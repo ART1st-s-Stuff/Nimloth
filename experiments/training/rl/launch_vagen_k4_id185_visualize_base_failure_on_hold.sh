@@ -21,10 +21,14 @@ VIS_SEED=${ID185_VIS_SEED_OVERRIDE:-2}
 VIS_EXPECTED_OUTCOME=${ID185_VIS_EXPECTED_OUTCOME:-failure}
 VIS_ENABLE_WANDB=${ID185_VIS_ENABLE_WANDB:-false}
 VIS_WANDB_RUN_ID=${ID185_VIS_WANDB_RUN_ID:-nimloth-id185-k4-visualize-base-fail-seed2-retry2}
+VIS_PARTITION=${ID185_VIS_EXPECTED_PARTITION:-normal}
+VIS_SOURCE_BOUNDARY=${ID185_VIS_SOURCE_BOUNDARY:-20}
+[[ "${VIS_PARTITION}" =~ ^(normal|preempt)$ ]]
+[[ "${VIS_SOURCE_BOUNDARY}" =~ ^(0|20)$ ]]
 [[ "${VIS_EXPECTED_OUTCOME}" =~ ^(failure|success|any)$ ]]
 [[ "${VIS_ENABLE_WANDB}" =~ ^(true|false)$ ]]
 RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}
-RUNNER=${REPO}/experiments/training/rl/run_vagen_k4_id185_visualize_base_failure.sh
+RUNNER=${ID185_VIS_RUNNER_OVERRIDE:-${REPO}/experiments/training/rl/run_vagen_k4_id185_visualize_base_failure.sh}
 PHASE_TAG=vis1
 PHASE_NAME=visualization
 PHASE_OUT=${RUN_OUT}/${PHASE_NAME}
@@ -39,6 +43,7 @@ flock -n 9 || { echo "duplicate ID185 launcher for job ${HOLD_JOB}" >&2; exit 94
 ACTOR_MODEL=${ROOT}/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint
 PLANNING_MODEL=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-08-02/sft2/74_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16n3g844lw844_px100352/train_ws16/epoch_001
 ID185_SOURCE_CHECKPOINT=${ROOT}/outputs/experiments/training/rl/2026-08-17/184_continue_k4schemeb_jointupdate_dp8_tp8_u20_from10_train3x60_b24_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_val5x8_retry1/checkpoints/global_step_20
+if [[ "${VIS_SOURCE_BOUNDARY}" == 0 ]]; then ID185_SOURCE_CHECKPOINT=; fi
 source "${REPO}/experiments/training/rl/slurm_allocation.sh"
 set -a
 source /project/peilab/atst/flower/.env
@@ -49,7 +54,7 @@ WANDB_RESUME=never
 [[ -x "${PY}" && -x "${RUNNER}" ]]
 JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}")
 grep -q 'JobState=RUNNING' <<<"${JOB_DETAILS}"
-grep -q 'Partition=normal' <<<"${JOB_DETAILS}"
+grep -q "Partition=${VIS_PARTITION}" <<<"${JOB_DETAILS}"
 grep -q 'NumNodes=4' <<<"${JOB_DETAILS}"
 grep -q 'TimeLimit=05:00:00' <<<"${JOB_DETAILS}"
 grep -Eq 'ReqTRES=[^ ]*gres/gpu=8([, ]|$)' <<<"${JOB_DETAILS}"
@@ -419,7 +424,16 @@ COMMON_ENV=(
   ID185_VIS_RUN_NAME="${RUN_NAME}"
   ID185_VIS_RUN_OUT="${RUN_OUT}"
   ID185_VIS_SEED="${VIS_SEED}"
+  ID188_TRAIN_CONFIG="${PHASE_OUT}/train_navigation_joint_id188.yaml"
+  ID188_VAL_CONFIG="${PHASE_OUT}/val_navigation_joint_id188.yaml"
+  ID188_ACTOR_MODEL="${ACTOR_MODEL}"
+  ID188_PLANNING_CHECKPOINT="${PLANNING_MODEL}"
+  ID188_AGENT_CONFIG="${REPO}/external/VAGEN/vagen/configs/agent_no_concat.yaml"
+  ID188_RUN_NAME="${RUN_NAME}"
+  ID188_RUN_OUT="${RUN_OUT}"
+  ID188_SEED="${VIS_SEED}"
   ID185_VIS_EXPECTED_OUTCOME="${VIS_EXPECTED_OUTCOME}"
+  ID185_VIS_SOURCE_BOUNDARY="${VIS_SOURCE_BOUNDARY}"
   ID185_VIS_ENABLE_WANDB="${VIS_ENABLE_WANDB}"
   RAY_agent_register_timeout_ms=120000
 )
@@ -481,6 +495,7 @@ timeout 120s srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
   RAY_EXPECTED_NODE_IPS="${RAY_EXPECTED_NODE_IPS}" \
   EXPECTED_WANDB_RESUME="${WANDB_RESUME}" \
   EXPECTED_WANDB_RUN_ID="${VIS_WANDB_RUN_ID}" \
+  EXPECTED_SOURCE_BOUNDARY="${VIS_SOURCE_BOUNDARY}" \
   "${PY}" - <<'PY' | tee "${RAY_LOG_ROOT}/cluster_probe.json"
 import json, os, ray
 ray.init(address=os.environ['RAY_ADDRESS'])
@@ -537,7 +552,11 @@ assert all(row['hf_home']=='/project/peilab/atst/.cache/huggingface' for row in 
 assert all(row['torch_home']=='/project/peilab/atst/flower/.cache/torch' for row in probes)
 assert all(row['vllm_worker_multiproc_method']=='spawn' for row in probes)
 assert all(row['id185_train_config'] for row in probes)
-assert all(row['id185_source_checkpoint'].endswith('/global_step_20') for row in probes)
+if os.environ['EXPECTED_SOURCE_BOUNDARY'] == '20':
+    assert all(row['id185_source_checkpoint'].endswith('/global_step_20') for row in probes)
+else:
+    assert os.environ['EXPECTED_SOURCE_BOUNDARY'] == '0'
+    assert all(row['id185_source_checkpoint']=='' for row in probes)
 assert all(row['wandb_run_id']==os.environ['EXPECTED_WANDB_RUN_ID'] for row in probes)
 assert all(row['wandb_resume']==os.environ['EXPECTED_WANDB_RESUME'] for row in probes)
 assert all(row['wandb_api_key_present'] for row in probes)
@@ -557,4 +576,5 @@ srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
     RUN_NAME="${RUN_NAME}" RUN_DATE="${RUN_DATE}" \
     ID185_VIS_EXPECTED_RUN_NAME="${RUN_NAME}" \
     ID185_VIS_EXPECTED_RUN_DATE="${RUN_DATE}" \
+    ID185_VIS_EXPECTED_PARTITION="${VIS_PARTITION}" \
     "${RUNNER}"

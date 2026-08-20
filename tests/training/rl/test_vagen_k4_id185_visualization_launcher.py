@@ -8,6 +8,8 @@ SLURM = ROOT / "experiments/training/rl/id185_k4_visualize_base_failure.slurm"
 LAUNCHER = ROOT / "experiments/training/rl/launch_vagen_k4_id185_visualize_base_failure_on_hold.sh"
 RUNNER = ROOT / "experiments/training/rl/run_vagen_k4_id185_visualize_base_failure.sh"
 CANARY_SLURM = ROOT / "experiments/training/rl/id187_rollout_browser_canary.slurm"
+STEP0_SLURM = ROOT / "experiments/training/rl/id188_step0_rollout_browser_canary.slurm"
+STEP0_RUNNER = ROOT / "experiments/training/rl/run_vagen_k4_id188_step0_browser_canary.sh"
 def test_visualization_launcher_keeps_exact_tp8_topology() -> None:
     slurm = SLURM.read_text()
     launcher = LAUNCHER.read_text()
@@ -46,13 +48,38 @@ def test_id187_browser_canary_has_unique_identity_and_no_training() -> None:
     assert "#SBATCH --job-name=nimloth-id187-browser-canary" in source
     assert "#SBATCH --nodes=4" in source
     assert "#SBATCH --gres=gpu:2" in source
-    assert "#SBATCH --partition=normal" in source
+    assert "#SBATCH --partition=preempt" in source
     assert "ID185_VIS_RUN_NAME_OVERRIDE=187_smoke_rollout_browser" in source
     assert "ID185_VIS_EXPECTED_OUTCOME=any" in source
     assert "ID185_VIS_ENABLE_WANDB=true" in source
     assert "ID185_VIS_WANDB_RUN_ID=nimloth-id187-smoke-rollout-browser" in source
+    assert "#SBATCH --partition=preempt" in source
+    assert "ID185_VIS_EXPECTED_PARTITION=preempt" in source
+    assert "ID185_VIS_SOURCE_BOUNDARY=20" in source
+    launcher = LAUNCHER.read_text()
+    runner = RUNNER.read_text()
+    assert "VIS_PARTITION=${ID185_VIS_EXPECTED_PARTITION:-normal}" in launcher
+    assert '"${SLURM_JOB_PARTITION:-}" == "${ID185_VIS_EXPECTED_PARTITION}"' in runner
+
+
+def test_id188_step0_canary_uses_sft2_initialization_without_resume() -> None:
+    slurm = STEP0_SLURM.read_text()
+    runner = STEP0_RUNNER.read_text()
+    assert "#SBATCH --partition=preempt" in slurm
+    assert "#SBATCH --nodes=4" in slurm
+    assert "#SBATCH --gres=gpu:2" in slurm
+    assert "188_smoke_rollout_browser_k4_dp8_tp8_step0_" in slurm
+    assert "run_vagen_k4_id188_step0_browser_canary.sh" in slurm
+    assert "ID185_VIS_SOURCE_BOUNDARY=0" in slurm
+    assert "--config-name=joint_id188_step0_visualize_one" in runner
+    assert "trainer.resume_mode=disable" in runner
+    assert "ID188_K4_STEP0_BOOTSTRAP_OK global_step=0" in runner
+    assert "evaluation_browser/global_step_0" in runner
+    assert "validation/0.jsonl" in runner
+    assert "load_complete_joint_checkpoint" not in runner
+    assert "global_step_*" in runner
 
 
 def test_visualization_scripts_are_executable() -> None:
-    for path in (SLURM, LAUNCHER, RUNNER, CANARY_SLURM):
+    for path in (SLURM, LAUNCHER, RUNNER, CANARY_SLURM, STEP0_SLURM, STEP0_RUNNER):
         assert path.stat().st_mode & 0o111
