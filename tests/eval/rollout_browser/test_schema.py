@@ -30,6 +30,8 @@ def _audit() -> dict:
             "state_value": True,
             "planner": True,
             "mcts": True,
+            "model_state": False,
+            "mcts_process": False,
         },
         "task": "navigate to the toaster",
         "data_source": "navigation_base",

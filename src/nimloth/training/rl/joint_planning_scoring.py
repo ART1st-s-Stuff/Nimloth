@@ -262,9 +262,26 @@ def k4_scoring_record_from_policy_state(
         "candidate_visit_counts",
         "planner_latency_seconds",
     }
-    plan = _exact_mapping(planning, planning_fields, "K4 policy planning result")
+    missing_planning = planning_fields - set(planning)
+    unexpected_planning = set(planning) - planning_fields - {"current_state", "mcts_trace"}
+    if missing_planning or unexpected_planning:
+        raise ValueError(
+            "K4 policy planning result fields mismatch: "
+            f"missing={sorted(missing_planning)}, unexpected={sorted(unexpected_planning)}"
+        )
+    plan = dict(planning)
     if plan["scored"] is not True or plan["tensor_parallel_rank"] != 0:
         raise ValueError("K4 policy planning result must come from TP rank zero")
+    current_state = plan.get("current_state")
+    mcts_trace = plan.get("mcts_trace")
+    if (current_state is None) != (mcts_trace is None):
+        raise ValueError("K4 current state and MCTS trace must be captured together")
+    if current_state is not None:
+        projected = _finite_matrix(current_state, "current_state")
+        if len(projected) != 8 or len(projected[0]) != 1024:
+            raise ValueError("K4 captured current state must have shape (8, 1024)")
+        if not isinstance(mcts_trace, Mapping):
+            raise ValueError("K4 captured MCTS trace must be a mapping")
     config = plan["planning_config"]
     if not isinstance(config, Mapping) or set(config) != {
         "horizon",

@@ -1,13 +1,13 @@
 # 统一 Evaluation Rollout Browser 设计
 
 状态：**核心实现完成；真实服务器canary待执行**
-日期：2026-08-20
+日期：2026-08-21
 
 ## 实现进度（2026-08-20）
 
 已完成：
 
-- `nimloth_rollout_audit_v2` capability-aware schema及严格验证；
+- `nimloth_rollout_audit_v3` capability-aware schema及严格验证（兼容读取v2）；
 - `RolloutTrajectory`无重算adapter，覆盖SFT/greedy/SFT2 MCTS；
 - 完整token/action/planner evidence和PNG归档；
 - 单batch及多batch原子写入、hash、identity与global complete门禁；
@@ -51,6 +51,7 @@
    - 完整 raw response / CoT；
    - 全部真实 step 和 terminal 图像。
 3. UI 可以默认折叠或只把 Top-N 放在首屏，但底层数据不得 Top-N 截断。
+4. K4必须额外保存同次生成的完整`16×2048` latent hidden、behavior-time`8×1024` projected current state、每个唯一MCTS tree node的完整predicted state，以及按时间排序的全部100次UCT过程；每次过程包含selection/expansion、UCT输入、leaf all-action Q与scalar value、逐node backup前后值。
 
 ## 3. 当前系统事实
 
@@ -111,7 +112,9 @@
     "direct_q": false,
     "state_value": false,
     "planner": true,
-    "mcts": true
+    "mcts": true,
+    "model_state": true,
+    "mcts_process": true
   }
 }
 ```
@@ -126,6 +129,8 @@
 | guided-policy state value | 是 | 否 | 否 |
 | planner root scores/candidates | 是 | 是 | 否 |
 | MCTS visits | 是 | 是 | 否 |
+| full latent/current/predicted states | 是 | 仅当behavior-time保存时是 | 否 |
+| chronological MCTS process | 是 | 仅当behavior-time保存时是 | 否 |
 
 `false` 表示策略没有提供该证据，不能用 `0` 表示。
 
@@ -189,7 +194,7 @@
 
 ### 5.2 Rollout audit
 
-建议 schema：`nimloth_rollout_audit_v2`。通用层只描述事实，不嵌入 ID185 名称。
+schema：`nimloth_rollout_audit_v3`。通用层只描述事实，不嵌入 ID185 名称；v2可读但其`model_state/mcts_process`能力固定为false。
 
 Rollout-level 字段：
 
@@ -213,7 +218,8 @@ Turn-level 通用字段：
 - token trace（存在时）；
 - action distribution（存在时）；
 - direct-Q block（存在时）；
-- planner block（存在时）。
+- planner block（存在时）；
+- model-state archive及chronological MCTS process（behavior-time存在时）。
 
 Planner block 必须保存完整 candidate 数组，不只保存排序后的 Top-N：
 
@@ -235,6 +241,8 @@ Planner block 必须保存完整 candidate 数组，不只保存排序后的 Top
   ]
 }
 ```
+
+K4 turn另含`model_state`和`planner.mcts_process`。float32状态写入hash绑定的`step_<n>_model_states.npz`，包含`latent_hidden`、`current_state`、`mcts_node_states`；每个非root tree node以`state_index`引用唯一predicted state，root引用`current_state`。`mcts_process.simulations`必须恰好100条且index连续，每条保存4个selection/expansion step、leaf all-action values/scalar value和5个backup前后记录。写入和finalize都重新校验tensor key/dtype/shape/finite及SHA256。
 
 JSON 中的 `-inf` 使用 `null` 加显式语义字段编码，禁止输出非标准 `Infinity/NaN`。
 

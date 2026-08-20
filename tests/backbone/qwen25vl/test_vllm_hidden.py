@@ -348,9 +348,12 @@ def test_worker_installs_and_scores_k4_planner_only_on_tp_rank_zero(
             self.score_dtype = snapshot.score_dtype
             self.planning_config = snapshot.planning_config
 
-        def score(self, root):
+        def score(self, root, *, capture_mcts_trace=False):
             assert root.shape == (1, 2, 2)
+            assert capture_mcts_trace is False
             return SimpleNamespace(
+                current_state=torch.zeros((1, 8, 1024)),
+                mcts_trace=None,
                 direct_all_action_q=torch.arange(8, dtype=torch.float32).unsqueeze(0),
                 planner_root_mean_values=torch.arange(8, dtype=torch.float32).unsqueeze(0) / 10.0,
                 root_visit_counts=torch.tensor(
