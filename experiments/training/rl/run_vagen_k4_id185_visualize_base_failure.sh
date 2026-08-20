@@ -8,6 +8,10 @@ ROOT=/project/peilab/atst/nimloth
 : "${EXPECTED_VERL_COMMIT:?EXPECTED_VERL_COMMIT is required}"
 : "${RUN_NAME:?RUN_NAME is required}"
 : "${RUN_DATE:?RUN_DATE is required}"
+: "${ID185_VIS_EXPECTED_RUN_NAME:?ID185_VIS_EXPECTED_RUN_NAME is required}"
+: "${ID185_VIS_EXPECTED_RUN_DATE:?ID185_VIS_EXPECTED_RUN_DATE is required}"
+: "${ID185_VIS_EXPECTED_OUTCOME:?ID185_VIS_EXPECTED_OUTCOME is required}"
+: "${ID185_VIS_ENABLE_WANDB:?ID185_VIS_ENABLE_WANDB is required}"
 VAGEN=${REPO}/external/VAGEN
 VERL=${VAGEN}/verl
 PY=${ROOT}/.venv-vagen-main/bin/python3
@@ -37,8 +41,10 @@ TRAIN_PID=
 NVIDIA_PID=
 PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-16200}
 
-[[ "${RUN_NAME}" == 185_visualize_k4schemeb_dp8_tp8_source20_base_failed_seed2_retry2 ]]
-[[ "${RUN_DATE}" == 2026-08-20 ]]
+[[ "${RUN_NAME}" == "${ID185_VIS_EXPECTED_RUN_NAME}" ]]
+[[ "${RUN_DATE}" == "${ID185_VIS_EXPECTED_RUN_DATE}" ]]
+[[ "${ID185_VIS_EXPECTED_OUTCOME}" =~ ^(failure|success|any)$ ]]
+[[ "${ID185_VIS_ENABLE_WANDB}" =~ ^(true|false)$ ]]
 [[ "${EXPECTED_VERL_COMMIT}" == 494f264494b2525f2c13595f63ac4912963e6d2f ]]
 [[ "${SLURM_JOB_PARTITION:-}" == normal ]]
 [[ "${ID185_EXPECTED_NNODES}" == 4 ]]
@@ -112,7 +118,7 @@ set +a
 export WANDB_ENTITY=art2nd-hong-kong-university-of-science-and-technology
 export WANDB_PROJECT=vagen
 export WANDB_NAME=${RUN_NAME}
-export WANDB_RUN_ID=nimloth-id185-k4-visualize-base-fail-seed2-retry2
+export WANDB_RUN_ID=${WANDB_RUN_ID:-nimloth-id185-k4-visualize-base-fail-seed2-retry2}
 WANDB_PREFLIGHT_JSON=$("${PY}" - "${WANDB_ENTITY}" "${WANDB_PROJECT}" "${WANDB_RUN_ID}" "${RUN_NAME}" <<'PY'
 import json, sys, wandb
 from wandb.errors import CommError
@@ -344,7 +350,7 @@ export ID185_VIS_AGENT_CONFIG=${VAGEN}/vagen/configs/agent_no_concat.yaml
 export ID185_VIS_RUN_NAME=${RUN_NAME}
 export ID185_VIS_RUN_OUT=${RUN_OUT}
 export ID185_VIS_SOURCE_CHECKPOINT=${SOURCE_CHECKPOINT}
-export ID185_VIS_SEED=2
+export ID185_VIS_SEED=${ID185_VIS_SEED:-2}
 
 "${PY}" - "${ID185_TRAIN_CONFIG}" "${ID185_VAL_CONFIG}" "${PHASE_OUT}" <<'PY'
 import json, sys
@@ -400,13 +406,15 @@ assert len({row['rollout_sample_id'] for row in val_rows})==300
 PY
 
 cat >"${RUN_OUT}/README.md" <<EOF
-# ID185 one-rollout interactive visualization
+# One-rollout K4 evaluation evidence canary
 
 - source: immutable ID184 step20/source796 and frozen snapshot sha256:6648780b3791cb4b937974b151b9e119ed9bf74602d1bc21dabfc30a3914d969.
-- selected episode: historical ID185 Base task seed2, which failed in the formal ID185 run. Selection is bound to data_source+seed because the current environment transport URL is intentionally excluded from semantic task selection and changes the derived rollout_sample_id.
-- execution: a new same-contract rollout (not a reconstruction of the old stochastic trajectory), val-only, K4/100 UCT/c1 Scheme-B alpha1 beta85.78297006578457, TP8/DP1 rollout and DP8 restore. No optimizer update or checkpoint.
+- selected episode: Base seed ${ID185_VIS_SEED}. Selection is bound to data_source+seed because the current environment transport URL is intentionally excluded from semantic task selection and changes the derived rollout_sample_id.
+- execution: a new same-contract rollout, val-only, K4/100 UCT/c1 Scheme-B alpha1 beta85.78297006578457, TP8/DP1 rollout and DP8 restore. All model modules are frozen; there is no optimizer update or checkpoint.
 - audit: every real action step persists the true observation image, actual generated CoT, prior and executed action, direct all-action Q, Frozen-V current state value, MCTS root predictions/visits, and all candidate 4-action sequences.
-- result: visualization/rollout_audit/index.html. The validator requires this new rollout to be a failure; otherwise a different historical base-failure seed must be selected in a new output.
+- expected outcome: ${ID185_VIS_EXPECTED_OUTCOME}. This controls only final validation and never changes policy execution.
+- results: `evaluation_browser/global_step_20/index.html` is the unified browser; `visualization/rollout_audit/index.html` remains the legacy single-rollout view for cross-checking.
+- W&B: project `vagen`, run `${RUN_NAME}`, enabled=${ID185_VIS_ENABLE_WANDB}, identity `${WANDB_RUN_ID}`.
 EOF
 
 "${PY}" - "${REPAIR_ROOT}" "${PHASE_OUT}" <<'PY'
@@ -519,6 +527,9 @@ COMMAND=(
   trainer.save_freq=5
   trainer.joint_dataloader_resume_policy=exact
 )
+if [[ "${ID185_VIS_ENABLE_WANDB}" == true ]]; then
+  COMMAND+=("trainer.logger=[console,wandb]")
+fi
 printf '%q ' "${COMMAND[@]}" >"${PHASE_OUT}/command.sh"; printf '\n' >>"${PHASE_OUT}/command.sh"
 setsid timeout --signal=TERM --kill-after=30s "${PHASE_TIMEOUT_SECONDS}s" "${COMMAND[@]}" >"${PHASE_OUT}/train.log" 2>&1 &
 TRAIN_PID=$!
@@ -536,11 +547,13 @@ TRAIN_PID=
   --output "${PHASE_OUT}/rollout_audit/index.html"
 [[ -f "${PHASE_OUT}/rollout_audit/index.html" ]]
 
-"${PY}" - "${SOURCE_CHECKPOINT}" "${PHASE_OUT}" "${RUN_OUT}" "${ID185_VIS_SEED}" <<'PY'
+"${PY}" - "${SOURCE_CHECKPOINT}" "${PHASE_OUT}" "${RUN_OUT}" \
+  "${ID185_VIS_SEED}" "${ID185_VIS_EXPECTED_OUTCOME}" <<'PY'
 import json, os, sys, tempfile
 from pathlib import Path
 from vagen.joint_policy.checkpoint import load_complete_joint_checkpoint
 source=Path(sys.argv[1]); out=Path(sys.argv[2]); run=Path(sys.argv[3]); expected_seed=int(sys.argv[4])
+expected_outcome=sys.argv[5]
 manifest=json.loads((out/'dataset_manifest.json').read_text())
 selected=[
  row for row in manifest['validation_rows']
@@ -571,7 +584,13 @@ assert audit['rollout_sample_id']==expected_id
 assert audit['rollout_repeat_index']==0
 assert audit['turn_count']==len(audit['turns'])
 assert audit['turn_count']>=1
-assert audit['success'] is False
+success=bool(audit['success'])
+if expected_outcome == 'failure':
+ assert success is False
+elif expected_outcome == 'success':
+ assert success is True
+else:
+ assert expected_outcome == 'any'
 for index,turn in enumerate(audit['turns']):
  assert turn['turn_index']==index and turn['turn_number']==index+1
  assert turn['cot'].startswith('<think>') and turn['cot'].endswith('</think>')
@@ -588,14 +607,34 @@ complete=json.loads((journal/'complete.json').read_text())
 assert complete['batch_count']==1 and complete['row_count']==1
 rows=[json.loads(line) for line in (run/'validation/20.jsonl').read_text().splitlines() if line]
 assert len(rows)==1 and rows[0]['rollout_sample_id']==expected_id
-assert float(rows[0]['traj_success'])==0.0
+assert bool(float(rows[0]['traj_success'])) is success
 assert (audit_dir/'index.html').is_file()
+browser=run/'evaluation_browser/global_step_20'
+complete=json.loads((browser/'complete.json').read_text())
+manifest_bytes=(browser/'manifest.json').read_bytes()
+import hashlib
+assert complete['manifest_sha256']=='sha256:'+hashlib.sha256(manifest_bytes).hexdigest()
+manifest=json.loads(manifest_bytes)
+assert manifest['status']=='complete' and manifest['rollout_count']==1
+assert manifest['expected_rollouts']==1 and len(manifest['rollouts'])==1
+browser_row=manifest['rollouts'][0]
+assert browser_row['identity']['rollout_sample_id']==expected_id
+assert bool(browser_row['success']) is success
+assert browser_row['turn_count']==audit['turn_count']
+assert browser_row['capabilities']['mcts_candidates'] is True
+artifact=browser/browser_row['artifact']
+assert artifact.is_file()
+browser_audit=artifact.parent/'rollout.json'
+assert 'sha256:'+hashlib.sha256(browser_audit.read_bytes()).hexdigest()==browser_row['audit_sha256']
+assert (browser/'index.html').is_file()
 summary={
  'status':'ALL_OK','phase':'visualization','global_step':20,'source_step':796,
  'snapshot_id':active['snapshot_id'],'rollout_sample_id':expected_id,
- 'turn_count':audit['turn_count'],'success':False,'checkpoint_steps':[],
+ 'turn_count':audit['turn_count'],'success':success,'checkpoint_steps':[],
  'rollout_audit':str(audit_dir/'rollout_audit.json'),
  'html':str(audit_dir/'index.html'),
+ 'rollout_browser':str(browser/'index.html'),
+ 'rollout_browser_manifest_sha256':complete['manifest_sha256'],
 }
 atomic_json(out/'validator.json',summary)
 atomic_json(run/'final_status.json',{**summary,'status':'passed'})

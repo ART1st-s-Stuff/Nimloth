@@ -15,8 +15,14 @@ SLURM_BIN_DIR=/cm/shared/apps/slurm/current/bin
 SLURM_CONF=/cm/shared/apps/slurm/var/etc/slurm/slurm.conf
 [[ -x "${SLURM_BIN_DIR}/scontrol" && -x "${SLURM_BIN_DIR}/srun" ]]
 [[ -r "${SLURM_CONF}" ]]
-RUN_NAME=185_visualize_k4schemeb_dp8_tp8_source20_base_failed_seed2_retry2
-RUN_DATE=2026-08-20
+RUN_NAME=${ID185_VIS_RUN_NAME_OVERRIDE:-185_visualize_k4schemeb_dp8_tp8_source20_base_failed_seed2_retry2}
+RUN_DATE=${ID185_VIS_RUN_DATE_OVERRIDE:-2026-08-20}
+VIS_SEED=${ID185_VIS_SEED_OVERRIDE:-2}
+VIS_EXPECTED_OUTCOME=${ID185_VIS_EXPECTED_OUTCOME:-failure}
+VIS_ENABLE_WANDB=${ID185_VIS_ENABLE_WANDB:-false}
+VIS_WANDB_RUN_ID=${ID185_VIS_WANDB_RUN_ID:-nimloth-id185-k4-visualize-base-fail-seed2-retry2}
+[[ "${VIS_EXPECTED_OUTCOME}" =~ ^(failure|success|any)$ ]]
+[[ "${VIS_ENABLE_WANDB}" =~ ^(true|false)$ ]]
 RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}
 RUNNER=${REPO}/experiments/training/rl/run_vagen_k4_id185_visualize_base_failure.sh
 PHASE_TAG=vis1
@@ -393,7 +399,7 @@ COMMON_ENV=(
   WANDB_ENTITY=art2nd-hong-kong-university-of-science-and-technology
   WANDB_PROJECT=vagen
   WANDB_NAME="${RUN_NAME}"
-  WANDB_RUN_ID=nimloth-id185-k4-visualize-base-fail-seed2-retry2
+  WANDB_RUN_ID="${VIS_WANDB_RUN_ID}"
   WANDB_RESUME="${WANDB_RESUME}"
   WANDB_DIR="${RAY_LOG_ROOT}/wandb"
   ID185_TRAIN_CONFIG="${PHASE_OUT}/train_navigation_joint_id185.yaml"
@@ -412,7 +418,9 @@ COMMON_ENV=(
   ID185_VIS_AGENT_CONFIG="${REPO}/external/VAGEN/vagen/configs/agent_no_concat.yaml"
   ID185_VIS_RUN_NAME="${RUN_NAME}"
   ID185_VIS_RUN_OUT="${RUN_OUT}"
-  ID185_VIS_SEED=2
+  ID185_VIS_SEED="${VIS_SEED}"
+  ID185_VIS_EXPECTED_OUTCOME="${VIS_EXPECTED_OUTCOME}"
+  ID185_VIS_ENABLE_WANDB="${VIS_ENABLE_WANDB}"
   RAY_agent_register_timeout_ms=120000
 )
 
@@ -471,7 +479,9 @@ done
 timeout 120s srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
   -w "${HEAD_NODE}" --gpus=0 env RAY_ADDRESS="${RAY_ADDRESS}" \
   RAY_EXPECTED_NODE_IPS="${RAY_EXPECTED_NODE_IPS}" \
-  EXPECTED_WANDB_RESUME="${WANDB_RESUME}" "${PY}" - <<'PY' | tee "${RAY_LOG_ROOT}/cluster_probe.json"
+  EXPECTED_WANDB_RESUME="${WANDB_RESUME}" \
+  EXPECTED_WANDB_RUN_ID="${VIS_WANDB_RUN_ID}" \
+  "${PY}" - <<'PY' | tee "${RAY_LOG_ROOT}/cluster_probe.json"
 import json, os, ray
 ray.init(address=os.environ['RAY_ADDRESS'])
 alive=[node for node in ray.nodes() if node['Alive']]
@@ -528,7 +538,7 @@ assert all(row['torch_home']=='/project/peilab/atst/flower/.cache/torch' for row
 assert all(row['vllm_worker_multiproc_method']=='spawn' for row in probes)
 assert all(row['id185_train_config'] for row in probes)
 assert all(row['id185_source_checkpoint'].endswith('/global_step_20') for row in probes)
-assert all(row['wandb_run_id']=='nimloth-id185-k4-visualize-base-fail-seed2-retry2' for row in probes)
+assert all(row['wandb_run_id']==os.environ['EXPECTED_WANDB_RUN_ID'] for row in probes)
 assert all(row['wandb_resume']==os.environ['EXPECTED_WANDB_RESUME'] for row in probes)
 assert all(row['wandb_api_key_present'] for row in probes)
 assert all(row['dataset_type']=='vagen.gym_agent_dataset.AgenticDataset' for row in probes)
@@ -545,4 +555,6 @@ srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 \
     EXPECTED_VAGEN_COMMIT="${EXPECTED_VAGEN_COMMIT}" \
     EXPECTED_VERL_COMMIT="${EXPECTED_VERL_COMMIT}" \
     RUN_NAME="${RUN_NAME}" RUN_DATE="${RUN_DATE}" \
+    ID185_VIS_EXPECTED_RUN_NAME="${RUN_NAME}" \
+    ID185_VIS_EXPECTED_RUN_DATE="${RUN_DATE}" \
     "${RUNNER}"

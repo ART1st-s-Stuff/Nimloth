@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[3]
 SLURM = ROOT / "experiments/training/rl/id185_k4_visualize_base_failure.slurm"
 LAUNCHER = ROOT / "experiments/training/rl/launch_vagen_k4_id185_visualize_base_failure_on_hold.sh"
 RUNNER = ROOT / "experiments/training/rl/run_vagen_k4_id185_visualize_base_failure.sh"
+CANARY_SLURM = ROOT / "experiments/training/rl/id187_rollout_browser_canary.slurm"
 def test_visualization_launcher_keeps_exact_tp8_topology() -> None:
     slurm = SLURM.read_text()
     launcher = LAUNCHER.read_text()
@@ -19,7 +20,7 @@ def test_visualization_launcher_keeps_exact_tp8_topology() -> None:
     assert "ID185_DYNAMIC_HEAD_RENDER_OK" in launcher
     assert "--tensor_parallel_size" not in launcher
     assert "ID185_VIS_ROLLOUT_SAMPLE_ID" not in launcher
-    assert "ID185_VIS_SEED=2" in launcher
+    assert "ID185_VIS_SEED=\"${VIS_SEED}\"" in launcher
 
 
 def test_visualization_runner_is_one_read_only_failure_rollout() -> None:
@@ -27,16 +28,31 @@ def test_visualization_runner_is_one_read_only_failure_rollout() -> None:
     assert "--config-name=joint_id185_visualize_one" in source
     assert "ID185_K4_VISUALIZATION_RESTORE_OK global_step=20" in source
     assert "VALIDATION_BATCH_JOURNAL_COMPLETE batches=1 rows=1" in source
-    assert "audit['success'] is False" in source
+    assert "if expected_outcome == 'failure':" in source
+    assert "elif expected_outcome == 'success':" in source
     assert "assert not list((run/'checkpoints').glob('global_step_*'))" in source
     assert "row['data_source']=='navigation_base_test_id185'" in source
     assert "row['seed']==expected_seed" in source
-    assert "export ID185_VIS_SEED=2" in source
+    assert "export ID185_VIS_SEED=${ID185_VIS_SEED:-2}" in source
+    assert "evaluation_browser/global_step_20" in source
+    assert "manifest_sha256" in source
     assert "render_id185_rollout_visualization.py" in source
     assert "rollout_audit/index.html" in source
     assert "optimizer update" in source
 
 
+def test_id187_browser_canary_has_unique_identity_and_no_training() -> None:
+    source = CANARY_SLURM.read_text()
+    assert "#SBATCH --job-name=nimloth-id187-browser-canary" in source
+    assert "#SBATCH --nodes=4" in source
+    assert "#SBATCH --gres=gpu:2" in source
+    assert "#SBATCH --partition=normal" in source
+    assert "ID185_VIS_RUN_NAME_OVERRIDE=187_smoke_rollout_browser" in source
+    assert "ID185_VIS_EXPECTED_OUTCOME=any" in source
+    assert "ID185_VIS_ENABLE_WANDB=true" in source
+    assert "ID185_VIS_WANDB_RUN_ID=nimloth-id187-smoke-rollout-browser" in source
+
+
 def test_visualization_scripts_are_executable() -> None:
-    for path in (SLURM, LAUNCHER, RUNNER):
+    for path in (SLURM, LAUNCHER, RUNNER, CANARY_SLURM):
         assert path.stat().st_mode & 0o111
