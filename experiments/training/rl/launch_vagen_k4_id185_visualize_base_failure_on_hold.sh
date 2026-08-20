@@ -60,7 +60,12 @@ set +a
 WANDB_RESUME=never
 
 [[ -x "${PY}" && -x "${RUNNER}" ]]
-JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}")
+JOB_DETAILS=
+for _ in $(seq 1 30); do
+  JOB_DETAILS=$(scontrol show job -dd "${HOLD_JOB}")
+  if grep -q 'JobState=RUNNING' <<<"${JOB_DETAILS}"; then break; fi
+  sleep 1
+done
 grep -q 'JobState=RUNNING' <<<"${JOB_DETAILS}"
 grep -q "Partition=${VIS_PARTITION}" <<<"${JOB_DETAILS}"
 grep -q 'NumNodes=4' <<<"${JOB_DETAILS}"
