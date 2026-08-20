@@ -25,10 +25,11 @@ if [[ "${PHASE}" == resume_20_to_30 ]]; then
   PHASE_NAME=phase1_resume_20_to_30
   PHASE_TAG=p1
   SOURCE_CHECKPOINT=${ID184_SOURCE_RUN_OUT}/checkpoints/global_step_20
-  SOURCE_TRAIN_CONFIG=${ID184_SOURCE_RUN_OUT}/continue_step10_to20/train_navigation_joint_id184.yaml
-  SOURCE_DATASET_MANIFEST=${ID184_SOURCE_RUN_OUT}/continue_step10_to20/dataset_manifest.json
+  SOURCE_TRAIN_CONFIG=${VAGEN}/examples/train/navigation/train_navigation_joint_id186.yaml
+  SOURCE_DATASET_MANIFEST=
   export WANDB_RUN_ID=nimloth-id186-k4-continue-20-to30
   VAL_BEFORE_TRAIN=true
+  DATALOADER_POLICY=reset
 else
   [[ "${PHASE}" == resume_30_to_40 ]]
   START_STEP=30
@@ -41,6 +42,7 @@ else
   SOURCE_DATASET_MANIFEST=${RUN_OUT}/phase1_resume_20_to_30/dataset_manifest.json
   export WANDB_RUN_ID=nimloth-id186-k4-continue-30-to40
   VAL_BEFORE_TRAIN=false
+  DATALOADER_POLICY=exact
 fi
 PHASE_OUT=${RUN_OUT}/${PHASE_NAME}
 : "${ID186_HEAD_IP:?ID186_HEAD_IP is required}"
@@ -60,7 +62,7 @@ TRAIN_PID=
 NVIDIA_PID=
 PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-13200}
 
-[[ "${RUN_NAME}" == 186_continue_k4schemeb_jointupdate_dp8_tp8_u40_from20_train3x60_b24_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_val5x8 ]]
+[[ "${RUN_NAME}" == 186_continue_k4schemeb_jointupdate_dp8_tp8_u40_from20_train3x1200_b24_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_val5x8 ]]
 [[ "${RUN_DATE}" == 2026-08-20 ]]
 [[ "${PHASE}" == resume_20_to_30 || "${PHASE}" == resume_30_to_40 ]]
 [[ "${EXPECTED_VERL_COMMIT}" == 494f264494b2525f2c13595f63ac4912963e6d2f ]]
@@ -173,7 +175,9 @@ fi
 [[ -f "${SOURCE_CHECKPOINT}/joint_checkpoint_complete.json" ]]
 [[ -f "${SOURCE_CHECKPOINT}/data.pt" ]]
 [[ -f "${SOURCE_TRAIN_CONFIG}" ]]
-[[ -f "${SOURCE_DATASET_MANIFEST}" ]]
+if [[ "${PHASE}" == resume_30_to_40 ]]; then
+  [[ -f "${SOURCE_DATASET_MANIFEST}" ]]
+fi
 SOURCE_CHECKPOINT_PREFLIGHT_JSON=$("${PY}" - "${SOURCE_CHECKPOINT}" "${START_STEP}" "${TARGET_SOURCE_STEP}" <<'PY'
 import hashlib,json,sys
 from pathlib import Path
@@ -382,7 +386,9 @@ from collections import Counter
 from pathlib import Path
 from vagen.gym_agent_dataset import AgenticDataset
 train_path=Path(sys.argv[1]); val_path=Path(sys.argv[2]); out=Path(sys.argv[3])
-source_manifest=json.loads(Path(sys.argv[4]).read_text())
+source_manifest=(
+ json.loads(Path(sys.argv[4]).read_text()) if sys.argv[4] else None
+)
 def rows_for(path):
  dataset=AgenticDataset(data_files=str(path),config={'base_seed':0})
  return [{
@@ -394,14 +400,15 @@ def rows_for(path):
 train_rows=rows_for(train_path); val_rows=rows_for(val_path)
 train_counts=Counter(row['data_source'] for row in train_rows)
 val_counts=Counter(row['data_source'] for row in val_rows)
-assert len(train_rows)==180
+assert len(train_rows)==3600
 assert train_counts=={
- 'navigation_base_train_id184':60,
- 'navigation_common_sense_train_id184':60,
- 'navigation_long_horizon_train_id184':60,
+ 'navigation_base_train_id186':1200,
+ 'navigation_common_sense_train_id186':1200,
+ 'navigation_long_horizon_train_id186':1200,
 }
 assert all(
- len({row['seed'] for row in train_rows if row['data_source']==source})==60
+ sorted(row['seed'] for row in train_rows if row['data_source']==source)
+ ==list(range(1200))
  for source in train_counts
 )
 expected_val_sources={
@@ -417,12 +424,13 @@ assert all(
  sorted(row['seed'] for row in val_rows if row['data_source']==source)==list(range(8))
  for source in expected_val_sources
 )
-assert len({row['rollout_sample_id'] for row in train_rows})==180
+assert len({row['rollout_sample_id'] for row in train_rows})==3600
 assert len({row['rollout_sample_id'] for row in val_rows})==40
-assert train_rows==source_manifest['train_rows']
+if source_manifest is not None:
+ assert train_rows==source_manifest['train_rows']
 (out/'dataset_manifest.json').write_text(json.dumps({
  'base_seed':0,
- 'train_seed_directive':'inclusive [0,1199], unique within each split',
+ 'train_seed_directive':'all tasks 0..1199 in each train asset',
  'validation_seeds':'explicit 0..7 per held-out asset',
  'train_counts':dict(sorted(train_counts.items())),
  'validation_counts':dict(sorted(val_counts.items())),
@@ -437,8 +445,8 @@ cat >"${RUN_OUT}/README.md" <<EOF
 - project/run: vagen / ${RUN_NAME}; current phase ${PHASE} (${START_STEP}->${TARGET_STEP}).
 - approval: continue the complete ID184 step20/source796 state for 20 additional updates in two strict fresh-resume phases, validate/save every five updates, then run a separate full test300.
 - parent/VAGEN/VERL: ${EXPECTED_PARENT_COMMIT} / ${EXPECTED_VAGEN_COMMIT} / ${EXPECTED_VERL_COMMIT}
-- source checkpoint: ${SOURCE_CHECKPOINT}; actor, optimizer, scheduler, rank RNG, dataloader cursor, joint projector/predictor/ValueHead optimizer, active frozen snapshot and global step restore exactly.
-- training data: the exact ID184 base_train/common_sense_train/long_horizon_train 3x60 manifest and sample IDs. The checkpoint-bound YAML remains byte-identical; only the HTTP connection transport migrates through the scoped ID186 client override to ${ENV_URL}.
+- source checkpoint: ${SOURCE_CHECKPOINT}; actor, optimizer, scheduler, rank RNG, joint projector/predictor/ValueHead optimizer, active frozen snapshot and global step restore exactly. Phase1 explicitly resets only the dataloader because the dataset expands; phase2 restores the step30 cursor exactly.
+- training data: all 1200 tasks from each approved base_train/common_sense_train/long_horizon_train asset (3600 total), deterministically shuffled and consumed in successive 24-row updates. The dataset YAML remains stable across phases; only the HTTP connection transport migrates through the scoped ID186 client override to ${ENV_URL}.
 - validation data: held-out base/common_sense/long_horizon/complex_instruction/visual_appearance, explicit seeds0..7 per asset (5x8) at steps20/25/30/35/40; phase2 disables validation-before-train so step30 is never overwritten.
 - behavior/update: unchanged K4/100 UCT/c1 Scheme-B contract, alpha1, beta85.78297006578457, prior temperature1, float32, keyed sampling, CoT temperature0.7/top-p0.95; actor lr1e-7 and joint planning lr1e-4 objectives unchanged. Vision and reference remain frozen.
 - checkpoint/resume: phase1 writes25/30, phase2 exact-restores30 then retains35/40. Each phase has a distinct W&B identity; no prior ID184/ID185 output is modified.
@@ -553,7 +561,7 @@ COMMAND=(
   "trainer.val_before_train=${VAL_BEFORE_TRAIN}"
   trainer.test_freq=5
   trainer.save_freq=5
-  trainer.joint_dataloader_resume_policy=exact
+  "trainer.joint_dataloader_resume_policy=${DATALOADER_POLICY}"
 )
 printf '%q ' "${COMMAND[@]}" >"${PHASE_OUT}/command.sh"; printf '\n' >>"${PHASE_OUT}/command.sh"
 setsid timeout --signal=TERM --kill-after=30s "${PHASE_TIMEOUT_SECONDS}s" "${COMMAND[@]}" >"${PHASE_OUT}/train.log" 2>&1 &
@@ -646,7 +654,10 @@ log=(out/'train.log').read_text()
 assert f'Setting global step to {start}' in log
 assert f'ID186_K4_CONTINUE_RESUME_OK global_step={start}' in log
 assert 'ID186_TRAINING_CONTRACT_PATH_MIGRATION_OK' in log
-assert 'ID186_DATALOADER_RESET_OK' not in log
+if phase=='resume_20_to_30':
+ assert 'ID186_DATALOADER_RESET_OK global_step=20' in log
+else:
+ assert 'ID186_DATALOADER_RESET_OK' not in log
 updated_path=snapshots/f'source_step_{776+target}'/'frozen_k4_planner.pt'
 assert initial_path.is_file() and updated_path.is_file()
 initial=load_frozen_planning_snapshot_file(initial_path,device=torch.device('cpu'))

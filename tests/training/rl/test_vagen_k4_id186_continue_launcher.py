@@ -8,12 +8,13 @@ SLURM1 = ROOT / "experiments/training/rl/id186_k4_continue_phase1.slurm"
 SLURM2 = ROOT / "experiments/training/rl/id186_k4_continue_phase2.slurm"
 
 
-def test_id186_uses_two_strict_exact_resume_phases() -> None:
+def test_id186_uses_reset_then_exact_resume_phases() -> None:
     runner = RUNNER.read_text()
     launcher = LAUNCHER.read_text()
     assert "resume_20_to_30" in runner and "resume_30_to_40" in runner
-    assert "trainer.joint_dataloader_resume_policy=exact" in runner
-    assert "trainer.joint_dataloader_resume_policy=reset" not in runner
+    assert "DATALOADER_POLICY=reset" in runner
+    assert "DATALOADER_POLICY=exact" in runner
+    assert "trainer.joint_dataloader_resume_policy=${DATALOADER_POLICY}" in runner
     assert "trainer.total_training_steps=${TARGET_STEP}" in runner
     assert "trainer.val_before_train=${VAL_BEFORE_TRAIN}" in runner
     assert "global_step_20" in launcher and "global_step_30" in launcher
@@ -21,10 +22,12 @@ def test_id186_uses_two_strict_exact_resume_phases() -> None:
     assert "nimloth-id186-k4-continue-30-to40" in launcher
 
 
-def test_id186_preserves_dataset_ids_and_migrates_only_transport() -> None:
+def test_id186_uses_full_train_assets_and_migrates_only_transport() -> None:
     runner = RUNNER.read_text()
     launcher = LAUNCHER.read_text()
     assert "runtime_train_path.write_bytes(source_train.read_bytes())" in runner
+    assert "assert len(train_rows)==3600" in runner
+    assert "navigation_base_train_id186':1200" in runner
     assert "assert train_rows==source_manifest['train_rows']" in runner
     assert "VAGEN_REMOTE_ENV_BASE_URL_OVERRIDE=\"${ENV_URL}\"" in launcher
     assert "VAGEN_REMOTE_ENV_BASE_URL_OVERRIDE_SCOPE=id186_exact_continuation_v1" in launcher
@@ -58,6 +61,7 @@ def test_id186_validates_every_five_steps_without_overwrite() -> None:
     assert "else {20,25,30,35,40})" in runner
     assert "phase2 disables validation-before-train" in runner
     assert "actual_checkpoint_steps=={target-5,target}" in runner
+    assert "ID186_DATALOADER_RESET_OK global_step=20" in runner
     assert "ID186_DATALOADER_RESET_OK' not in log" in runner
     assert "phase=='resume_30_to_40'" in runner
     assert "atomic_json(run_out/'final_status.json'" in runner

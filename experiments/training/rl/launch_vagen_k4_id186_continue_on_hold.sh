@@ -16,7 +16,7 @@ SLURM_BIN_DIR=/cm/shared/apps/slurm/current/bin
 SLURM_CONF=/cm/shared/apps/slurm/var/etc/slurm/slurm.conf
 [[ -x "${SLURM_BIN_DIR}/scontrol" && -x "${SLURM_BIN_DIR}/srun" ]]
 [[ -r "${SLURM_CONF}" ]]
-RUN_NAME=186_continue_k4schemeb_jointupdate_dp8_tp8_u40_from20_train3x60_b24_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_val5x8
+RUN_NAME=186_continue_k4schemeb_jointupdate_dp8_tp8_u40_from20_train3x1200_b24_t20_s100_c1_a1_b85p78297006578457_t1_cot07p095_val5x8
 RUN_DATE=2026-08-20
 RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}
 RUNNER=${REPO}/experiments/training/rl/run_vagen_k4_id186_continue_phase.sh
