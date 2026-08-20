@@ -12,15 +12,15 @@ def _trajectory(tmp_path: Path, *, planner: bool) -> RolloutTrajectory:
     if planner:
         traces = [
             PlannerPolicyTrace(
-                candidate_sequences=((0, 1), (1, 0)),
-                candidate_scores=(0.7, 0.2),
-                root_action_scores=(0.7, 0.2),
+                candidate_sequences=tuple((i, (i + 1) % 8) for i in range(8)),
+                candidate_scores=(0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0),
+                root_action_scores=(0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.0),
                 executed_action_index=0,
                 horizon=2,
                 search_mode="mcts",
-                candidate_visit_counts=(3, 1),
-                root_visit_counts=(3, 1),
-                num_simulations=4,
+                candidate_visit_counts=(3, 1, 1, 1, 1, 1, 1, 1),
+                root_visit_counts=(3, 1, 1, 1, 1, 1, 1, 1),
+                num_simulations=10,
                 exploration_constant=1.0,
             )
         ]
@@ -30,7 +30,7 @@ def _trajectory(tmp_path: Path, *, planner: bool) -> RolloutTrajectory:
         image_paths=["step0.png", "terminal.png"],
         action_indices=[0],
         action_names=["move_forward"],
-        action_log_probs=[[-0.1, -2.35]],
+        action_log_probs=[[-0.1, -2.35, -3.0, -3.1, -3.2, -3.3, -3.4, -3.5]],
         instruction="navigate to the toaster",
         success=False,
         reward=0.2,
@@ -77,6 +77,6 @@ def test_sft_mcts_adapter_preserves_every_candidate_and_visit(
     assert audit["capabilities"]["planner"] is True
     assert audit["capabilities"]["mcts"] is True
     planner = audit["turns"][0]["planner"]
-    assert len(planner["candidates"]) == 2
-    assert [row["visits"] for row in planner["candidates"]] == [3, 1]
-    assert planner["root_visits"] == [3, 1]
+    assert len(planner["candidates"]) == 8
+    assert [row["visits"] for row in planner["candidates"]] == [3, 1, 1, 1, 1, 1, 1, 1]
+    assert planner["root_visits"] == [3, 1, 1, 1, 1, 1, 1, 1]
