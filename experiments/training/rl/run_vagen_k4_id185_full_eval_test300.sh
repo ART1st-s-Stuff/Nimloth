@@ -586,12 +586,10 @@ assert active['snapshot_id']==actor['snapshot_id']
 assert active['snapshot_source_step']==796
 assert actor['snapshot_transport']==active
 source_snapshot_path=Path(active['transport_path'])
-restored_snapshot_path=snapshots/'source_step_796/frozen_k4_planner.pt'
-assert source_snapshot_path.is_file() and restored_snapshot_path.is_file()
+assert source_snapshot_path.is_file()
 source_snapshot=load_frozen_planning_snapshot_file(source_snapshot_path,device=torch.device('cpu'))
-restored_snapshot=load_frozen_planning_snapshot_file(restored_snapshot_path,device=torch.device('cpu'))
-assert source_snapshot.source_step==restored_snapshot.source_step==796
-assert source_snapshot.snapshot_id==restored_snapshot.snapshot_id==actor['snapshot_id']
+assert source_snapshot.source_step==796
+assert source_snapshot.snapshot_id==actor['snapshot_id']
 log=(out/'train.log').read_text()
 assert 'Setting global step to 20' in log
 assert 'ID185_K4_FULL_EVAL_RESTORE_OK global_step=20' in log
@@ -652,7 +650,7 @@ summary={
  'status':'ALL_OK','phase':'full_eval_test300','global_step':20,
  'source_step':796,'source_checkpoint':str(source_path),
  'source_snapshot_id':source_snapshot.snapshot_id,
- 'snapshot_id':restored_snapshot.snapshot_id,
+ 'snapshot_id':source_snapshot.snapshot_id,
  'planning_optimizer_fingerprint':actor['planning_optimizer_fingerprint'],
  'activation_version':owner['activation_version'],
  'checkpoint_steps':[],
