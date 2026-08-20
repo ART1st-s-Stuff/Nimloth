@@ -550,8 +550,9 @@ TRAIN_PID=
 
 "${PY}" - "${SOURCE_CHECKPOINT}" "${PHASE_OUT}" "${RUN_OUT}" \
   "${ID185_VIS_SEED}" "${ID185_VIS_EXPECTED_OUTCOME}" <<'PY'
-import json, os, sys, tempfile
+import hashlib, json, os, sys, tempfile
 from pathlib import Path
+import numpy as np
 from vagen.joint_policy.checkpoint import load_complete_joint_checkpoint
 source=Path(sys.argv[1]); out=Path(sys.argv[2]); run=Path(sys.argv[3]); expected_seed=int(sys.argv[4])
 expected_outcome=sys.argv[5]
@@ -613,7 +614,6 @@ assert (audit_dir/'index.html').is_file()
 browser=run/'evaluation_browser/global_step_20'
 complete=json.loads((browser/'complete.json').read_text())
 manifest_bytes=(browser/'manifest.json').read_bytes()
-import hashlib
 assert complete['manifest_sha256']=='sha256:'+hashlib.sha256(manifest_bytes).hexdigest()
 manifest=json.loads(manifest_bytes)
 assert manifest['status']=='complete' and manifest['rollout_count']==1
@@ -622,11 +622,25 @@ browser_row=manifest['rollouts'][0]
 assert browser_row['identity']['rollout_sample_id']==expected_id
 assert bool(browser_row['success']) is success
 assert browser_row['turn_count']==audit['turn_count']
-assert browser_row['capabilities']['mcts_candidates'] is True
+assert browser_row['capabilities']['mcts'] is True
+assert browser_row['capabilities']['model_state'] is True
+assert browser_row['capabilities']['mcts_process'] is True
 artifact=browser/browser_row['artifact']
 assert artifact.is_file()
 browser_audit=artifact.parent/'rollout.json'
 assert 'sha256:'+hashlib.sha256(browser_audit.read_bytes()).hexdigest()==browser_row['audit_sha256']
+browser_payload=json.loads(browser_audit.read_text())
+for turn in browser_payload['turns']:
+ state=turn['model_state']; archive=artifact.parent/state['archive']
+ assert 'sha256:'+hashlib.sha256(archive.read_bytes()).hexdigest()==state['sha256']
+ with np.load(archive,allow_pickle=False) as tensors:
+  assert tensors['latent_hidden'].shape==(16,2048)
+  assert tensors['current_state'].shape==(8,1024)
+  assert tensors['mcts_node_states'].ndim==3
+  assert tensors['mcts_node_states'].shape[1:]==(8,1024)
+ process=turn['planner']['mcts_process']
+ assert len(process['simulations'])==100
+ assert len(process['tree_nodes'])==state['arrays']['mcts_node_states']['shape'][0]+1
 assert (browser/'index.html').is_file()
 summary={
  'status':'ALL_OK','phase':'visualization','global_step':20,'source_step':796,
