@@ -20,10 +20,10 @@ class RolloutBrowserArtifact:
     image_sources: dict[str, Any]
 
 
-def _cot(raw_response: str) -> str:
+def _cot(raw_response: str) -> str | None:
     boundary = raw_response.find("</think>")
     if not raw_response.startswith("<think>") or boundary < 0:
-        raise ValueError("rollout response does not contain actual <think> CoT")
+        return None
     return raw_response[: boundary + len("</think>")]
 
 
@@ -126,6 +126,10 @@ def rollout_trajectory_artifact(
     action_names = action_space.keys
     if any(len(row) != len(action_names) for row in trajectory.action_log_probs):
         raise ValueError("trajectory action distributions do not match action space")
+    cots = [_cot(response) for response in trajectory.assistant_responses]
+    has_cot = all(cot is not None for cot in cots)
+    if any(cot is not None for cot in cots) != has_cot:
+        raise ValueError("partial CoT coverage cannot be advertised")
     token_traces = [trajectory.policy_token_trace(index) for index in range(steps)]
     planner_traces = [trajectory.planner_policy_trace(index) for index in range(steps)]
     has_token_trace = all(trace is not None for trace in token_traces)
@@ -173,7 +177,7 @@ def rollout_trajectory_artifact(
                 "sha256": "sha256:pending",
             },
             "raw_response": trajectory.assistant_responses[index],
-            "cot": _cot(trajectory.assistant_responses[index]),
+            "cot": cots[index],
             "executed_action": {"id": action_index, "name": expected_name},
             "environment": {
                 "reward": float(trajectory.rewards[index]),
@@ -234,7 +238,7 @@ def rollout_trajectory_artifact(
             "task": True,
             "observations": True,
             "terminal_observation": True,
-            "cot": True,
+            "cot": has_cot,
             "token_trace": has_token_trace,
             "action_distribution": True,
             "direct_q": False,
