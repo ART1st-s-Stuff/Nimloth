@@ -190,14 +190,16 @@ def validate_rollout_audit(raw: Mapping[str, Any]) -> None:
                 or not raw_response
             ):
                 raise ValueError("cot capability requires actual response and CoT")
-        action = _mapping(turn.get("executed_action"), f"{turn_name}.executed_action")
-        if (
-            isinstance(action.get("id"), bool)
-            or not isinstance(action.get("id"), int)
-            or not isinstance(action.get("name"), str)
-            or not action.get("name")
-        ):
-            raise ValueError("executed action is invalid")
+        raw_action = turn.get("executed_action")
+        if raw_action is not None:
+            action = _mapping(raw_action, f"{turn_name}.executed_action")
+            if (
+                isinstance(action.get("id"), bool)
+                or not isinstance(action.get("id"), int)
+                or not isinstance(action.get("name"), str)
+                or not action.get("name")
+            ):
+                raise ValueError("executed action is invalid")
         environment = _mapping(turn.get("environment"), f"{turn_name}.environment")
         _finite(environment.get("reward"), "turn environment reward")
         if capabilities["action_distribution"]:

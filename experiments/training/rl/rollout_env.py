@@ -223,6 +223,103 @@ def summarize_eval_set_rollouts(records, eval_sets: tuple[str, ...]) -> dict:
     }
 
 
+def rollout_browser_policy_family(args: argparse.Namespace) -> str:
+    """Describe the behavior route without claiming unavailable planner evidence."""
+
+    if not args.planner_enabled:
+        return "sft_policy"
+    if args.planning_search_mode == "mcts":
+        return "sft2_mcts"
+    if args.planning_search_mode == "policy":
+        return "planner_policy"
+    return "sft2_planner"
+
+
+def rollout_browser_source_seed(
+    args: argparse.Namespace,
+    eval_sets: tuple[str, ...],
+    episode_index: int,
+) -> tuple[str, int]:
+    """Mirror the collector's deterministic round-robin identity assignment."""
+
+    data_source = eval_sets[episode_index % len(eval_sets)]
+    seed = (
+        args.seed_offset + episode_index // len(eval_sets)
+        if args.seed_per_eval_set
+        else args.seed_offset + episode_index
+    )
+    return data_source, seed
+
+
+def write_rollout_browser_for_evaluation(
+    args: argparse.Namespace,
+    eval_sets: tuple[str, ...],
+    trajectories,
+) -> Path | None:
+    """Publish a complete offline browser for every environment evaluation."""
+
+    if args.split == "train":
+        return None
+    from nimloth.eval.rollout_browser import (
+        rollout_trajectory_artifact,
+        write_evaluation_browser,
+    )
+    from nimloth.rollout.fresh import (
+        auxiliary_artifact_fingerprint,
+        policy_artifact_fingerprint,
+    )
+
+    policy_family = rollout_browser_policy_family(args)
+    checkpoint_fingerprint = policy_artifact_fingerprint(args.model)
+    planner_paths = {
+        "wm_predictor": args.wm_checkpoint,
+        "state_projector": args.state_proj_checkpoint,
+        "value_head": args.value_head_checkpoint,
+        "planner_policy_head": args.planner_policy_head_checkpoint,
+    }
+    planner_fingerprints = {
+        name: auxiliary_artifact_fingerprint(path)
+        for name, path in planner_paths.items()
+        if path is not None
+    }
+    artifacts = []
+    for episode_index, trajectory in enumerate(trajectories):
+        data_source, seed = rollout_browser_source_seed(
+            args, eval_sets, episode_index
+        )
+        artifacts.append(
+            rollout_trajectory_artifact(
+                trajectory,
+                policy_family=policy_family,
+                image_root=args.output_dir,
+                data_source=data_source,
+                seed=seed,
+                rollout_sample_id=trajectory.record_id,
+                rollout_repeat_index=0,
+                provenance={
+                    "checkpoint_path": str(args.model.resolve()),
+                    "checkpoint_fingerprint": checkpoint_fingerprint,
+                    "planner_fingerprints": planner_fingerprints,
+                },
+            )
+        )
+    destination = args.output_dir / "evaluation_browser"
+    write_evaluation_browser(
+        destination,
+        artifacts,
+        evaluation={
+            "evaluation_id": args.output_dir.name,
+            "policy_family": policy_family,
+            "global_step": None,
+            "source_step": None,
+            "checkpoint_identity": checkpoint_fingerprint,
+            "snapshot_identity": planner_fingerprints or None,
+        },
+        expected_rollouts=len(trajectories),
+    )
+    return destination
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     eval_sets = tuple(args.eval_sets or (args.eval_set,))
@@ -494,6 +591,11 @@ def main(argv: list[str] | None = None) -> int:
         resume_existing=args.resume_existing_rollouts,
     )
     validate_trajectories(trajectories, expected_count=args.num_episodes)
+    rollout_browser_path = write_rollout_browser_for_evaluation(
+        args,
+        eval_sets,
+        trajectories,
+    )
     manifest_path = args.fresh_manifest
     if manifest_path is not None:
         FreshRolloutManifest.create(
@@ -535,6 +637,11 @@ def main(argv: list[str] | None = None) -> int:
         "jsonl": str(args.output_dir / "trajectories.jsonl"),
         "summary_json": str(summary_path),
         "fresh_manifest": str(manifest_path) if manifest_path else None,
+        "rollout_browser": (
+            str(rollout_browser_path / "index.html")
+            if rollout_browser_path is not None
+            else None
+        ),
         "processor_pixel_bounds": list(qwen_processor_pixel_bounds(processor)),
         "eval_sets": eval_sets,
         "seed_per_eval_set": args.seed_per_eval_set,

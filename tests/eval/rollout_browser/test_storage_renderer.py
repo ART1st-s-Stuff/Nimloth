@@ -7,7 +7,11 @@ import pytest
 from PIL import Image
 
 from nimloth.eval.rollout_browser.sft_adapter import rollout_trajectory_artifact
-from nimloth.eval.rollout_browser.storage import write_evaluation_browser
+from nimloth.eval.rollout_browser.storage import (
+    finalize_evaluation_browser,
+    write_evaluation_browser,
+    write_evaluation_browser_batch,
+)
 from nimloth.rollout.schema import RolloutTrajectory
 
 
@@ -20,7 +24,7 @@ def _artifact(tmp_path: Path, record_id: str, success: bool):
         image_paths=[f"{record_id}-0.png", f"{record_id}-1.png"],
         action_indices=[0],
         action_names=["move_forward"],
-        action_log_probs=[[-0.1, -2.35]],
+        action_log_probs=[[-0.1, -2.35, -3.0, -3.1, -3.2, -3.3, -3.4, -3.5]],
         instruction=f"task for {record_id}",
         success=success,
         reward=1.01 if success else 0.01,
@@ -66,7 +70,11 @@ def test_writer_atomically_builds_selectable_offline_browser(tmp_path: Path) -> 
     assert "search" in index
     assert "iframe" in index
     assert "task for episode-a" in index
-    rollout_pages = sorted((destination / "rollouts").glob("*/index.html"))
+    rollout_pages = sorted(
+        (destination / "batches" / "batch_0000" / "rollouts").glob(
+            "*/index.html"
+        )
+    )
     assert len(rollout_pages) == 2
     page = rollout_pages[0].read_text()
     assert "Task" in page
@@ -82,6 +90,34 @@ def test_writer_atomically_builds_selectable_offline_browser(tmp_path: Path) -> 
             evaluation=manifest,
             expected_rollouts=2,
         )
+
+
+def test_multi_batch_writer_publishes_only_after_global_identity_gate(
+    tmp_path: Path,
+) -> None:
+    destination = tmp_path / "browser"
+    write_evaluation_browser_batch(
+        destination, [_artifact(tmp_path, "episode-a", False)], batch_index=0
+    )
+    assert not (destination / "complete.json").exists()
+    write_evaluation_browser_batch(
+        destination, [_artifact(tmp_path, "episode-b", True)], batch_index=1
+    )
+    manifest = finalize_evaluation_browser(
+        destination,
+        evaluation={
+            "evaluation_id": "two-batches",
+            "policy_family": "sft1",
+            "global_step": None,
+            "source_step": None,
+            "checkpoint_identity": "sha256:checkpoint",
+            "snapshot_identity": None,
+        },
+        expected_rollouts=2,
+        expected_batches=2,
+    )
+    assert manifest["rollout_count"] == 2
+    assert (destination / "complete.json").is_file()
 
 
 def test_writer_does_not_publish_partial_root_on_count_failure(tmp_path: Path) -> None:
