@@ -298,7 +298,7 @@ for reward_field in (
  'success_reward: 1.0',
 ):
  assert reward_field in train_text
-(out/'train_navigation_joint_id185.yaml').write_text(train_text)
+(out/'train_navigation_joint_id187.yaml').write_text(train_text)
 val_src=vagen/'examples/train/navigation/val_navigation_joint_id185.yaml'
 val_text=val_src.read_text()
 assert 'http://127.0.0.1:8000' in val_text
@@ -308,8 +308,8 @@ for reward_field in (
  'success_reward: 1.0',
 ):
  assert reward_field in val_text
-(out/'val_navigation_joint_id185.yaml').write_text(
- val_text.replace('http://127.0.0.1:8000',url)
+(out/'val_navigation_joint_id187.yaml').write_text(
+ val_text.replace('http://127.0.0.1:8000',url).replace('_id185','_id187')
 )
 expected={
  'base_train':(1200,'eb0aa69186604cedc6dc6c2a8874393beae09b7ac1dadae5458e87492b5e01e9'),
@@ -343,17 +343,17 @@ for name in ('base','common_sense','long_horizon','complex_instruction','visual_
  'assets':assets,
 },indent=2)+'\n')
 PY
-export ID185_VIS_TRAIN_CONFIG=${PHASE_OUT}/train_navigation_joint_id185.yaml
-export ID185_VIS_VAL_CONFIG=${PHASE_OUT}/val_navigation_joint_id185.yaml
-export ID185_VIS_ACTOR_MODEL=${ACTOR_MODEL}
-export ID185_VIS_PLANNING_CHECKPOINT=${PLANNING_MODEL}
-export ID185_VIS_AGENT_CONFIG=${VAGEN}/vagen/configs/agent_no_concat.yaml
-export ID185_VIS_RUN_NAME=${RUN_NAME}
-export ID185_VIS_RUN_OUT=${RUN_OUT}
-export ID185_VIS_SOURCE_CHECKPOINT=${SOURCE_CHECKPOINT}
-export ID185_VIS_SEED=${ID185_VIS_SEED:-2}
+export ID187_TRAIN_CONFIG=${PHASE_OUT}/train_navigation_joint_id187.yaml
+export ID187_VAL_CONFIG=${PHASE_OUT}/val_navigation_joint_id187.yaml
+export ID187_ACTOR_MODEL=${ACTOR_MODEL}
+export ID187_PLANNING_CHECKPOINT=${PLANNING_MODEL}
+export ID187_AGENT_CONFIG=${VAGEN}/vagen/configs/agent_no_concat.yaml
+export ID187_RUN_NAME=${RUN_NAME}
+export ID187_RUN_OUT=${RUN_OUT}
+export ID187_SOURCE_CHECKPOINT=${SOURCE_CHECKPOINT}
+export ID187_SEED=${ID185_VIS_SEED:-2}
 
-"${PY}" - "${ID185_TRAIN_CONFIG}" "${ID185_VAL_CONFIG}" "${PHASE_OUT}" <<'PY'
+"${PY}" - "${ID187_TRAIN_CONFIG}" "${ID187_VAL_CONFIG}" "${PHASE_OUT}" <<'PY'
 import json, sys
 from collections import Counter
 from pathlib import Path
@@ -381,11 +381,11 @@ assert all(
  for source in train_counts
 )
 expected_val_sources={
- 'navigation_base_test_id185',
- 'navigation_common_sense_test_id185',
- 'navigation_complex_instruction_test_id185',
- 'navigation_visual_appearance_test_id185',
- 'navigation_long_horizon_test_id185',
+ 'navigation_base_test_id187',
+ 'navigation_common_sense_test_id187',
+ 'navigation_complex_instruction_test_id187',
+ 'navigation_visual_appearance_test_id187',
+ 'navigation_long_horizon_test_id187',
 }
 assert len(val_rows)==300
 assert val_counts==Counter({source:60 for source in expected_val_sources})
@@ -516,7 +516,7 @@ cd "${VAGEN}"
 COMMAND=(
   "${PY}" -m vagen.main_ppo
   --config-path="${VAGEN}/vagen/configs"
-  --config-name=joint_id185_visualize_one
+  --config-name=joint_id187_source20_visualize_one
   "hydra.run.dir=${PHASE_OUT}/hydra"
   hydra.job.chdir=false
   trainer.resume_mode=resume_path
@@ -558,7 +558,7 @@ expected_outcome=sys.argv[5]
 manifest=json.loads((out/'dataset_manifest.json').read_text())
 selected=[
  row for row in manifest['validation_rows']
- if row['data_source']=='navigation_base_test_id185' and row['seed']==expected_seed
+ if row['data_source']=='navigation_base_test_id187' and row['seed']==expected_seed
 ]
 assert len(selected)==1
 expected_id=selected[0]['rollout_sample_id']
@@ -575,7 +575,7 @@ assert active['snapshot_source_step']==796
 assert active['snapshot_id']=='sha256:6648780b3791cb4b937974b151b9e119ed9bf74602d1bc21dabfc30a3914d969'
 assert not list((run/'checkpoints').glob('global_step_*'))
 log=(out/'train.log').read_text()
-assert 'ID185_K4_VISUALIZATION_RESTORE_OK global_step=20' in log
+assert 'ID187_K4_SOURCE20_RESTORE_OK global_step=20' in log
 assert 'SINGLE_ROLLOUT_VISUALIZATION_AUDIT_COMPLETE' in log
 assert 'VALIDATION_BATCH_JOURNAL_COMPLETE batches=1 rows=1' in log
 audit_dir=out/'rollout_audit'

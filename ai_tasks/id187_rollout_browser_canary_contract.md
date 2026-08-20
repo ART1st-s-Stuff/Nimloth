@@ -1,9 +1,9 @@
 # ID187 rollout browser production canary contract
 
 Date: 2026-08-20
-Status: normal Job 525468 cancelled pending; preempt retries 1--4 failed before output; retry5 prepared
+Status: preempt retry5 reached model startup but failed the experiment-bound gate; retry6 prepared
 
-The original normal Job `525468` was cancelled pending with no allocation/output/W&B. Preempt retries `525568`, `525570`, and `525572` exposed the preempt allocation-state race. Retry4 Job `525575` then proved the in-job `scontrol` was not receiving the fixed cluster configuration: the launcher assigned `SLURM_CONF` as a shell variable but did not guarantee it was exported after `module load slurm`, so its job lookup lacked the expected `JobId`. All four retries exited before output/W&B/Ray/environment/model work. Retry5 explicitly exports the fixed `SLURM_CONF` and prepends the fixed Slurm binary directory before every allocation query; it uses a fresh identity.
+The original normal Job `525468` was cancelled pending. Preempt retries `525568`, `525570`, `525572`, and `525575` exposed and fixed the allocation-state/Slurm-client bootstrap. Retry5 Job `525581` passed exact4x2, dynamic head20, Ray, environment, all prewarms, checkpoint hashes, and model startup, then correctly failed before rollout because it reused the experiment-bound ID185 config with an ID187 W&B name. It created a partial diagnostic output but no browser, validation row, checkpoint, or W&B run. Retry6 adds the dedicated `id187_k4_source20_browser_v1` config/gate and uses a fresh identity.
 
 ## Purpose
 
@@ -12,7 +12,7 @@ Validate that one real frozen K4 Scheme-B Navigation evaluation rollout produces
 ## Immutable code and entrypoints
 
 - Parent implementation commit: `e2935530abb5b0913f9ba75b8fa5ddec0e765cae` (the runtime Parent commit may additionally contain contract/progress-only commits and is supplied through `EXPECTED_PARENT_COMMIT`).
-- VAGEN: `67df5944d3bbfe1928c18201c30b7e805740d951`.
+- VAGEN: `8b003c6eef5aef94a341451c2c4acfd79fddc50f`.
 - VERL: `494f264494b2525f2c13595f63ac4912963e6d2f`.
 - Slurm entry: `experiments/training/rl/id187_rollout_browser_canary.slurm`.
 - Allocation launcher: `experiments/training/rl/launch_vagen_k4_id185_visualize_base_failure_on_hold.sh`.
@@ -46,9 +46,9 @@ Validate that one real frozen K4 Scheme-B Navigation evaluation rollout produces
 ## Identity, output, and resume
 
 - W&B project: `vagen`.
-- W&B run name: `187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry5`.
-- W&B run ID: `nimloth-id187-smoke-rollout-browser-k4-source20-seed2-preempt-r5`; `resume=never`.
-- Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-21/187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry5`.
+- W&B run name: `187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry6`.
+- W&B run ID: `nimloth-id187-smoke-rollout-browser-k4-source20-seed2-preempt-r6`; `resume=never`.
+- Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-21/187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry6`.
 - The output and W&B identities must not exist before launch. No resume or overwrite is allowed; a failed retry would require a new ID/name/output.
 - Unified browser target: `evaluation_browser/global_step_20/index.html`.
 
