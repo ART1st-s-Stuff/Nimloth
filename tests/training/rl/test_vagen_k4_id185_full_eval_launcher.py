@@ -69,6 +69,8 @@ def test_id185_runner_is_full_eval_only_from_step20() -> None:
     assert "WANDB_RUN_ID=nimloth-id185-k4-full-eval-test300-retry4" in source
     assert "VALIDATION_BATCH_JOURNAL_COMPLETE" in source
     assert "validation_batch_journal" in source
+    assert "assert source_snapshot_path.is_file()" in source
+    assert "restored_snapshot_path" not in source
     assert "steps==[20]" in source
     assert "global_step_15" not in source
     assert "global_step_10" not in source
