@@ -15,7 +15,7 @@ SLURM_BIN_DIR=/cm/shared/apps/slurm/current/bin
 SLURM_CONF=/cm/shared/apps/slurm/var/etc/slurm/slurm.conf
 [[ -x "${SLURM_BIN_DIR}/scontrol" && -x "${SLURM_BIN_DIR}/srun" ]]
 [[ -r "${SLURM_CONF}" ]]
-RUN_NAME=185_visualize_k4schemeb_dp8_tp8_source20_base_failed_seed1
+RUN_NAME=185_visualize_k4schemeb_dp8_tp8_source20_base_failed_seed1_retry1
 RUN_DATE=2026-08-20
 RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}
 RUNNER=${REPO}/experiments/training/rl/run_vagen_k4_id185_visualize_base_failure.sh
@@ -393,7 +393,7 @@ COMMON_ENV=(
   WANDB_ENTITY=art2nd-hong-kong-university-of-science-and-technology
   WANDB_PROJECT=vagen
   WANDB_NAME="${RUN_NAME}"
-  WANDB_RUN_ID=nimloth-id185-k4-visualize-base-fail-seed1
+  WANDB_RUN_ID=nimloth-id185-k4-visualize-base-fail-seed1-retry1
   WANDB_RESUME="${WANDB_RESUME}"
   WANDB_DIR="${RAY_LOG_ROOT}/wandb"
   ID185_TRAIN_CONFIG="${PHASE_OUT}/train_navigation_joint_id185.yaml"
@@ -412,7 +412,6 @@ COMMON_ENV=(
   ID185_VIS_AGENT_CONFIG="${REPO}/external/VAGEN/vagen/configs/agent_no_concat.yaml"
   ID185_VIS_RUN_NAME="${RUN_NAME}"
   ID185_VIS_RUN_OUT="${RUN_OUT}"
-  ID185_VIS_ROLLOUT_SAMPLE_ID="sha256:babf2d061be39ece523d4d688e10f04a8a11f6dcda0d56e6d1e705c8b3a2a779"
   RAY_agent_register_timeout_ms=120000
 )
 
@@ -528,7 +527,7 @@ assert all(row['torch_home']=='/project/peilab/atst/flower/.cache/torch' for row
 assert all(row['vllm_worker_multiproc_method']=='spawn' for row in probes)
 assert all(row['id185_train_config'] for row in probes)
 assert all(row['id185_source_checkpoint'].endswith('/global_step_20') for row in probes)
-assert all(row['wandb_run_id']=='nimloth-id185-k4-visualize-base-fail-seed1' for row in probes)
+assert all(row['wandb_run_id']=='nimloth-id185-k4-visualize-base-fail-seed1-retry1' for row in probes)
 assert all(row['wandb_resume']==os.environ['EXPECTED_WANDB_RESUME'] for row in probes)
 assert all(row['wandb_api_key_present'] for row in probes)
 assert all(row['dataset_type']=='vagen.gym_agent_dataset.AgenticDataset' for row in probes)
