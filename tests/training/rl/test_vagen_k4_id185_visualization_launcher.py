@@ -56,13 +56,14 @@ def test_id187_browser_canary_has_unique_identity_and_no_training() -> None:
     assert "#SBATCH --partition=preempt" in source
     assert "ID185_VIS_EXPECTED_PARTITION=preempt" in source
     assert "ID185_VIS_SOURCE_BOUNDARY=20" in source
-    assert "preempt_retry3" in source
+    assert "preempt_retry4" in source
     launcher = LAUNCHER.read_text()
     runner = RUNNER.read_text()
     assert "VIS_PARTITION=${ID185_VIS_EXPECTED_PARTITION:-normal}" in launcher
     assert "ROLLOUT_BROWSER_LAUNCHER_ERROR" in launcher
-    assert "for _ in $(seq 1 30); do" in launcher
-    assert "if grep -q 'JobState=RUNNING'" in launcher
+    assert '[[ "${SLURM_JOB_ID:-}" == "${HOLD_JOB}" ]]' in launcher
+    assert "grep -Eq 'NodeList=[^ (]+'" in launcher
+    assert "JobState=RUNNING" not in launcher
     assert '"${SLURM_JOB_PARTITION:-}" == "${ID185_VIS_EXPECTED_PARTITION}"' in runner
 
 

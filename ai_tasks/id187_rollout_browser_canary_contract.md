@@ -1,9 +1,9 @@
 # ID187 rollout browser production canary contract
 
 Date: 2026-08-20
-Status: normal Job 525468 cancelled pending; preempt retries 1/2 failed before output; retry3 prepared
+Status: normal Job 525468 cancelled pending; preempt retries 1--3 failed before output; retry4 prepared
 
-The original normal-partition Job `525468` remained `PENDING (Priority)` with no allocation, output, or W&B identity and was cancelled at `2026-08-21T01:09:15`. Preempt retry1 Job `525568` obtained `dgx-[11,20,24,30]` but exited `1:0` after one second before output/W&B/Ray/environment/model work; silent `set -e` preflight made the exact failing command unavailable. Retry2 Job `525570` added ERR diagnostics and proved the launcher read `JobState=CONFIGURING` during the first allocation second, then failed its immediate `RUNNING` assertion; it also created no output/W&B. Retry3 waits at most 30 seconds for the allocation to reach `RUNNING` and uses a fresh identity.
+The original normal Job `525468` was cancelled pending with no allocation/output/W&B. Preempt retry1 Job `525568` silently failed in the launcher after one second. Retry2 Job `525570` diagnosed the immediate `JobState=RUNNING` assertion. Retry3 Job `525572` showed this controller reports a non-`RUNNING` state to the in-job `scontrol` call for the full 30-second wait even while external `squeue` reports the batch running; it exited before output/W&B/Ray/environment/model work. Retry4 removes that unreliable state assertion and instead proves it is executing under the exact `SLURM_JOB_ID`, has a nonempty allocated `NodeList`, and passes all topology/TRES/GPU checks. It uses a fresh identity.
 
 ## Purpose
 
@@ -46,9 +46,9 @@ Validate that one real frozen K4 Scheme-B Navigation evaluation rollout produces
 ## Identity, output, and resume
 
 - W&B project: `vagen`.
-- W&B run name: `187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry3`.
-- W&B run ID: `nimloth-id187-smoke-rollout-browser-k4-source20-seed2-preempt-r3`; `resume=never`.
-- Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-21/187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry3`.
+- W&B run name: `187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry4`.
+- W&B run ID: `nimloth-id187-smoke-rollout-browser-k4-source20-seed2-preempt-r4`; `resume=never`.
+- Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-21/187_smoke_rollout_browser_k4_dp8_tp8_source20_base_seed2_t20_s100_preempt_retry4`.
 - The output and W&B identities must not exist before launch. No resume or overwrite is allowed; a failed retry would require a new ID/name/output.
 - Unified browser target: `evaluation_browser/global_step_20/index.html`.
 
