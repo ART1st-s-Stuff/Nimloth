@@ -26,6 +26,8 @@ PHASE_OUT=${RUN_OUT}/${PHASE_NAME}
 : "${ID185_HEAD_IP:?ID185_HEAD_IP is required}"
 : "${ID185_EXPECTED_NNODES:?ID185_EXPECTED_NNODES is required}"
 : "${ID185_EXPECTED_GPUS_PER_NODE:?ID185_EXPECTED_GPUS_PER_NODE is required}"
+: "${ID185_EXPECTED_GPU_COUNTS:?ID185_EXPECTED_GPU_COUNTS is required}"
+: "${ID185_HEAD_GPU_COUNT:?ID185_HEAD_GPU_COUNT is required}"
 : "${ID185_CLUSTER_NODES:?ID185_CLUSTER_NODES is required}"
 : "${RAY_ADDRESS:?RAY_ADDRESS is required}"
 : "${RAY_EXPECTED_NODE_IPS:?RAY_EXPECTED_NODE_IPS is required}"
@@ -46,31 +48,30 @@ PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-16200}
 [[ "${ID185_VIS_ENABLE_WANDB}" =~ ^(true|false)$ ]]
 [[ "${EXPECTED_VERL_COMMIT}" == 494f264494b2525f2c13595f63ac4912963e6d2f ]]
 [[ "${SLURM_JOB_PARTITION:-}" == "${ID185_VIS_EXPECTED_PARTITION}" ]]
-[[ "${ID185_EXPECTED_NNODES}" == 4 ]]
-[[ "${ID185_EXPECTED_GPUS_PER_NODE}" == 2 ]]
-[[ "${SLURM_JOB_NUM_NODES:-${SLURM_NNODES:-}}" == 4 ]]
-[[ "${SLURM_CPUS_PER_TASK:-}" == 16 ]]
+[[ "${ID185_EXPECTED_NNODES}" == 2 ]]
+[[ "${ID185_EXPECTED_GPUS_PER_NODE}" == 4 ]]
+[[ "${ID185_EXPECTED_GPU_COUNTS}" == 6,2 ]]
+[[ "${ID185_HEAD_GPU_COUNT}" =~ ^(2|6)$ ]]
 [[ "${PHASE_TIMEOUT_SECONDS}" == 16200 ]]
 [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]
 IFS=, read -r -a VISIBLE_GPUS <<<"${CUDA_VISIBLE_DEVICES}"
-(( ${#VISIBLE_GPUS[@]} == 2 ))
+(( ${#VISIBLE_GPUS[@]} == ID185_HEAD_GPU_COUNT ))
 mapfile -t GPU_NAMES < <(nvidia-smi --query-gpu=name --format=csv,noheader)
-(( ${#GPU_NAMES[@]} == 2 ))
+(( ${#GPU_NAMES[@]} == ID185_HEAD_GPU_COUNT ))
 for name in "${GPU_NAMES[@]}"; do [[ "${name}" == *H800* ]]; done
 for excluded in dgx-09 dgx-13 dgx-32 dgx-51; do
   [[ "$(hostname)" != "${excluded}" ]]
 done
 
-JOB_DETAILS=$(scontrol show job -dd "${SLURM_JOB_ID}" -o)
-grep -q "Partition=${ID185_VIS_EXPECTED_PARTITION}" <<<"${JOB_DETAILS}"
-grep -q 'NumNodes=4' <<<"${JOB_DETAILS}"
-grep -q 'TimeLimit=05:00:00' <<<"${JOB_DETAILS}"
-grep -Eq 'ReqTRES=[^ ]*mem=256G([, ]|$)' <<<"${JOB_DETAILS}"
-grep -Eq 'AllocTRES=[^ ]*gres/gpu=8([, ]|$)' <<<"${JOB_DETAILS}"
-grep -Eq 'AllocTRES=[^ ]*cpu=64([, ]|$)' <<<"${JOB_DETAILS}"
-grep -q 'MinMemoryNode=64G' <<<"${JOB_DETAILS}"
+[[ "${SLURM_HET_SIZE:-}" == 2 ]]
+for group in 0 1; do
+ JOB_DETAILS=$(scontrol show job -dd "${SLURM_JOB_ID}+${group}" -o)
+ grep -q "Partition=${ID185_VIS_EXPECTED_PARTITION}" <<<"${JOB_DETAILS}"
+ grep -q 'NumNodes=1' <<<"${JOB_DETAILS}"
+ grep -q 'TimeLimit=05:00:00' <<<"${JOB_DETAILS}"
+done
 IFS=, read -r -a CLUSTER_NODES <<<"${ID185_CLUSTER_NODES}"
-(( ${#CLUSTER_NODES[@]} == 4 ))
+(( ${#CLUSTER_NODES[@]} == 2 ))
 [[ "$(hostname -s)" == "${CLUSTER_NODES[0]}" ]]
 
 [[ "$(git -C "${REPO}" rev-parse HEAD)" == "${EXPECTED_PARENT_COMMIT}" ]]
@@ -87,7 +88,7 @@ done
 [[ -f "${REPAIR_ROOT}/complete.marker" ]]
 [[ -f "${PLANNING_MODEL}/training_state.pt" ]]
 IFS=, read -r -a EXPECTED_NODE_IPS <<<"${RAY_EXPECTED_NODE_IPS}"
-(( ${#EXPECTED_NODE_IPS[@]} == 4 ))
+(( ${#EXPECTED_NODE_IPS[@]} == 2 ))
 [[ "${ID185_HEAD_IP}" == "${EXPECTED_NODE_IPS[0]}" ]]
 [[ "${RAY_ADDRESS}" == "${ID185_HEAD_IP}:"* ]]
 "${PY}" - "${RAY_ADDRESS}" "${RAY_EXPECTED_NODE_IPS}" <<'PY'
@@ -107,8 +108,8 @@ rows=sorted(
 )
 ray.shutdown()
 assert [row['address'] for row in rows]==expected, (rows,expected)
-assert [row['gpus'] for row in rows]==[2.0,2.0,2.0,2.0], rows
-print(json.dumps({'status':'ID185_RAY_4X2_OK','nodes':rows}))
+assert sorted(row['gpus'] for row in rows)==[2.0,6.0], rows
+print(json.dumps({'status':'ID188_RAY_6X2_OK','nodes':rows}))
 PY
 
 set -a
@@ -480,8 +481,10 @@ for split in base common_sense complex_instruction visual_appearance long_horizo
   timeout --signal=TERM --kill-after=10s 300s "${PY}" -m nimloth.environment.navigation.prewarm --env-url "${ENV_URL}" --eval-set "${split}" --seed 0 --timeout-seconds 300 --env-id "id185-prewarm-${split}-${SLURM_JOB_ID}" | tee "${PHASE_OUT}/prewarm_${split}.json"
 done
 
-srun --jobid="${SLURM_JOB_ID}" --overlap --nodes=4 --ntasks=4 \
-  --ntasks-per-node=1 --gres=gpu:2 --label \
+/cm/shared/apps/slurm/current/bin/srun --jobid="${SLURM_JOB_ID}" --overlap \
+  --het-group=0 --nodes=1 --ntasks=1 --gres=gpu:6 --label \
+  nvidia-smi --query-gpu=timestamp,index,uuid,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits -l 1 \
+  : --het-group=1 --nodes=1 --ntasks=1 --gres=gpu:2 --label \
   nvidia-smi --query-gpu=timestamp,index,uuid,memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits -l 1 \
   >"${PHASE_OUT}/nvidia_smi.csv" 2>"${PHASE_OUT}/nvidia_smi.err" &
 NVIDIA_PID=$!

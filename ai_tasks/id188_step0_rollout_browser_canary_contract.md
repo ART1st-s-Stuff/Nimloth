@@ -1,7 +1,7 @@
 # ID188 pre-RL step0 rollout browser comparison contract
 
 Date: 2026-08-21
-Status: Jobs 525598/525603 cancelled unallocated; independent retry2 with full state/process evidence prepared
+Status: Job 525618 cancelled unallocated after human selected heterogeneous 6+2; independent retry3 prepared
 
 ## Purpose
 
@@ -12,7 +12,7 @@ This is a stochastic cross-run comparison. The environment transport URL is part
 ## Code and entrypoints
 
 - Parent state-process implementation commit: `4f76c926d1f41c62bb309d59f8d2a561a8cb5053`.
-- VAGEN: `7ad77b58fa5bdb7e915e6746767e673a14ab203c`.
+- VAGEN: `af06b9288a504ccc739749a0e643dd01a28effcc`.
 - VERL: `494f264494b2525f2c13595f63ac4912963e6d2f`.
 - Slurm: `experiments/training/rl/id188_step0_rollout_browser_canary.slurm`.
 - Allocation launcher: `experiments/training/rl/launch_vagen_k4_id185_visualize_base_failure_on_hold.sh` with `ID185_VIS_SOURCE_BOUNDARY=0`.
@@ -45,15 +45,15 @@ This is a stochastic cross-run comparison. The environment transport URL is part
 ## Identity and outputs
 
 - W&B project: `vagen`.
-- Run: `188_smoke_rollout_browser_k4_dp8_tp8_step0_base_seed2_t20_s100_retry2`.
-- Run ID: `nimloth-id188-smoke-rollout-browser-k4-step0-seed2-r2`; `resume=never`.
-- Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-21/188_smoke_rollout_browser_k4_dp8_tp8_step0_base_seed2_t20_s100_retry2`.
+- Run: `188_smoke_rollout_browser_k4_dp8_tp8_step0_base_seed2_t20_s100_retry3`.
+- Run ID: `nimloth-id188-smoke-rollout-browser-k4-step0-seed2-r3`; `resume=never`.
+- Output: `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-21/188_smoke_rollout_browser_k4_dp8_tp8_step0_base_seed2_t20_s100_retry3`.
 - Browser: `evaluation_browser/global_step_0/index.html`.
 - A failed retry requires a new output/W&B identity; partial evidence cannot be combined or resumed.
 
 ## Slurm
 
-- Partition `preempt`; exact 4 nodes x 2 H800; 8 GPUs; 64 CPUs; 256 GiB total; 5-hour limit.
+- Partition `preempt`; heterogeneous component0=`1 node × 6 H800, 48 CPU, 192 GiB`, component1=`1 node × 2 H800, 16 CPU, 64 GiB`; 8 GPUs/64 CPU/256 GiB total; 5-hour limit.
 - Expected healthy runtime around 10--15 minutes after allocation.
 - Allocation exclusions: `dgx-09,dgx-13,dgx-32,dgx-51`.
 - Navigation/Ray head exclusions and dynamic 150-second FloorPlan1 qualification are identical to ID187.
