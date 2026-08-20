@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 
@@ -19,6 +21,7 @@ def test_renderer_builds_interactive_step_view(tmp_path: Path) -> None:
     payload = {
         "schema": "vagen_single_rollout_visualization_audit_v1",
         "rollout_sample_id": "sha256:test",
+        "task": "navigate to the Toaster",
         "turn_count": 1,
         "success": False,
         "turns": [
@@ -59,6 +62,11 @@ def test_renderer_builds_interactive_step_view(tmp_path: Path) -> None:
     MODULE.render(audit, output)
     text = output.read_text()
     assert "ID185 K4 Scheme-B rollout" in text
+    assert 'id="task"' in text
+    match = re.search(r"JSON\.parse\(atob\('([^']+)'\)\)", text)
+    assert match is not None
+    embedded = json.loads(base64.b64decode(match.group(1)))
+    assert embedded["task"] == "navigate to the Toaster"
     assert "Current state value" in text
     assert "Predicted action lists" in text
     assert "__AUDIT_B64__" not in text
