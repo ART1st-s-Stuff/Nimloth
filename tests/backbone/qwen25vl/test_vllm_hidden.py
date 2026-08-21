@@ -352,7 +352,7 @@ def test_worker_installs_and_scores_k4_planner_only_on_tp_rank_zero(
             assert root.shape == (1, 2, 2)
             assert capture_mcts_trace is False
             return SimpleNamespace(
-                current_state=torch.zeros((1, 8, 1024)),
+                current_state=torch.zeros((1, 16, 1024)),
                 mcts_trace=None,
                 direct_all_action_q=torch.arange(8, dtype=torch.float32).unsqueeze(0),
                 planner_root_mean_values=torch.arange(8, dtype=torch.float32).unsqueeze(0) / 10.0,

@@ -51,7 +51,7 @@
    - 完整 raw response / CoT；
    - 全部真实 step 和 terminal 图像。
 3. UI 可以默认折叠或只把 Top-N 放在首屏，但底层数据不得 Top-N 截断。
-4. K4必须额外保存同次生成的完整`16×2048` latent hidden、behavior-time`8×1024` projected current state、每个唯一MCTS tree node的完整predicted state，以及按时间排序的全部100次UCT过程；每次过程包含selection/expansion、UCT输入、leaf all-action Q与scalar value、逐node backup前后值。
+4. K4必须额外保存同次生成的完整`16×2048` latent hidden、behavior-time`16×1024` projected current state、每个唯一MCTS tree node的完整predicted state，以及按时间排序的全部100次UCT过程；每次过程包含selection/expansion、UCT输入、leaf all-action Q与scalar value、逐node backup前后值。
 
 ## 3. 当前系统事实
 

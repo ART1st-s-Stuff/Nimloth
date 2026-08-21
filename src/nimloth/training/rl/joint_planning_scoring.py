@@ -278,8 +278,8 @@ def k4_scoring_record_from_policy_state(
         raise ValueError("K4 current state and MCTS trace must be captured together")
     if current_state is not None:
         projected = _finite_matrix(current_state, "current_state")
-        if len(projected) != 8 or len(projected[0]) != 1024:
-            raise ValueError("K4 captured current state must have shape (8, 1024)")
+        if len(projected) != 16 or len(projected[0]) != 1024:
+            raise ValueError("K4 captured current state must have shape (16, 1024)")
         if not isinstance(mcts_trace, Mapping):
             raise ValueError("K4 captured MCTS trace must be a mapping")
     config = plan["planning_config"]
