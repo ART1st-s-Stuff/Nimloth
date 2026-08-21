@@ -1,6 +1,10 @@
 # ID189 source20 Base+Common120 full-browser evaluation contract
 
-Status: implementation ready; not submitted
+Status: implementation committed; preflight pending
+
+- Nimloth implementation commit: `860062e4a37e6e847828e089f69b4905eeaccc78`.
+- VAGEN implementation commit: `14d862e816f6f598c0f2eeb3383ac2df6b894e84`.
+- VERL commit: `494f264494b2525f2c13595f63ac4912963e6d2f`.
 
 ## Purpose
 
