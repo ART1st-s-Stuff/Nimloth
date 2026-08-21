@@ -644,9 +644,9 @@ for turn in browser_payload['turns']:
  assert 'sha256:'+hashlib.sha256(archive.read_bytes()).hexdigest()==state['sha256']
  with np.load(archive,allow_pickle=False) as tensors:
   assert tensors['latent_hidden'].shape==(16,2048)
-  assert tensors['current_state'].shape==(8,1024)
+  assert tensors['current_state'].shape==(16,1024)
   assert tensors['mcts_node_states'].ndim==3
-  assert tensors['mcts_node_states'].shape[1:]==(8,1024)
+  assert tensors['mcts_node_states'].shape[1:]==(16,1024)
  process=turn['planner']['mcts_process']
  assert len(process['simulations'])==100
  assert len(process['tree_nodes'])==state['arrays']['mcts_node_states']['shape'][0]+1

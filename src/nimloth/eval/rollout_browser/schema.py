@@ -111,7 +111,7 @@ def _validate_model_state(raw: Any, turn_name: str) -> None:
     arrays = _mapping(state.get("arrays"), "model_state.arrays")
     expected = {
         "latent_hidden": [16, 2048],
-        "current_state": [8, 1024],
+        "current_state": [16, 1024],
         "mcts_node_states": None,
     }
     if set(arrays) != set(expected):
@@ -126,7 +126,7 @@ def _validate_model_state(raw: Any, turn_name: str) -> None:
         if fixed_shape is not None and shape != fixed_shape:
             raise ValueError(f"model state {key} shape mismatch")
         if key == "mcts_node_states" and (
-            len(shape) != 3 or shape[0] < 1 or shape[1:] != [8, 1024]
+            len(shape) != 3 or shape[0] < 1 or shape[1:] != [16, 1024]
         ):
             raise ValueError("MCTS node-state tensor shape mismatch")
 
