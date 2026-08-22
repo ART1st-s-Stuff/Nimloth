@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[3]
 SLURM = ROOT / "experiments/training/rl/id189_source20_base_common120.slurm"
 RETRY1_SLURM = ROOT / "experiments/training/rl/id189_source20_base_common120_retry1.slurm"
 NORMAL4X2_SLURM = ROOT / "experiments/training/rl/id189_source20_base_common120_normal4x2_retry2.slurm"
+NORMAL4X2_RETRY3_SLURM = ROOT / "experiments/training/rl/id189_source20_base_common120_normal4x2_retry3.slurm"
 NORMAL4X2_RUNNER = ROOT / "experiments/training/rl/run_vagen_k4_id189_source20_base_common120_normal4x2.sh"
 RUNNER = ROOT / "experiments/training/rl/run_vagen_k4_id189_source20_base_common120.sh"
 LAUNCHER = ROOT / "experiments/training/rl/launch_vagen_k4_1x8_browser_on_hold.sh"
@@ -67,6 +68,17 @@ def test_id189_normal_4x2_retry2_contract_and_manifest_regression() -> None:
     assert "sorted(row['gpus'] for row in rows)==[2.0,2.0,2.0,2.0]" in runner
     assert "len({row['rollout_sample_id'] for row in val_rows})==120" in runner
     assert "len({row['rollout_sample_id'] for row in val_rows})==300" not in runner
+    assert "trap handle_termination TERM INT" in runner
+    assert '[[ -z "${TERMINATION_STATUS}" ]] || status=${TERMINATION_STATUS}' in runner
+
+
+def test_id189_retry3_has_fresh_identity_after_archive_perf_fix() -> None:
+    retry2 = NORMAL4X2_SLURM.read_text()
+    retry3 = NORMAL4X2_RETRY3_SLURM.read_text()
+    assert "normal_4x2_retry3" in retry3
+    assert "normal-4x2-r3" in retry3
+    assert "normal_4x2_retry3" not in retry2
+    assert "normal-4x2-r3" not in retry2
 
 
 def test_id189_val_source_filters_to_exact_base_and_common_60_each() -> None:
