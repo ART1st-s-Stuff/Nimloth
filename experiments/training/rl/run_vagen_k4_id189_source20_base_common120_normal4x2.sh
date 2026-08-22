@@ -50,10 +50,10 @@ PHASE_TIMEOUT_SECONDS=${PHASE_TIMEOUT_SECONDS:-16200}
 [[ "${ID185_VIS_ENABLE_WANDB}" =~ ^(true|false)$ ]]
 [[ "${EXPECTED_VERL_COMMIT}" == 494f264494b2525f2c13595f63ac4912963e6d2f ]]
 [[ "${SLURM_JOB_PARTITION:-}" == "${ID185_VIS_EXPECTED_PARTITION}" ]]
-[[ "${ID185_EXPECTED_NNODES}" == 1 ]]
-[[ "${ID185_EXPECTED_GPUS_PER_NODE}" == 8 ]]
-[[ "${ID185_EXPECTED_GPU_COUNTS}" == 8 ]]
-[[ "${ID185_HEAD_GPU_COUNT}" == 8 ]]
+[[ "${ID185_EXPECTED_NNODES}" == 4 ]]
+[[ "${ID185_EXPECTED_GPUS_PER_NODE}" == 2 ]]
+[[ "${ID185_EXPECTED_GPU_COUNTS}" == 2,2,2,2 ]]
+[[ "${ID185_HEAD_GPU_COUNT}" == 2 ]]
 [[ "${PHASE_TIMEOUT_SECONDS}" == 16200 ]]
 [[ -n "${CUDA_VISIBLE_DEVICES:-}" ]]
 IFS=, read -r -a VISIBLE_GPUS <<<"${CUDA_VISIBLE_DEVICES}"
@@ -68,10 +68,10 @@ done
 [[ -z "${SLURM_HET_SIZE:-}" ]]
 JOB_DETAILS=$(scontrol show job -dd "${SLURM_JOB_ID}" -o)
 grep -q "Partition=${ID185_VIS_EXPECTED_PARTITION}" <<<"${JOB_DETAILS}"
-grep -q 'NumNodes=1' <<<"${JOB_DETAILS}"
+grep -q 'NumNodes=4' <<<"${JOB_DETAILS}"
 grep -q 'TimeLimit=05:00:00' <<<"${JOB_DETAILS}"
 IFS=, read -r -a CLUSTER_NODES <<<"${ID185_CLUSTER_NODES}"
-(( ${#CLUSTER_NODES[@]} == 1 ))
+(( ${#CLUSTER_NODES[@]} == 4 ))
 [[ "$(hostname -s)" == "${CLUSTER_NODES[0]}" ]]
 
 [[ "$(git -C "${REPO}" rev-parse HEAD)" == "${EXPECTED_PARENT_COMMIT}" ]]
@@ -88,7 +88,7 @@ done
 [[ -f "${REPAIR_ROOT}/complete.marker" ]]
 [[ -f "${PLANNING_MODEL}/training_state.pt" ]]
 IFS=, read -r -a EXPECTED_NODE_IPS <<<"${RAY_EXPECTED_NODE_IPS}"
-(( ${#EXPECTED_NODE_IPS[@]} == 1 ))
+(( ${#EXPECTED_NODE_IPS[@]} == 4 ))
 [[ "${ID185_HEAD_IP}" == "${EXPECTED_NODE_IPS[0]}" ]]
 [[ "${RAY_ADDRESS}" == "${ID185_HEAD_IP}:"* ]]
 "${PY}" - "${RAY_ADDRESS}" "${RAY_EXPECTED_NODE_IPS}" <<'PY'
@@ -108,8 +108,8 @@ rows=sorted(
 )
 ray.shutdown()
 assert [row['address'] for row in rows]==expected, (rows,expected)
-assert sorted(row['gpus'] for row in rows)==[8.0], rows
-print(json.dumps({'status':'ID187_RAY_1X8_OK','nodes':rows}))
+assert sorted(row['gpus'] for row in rows)==[2.0,2.0,2.0,2.0], rows
+print(json.dumps({'status':'ID189_RAY_4X2_OK','nodes':rows}))
 PY
 
 set -a

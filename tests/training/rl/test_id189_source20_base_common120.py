@@ -7,6 +7,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[3]
 SLURM = ROOT / "experiments/training/rl/id189_source20_base_common120.slurm"
 RETRY1_SLURM = ROOT / "experiments/training/rl/id189_source20_base_common120_retry1.slurm"
+NORMAL4X2_SLURM = ROOT / "experiments/training/rl/id189_source20_base_common120_normal4x2_retry2.slurm"
+NORMAL4X2_RUNNER = ROOT / "experiments/training/rl/run_vagen_k4_id189_source20_base_common120_normal4x2.sh"
 RUNNER = ROOT / "experiments/training/rl/run_vagen_k4_id189_source20_base_common120.sh"
 LAUNCHER = ROOT / "experiments/training/rl/launch_vagen_k4_1x8_browser_on_hold.sh"
 CONFIG = ROOT / "external/VAGEN/vagen/configs/joint_id189_source20_base_common120.yaml"
@@ -47,6 +49,24 @@ def test_id189_retry1_uses_fresh_non_resume_identities() -> None:
     assert "WANDB_RESUME=never" not in retry1  # launcher owns the fixed never-resume gate
     assert "source20_base_common120_t20_s100_preempt_retry1" not in attempt0
     assert "source20-base-common120-preempt-r1" not in attempt0
+
+
+def test_id189_normal_4x2_retry2_contract_and_manifest_regression() -> None:
+    slurm = NORMAL4X2_SLURM.read_text()
+    runner = NORMAL4X2_RUNNER.read_text()
+    launcher = (ROOT / "experiments/training/rl/launch_vagen_k4_id185_visualize_base_failure_on_hold.sh").read_text()
+    assert "#SBATCH --partition=normal" in slurm
+    assert "#SBATCH --nodes=4" in slurm
+    assert "#SBATCH --gres=gpu:2" in slurm
+    assert "normal_4x2_retry2" in slurm
+    assert "normal-4x2-r2" in slurm
+    assert "ID185_EXPECTED_NNODES=4" in launcher
+    assert "ID185_EXPECTED_GPU_COUNTS=2,2,2,2" in launcher
+    assert "ID187_TRAIN_CONFIG" in launcher
+    assert '[[ "${ID185_EXPECTED_GPU_COUNTS}" == 2,2,2,2 ]]' in runner
+    assert "sorted(row['gpus'] for row in rows)==[2.0,2.0,2.0,2.0]" in runner
+    assert "len({row['rollout_sample_id'] for row in val_rows})==120" in runner
+    assert "len({row['rollout_sample_id'] for row in val_rows})==300" not in runner
 
 
 def test_id189_val_source_filters_to_exact_base_and_common_60_each() -> None:
