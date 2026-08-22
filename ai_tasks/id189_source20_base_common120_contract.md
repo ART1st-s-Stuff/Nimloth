@@ -1,6 +1,6 @@
 # ID189 source20 Base+Common120 full-browser evaluation contract
 
-Status: attempt0 Job `525905` failed before formal output; retry required with fresh identity
+Status: retry1 Job `527282` submitted; `PENDING (Priority)` with zero allocation/output/W&B
 
 ## Attempt 0 — Job 525905
 
@@ -9,6 +9,13 @@ Status: attempt0 Job `525905` failed before formal output; retry required with f
 - The runner clean-tree gate rejected `external/le-wm/__pycache__/module.cpython-312.pyc`. It was created by server preflight pytest in the production worktree without disabling Python bytecode.
 - Failure occurred before formal `RUN_OUT`, W&B/model load/rollout/validation/browser. No optimizer update or checkpoint exists.
 - Attempt0 is not resumable and neither its output nor W&B identity may be reused. See `E0136`.
+
+## Retry 1 — Job 527282
+
+- Fresh production worktree: `/project/peilab/atst/nimloth/.worktrees/id189-bc120-r1-37489767` at Parent `37489767cb3393092867123a37ee7cf91ca9a04c`.
+- Fresh output suffix: `_preempt_retry1`; fresh W&B suffix: `-preempt-r1`.
+- No tests or imports were run in this production worktree. Parent, VAGEN, VERL, le-wm, and RCDM were all clean immediately before submission.
+- Submitted to preempt 1×8 as Job `527282`; currently pending priority with no allocated node or formal artifacts.
 
 - Nimloth implementation commit: `860062e4a37e6e847828e089f69b4905eeaccc78`.
 - VAGEN implementation commit: `14d862e816f6f598c0f2eeb3383ac2df6b894e84`.
