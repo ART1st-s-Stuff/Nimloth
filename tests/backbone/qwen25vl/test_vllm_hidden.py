@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
 from nimloth.backbone.qwen25vl.vllm_hidden import (
+    _jsonable_planning_evidence,
     PolicyStateCaptureWorkerExtension,
     async_abort_policy_state_capture_for_request,
     async_pop_latent_state_capture_for_request,
@@ -18,6 +21,23 @@ from nimloth.backbone.qwen25vl.vllm_hidden import (
     pop_policy_state_captures,
     start_policy_state_capture,
 )
+
+
+def test_predicted_planning_state_uses_binary_transport() -> None:
+    state = torch.arange(16 * 1024, dtype=torch.float32).reshape(16, 1024)
+    payload = _jsonable_planning_evidence(
+        {"predicted_state": state, "value": torch.tensor([1.0, 2.0])}
+    )
+
+    encoded = payload["predicted_state"]
+    assert encoded["schema"] == "nimloth_float32_tensor_base64_v1"
+    assert encoded["dtype"] == "float32_le"
+    assert encoded["shape"] == [16, 1024]
+    restored = np.frombuffer(
+        base64.b64decode(encoded["data"], validate=True), dtype="<f4"
+    ).reshape(encoded["shape"])
+    np.testing.assert_array_equal(restored, state.numpy())
+    assert payload["value"] == [1.0, 2.0]
 
 
 class _Model(torch.nn.Module):

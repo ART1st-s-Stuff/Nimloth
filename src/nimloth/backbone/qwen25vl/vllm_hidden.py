@@ -8,6 +8,7 @@ captured boundary hidden state with the loaded vLLM model's normal LM head.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -20,7 +21,27 @@ def _jsonable_planning_evidence(value: Any) -> Any:
     if isinstance(value, torch.Tensor):
         return value.detach().float().cpu().tolist()
     if isinstance(value, dict):
-        return {str(key): _jsonable_planning_evidence(item) for key, item in value.items()}
+        encoded = {}
+        for key, item in value.items():
+            if key == "predicted_state" and isinstance(item, torch.Tensor):
+                array = (
+                    item.detach()
+                    .to(device="cpu", dtype=torch.float32)
+                    .contiguous()
+                    .numpy()
+                    .astype("<f4", copy=False)
+                )
+                encoded[str(key)] = {
+                    "schema": "nimloth_float32_tensor_base64_v1",
+                    "dtype": "float32_le",
+                    "shape": list(array.shape),
+                    "data": base64.b64encode(array.tobytes(order="C")).decode(
+                        "ascii"
+                    ),
+                }
+            else:
+                encoded[str(key)] = _jsonable_planning_evidence(item)
+        return encoded
     if isinstance(value, (tuple, list)):
         return [_jsonable_planning_evidence(item) for item in value]
     return value

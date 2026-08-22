@@ -9,6 +9,7 @@ SLURM = ROOT / "experiments/training/rl/id189_source20_base_common120.slurm"
 RETRY1_SLURM = ROOT / "experiments/training/rl/id189_source20_base_common120_retry1.slurm"
 NORMAL4X2_SLURM = ROOT / "experiments/training/rl/id189_source20_base_common120_normal4x2_retry2.slurm"
 NORMAL4X2_RETRY3_SLURM = ROOT / "experiments/training/rl/id189_source20_base_common120_normal4x2_retry3.slurm"
+NORMAL4X2_RETRY4_SLURM = ROOT / "experiments/training/rl/id189_source20_base_common120_normal4x2_retry4.slurm"
 NORMAL4X2_RUNNER = ROOT / "experiments/training/rl/run_vagen_k4_id189_source20_base_common120_normal4x2.sh"
 RUNNER = ROOT / "experiments/training/rl/run_vagen_k4_id189_source20_base_common120.sh"
 LAUNCHER = ROOT / "experiments/training/rl/launch_vagen_k4_1x8_browser_on_hold.sh"
@@ -69,7 +70,19 @@ def test_id189_normal_4x2_retry2_contract_and_manifest_regression() -> None:
     assert "len({row['rollout_sample_id'] for row in val_rows})==120" in runner
     assert "len({row['rollout_sample_id'] for row in val_rows})==300" not in runner
     assert "trap handle_termination TERM INT" in runner
+    assert "VAGEN_ROLLOUT_BROWSER_PACK_WORKERS:-8" in runner
+    assert '[[ "${VAGEN_ROLLOUT_BROWSER_PACK_WORKERS}" == 8 ]]' in runner
+    assert "export VAGEN_ROLLOUT_BROWSER_PACK_WORKERS" in runner
     assert '[[ -z "${TERMINATION_STATUS}" ]] || status=${TERMINATION_STATUS}' in runner
+
+
+def test_id189_retry4_has_fresh_identity_after_binary_parallel_fix() -> None:
+    retry3 = NORMAL4X2_RETRY3_SLURM.read_text()
+    retry4 = NORMAL4X2_RETRY4_SLURM.read_text()
+    assert "normal_4x2_retry4" in retry4
+    assert "normal-4x2-r4" in retry4
+    assert "normal_4x2_retry4" not in retry3
+    assert "normal-4x2-r4" not in retry3
 
 
 def test_id189_retry3_has_fresh_identity_after_archive_perf_fix() -> None:

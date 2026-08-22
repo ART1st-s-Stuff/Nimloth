@@ -1,6 +1,6 @@
 # ID189 source20 Base+Common120 full-browser evaluation contract
 
-Status: normal 4x2 retry3 Job `527471` running on `dgx-[14,26,29,31]`
+Status: retry3 cancelled by human instruction; binary-state 8-thread retry4 ready
 
 ## Attempt 0 — Job 525905
 
@@ -37,6 +37,8 @@ Status: normal 4x2 retry3 Job `527471` running on `dgx-[14,26,29,31]`
 - Human-approved cleanup removed old unreferenced SFT2 smoke artifacts, two failed-run duplicate snapshots, and terminal ID144/146 render caches. The path-specific Nimloth quota increased from about 71 GiB to 129 GiB free; deletion manifest is under remote `outputs/cleanup/2026-08-22_id189_quota/`.
 - A second human-approved cleanup removed heavyweight `train/` checkpoints from superseded/failed ID114, ID119, ID122, ID125 and ID134 plus raw rollout blobs from terminal ID132/135--140/144, while retaining README/failure analysis/metrics/evaluations. ID147 render preflight cache was explicitly preserved. Free quota increased from about 129 GiB to 352 GiB; manifest is remote `outputs/cleanup/2026-08-22_failed_legacy_rl/`.
 - A third human-approved cleanup pruned 21 intermediate model/EMA/training-state triplets from each completed RCDM run while retaining both final step8550 triplets, all evaluation/W&B evidence and all state caches; it also removed the two 14 GiB model directories from the explicitly token-polluted 2026-06-18 SFT2 run while retaining its README/logs. Free quota increased from about 352 GiB to 637 GiB; manifest is remote `outputs/cleanup/2026-08-22_rcdm_intermediate_and_polluted_sft2/`.
+- Human instructed stopping retry3 and launching a multithreaded replacement. Job `527471` was cancelled at elapsed `03:28:02`, still with zero rows/NPZ; signal cleanup wrote exit143/failed and W&B was finalized failed with zero rows.
+- Retry4 transports each predicted state as exact little-endian float32 base64 bytes rather than nested Python floats, decodes it without model replay, and packs turn archives with `VAGEN_ROLLOUT_BROWSER_PACK_WORKERS=8`. Synthetic production-shape checks measured one 271-node encode in 0.018s and eight 271-node turn archives in 0.40s with 8 workers; exact array parity and thread-count regression tests pass. Fresh retry4 output/W&B identities are required.
 
 - Nimloth implementation commit: `860062e4a37e6e847828e089f69b4905eeaccc78`.
 - VAGEN implementation commit: `14d862e816f6f598c0f2eeb3383ac2df6b894e84`.
