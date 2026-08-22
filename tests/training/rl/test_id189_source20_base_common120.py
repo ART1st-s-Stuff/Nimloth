@@ -11,6 +11,7 @@ NORMAL4X2_SLURM = ROOT / "experiments/training/rl/id189_source20_base_common120_
 NORMAL4X2_RETRY3_SLURM = ROOT / "experiments/training/rl/id189_source20_base_common120_normal4x2_retry3.slurm"
 NORMAL4X2_RETRY4_SLURM = ROOT / "experiments/training/rl/id189_source20_base_common120_normal4x2_retry4.slurm"
 NORMAL4X2_RUNNER = ROOT / "experiments/training/rl/run_vagen_k4_id189_source20_base_common120_normal4x2.sh"
+READONLY_VALIDATOR = ROOT / "experiments/training/rl/validate_vagen_k4_id189_existing_readonly.py"
 RUNNER = ROOT / "experiments/training/rl/run_vagen_k4_id189_source20_base_common120.sh"
 LAUNCHER = ROOT / "experiments/training/rl/launch_vagen_k4_1x8_browser_on_hold.sh"
 CONFIG = ROOT / "external/VAGEN/vagen/configs/joint_id189_source20_base_common120.yaml"
@@ -73,7 +74,21 @@ def test_id189_normal_4x2_retry2_contract_and_manifest_regression() -> None:
     assert "VAGEN_ROLLOUT_BROWSER_PACK_WORKERS:-8" in runner
     assert '[[ "${VAGEN_ROLLOUT_BROWSER_PACK_WORKERS}" == 8 ]]' in runner
     assert "export VAGEN_ROLLOUT_BROWSER_PACK_WORKERS" in runner
+    assert "int(row['seed']) for row in rows" not in runner
+    assert "record['seed']" in runner
+    assert "seed_by_source" in runner
+    assert "list(range(1,61))" in runner
     assert '[[ -z "${TERMINATION_STATUS}" ]] || status=${TERMINATION_STATUS}' in runner
+
+
+def test_id189_readonly_validator_uses_browser_seed_without_mutation() -> None:
+    validator = READONLY_VALIDATOR.read_text()
+    assert 'record["seed"]' in validator
+    assert "sorted(seeds) == list(range(1, 61))" in validator
+    assert 'row["seed"]' not in validator
+    assert "open(\"w\")" not in validator
+    assert "write_text" not in validator
+    compile(validator, str(READONLY_VALIDATOR), "exec")
 
 
 def test_id189_retry4_has_fresh_identity_after_binary_parallel_fix() -> None:

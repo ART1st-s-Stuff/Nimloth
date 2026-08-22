@@ -583,8 +583,8 @@ rows=[json.loads(line) for line in (run/'validation/20.jsonl').read_text().split
 assert len(rows)==120
 counts=Counter(row['data_source'] for row in rows)
 assert counts=={'navigation_base_test_id187':60,'navigation_common_sense_test_id187':60}
-assert all(sorted(int(row['seed']) for row in rows if row['data_source']==source)==list(range(1,61)) for source in counts)
-assert len({row['rollout_sample_id'] for row in rows})==120
+row_rollout_ids={row['rollout_sample_id'] for row in rows}
+assert len(row_rollout_ids)==120
 browser=run/'evaluation_browser/global_step_20'
 complete=json.loads((browser/'complete.json').read_text())
 assert complete['batch_count']==3 and complete['rollout_count']==120
@@ -592,8 +592,11 @@ assert complete['manifest_sha256']=='sha256:'+hashlib.sha256((browser/'manifest.
 rollout_files=sorted(browser.glob('batches/*/rollouts/*/rollout.json'))
 assert len(rollout_files)==120
 success=Counter(); reward=Counter(); turns=Counter(); archives=0
+seed_by_source={source: [] for source in counts}; browser_rollout_ids=set()
 for path in rollout_files:
  record=json.loads(path.read_text()); source=record['data_source']; assert source in counts
+ seed_by_source[source].append(int(record['seed']))
+ browser_rollout_ids.add(record['identity']['rollout_sample_id'])
  success[source]+=int(record['success']); reward[source]+=float(record['reward']); turns[source]+=int(record['turn_count'])
  assert record['capabilities']['model_state'] is True and record['capabilities']['mcts_process'] is True
  assert len(record['turns'])==record['turn_count']
@@ -612,6 +615,8 @@ for path in rollout_files:
   assert process['horizon']==4 and process['num_simulations']==100 and len(sims)==100
   assert [item['simulation_index'] for item in sims]==list(range(100))
   archives+=1
+assert browser_rollout_ids==row_rollout_ids
+assert all(sorted(seeds)==list(range(1,61)) for seeds in seed_by_source.values())
 assert not list((run/'checkpoints').glob('global_step_*'))
 payload={'status':'passed','phase':'base_common120','global_step':20,'source_step':796,'rollout_count':120,'archive_count':archives,'checkpoint_steps':[],'success_by_source':dict(success),'reward_sum_by_source':dict(reward),'turns_by_source':dict(turns),'browser':str(browser/'index.html'),'manifest_sha256':complete['manifest_sha256']}
 for name in ('validator.json','final_status.json'):

@@ -1,6 +1,6 @@
 # ID189 source20 Base+Common120 full-browser evaluation contract
 
-Status: binary-state 8-thread retry4 Job `527608` running
+Status: retry4 artifacts complete; post-run seed gate failed; read-only revalidation in progress
 
 ## Attempt 0 — Job 525905
 
@@ -40,6 +40,9 @@ Status: binary-state 8-thread retry4 Job `527608` running
 - Human instructed stopping retry3 and launching a multithreaded replacement. Job `527471` was cancelled at elapsed `03:28:02`, still with zero rows/NPZ; signal cleanup wrote exit143/failed and W&B was finalized failed with zero rows.
 - Retry4 transports each predicted state as exact little-endian float32 base64 bytes rather than nested Python floats, decodes it without model replay, and packs turn archives with `VAGEN_ROLLOUT_BROWSER_PACK_WORKERS=8`. Synthetic production-shape checks measured one 271-node encode in 0.018s and eight 271-node turn archives in 0.40s with 8 workers; exact array parity and thread-count regression tests pass.
 - Fresh Job `527608` started on normal `dgx-[10,14,26,29]`; dynamic qualification correctly selected `dgx-14` rather than excluded `dgx-10` as Navigation/Ray head. FloorPlan1 render, Ray `[2,2,2,2]`, source20 identity and Base/Common prewarm passed. Output/W&B identities use retry4 and are fresh.
+- Retry4 generated and committed all 3 batches, 120 validation rows, 120 Browser rollouts and 1862 float32 state archives; Browser `complete.json` and manifest were finalized. Initial metrics are Base success `26/60`, reward mean `0.5919999678929647`; Common Sense success `29/60`, reward mean `0.6349999542037646`.
+- Job `527608` then failed only in the post-run shell gate because it assumed validation JSONL rows contain `seed`; seed is owned by identity-aligned Browser `rollout.json`. The corrected gate reads Browser seed coverage and proves Browser/validation rollout-ID set equality. Existing artifacts do not require repacking; a separate read-only validator is used without modifying the failed run.
+- Production logs also showed `workers=1`: the shell-exported worker variable did not propagate to Ray TaskRunner. This did not affect artifact correctness, and binary transport reduced each production batch pack to 35–46 seconds. See E0140 and E0141.
 
 - Nimloth implementation commit: `860062e4a37e6e847828e089f69b4905eeaccc78`.
 - VAGEN implementation commit: `14d862e816f6f598c0f2eeb3383ac2df6b894e84`.
