@@ -35,6 +35,7 @@ Status: normal 4x2 retry3 Job `527471` running on `dgx-[14,26,29,31]`
 - Job `527471` started at `2026-08-22T18:20:42+08:00` on `dgx-[14,26,29,31]`.
 - Retry3 invalidated the claim that DEFLATE was the dominant bottleneck: its first 40 environments finished at `18:56:55`, but at elapsed `02:35` it still had zero validation rows/NPZ files and the TaskRunner had written only the roughly 400 MB planner snapshot. The delay is before NPZ serialization; no further cancellation or storage change is authorized without human decision.
 - Human-approved cleanup removed old unreferenced SFT2 smoke artifacts, two failed-run duplicate snapshots, and terminal ID144/146 render caches. The path-specific Nimloth quota increased from about 71 GiB to 129 GiB free; deletion manifest is under remote `outputs/cleanup/2026-08-22_id189_quota/`.
+- A second human-approved cleanup removed heavyweight `train/` checkpoints from superseded/failed ID114, ID119, ID122, ID125 and ID134 plus raw rollout blobs from terminal ID132/135--140/144, while retaining README/failure analysis/metrics/evaluations. ID147 render preflight cache was explicitly preserved. Free quota increased from about 129 GiB to 352 GiB; manifest is remote `outputs/cleanup/2026-08-22_failed_legacy_rl/`.
 
 - Nimloth implementation commit: `860062e4a37e6e847828e089f69b4905eeaccc78`.
 - VAGEN implementation commit: `14d862e816f6f598c0f2eeb3383ac2df6b894e84`.
