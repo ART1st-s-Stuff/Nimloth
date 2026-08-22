@@ -33,6 +33,8 @@ Status: normal 4x2 retry3 Job `527471` running on `dgx-[14,26,29,31]`
 - TERM/INT now preserve exit143 so cancellation cannot produce a false passed phase marker; retry2 metadata was corrected. See `E0139`.
 - Retry3 uses fresh `_normal_4x2_retry3` output and `-normal-4x2-r3` W&B identities.
 - Job `527471` started at `2026-08-22T18:20:42+08:00` on `dgx-[14,26,29,31]`.
+- Retry3 invalidated the claim that DEFLATE was the dominant bottleneck: its first 40 environments finished at `18:56:55`, but at elapsed `02:35` it still had zero validation rows/NPZ files and the TaskRunner had written only the roughly 400 MB planner snapshot. The delay is before NPZ serialization; no further cancellation or storage change is authorized without human decision.
+- Human-approved cleanup removed old unreferenced SFT2 smoke artifacts, two failed-run duplicate snapshots, and terminal ID144/146 render caches. The path-specific Nimloth quota increased from about 71 GiB to 129 GiB free; deletion manifest is under remote `outputs/cleanup/2026-08-22_id189_quota/`.
 
 - Nimloth implementation commit: `860062e4a37e6e847828e089f69b4905eeaccc78`.
 - VAGEN implementation commit: `14d862e816f6f598c0f2eeb3383ac2df6b894e84`.
