@@ -1,6 +1,14 @@
 # ID189 source20 Base+Common120 full-browser evaluation contract
 
-Status: Job `525905` submitted; pending priority with zero allocation/output/W&B
+Status: attempt0 Job `525905` failed before formal output; retry required with fresh identity
+
+## Attempt 0 — Job 525905
+
+- Allocated `preempt/dgx-42` with 8×H800 and ended `FAILED 1:0` after `00:01:15`.
+- Allocation, dynamic FloorPlan1 render, Ray `[8]`, runtime environment/import probe, and cleanup passed.
+- The runner clean-tree gate rejected `external/le-wm/__pycache__/module.cpython-312.pyc`. It was created by server preflight pytest in the production worktree without disabling Python bytecode.
+- Failure occurred before formal `RUN_OUT`, W&B/model load/rollout/validation/browser. No optimizer update or checkpoint exists.
+- Attempt0 is not resumable and neither its output nor W&B identity may be reused. See `E0136`.
 
 - Nimloth implementation commit: `860062e4a37e6e847828e089f69b4905eeaccc78`.
 - VAGEN implementation commit: `14d862e816f6f598c0f2eeb3383ac2df6b894e84`.
