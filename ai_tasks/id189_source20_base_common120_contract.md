@@ -1,6 +1,6 @@
 # ID189 source20 Base+Common120 full-browser evaluation contract
 
-Status: retry1 Job `527282` failed in manifest preflight; normal 4x2 retry2 implementation ready
+Status: normal 4x2 retry2 Job `527287` running on `dgx-[26,28-29,31]`
 
 ## Attempt 0 — Job 525905
 
@@ -27,6 +27,7 @@ Status: retry1 Job `527282` failed in manifest preflight; normal 4x2 retry2 impl
 - Allocation: normal, 4 nodes × 2 H800, 16 CPU and 64 GiB per node, total 8 GPU/64 CPU/256 GiB, 5 hours.
 - VAGEN ID189 topology is 4×2 with no one-node `joint_process_on_nodes`; rollout remains TP8/DP1 and actor restore remains DP8 across Ray's four 2-GPU nodes.
 - Dynamic navigation head authentication and 10.23 fabric/Ray address validation remain mandatory.
+- Job `527287` started at `2026-08-22T15:14:41+08:00` on `dgx-[26,28-29,31]`. Dynamic render, four-node Ray `[2,2,2,2]`, source20 checkpoint, 120-row manifest, Base/Common environment prewarm, DP8 actor loading, and distributed TP8 vLLM startup have passed; rollout generation is pending.
 
 - Nimloth implementation commit: `860062e4a37e6e847828e089f69b4905eeaccc78`.
 - VAGEN implementation commit: `14d862e816f6f598c0f2eeb3383ac2df6b894e84`.
