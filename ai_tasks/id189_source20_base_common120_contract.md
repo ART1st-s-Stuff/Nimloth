@@ -1,6 +1,6 @@
 # ID189 source20 Base+Common120 full-browser evaluation contract
 
-Status: normal 4x2 retry2 Job `527287` running on `dgx-[26,28-29,31]`
+Status: normal 4x2 retry2 cancelled for proven archive bottleneck; retry3 implementation ready
 
 ## Attempt 0 — Job 525905
 
@@ -27,7 +27,11 @@ Status: normal 4x2 retry2 Job `527287` running on `dgx-[26,28-29,31]`
 - Allocation: normal, 4 nodes × 2 H800, 16 CPU and 64 GiB per node, total 8 GPU/64 CPU/256 GiB, 5 hours.
 - VAGEN ID189 topology is 4×2 with no one-node `joint_process_on_nodes`; rollout remains TP8/DP1 and actor restore remains DP8 across Ray's four 2-GPU nodes.
 - Dynamic navigation head authentication and 10.23 fabric/Ray address validation remain mandatory.
-- Job `527287` started at `2026-08-22T15:14:41+08:00` on `dgx-[26,28-29,31]`. Dynamic render, four-node Ray `[2,2,2,2]`, source20 checkpoint, 120-row manifest, Base/Common environment prewarm, DP8 actor loading, and distributed TP8 vLLM startup have passed; rollout generation is pending.
+- Job `527287` started at `2026-08-22T15:14:41+08:00` on `dgx-[26,28-29,31]`. Dynamic render, four-node Ray `[2,2,2,2]`, source20 checkpoint, 120-row manifest, Base/Common environment prewarm, DP8 actor loading, distributed TP8 vLLM startup, and all 40 first-batch rollouts passed.
+- It was cancelled at `02:58:05` after the TaskRunner spent over `02:21` CPU at about 111 GB RSS constructing serial deflated archives while atomic output remained at zero rows/files. Three such batches could not complete before the 5-hour limit. No update/checkpoint/browser batch exists; W&B was finalized failed with zero rows.
+- VAGEN now uses ZIP-stored `np.savez` rather than `np.savez_compressed`; all float32 key/shape/finite/SHA256 contracts remain unchanged and a ZIP compression-type regression test passes. See `E0138`.
+- TERM/INT now preserve exit143 so cancellation cannot produce a false passed phase marker; retry2 metadata was corrected. See `E0139`.
+- Retry3 uses fresh `_normal_4x2_retry3` output and `-normal-4x2-r3` W&B identities.
 
 - Nimloth implementation commit: `860062e4a37e6e847828e089f69b4905eeaccc78`.
 - VAGEN implementation commit: `14d862e816f6f598c0f2eeb3383ac2df6b894e84`.

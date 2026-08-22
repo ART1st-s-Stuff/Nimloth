@@ -249,9 +249,17 @@ terminate_runtime_processes() {
   done < <(runtime_process_ids)
 }
 
+TERMINATION_STATUS=
+handle_termination() {
+  TERMINATION_STATUS=143
+  exit 143
+}
+trap handle_termination TERM INT
+
 cleanup() {
   local status=$?
-  trap - EXIT
+  [[ -z "${TERMINATION_STATUS}" ]] || status=${TERMINATION_STATUS}
+  trap - EXIT TERM INT
   set +e
   terminate_group "${TRAIN_PID}"
   terminate_pid "${NVIDIA_PID}"
