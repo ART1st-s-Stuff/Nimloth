@@ -1,6 +1,6 @@
 # ID189 source20 Base+Common120 full-browser evaluation contract
 
-Status: normal 4x2 retry2 cancelled for proven archive bottleneck; retry3 implementation ready
+Status: normal 4x2 retry3 Job `527471` running on `dgx-[14,26,29,31]`
 
 ## Attempt 0 — Job 525905
 
@@ -32,6 +32,7 @@ Status: normal 4x2 retry2 cancelled for proven archive bottleneck; retry3 implem
 - VAGEN now uses ZIP-stored `np.savez` rather than `np.savez_compressed`; all float32 key/shape/finite/SHA256 contracts remain unchanged and a ZIP compression-type regression test passes. See `E0138`.
 - TERM/INT now preserve exit143 so cancellation cannot produce a false passed phase marker; retry2 metadata was corrected. See `E0139`.
 - Retry3 uses fresh `_normal_4x2_retry3` output and `-normal-4x2-r3` W&B identities.
+- Job `527471` started at `2026-08-22T18:20:42+08:00` on `dgx-[14,26,29,31]`.
 
 - Nimloth implementation commit: `860062e4a37e6e847828e089f69b4905eeaccc78`.
 - VAGEN implementation commit: `14d862e816f6f598c0f2eeb3383ac2df6b894e84`.
