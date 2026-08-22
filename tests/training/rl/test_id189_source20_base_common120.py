@@ -6,6 +6,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 SLURM = ROOT / "experiments/training/rl/id189_source20_base_common120.slurm"
+RETRY1_SLURM = ROOT / "experiments/training/rl/id189_source20_base_common120_retry1.slurm"
 RUNNER = ROOT / "experiments/training/rl/run_vagen_k4_id189_source20_base_common120.sh"
 LAUNCHER = ROOT / "experiments/training/rl/launch_vagen_k4_1x8_browser_on_hold.sh"
 CONFIG = ROOT / "external/VAGEN/vagen/configs/joint_id189_source20_base_common120.yaml"
@@ -36,6 +37,16 @@ def test_id189_is_frozen_one_node_source20_full_browser() -> None:
     assert "validation_rollout_browser_expected_rows: 120" in config
     assert "validation_rollout_browser_capture_mcts_process: true" in config
     assert "validation_visualization_data_source" not in config
+
+
+def test_id189_retry1_uses_fresh_non_resume_identities() -> None:
+    attempt0 = SLURM.read_text()
+    retry1 = RETRY1_SLURM.read_text()
+    assert "source20_base_common120_t20_s100_preempt_retry1" in retry1
+    assert "source20-base-common120-preempt-r1" in retry1
+    assert "WANDB_RESUME=never" not in retry1  # launcher owns the fixed never-resume gate
+    assert "source20_base_common120_t20_s100_preempt_retry1" not in attempt0
+    assert "source20-base-common120-preempt-r1" not in attempt0
 
 
 def test_id189_val_source_filters_to_exact_base_and_common_60_each() -> None:
