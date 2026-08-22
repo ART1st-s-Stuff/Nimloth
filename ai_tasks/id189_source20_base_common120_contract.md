@@ -1,6 +1,6 @@
 # ID189 source20 Base+Common120 full-browser evaluation contract
 
-Status: retry4 artifacts complete; post-run seed gate failed; read-only revalidation in progress
+Status: retry4 artifacts complete; independent read-only revalidation passed
 
 ## Attempt 0 — Job 525905
 
@@ -43,6 +43,7 @@ Status: retry4 artifacts complete; post-run seed gate failed; read-only revalida
 - Retry4 generated and committed all 3 batches, 120 validation rows, 120 Browser rollouts and 1862 float32 state archives; Browser `complete.json` and manifest were finalized. Initial metrics are Base success `26/60`, reward mean `0.5919999678929647`; Common Sense success `29/60`, reward mean `0.6349999542037646`.
 - Job `527608` then failed only in the post-run shell gate because it assumed validation JSONL rows contain `seed`; seed is owned by identity-aligned Browser `rollout.json`. The corrected gate reads Browser seed coverage and proves Browser/validation rollout-ID set equality. Existing artifacts do not require repacking; a separate read-only validator is used without modifying the failed run.
 - Production logs also showed `workers=1`: the shell-exported worker variable did not propagate to Ray TaskRunner. This did not affect artifact correctness, and binary transport reduced each production batch pack to 35–46 seconds. See E0140 and E0141.
+- Corrected read-only validator commit `17e1ee12` passed all 120 identity/seed rows, 1862 archive SHA256/shape/dtype/finite checks and every 100-simulation MCTS trace. Manifest remains `sha256:6d555cd81141f280d3b7b1de5ad1972cea5456c13c2c0334ac4861dabb27de60`. Derived evidence is remote `outputs/evaluation_audits/2026-08-22/id189_source20_retry4_readonly/`; original Browser artifacts were not modified. Job identity remains failed and must not be resumed or overwritten; W&B is finished at history step20.
 
 - Nimloth implementation commit: `860062e4a37e6e847828e089f69b4905eeaccc78`.
 - VAGEN implementation commit: `14d862e816f6f598c0f2eeb3383ac2df6b894e84`.
