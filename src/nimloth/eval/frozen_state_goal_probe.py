@@ -33,32 +33,51 @@ class TaskProbeFeatures:
     features: np.ndarray
     labels: np.ndarray
     task_keys: np.ndarray
+    leakage_group_keys: np.ndarray
 
 
-def parse_actual_task_identity(
+def parse_source_row_metadata(
     *,
     config_id: str,
     migrated_seed: int,
     source_seed: int,
 ) -> tuple[str, int]:
-    """Recover the actual asset and require migration/source seed agreement."""
+    """Parse source-row diagnostics without claiming they identify the real task.
+
+    The legacy asynchronous archive can bind ``config_id``/seed metadata to the
+    wrong trajectory row.  We still require migration to preserve the source
+    row exactly, but the returned values are diagnostics only.
+    """
 
     match = re.search(r"(?:^|\()eval_set=([^,\)]+)", str(config_id))
     if match is None:
         raise ValueError(f"source config_id has no eval_set: {config_id!r}")
-    actual_eval_set = match.group(1)
-    if actual_eval_set not in {
+    config_eval_set = match.group(1)
+    if config_eval_set not in {
         "base_train",
         "common_sense_train",
         "long_horizon_train",
     }:
-        raise ValueError(f"unsupported actual eval_set {actual_eval_set!r}")
+        raise ValueError(f"unsupported source config eval_set {config_eval_set!r}")
     if int(migrated_seed) != int(source_seed):
         raise ValueError(
             "migrated/source seed mismatch: "
             f"{int(migrated_seed)} != {int(source_seed)}"
         )
-    return actual_eval_set, int(source_seed)
+    return config_eval_set, int(source_seed)
+
+
+def build_global_instruction_goal_map(asset_root: Path) -> dict[str, str]:
+    """Map exact instructions to targets only when all train assets agree."""
+
+    labels: dict[str, set[str]] = defaultdict(set)
+    for mapping in build_instruction_goal_map(asset_root).values():
+        for instruction, target in mapping.items():
+            labels[instruction].add(target)
+    ambiguous = {key: sorted(value) for key, value in labels.items() if len(value) != 1}
+    if ambiguous:
+        raise ValueError(f"globally ambiguous instruction goal labels: {ambiguous}")
+    return {key: next(iter(value)) for key, value in labels.items()}
 
 
 def aggregate_task_probe_features(
@@ -66,13 +85,20 @@ def aggregate_task_probe_features(
     features: np.ndarray,
     task_keys: np.ndarray,
     labels: np.ndarray,
+    leakage_group_keys: np.ndarray | None = None,
 ) -> TaskProbeFeatures:
-    """Average duplicate archive rows so every actual task has one probe row."""
+    """Average exact observed-task duplicates without trusting row metadata."""
 
     matrix = np.asarray(features, dtype=np.float32)
     keys = np.asarray(task_keys).astype(str)
     goals = np.asarray(labels).astype(str)
-    if matrix.ndim != 2 or len(matrix) != len(keys) or len(matrix) != len(goals):
+    leakage = keys if leakage_group_keys is None else np.asarray(leakage_group_keys).astype(str)
+    if (
+        matrix.ndim != 2
+        or len(matrix) != len(keys)
+        or len(matrix) != len(goals)
+        or len(matrix) != len(leakage)
+    ):
         raise ValueError("task probe features and metadata do not align")
     grouped: dict[str, list[int]] = defaultdict(list)
     for index, key in enumerate(keys):
@@ -80,18 +106,24 @@ def aggregate_task_probe_features(
     output_features: list[np.ndarray] = []
     output_labels: list[str] = []
     output_keys: list[str] = []
+    output_leakage: list[str] = []
     for key in sorted(grouped):
         indices = grouped[key]
         unique_goals = sorted(set(goals[indices].tolist()))
+        unique_leakage = sorted(set(leakage[indices].tolist()))
         if len(unique_goals) != 1:
             raise ValueError(f"task {key!r} has multiple goal labels: {unique_goals}")
+        if len(unique_leakage) != 1:
+            raise ValueError(f"task {key!r} spans multiple leakage groups")
         output_features.append(matrix[indices].mean(axis=0, dtype=np.float64).astype(np.float32))
         output_labels.append(unique_goals[0])
         output_keys.append(key)
+        output_leakage.append(unique_leakage[0])
     return TaskProbeFeatures(
         features=np.stack(output_features),
         labels=np.asarray(output_labels),
         task_keys=np.asarray(output_keys),
+        leakage_group_keys=np.asarray(output_leakage),
     )
 
 
@@ -141,38 +173,42 @@ def _record_metadata(
     *,
     split: str,
     source_rows: dict[tuple[str, int], dict[str, Any]],
-    goal_maps: dict[str, dict[str, str]],
+    instruction_goals: dict[str, str],
 ) -> list[dict[str, Any]]:
     result = []
     for record in records:
         key = (str(record["source_jsonl"]), int(record["source_line_index"]))
         source = source_rows[key]
-        actual_eval_set, seed = parse_actual_task_identity(
+        config_eval_set, source_seed = parse_source_row_metadata(
             config_id=str(source["config_id"]),
             migrated_seed=int(record["env_seed"]),
             source_seed=int(source["env_seed"]),
         )
-        if split == "train" and not 1 <= seed <= 1080:
-            raise ValueError(f"train source seed is outside 1..1080: {seed}")
-        if split == "val" and not 1081 <= seed <= 1200:
-            raise ValueError(f"validation source seed is outside 1081..1200: {seed}")
         instruction = _extract_instruction(str(record["observation_texts"][0]))
         try:
-            goal = goal_maps[actual_eval_set][instruction]
+            goal = instruction_goals[instruction]
         except KeyError as error:
             raise ValueError(
-                f"record {record['id']!r} instruction is absent from {actual_eval_set}"
+                f"record {record['id']!r} instruction has no globally unique target"
             ) from error
+        initial_image = Path(record["image_paths"][0]).resolve()
+        image_digest = _sha256(initial_image)
+        observed_task_key = hashlib.sha256(
+            f"{image_digest}\0{instruction}".encode("utf-8")
+        ).hexdigest()
         result.append(
             {
                 "record_id": str(record["id"]),
                 "split": split,
-                "actual_eval_set": actual_eval_set,
-                "env_seed": seed,
-                "task_key": f"{actual_eval_set}:{seed}",
-                "source_uid": str(source["uid"]),
-                "declared_eval_set": str(record["eval_set"]),
-                "declared_actual_mismatch": str(record["eval_set"]) != actual_eval_set,
+                "row_task_identity_available": False,
+                "source_config_eval_set_diagnostic": config_eval_set,
+                "source_seed_diagnostic": source_seed,
+                "source_uid_diagnostic": str(source["uid"]),
+                "source_declared_eval_set_diagnostic": str(source["eval_set"]),
+                "migrated_eval_set_diagnostic": str(record["eval_set"]),
+                "initial_image_sha256": image_digest,
+                "observed_task_key": observed_task_key,
+                "inner_group_key": image_digest,
                 "goal": goal,
                 "instruction": instruction,
             }
@@ -248,18 +284,19 @@ def _normalize_rows(value: np.ndarray) -> np.ndarray:
     return matrix / np.maximum(denominator, 1e-12)
 
 
-def _inner_split(task_keys: np.ndarray, labels: np.ndarray) -> np.ndarray:
-    """Deterministic label-stratified 20% selection set within train tasks."""
+def _inner_split(group_keys: np.ndarray, labels: np.ndarray) -> np.ndarray:
+    """Select whole exact-image groups while retaining every class in fit."""
 
-    keys = np.asarray(task_keys).astype(str)
+    groups = np.asarray(group_keys).astype(str)
     goals = np.asarray(labels).astype(str)
-    selected = np.zeros(len(keys), dtype=bool)
+    group_choice = {
+        group: int(hashlib.sha256(group.encode()).hexdigest()[:8], 16) % 5 == 0
+        for group in sorted(set(groups.tolist()))
+    }
+    selected = np.asarray([group_choice[group] for group in groups], dtype=bool)
     for goal in sorted(set(goals.tolist())):
-        indices = np.flatnonzero(goals == goal).tolist()
-        indices.sort(key=lambda index: hashlib.sha256(keys[index].encode()).hexdigest())
-        if len(indices) >= 5:
-            count = max(1, int(round(0.2 * len(indices))))
-            selected[indices[:count]] = True
+        if not np.any((goals == goal) & ~selected):
+            selected[goals == goal] = False
     if not selected.any() or selected.all():
         raise ValueError("inner goal-probe split is empty")
     return selected
@@ -468,25 +505,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     val_records = _load_records(args.val_jsonl)
     all_records = train_records + val_records
     source_rows = _source_rows(all_records)
-    goal_maps = build_instruction_goal_map(args.asset_root)
+    instruction_goals = build_global_instruction_goal_map(args.asset_root)
     train_meta = _record_metadata(
         train_records,
         split="train",
         source_rows=source_rows,
-        goal_maps=goal_maps,
+        instruction_goals=instruction_goals,
     )
     val_meta = _record_metadata(
         val_records,
         split="val",
         source_rows=source_rows,
-        goal_maps=goal_maps,
+        instruction_goals=instruction_goals,
     )
-    train_keys = {row["task_key"] for row in train_meta}
-    val_keys = {row["task_key"] for row in val_meta}
-    if train_keys & val_keys:
-        raise ValueError("actual task identity overlaps train and validation")
-    if {row["source_uid"] for row in train_meta} & {row["source_uid"] for row in val_meta}:
-        raise ValueError("source UID overlaps train and validation")
+    cross_split_initial_images = {
+        row["initial_image_sha256"] for row in train_meta
+    } & {row["initial_image_sha256"] for row in val_meta}
 
     train_prompts, train_states, train_transitions = _build_cache_index(
         train_records,
@@ -508,6 +542,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     state_metadata = train_states + val_states
     transition_rows = train_transitions + val_transitions
     record_metadata = train_meta + val_meta
+    image_digest_cache: dict[str, str] = {}
+    for row in state_metadata:
+        image_path = str(row["image_path"])
+        if image_path not in image_digest_cache:
+            image_digest_cache[image_path] = _sha256(Path(image_path))
+        row["image_sha256"] = image_digest_cache[image_path]
 
     device = torch.device("cuda:0")
     projector = load_sft1_slot_projector(
@@ -541,6 +581,26 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError(f"DINO/state cache mismatch: {dino.shape} != {state.shape}")
 
     transition = np.asarray(transition_rows, dtype=np.int64)
+    train_state_hashes = {
+        row["image_sha256"]
+        for row in state_metadata
+        if int(row["record_index"]) < len(train_records)
+    }
+    train_initial_hashes = {
+        row["initial_image_sha256"] for row in train_meta
+    }
+    external_eligible = np.asarray(
+        [
+            int(row[3]) == 0
+            or (
+                record_metadata[int(row[4])]["initial_image_sha256"] not in train_initial_hashes
+                and state_metadata[int(row[0])]["image_sha256"] not in train_state_hashes
+                and state_metadata[int(row[1])]["image_sha256"] not in train_state_hashes
+            )
+            for row in transition_rows
+        ],
+        dtype=np.bool_,
+    )
     arrays = {
         "state": state,
         "dino": dino,
@@ -549,6 +609,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "transition_action": transition[:, 2],
         "transition_split": transition[:, 3],
         "transition_record_index": transition[:, 4],
+        "transition_external_eligible": external_eligible,
         "state_record_index": np.asarray([row["record_index"] for row in state_metadata], dtype=np.int64),
         "state_step_index": np.asarray([row["step_index"] for row in state_metadata], dtype=np.int64),
         "record_initial_state_index": np.asarray(
@@ -561,36 +622,44 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     initial = arrays["record_initial_state_index"]
     state_feature = state[initial].mean(axis=1)
     dino_feature = dino[initial].mean(axis=1)
-    task_keys = np.asarray([row["task_key"] for row in record_metadata])
+    task_keys = np.asarray([row["observed_task_key"] for row in record_metadata])
+    leakage_groups = np.asarray([row["inner_group_key"] for row in record_metadata])
     goals = np.asarray([row["goal"] for row in record_metadata])
     split = np.asarray([row["split"] for row in record_metadata])
     train_mask = split == "train"
-    val_mask = split == "val"
+    raw_val_mask = split == "val"
+    val_mask = raw_val_mask & ~np.isin(leakage_groups, sorted(cross_split_initial_images))
     state_train = aggregate_task_probe_features(
         features=state_feature[train_mask],
         task_keys=task_keys[train_mask],
         labels=goals[train_mask],
+        leakage_group_keys=leakage_groups[train_mask],
     )
     state_val = aggregate_task_probe_features(
         features=state_feature[val_mask],
         task_keys=task_keys[val_mask],
         labels=goals[val_mask],
+        leakage_group_keys=leakage_groups[val_mask],
     )
     dino_train = aggregate_task_probe_features(
         features=dino_feature[train_mask],
         task_keys=task_keys[train_mask],
         labels=goals[train_mask],
+        leakage_group_keys=leakage_groups[train_mask],
     )
     dino_val = aggregate_task_probe_features(
         features=dino_feature[val_mask],
         task_keys=task_keys[val_mask],
         labels=goals[val_mask],
+        leakage_group_keys=leakage_groups[val_mask],
     )
     if not (
         np.array_equal(state_train.task_keys, dino_train.task_keys)
         and np.array_equal(state_val.task_keys, dino_val.task_keys)
         and np.array_equal(state_train.labels, dino_train.labels)
         and np.array_equal(state_val.labels, dino_val.labels)
+        and np.array_equal(state_train.leakage_group_keys, dino_train.leakage_group_keys)
+        and np.array_equal(state_val.leakage_group_keys, dino_val.leakage_group_keys)
     ):
         raise ValueError("state and DINO task aggregation differ")
 
@@ -600,7 +669,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     unseen_labels = sorted(set(state_val.labels[~seen_val].tolist()))
     val_labels = np.asarray([class_index[label] for label in state_val.labels[seen_val]], dtype=np.int64)
     train_labels = np.asarray([class_index[label] for label in state_train.labels], dtype=np.int64)
-    inner = _inner_split(state_train.task_keys, state_train.labels)
+    inner = _inner_split(state_train.leakage_group_keys, state_train.labels)
     fit = ~inner
 
     probe_results: dict[str, Any] = {}
@@ -651,8 +720,33 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     weights_path = output_dir / "diagnostic_goal_probes.npz"
     _atomic_probe_weights(weights_path, probe_weights)
 
+    def metadata_conflicts(rows: Sequence[dict[str, Any]]) -> dict[str, int]:
+        grouped: dict[tuple[str, int], set[str]] = defaultdict(set)
+        for row in rows:
+            grouped[
+                (
+                    str(row["source_config_eval_set_diagnostic"]),
+                    int(row["source_seed_diagnostic"]),
+                )
+            ].add(str(row["instruction"]))
+        conflicts = {key: values for key, values in grouped.items() if len(values) > 1}
+        return {
+            "config_seed_keys": len(grouped),
+            "conflicting_config_seed_keys": len(conflicts),
+            "rows_in_conflicting_keys": sum(
+                1
+                for row in rows
+                if (
+                    str(row["source_config_eval_set_diagnostic"]),
+                    int(row["source_seed_diagnostic"]),
+                )
+                in conflicts
+            ),
+        }
+
     cache_metadata = {
         "schema": "nimloth_frozen_state_cache_v1",
+        "row_task_identity_available": False,
         "records": record_metadata,
         "states": state_metadata,
     }
@@ -663,20 +757,32 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "trainable_modules": ["diagnostic_linear_goal_readout"],
         "raw_dino_training_loss": False,
         "cot_semantics": "actual archived observation-conditioned assistant response or persisted terminal CoT",
+        "split_semantics": (
+            "archive-level pre-RL train/validation files; row-level config_id/seed task identity "
+            "is unavailable, inner splits group exact initial-image hashes, and exact-image "
+            "cross-split rows are excluded"
+        ),
+        "row_task_identity_available": False,
         "counts": {
             "train_records": len(train_records),
             "val_records": len(val_records),
-            "train_actual_tasks": len(state_train.task_keys),
-            "val_actual_tasks": len(state_val.task_keys),
+            "train_observed_tasks_after_exact_dedup": len(state_train.task_keys),
+            "val_observed_tasks_after_exact_dedup": len(state_val.task_keys),
             "train_states": len(train_prompts),
             "val_states": len(val_prompts),
             "train_transitions": len(train_transitions),
             "val_transitions": len(val_transitions),
-            "train_declared_actual_mismatch": sum(row["declared_actual_mismatch"] for row in train_meta),
-            "val_declared_actual_mismatch": sum(row["declared_actual_mismatch"] for row in val_meta),
-            "represented_val_tasks": int(seen_val.sum()),
-            "unseen_val_tasks": int((~seen_val).sum()),
+            "val_probe_rows_excluded_cross_split_image": int(raw_val_mask.sum() - val_mask.sum()),
+            "val_t1_transitions_excluded_cross_split_image": int(
+                ((transition[:, 3] == 1) & ~external_eligible).sum()
+            ),
+            "represented_val_observed_tasks": int(seen_val.sum()),
+            "unseen_val_observed_tasks": int((~seen_val).sum()),
             "unseen_val_labels": unseen_labels,
+        },
+        "metadata_conflicts": {
+            "train": metadata_conflicts(train_meta),
+            "val": metadata_conflicts(val_meta),
         },
         "probe": probe_results,
         "majority": {

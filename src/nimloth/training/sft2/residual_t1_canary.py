@@ -118,9 +118,9 @@ def residual_t1_metrics(
     }
 
 
-def _task_selection_mask(task_keys: np.ndarray) -> np.ndarray:
+def _group_selection_mask(group_keys: np.ndarray) -> np.ndarray:
     selected = np.asarray(
-        [int(hashlib.sha256(str(key).encode()).hexdigest()[:8], 16) % 10 == 0 for key in task_keys],
+        [int(hashlib.sha256(str(key).encode()).hexdigest()[:8], 16) % 10 == 0 for key in group_keys],
         dtype=bool,
     )
     if not selected.any() or selected.all():
@@ -362,6 +362,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "transition_action",
             "transition_split",
             "transition_record_index",
+            "transition_external_eligible",
         }
         if not required.issubset(cache.files):
             raise ValueError(f"ID60 cache is missing arrays: {sorted(required - set(cache.files))}")
@@ -372,6 +373,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         actions = cache["transition_action"].astype(np.int64)
         split = cache["transition_split"].astype(np.int64)
         record_index = cache["transition_record_index"].astype(np.int64)
+        external_eligible = cache["transition_external_eligible"].astype(np.bool_)
     if state.shape != dino.shape or state.ndim != 3 or state.shape[1:] != (16, 1024):
         raise ValueError("ID75 frozen state/DINO arrays have invalid shape")
     if not np.isfinite(state).all() or not np.isfinite(dino).all():
@@ -379,21 +381,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     metadata = json.loads(args.state_cache_metadata.read_text(encoding="utf-8"))
     records = metadata["records"]
-    task_keys = np.asarray([records[index]["task_key"] for index in record_index])
+    group_keys = np.asarray([records[index]["inner_group_key"] for index in record_index])
     current = state[current_index]
     target = state[next_index]
     next_dino = dino[next_index]
     train_mask = split == 0
-    val_mask = split == 1
-    train_task_selection = _task_selection_mask(task_keys[train_mask])
+    raw_val_mask = split == 1
+    val_mask = raw_val_mask & external_eligible
+    train_task_selection = _group_selection_mask(group_keys[train_mask])
     fit_mask = train_mask.copy()
     selection_mask = train_mask.copy()
     fit_mask[train_mask] = ~train_task_selection
     selection_mask[train_mask] = train_task_selection
-    if set(task_keys[fit_mask]) & set(task_keys[selection_mask]):
-        raise ValueError("T1 fit/selection task identity overlaps")
-    if set(task_keys[train_mask]) & set(task_keys[val_mask]):
-        raise ValueError("T1 train/external-validation task identity overlaps")
+    if set(group_keys[fit_mask]) & set(group_keys[selection_mask]):
+        raise ValueError("T1 fit/selection exact-image groups overlap")
+    if set(group_keys[train_mask]) & set(group_keys[val_mask]):
+        raise ValueError("T1 train/external-validation exact-image groups overlap")
 
     config = GridPredictorConfig(
         grid_tokens=16,
@@ -500,6 +503,9 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             "inner_selection_transitions": int(selection_mask.sum()),
             "all_train_transitions": int(train_mask.sum()),
             "external_validation_transitions": int(val_mask.sum()),
+            "external_validation_excluded_cross_split_image": int(
+                raw_val_mask.sum() - val_mask.sum()
+            ),
             "train_action_counts": {
                 str(key): value for key, value in sorted(Counter(actions[train_mask].tolist()).items())
             },

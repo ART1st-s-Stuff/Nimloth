@@ -6,12 +6,12 @@ import pytest
 from nimloth.eval.frozen_state_goal_probe import (
     aggregate_task_probe_features,
     goal_probe_gate,
-    parse_actual_task_identity,
+    parse_source_row_metadata,
 )
 
 
-def test_parse_actual_task_identity_uses_source_config_and_validates_seed() -> None:
-    identity = parse_actual_task_identity(
+def test_parse_source_row_metadata_is_diagnostic_and_validates_seed() -> None:
+    identity = parse_source_row_metadata(
         config_id=(
             "NavigationEnvConfig(eval_set=common_sense_train,"
             "render_mode=vision,max_actions_per_step=1)"
@@ -21,7 +21,7 @@ def test_parse_actual_task_identity_uses_source_config_and_validates_seed() -> N
     )
     assert identity == ("common_sense_train", 1082)
     with pytest.raises(ValueError, match="seed"):
-        parse_actual_task_identity(
+        parse_source_row_metadata(
             config_id="NavigationEnvConfig(eval_set=base_train)",
             migrated_seed=1,
             source_seed=2,
@@ -32,10 +32,12 @@ def test_aggregate_task_probe_features_averages_duplicate_task_rows() -> None:
     features = np.asarray([[1.0, 3.0], [3.0, 5.0], [9.0, 7.0]], dtype=np.float32)
     result = aggregate_task_probe_features(
         features=features,
-        task_keys=np.asarray(["base_train:1", "base_train:1", "base_train:2"]),
+        task_keys=np.asarray(["image1:Mug", "image1:Mug", "image2:Chair"]),
         labels=np.asarray(["Mug", "Mug", "Chair"]),
+        leakage_group_keys=np.asarray(["image1", "image1", "image2"]),
     )
-    assert result.task_keys.tolist() == ["base_train:1", "base_train:2"]
+    assert result.task_keys.tolist() == ["image1:Mug", "image2:Chair"]
+    assert result.leakage_group_keys.tolist() == ["image1", "image2"]
     np.testing.assert_allclose(result.features, [[2.0, 4.0], [9.0, 7.0]])
     assert result.labels.tolist() == ["Mug", "Chair"]
 
@@ -44,7 +46,7 @@ def test_aggregate_task_probe_features_rejects_inconsistent_goal() -> None:
     with pytest.raises(ValueError, match="multiple goal labels"):
         aggregate_task_probe_features(
             features=np.ones((2, 3), dtype=np.float32),
-            task_keys=np.asarray(["base_train:1", "base_train:1"]),
+            task_keys=np.asarray(["same-observation-task", "same-observation-task"]),
             labels=np.asarray(["Mug", "Chair"]),
         )
 

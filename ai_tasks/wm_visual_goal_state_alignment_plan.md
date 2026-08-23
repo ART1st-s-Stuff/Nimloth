@@ -242,12 +242,12 @@ ID59 Job`528906`在normal/dgx-10以`COMPLETED 0:0`、`00:13:23`完成。它使�
 - 固定SFT1 projector时，SFT1→部署ID176 actor validation state RMSE仅`0.018796`。
 - ID176+SFT1 projector的validation DINO RMSE/cosine为`0.846426/0.642177`，SFT1+SFT1为`0.846767/0.641844`；部署路径视觉非劣门禁通过。
 - 同一ID176 hidden换为ID74 projector时state drift RMSE=`0.885311`，DINO RMSE/cosine退化为`1.119524/0.402734`；ID58的projector/interface定位在部署actor上复现。
-- 目标标签来自exact instruction与source config实际asset中唯一`targetObjectType`的匹配，不使用迁移category或启发式标签。迁移category与实际source config在train `587/3211`、validation `67/355`行不一致。
+- 目标标签来自exact instruction到全局一致`targetObjectType`的匹配，不使用启发式标签。后续ID60 preflight确认source `config_id`/seed/UID也可能错绑trajectory row，因此ID59未恢复actual asset/task identity；train `587/3211`、validation `67/355`仅是迁移category与source config的分歧计数。
 - ID176+SFT1 flattened-K16目标检索top1/top5/MRR=`0.086455/0.288184/0.196890`，低于冻结DINO的`0.109510/0.371758/0.242340`；goal-above-DINO门禁失败。majority top1=`0.070423`。
 - 检索覆盖347条、20个gallery中已有的validation目标；8条`Footstool`因gallery无该目标而显式排除；exact-image candidate排除1个。
 - train自然same-image/different-goal pair的state RMSE均值`0.020433`，高于same-goal pair`0.003009`，但计数仅21对与4对且真实CoT同步变化，只能证明少量目标敏感性，不能覆盖检索失败。
 
-因此：SFT1 projector保留为视觉anchor候选，但完整visual-goal gate未通过。在更强的受控goal probe或counterfactual门禁前，不启动T1 residual WM。下一诊断应使用冻结state、显式图像/DINO和多数类基线、按真实source task划分的低容量goal readout；任何learned readout、projector校准或WM训练均需独立实验身份和授权。
+因此：SFT1 projector保留为视觉anchor候选，但完整visual-goal gate未通过。ID60使用冻结state、匹配图像/DINO和多数类基线训练低容量goal readout；由于row级task identity不可恢复，人类批准按exact image分组、去重和跨split排除的保守诊断，结果不得称为正式task-generalization。任何projector校准或后续WM训练仍需独立实验身份和授权。
 
 ### 阶段A：State projector gate
 
