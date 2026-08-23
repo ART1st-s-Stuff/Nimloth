@@ -26,6 +26,9 @@ def test_id58_runner_uses_fresh_output_and_explicit_server_python() -> None:
     assert "--max-step-index 3" in text
     assert "--batch-size 2" in text
     assert "--output-dir" in text
+    assert "RUN_WANDB_PROJECT=nimloth-recon" in text
+    assert '--wandb-project "${RUN_WANDB_PROJECT}"' in text
+    assert 'export WANDB_PROJECT="${RUN_WANDB_PROJECT}"' in text
     assert "training is forbidden" in text
     assert "mkdir \"${RUN_OUT}\"" in text
     assert "mkdir -p \"${RUN_OUT}\"" not in text
