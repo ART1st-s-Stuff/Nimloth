@@ -65,5 +65,5 @@ No goal probe is run because this archive has no validated goal labels or real m
 - Python: `/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3`.
 - W&B project: `nimloth-recon`.
 - W&B run name: `58_sft1id74_state_matrix_val96_early4_k16`; run ID `nimloth-recon-id58-sft1id74-state-matrix`; numeric ID 58 was confirmed unoccupied before launch.
-- Slurm: `normal`, one node, one GPU (H800), 16 CPUs, 96 GiB RAM, hard walltime `01:45:00`.
+- Slurm: `normal`, one node, one GPU (H800), 16 CPUs, 96 GiB RAM, hard walltime `01:45:00`; excludes `dgx-09,dgx-13,dgx-32,dgx-51`.
 - Source commit: recorded in the run-owned README from `EXPECTED_COMMIT`; production worktree must be clean and exactly match it.

@@ -2,6 +2,7 @@
 #SBATCH --job-name=nimloth-id58-sft-state-matrix
 #SBATCH --account=peilab
 #SBATCH --partition=normal
+#SBATCH --exclude=dgx-09,dgx-13,dgx-32,dgx-51
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
