@@ -1,6 +1,6 @@
 # ID56 — ID189 WM versus frozen ID45 CFM decoder diagnostic
 
-Status: ready for production submission
+Status: completed, validated and downloaded
 
 ## Question
 
@@ -66,3 +66,14 @@ Pixel L1 is averaged over four deterministic matched noise seeds. Frozen DINOv2-
 ## Human decision
 
 The human explicitly approved execution after reviewing this separation design: “可以，你来执行”.
+
+## Result
+
+- Job `528356` completed on `normal/dgx-10` in `00:33:48`, exit `0:0`, peak RSS about 2.28 GiB.
+- Validated all 120 rollouts and 1,742 nonterminal transitions, with all eight depth-1 actions, four matched CFM seeds and fixed DINO revision. Summary SHA256 `6ee5ee77d3f7ba1fa59a9ce64c896236487e21fa7fea6c0834f52d6be1329d19`.
+- W&B ID56 is finished, history step1. No optimizer, parameter update or checkpoint occurred.
+- Decoder oracle failed to improve over copy: `D(actual_next_state)` pixel L1 `0.35022` versus `D(current)` `0.35026` on the `[-1,1]` scale; DINO similarity `0.41717` versus copy `0.42183`. Exact actual-next state therefore does not recover the next image. Decoder/domain transfer is a major source of poor visualization.
+- WM prediction is also far from the actual next behavior-state: RMSE `0.52598` versus copy baseline `0.11923`; cosine `0.79370` versus copy `0.94248`; predicted beats copy on `0/1742`, also `0%` among the 950 transitions with copy RMSE >=0.1.
+- WM retains nontrivial signal: executed action is closest among eight depth-1 states on `46.67%` (chance `12.5%`, mean rank `1.83`); predicted beats copy against the frozen real-next DINO target on `100%`, RMSE `0.83801` versus `0.98837`.
+- Conclusion: both components contribute. The decoder is the direct reason oracle-state images remain poor; the WM captures action/visual semantics but its predicted states do not match the next behavior-state distribution, which is especially concerning for recursive K4 planning.
+- Local report: `nimloth-artifacts/id56_id189_wm_decoder_diagnostic/extracted/index.html`; payload SHA256 `d241222eebb90958a330e7855eb261d85a3660720fb7f1c21ac072576413e33b`.
