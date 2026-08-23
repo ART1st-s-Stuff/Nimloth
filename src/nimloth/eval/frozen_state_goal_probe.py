@@ -9,6 +9,7 @@ import json
 import os
 import re
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -168,12 +169,20 @@ def _source_rows(records: Sequence[dict[str, Any]]) -> dict[tuple[str, int], dic
     return result
 
 
+def _hash_paths(paths: Sequence[str | Path], *, workers: int = 16) -> dict[str, str]:
+    unique = sorted({str(Path(path).resolve()) for path in paths})
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        digests = executor.map(lambda path: _sha256(Path(path)), unique)
+        return dict(zip(unique, digests, strict=True))
+
+
 def _record_metadata(
     records: Sequence[dict[str, Any]],
     *,
     split: str,
     source_rows: dict[tuple[str, int], dict[str, Any]],
     instruction_goals: dict[str, str],
+    image_digests: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     result = []
     for record in records:
@@ -192,7 +201,11 @@ def _record_metadata(
                 f"record {record['id']!r} instruction has no globally unique target"
             ) from error
         initial_image = Path(record["image_paths"][0]).resolve()
-        image_digest = _sha256(initial_image)
+        image_digest = (
+            image_digests[str(initial_image)]
+            if image_digests is not None
+            else _sha256(initial_image)
+        )
         observed_task_key = hashlib.sha256(
             f"{image_digest}\0{instruction}".encode("utf-8")
         ).hexdigest()
@@ -506,17 +519,22 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     all_records = train_records + val_records
     source_rows = _source_rows(all_records)
     instruction_goals = build_global_instruction_goal_map(args.asset_root)
+    initial_image_digests = _hash_paths(
+        [record["image_paths"][0] for record in all_records]
+    )
     train_meta = _record_metadata(
         train_records,
         split="train",
         source_rows=source_rows,
         instruction_goals=instruction_goals,
+        image_digests=initial_image_digests,
     )
     val_meta = _record_metadata(
         val_records,
         split="val",
         source_rows=source_rows,
         instruction_goals=instruction_goals,
+        image_digests=initial_image_digests,
     )
     cross_split_initial_images = {
         row["initial_image_sha256"] for row in train_meta
@@ -542,12 +560,11 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     state_metadata = train_states + val_states
     transition_rows = train_transitions + val_transitions
     record_metadata = train_meta + val_meta
-    image_digest_cache: dict[str, str] = {}
+    image_digest_cache = _hash_paths([row["image_path"] for row in state_metadata])
     for row in state_metadata:
-        image_path = str(row["image_path"])
-        if image_path not in image_digest_cache:
-            image_digest_cache[image_path] = _sha256(Path(image_path))
-        row["image_sha256"] = image_digest_cache[image_path]
+        row["image_sha256"] = image_digest_cache[
+            str(Path(row["image_path"]).resolve())
+        ]
 
     device = torch.device("cuda:0")
     projector = load_sft1_slot_projector(
