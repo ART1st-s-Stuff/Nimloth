@@ -32,10 +32,10 @@ SFT1=${ROOT}/outputs/experiments/sft1_checkpoint_merge_fix/2026-07-24/3_k16_ep5_
 ID74=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-08-02/sft2/74_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16n3g844lw844_px100352/train_ws16/epoch_001
 VAL_JSONL=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-28/sft2/52_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga8_ws8_px100352/data/val_terminal_cot_migrated.jsonl
 DINO_CACHE=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-20/sft2/cache/k16_all3217_px100352_bf16_dino4x4_f32_b8659fe
-RUN_OUT=${ROOT}/outputs/experiments/evaluation/state_alignment/2026-08-23/58_sft1_id74_checkpoint_state_matrix_val96_early4_retry1
+RUN_OUT=${ROOT}/outputs/experiments/evaluation/state_alignment/2026-08-23/58_sft1_id74_checkpoint_state_matrix_val96_early4_retry2
 RUN_WANDB_PROJECT=nimloth-recon
-RUN_WANDB_NAME=58_sft1id74_state_matrix_val96_early4_k16_retry1
-RUN_WANDB_ID=nimloth-recon-id58-sft1id74-state-matrix-retry1
+RUN_WANDB_NAME=58_sft1id74_state_matrix_val96_early4_k16_retry2
+RUN_WANDB_ID=nimloth-recon-id58-sft1id74-state-matrix-retry2
 
 for path in \
   "${SFT1}/config.json" "${SFT1}/slot_projector.pt" \

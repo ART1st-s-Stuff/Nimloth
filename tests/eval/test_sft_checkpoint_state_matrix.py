@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from pathlib import Path
 
 import numpy as np
 
@@ -47,6 +48,15 @@ def test_select_early_transition_records_rejects_short_trajectories() -> None:
         assert "at least two actions" in str(error)
     else:  # pragma: no cover
         raise AssertionError("expected selection failure")
+
+
+def test_id58_ema_factory_uses_valid_checkpoint_decay() -> None:
+    source = (
+        Path(__file__).resolve().parents[2]
+        / "src/nimloth/eval/sft_checkpoint_state_matrix.py"
+    ).read_text(encoding="utf-8")
+    assert "decay=0.999" in source
+    assert "decay=0.0" not in source
 
 
 def test_combination_metrics_reports_copy_relative_and_value_calibration() -> None:

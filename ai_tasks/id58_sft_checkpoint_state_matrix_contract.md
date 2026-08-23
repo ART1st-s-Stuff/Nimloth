@@ -1,6 +1,6 @@
 # ID58 SFT1 / ID74 checkpoint state matrix contract
 
-Status: human authorized the read-only stage-0 diagnostic on `normal 1×H800`, with total execution capped below two hours. No training is authorized. Attempt0 Job`528778` was cancelled with human confirmation after a W&B project override; retry1 is the only valid result candidate.
+Status: human authorized the read-only stage-0 diagnostic on `normal 1×H800`, with total execution capped below two hours. No training is authorized. Attempt0 Job`528778` was cancelled after a W&B project override; retry1 Job`528804` failed on invalid EMA constructor decay before metrics; retry2 is the only valid result candidate.
 
 ## Purpose
 
@@ -55,8 +55,10 @@ No goal probe is run because this archive has no validated goal labels or real m
 - Forbidden: optimizer construction, backward, generation/replay of CoT, parameter updates, new model checkpoint, and resume.
 - Attempt0 output (failed, immutable):
   `/project/peilab/atst/nimloth/outputs/experiments/evaluation/state_alignment/2026-08-23/58_sft1_id74_checkpoint_state_matrix_val96_early4`.
-- Retry1 formal output is fresh and unique:
+- Retry1 output (failed, immutable):
   `/project/peilab/atst/nimloth/outputs/experiments/evaluation/state_alignment/2026-08-23/58_sft1_id74_checkpoint_state_matrix_val96_early4_retry1`.
+- Retry2 formal output is fresh and unique:
+  `/project/peilab/atst/nimloth/outputs/experiments/evaluation/state_alignment/2026-08-23/58_sft1_id74_checkpoint_state_matrix_val96_early4_retry2`.
 - Runner creates `RUN_OUT` exactly once and fails closed if it already exists.
 - Outputs: `README.md`, `result.json`, `summary.html`, float32 `matrix_states.npz`, hashes and W&B metadata.
 - Retry after any failure requires a fresh output directory and fresh W&B identity; failed output is never overwritten.
@@ -67,6 +69,7 @@ No goal probe is run because this archive has no validated goal labels or real m
 - Python: `/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3`.
 - W&B project: `nimloth-recon`.
 - Attempt0 incorrectly initialized in project `flower` because the shared env overwrote `WANDB_PROJECT`; Job`528778` was cancelled after `00:03:13`, before metrics, and is invalid.
-- Retry1 W&B project/name/ID: `nimloth-recon` / `58_sft1id74_state_matrix_val96_early4_k16_retry1` / `nimloth-recon-id58-sft1id74-state-matrix-retry1`. Locked `RUN_WANDB_*` values are reasserted after sourcing credentials.
+- Retry1 correctly used `nimloth-recon`, but Job`528804` failed after `00:02:43` because `decay=0.0` was rejected before the EMA checkpoint load; it produced no matrix metrics or audit payload.
+- Retry2 W&B project/name/ID: `nimloth-recon` / `58_sft1id74_state_matrix_val96_early4_k16_retry2` / `nimloth-recon-id58-sft1id74-state-matrix-retry2`. Locked `RUN_WANDB_*` values are reasserted after sourcing credentials; EMA construction uses valid checkpoint decay `0.999`.
 - Slurm: `normal`, one node, one GPU (H800), 16 CPUs, 96 GiB RAM, hard walltime `01:45:00`; excludes `dgx-09,dgx-13,dgx-32,dgx-51`.
 - Source commit: recorded in the run-owned README from `EXPECTED_COMMIT`; production worktree must be clean and exactly match it.

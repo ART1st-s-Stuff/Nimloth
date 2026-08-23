@@ -552,7 +552,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     id74_next_hidden = _encode(loaded_id74.backbone, next_batches, label="id74_online_next")
     vision_ema = build_vision_ema(
         enabled=True,
-        decay=0.0,
+        decay=0.999,
         llm=loaded_id74.backbone.model,
         resume_path=args.id74_checkpoint / "vision_ema.pt",
         device=device,
