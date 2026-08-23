@@ -69,7 +69,7 @@ cat >"${PROBE_OUT}/README.md" <<EOF
 
 - runtime commit: ${EXPECTED_COMMIT}
 - data: pre-RL ID52 train/validation; exact early steps 0--3 and persisted real CoT/terminal CoT
-- split: actual source config asset plus source/migrated seed agreement; train 1--1080, validation 1081--1200
+- split: archive-level pre-RL train/validation files; row-level config/seed task identity is unavailable; exact-image grouped inner split and cross-split exclusion
 - trainable: diagnostic linear state and matched DINO goal readouts only
 - frozen: ID176 actor/Qwen/vision, SFT1 SharedSlotProjector and DINO
 - output: immutable float32 state cache, diagnostic probe weights, result and summary

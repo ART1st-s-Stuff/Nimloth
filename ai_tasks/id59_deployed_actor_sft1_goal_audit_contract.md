@@ -18,14 +18,9 @@ Every state uses the archived observation and its actual recorded assistant resp
 
 ## Grounded goal labels
 
-The migrated archive's declared `data_source/eval_set` does not always match the actual source environment config. ID59 therefore:
+At ID59 execution time, the referenced source row's `NavigationEnvConfig(eval_set=...)` was treated as the actual asset, while migrated `data_source/eval_set` was treated as unreliable. Later ID60 CPU preflight found this was still insufficient: source `config_id`, seed and UID can themselves be bound to a different trajectory row (E0147).
 
-1. reads the referenced source JSONL row and parses its `NavigationEnvConfig(eval_set=...)`;
-2. extracts the exact archived `Human Instruction`;
-3. matches it against that actual asset;
-4. requires the instruction to map to exactly one `targetObjectType`.
-
-No heuristic or generated label is permitted. Declared-versus-actual mismatch counts are reported.
+The ID59 target labels remain usable only because each exact archived `Human Instruction` maps to one globally consistent `targetObjectType` across candidate train assets. ID59 did **not** recover row-level actual eval-set/task identity. Its 587/67 train/validation counts are migrated-versus-source-config disagreement counts, not known actual-category mismatch counts. No heuristic or generated target label is used.
 
 ## Metrics
 
@@ -58,7 +53,7 @@ The goal audit is diagnostic because the source archive's actual task-disjoint s
 - Replacing only the projector on ID176 hidden causes state RMSE `0.885311` and degrades DINO RMSE/cosine to `1.119524/0.402734`.
 - Grounded ID176+SFT1 flattened-K16 retrieval top1/top5/MRR is `0.086455/0.288184/0.196890`, below frozen DINO `0.109510/0.371758/0.242340`; the goal-above-DINO gate failed. Majority top1 is `0.070423`.
 - Retrieval evaluates 347 represented-label validation rows. Eight grounded `Footstool` rows are excluded and reported because no train-gallery row has that target. One exact-image candidate is excluded.
-- Declared category differs from actual source config for 587/3211 train and 67/355 validation rows. The grounded labels remain exact instruction→actual-asset mappings, but task-disjoint split identity is not trustworthy enough for a final learned-probe claim.
+- Migrated category differs from referenced source `config_id` for 587/3211 train and 67/355 validation rows. Later E0147 evidence shows neither side identifies the actual trajectory task reliably. Target labels remain exact instruction→globally consistent target mappings, while row-level task identity is unavailable.
 - Natural train same-image pairs show larger state change under different goals than same goals (`0.020433` vs `0.003009` RMSE), but sample counts are only 21 vs 4 and actual CoT also changes; this cannot override the failed retrieval gate.
 
 Decision: retain SFT1 projector as the visual anchor candidate, but do not start T1 residual-WM training. A stronger controlled goal probe/counterfactual gate is required first. Any learned diagnostic readout, projector calibration or WM training needs a separate authorization.
