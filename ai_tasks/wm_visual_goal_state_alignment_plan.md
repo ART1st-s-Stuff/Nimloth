@@ -12,7 +12,7 @@ State只保留规划需要的部分语义，重点包括：
 
 DINO是视觉teacher，用于把state拉向视觉相关的空间。WM只负责预测这个受约束state的动作条件变化，不负责还原完整Qwen hidden，也不应预测未知的未来CoT。
 
-任何CoT-conditioned policy state仍必须使用对应观察下实际生成的CoT；禁止fixed、canonical或placeholder CoT。可以另建observation/goal-grounded world state，但不得用伪造CoT替代真实policy state。
+State默认保持统一的视觉—目标语义表示，不预先划分visual state与semantic/goal state，也不按维度或token硬切分。任何CoT-conditioned state仍必须使用对应观察下实际生成的CoT；禁止fixed、canonical或placeholder CoT。WM不要求预测与规划无关的未来CoT表面变化，但不得用伪造CoT替代真实behavior-time state。
 
 ## 2. 当前证据及修订后的判断
 
@@ -64,35 +64,55 @@ DINO作为state约束的方向保留；需要修复的是state encoder、WM targ
 
 ## 4. 目标state定义
 
-建议概念上因子化：
+人类明确要求默认使用统一state：视觉、目标语义及其关系共同编码在同一个K16表示中。
 
 \[
-z_t=(z_t^{visual}, z_t^{goal})
+z_t=P(h_t)\in\mathbb{R}^{16\times1024}
 \]
 
-### 4.1 Visual部分
+禁止在缺乏确凿证据时把它预先拆成`visual state`和`goal/semantic state`，也不按slot或维度人为保留独立区域。DINO是统一state的视觉正则/teacher，并不定义state的全部内容。
 
-- 使用冻结DINO grid作为视觉teacher；
-- 保留16-slot空间结构；
-- state encoder应在真实current和next observation上直接接受视觉对齐监督；
-- 如果使用visual adapter `A_v`，其容量应受限，例如identity或低容量线性层，避免adapter独自吸收全部对齐而state本身不变。
+### 4.1 统一state监督
 
-### 4.2 Goal部分
+同一个`z_t`同时接受：
 
-DINO不包含完整任务目标，因此需要显式保留：
+- DINO视觉结构约束；
+- 目标语义和目标—观察关系约束；
+- dynamics、ValueHead/Q及必要的不变性约束。
 
-- episode内静态目标语义：可直接carry/copy，不要求WM重复预测；
-- 目标和当前观察之间的动态关系，例如可见性、相对方向或任务进度：由goal-relation head或WM预测；
-- ValueHead/Q同时读取visual和goal部分。
+允许为训练和诊断添加低容量readout，例如`A_v(z)`预测DINO、`A_g(z)`预测目标，但这些readout不是独立state分支。它们必须从相同完整K16 state读取，且容量受限，避免head独自吸收任务而state不包含相关信息。
 
-第一版可以保持外部`[16,1024]`合同不变，在内部维度、adapter或head层面因子化；是否改变state外部shape属于后续人类设计决策。
+视觉监督优先采用cosine、token/slot relational geometry或明确归一化后的损失，避免raw DINO MSE单独把state尺度拉到teacher尺度并覆盖目标语义。actual current、actual next和WM prediction必须使用同一readout、normalization和slot ordering。
+
+### 4.2 Goal语义
+
+DINO不提供目标语义，因此统一state还必须通过真实任务数据验证：
+
+- 能从state读取episode目标及目标类别；
+- 能区分同一或相近观察下的不同真实目标；
+- 能表示目标与当前观察的关系，例如可见性、相对位置或任务进度；
+- ValueHead/Q对目标变化具有正确敏感性。
+
+现有ID189 archive缺少validated goal labels和matched same-observation/different-goal pairs，因此不能用当前证据判断goal是否已被state保留，也不能据此主张拆分。
 
 ### 4.3 CoT边界
 
-- world state优先从observation-grounded特征和显式goal特征提取；
-- actual policy state仍保留本turn真实CoT；
-- 不要求WM预测下一turn未知CoT；
+- state继续是统一的视觉—目标语义表示；
+- CoT-conditioned state必须使用本turn真实CoT；
+- 不要求WM拟合与世界/目标无关的未来CoT表面随机性；
 - 若做CoT不变性约束，只能使用真实采样、真实记录且属于同一observation/goal的CoT，不得构造fixed thought。
+
+### 4.4 允许重新讨论拆分的证据门槛
+
+只有同时具备下列受控证据，才重新讨论visual/semantic factorization：
+
+1. **统一state强基线失败**：对称visual+goal监督、稳定target、充分容量和合理权重扫描后，统一state仍无法同时通过视觉、goal、dynamics和planning门禁；
+2. **可重复的优化冲突**：`L_visual`与`L_goal`在projector上的梯度长期显著负相关，且调权、归一化、容量增加或PCGrad等不改变Pareto冲突；
+3. **目标反事实失败**：在真实matched same-observation/different-goal数据上，统一state无法对goal变化敏感，同时保持视觉结构稳定；
+4. **匹配预算的factorized ablation获胜**：使用相同数据、参数量、训练算力和评估协议，拆分模型同时改善visual、goal、copy-relative dynamics及heldout planning，而非只改善其中一个指标；
+5. **跨seed复现**：上述收益在多个训练seed和Base/Common heldout上稳定存在。
+
+ID57只证明actual/predicted state接口错位，不满足这些拆分证据门槛。
 
 ## 5. 建议目标函数
 
@@ -107,11 +127,11 @@ z_t=P(h_t),\qquad d_t=DINO(o_t)
 \[
 L_{repr}=
 \lambda_v L_{visual}(A_v(z_t), d_t)
-+\lambda_g L_{goal}(z_t,g_t)
++\lambda_g L_{goal}(A_g(z_t),g_t)
 +\lambda_{inv}L_{irrelevant}
 \]
 
-其中`L_irrelevant`用于抑制与世界预测无关的语言表面变化；在没有合规真实对照数据时不启用。
+`A_v`和`A_g`只是同一统一state上的低容量监督/readout head，不创建独立视觉或语义state。actual current与actual next都应用相同`L_repr`。`L_irrelevant`用于抑制与世界预测无关的语言表面变化；在没有合规真实对照数据时不启用。
 
 ### 5.2 稳定target encoder
 
@@ -134,9 +154,10 @@ L_{repr}=
 \[
 L_{WM}=L_{state}(\hat z_{t+1},\bar z_{t+1})
 +\lambda_v L_{visual}(A_v(\hat z_{t+1}),d_{t+1})
++\lambda_g L_{goal}(A_g(\hat z_{t+1}),g_{t+1})
 \]
 
-actual state和predicted state必须共享同一个visual adapter、normalization、slot ordering和目标空间。
+actual state和predicted state必须共享同一个visual/goal readout、normalization、slot ordering和统一目标空间。WM预测完整统一state，不单独预测visual或goal分支。
 
 ## 6. 必须先完成的只读诊断
 
@@ -183,9 +204,9 @@ ID57 Job`528490`已在original-observation DINO teacher路径上完成前六项�
 
 ### 阶段A：State projector gate
 
-- 训练或校准visual/goal state encoder；
-- projector与DINO teacher尺度、slot和normalization一致；
-- 检查visual retrieval、goal probe和CoT/语言表面不变性；
+- 训练或校准统一的视觉—目标state encoder；
+- actual/predicted state共享同一visual/goal readout、slot和normalization；统一state本身不要求与raw DINO具有完全相同尺度；
+- 同时检查visual retrieval、goal probe和CoT/语言表面不变性，禁止只优化视觉指标；
 - gate通过后冻结projector，或创建EMA target projector。
 
 ### 阶段B：一步Residual WM
@@ -217,8 +238,8 @@ skill_d=1-\frac{MSE(\hat z_{t+d},z_{t+d})}
 
 ### Representation gate
 
-- actual state与canonical visual teacher的尺度、slot和分布一致；
-- goal probe显著优于不含目标的基线；
+- actual state经同一受限visual readout后稳定保留DINO视觉结构；
+- 同一个完整state上的goal probe显著优于不含目标的基线；
 - 同一observation/goal下，state不应主要由CoT措辞决定。
 
 ### One-step dynamics gate
