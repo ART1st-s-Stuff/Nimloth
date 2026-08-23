@@ -1,6 +1,6 @@
 # ID57 — ID189 actual/predicted state versus DINO alignment
 
-Status: prepared; read-only execution approved in principle, Slurm partition/resource confirmation still required before submission.
+Status: approved and preflighted; ready for read-only submission on confirmed `normal` 1×H800.
 
 ## Question
 
@@ -57,7 +57,7 @@ Goal-specific probing is explicitly unavailable in this run: the archived Browse
 - W&B project: `nimloth-recon`.
 - Run name: `57_id189source20_state_dino_alignment_all1742`.
 - W&B ID: `nimloth-recon-id57-id189source20-state-dino-alignment`.
-- Runtime commit must be inserted after implementation and preflight are committed.
+- The launcher requires exact `EXPECTED_COMMIT` equality and writes that runtime commit into the output README before final validation.
 
 ## Monitored outputs
 
@@ -71,4 +71,4 @@ Goal-specific probing is explicitly unavailable in this run: the archived Browse
 
 ## Human authorization
 
-The human authorized continuing the read-only comparison: “你可以继续进行只读比较”. This authorizes no training or model modification. Slurm partition and total GPU resource must still be explicitly confirmed before submission under the project experiment rules.
+The human authorized continuing the read-only comparison: “你可以继续进行只读比较”, then explicitly selected `Normal 1×H800（推荐）` after being shown the 5--15 minute estimate and frozen/no-checkpoint boundary. This authorizes no training or model modification.
