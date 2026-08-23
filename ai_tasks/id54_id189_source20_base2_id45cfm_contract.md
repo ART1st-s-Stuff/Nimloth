@@ -1,6 +1,6 @@
 # ID54 — ID189 source20 Base seed2 ID45 CFM guided-successor page
 
-Status: ready for production submission
+Status: completed and downloaded
 
 ## Purpose
 
@@ -52,3 +52,14 @@ Current/successor reconstructions use matched Gaussian noise, Euler50 and CFG2.
 ## Decision history
 
 The human initially approved a new pre-RL K16 CFM training run. Before launch, W&B and checkpoint inspection found the already-trained exact-shape ID45 checkpoint. The human then selected “先用现有ID45”; therefore the expensive retraining plan was not launched.
+
+## Result
+
+- First submission was rejected before allocation because the new script omitted the required `peilab` account; no output/W&B identity was consumed. Fixed in runtime commit `76b0fab1`; see E0143.
+- Job `528253` completed on `normal/dgx-14` in 45 seconds, exit `0:0`.
+- All 20 exact current/depth-1 successor state pairs passed archive/image SHA256, shape and finite gates.
+- Generated 20 matched-noise strips and one HTML page; no optimizer or checkpoint.
+- W&B ID54 is finished at history step0.
+- Remote page: `outputs/experiments/evaluation/reconstruction/2026-08-23/54_id189source20_base2_id45cfm_guidednext_euler50_cfg2/browser/index.html`.
+- Local downloaded page: `nimloth-artifacts/id54_id189_source20_base2_id45cfm_guidednext/browser/index.html`.
+- Preliminary 8-bit strip metrics: CFM current→real current L1 `0.12389`; CFM predicted successor→real next L1 `0.13839`; predicted/current CFM output L1 `0.04791`; predicted successor beats current reconstruction against real-next target on `3/20` turns. These are derived visual diagnostics, not policy metrics, and indicate substantial decoder/domain error.
