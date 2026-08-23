@@ -1,6 +1,6 @@
 # ID59 deployed actor + SFT1 projector visual/goal audit
 
-Status: human authorized a read-only `normal 1×H800` check, expected within 20 minutes. No training or checkpoint is authorized.
+Status: **completed**. Job `528906` ran read-only on `normal/dgx-10` with one H800, `COMPLETED 0:0`, elapsed `00:13:23`. No training or checkpoint occurred.
 
 ## Question
 
@@ -50,3 +50,17 @@ The goal audit is diagnostic because the source archive's actual task-disjoint s
 - W&B project/name/ID: `nimloth-recon` / `59_id176_sft1_goal_audit_train3211_val355_k16` / `nimloth-recon-id59-id176-sft1-goal-audit`.
 - Slurm: normal 1×H800, 16 CPUs, 128 GiB, hard walltime 30 minutes; excludes `dgx-09,dgx-13,dgx-32,dgx-51`.
 - Retry after failure requires fresh output, W&B identity and production worktree.
+
+## Result and decision
+
+- Runtime commit: `12fa3df3f06156fe24f4e330a2643eeeadfb9861`.
+- Fixed-SFT1-projector SFT1→ID176 state RMSE is `0.018796` on validation. ID176+SFT1 validation DINO RMSE/cosine is `0.846426/0.642177`, versus SFT1+SFT1 `0.846767/0.641844`; the visual non-inferiority gate passed.
+- Replacing only the projector on ID176 hidden causes state RMSE `0.885311` and degrades DINO RMSE/cosine to `1.119524/0.402734`.
+- Grounded ID176+SFT1 flattened-K16 retrieval top1/top5/MRR is `0.086455/0.288184/0.196890`, below frozen DINO `0.109510/0.371758/0.242340`; the goal-above-DINO gate failed. Majority top1 is `0.070423`.
+- Retrieval evaluates 347 represented-label validation rows. Eight grounded `Footstool` rows are excluded and reported because no train-gallery row has that target. One exact-image candidate is excluded.
+- Declared category differs from actual source config for 587/3211 train and 67/355 validation rows. The grounded labels remain exact instruction→actual-asset mappings, but task-disjoint split identity is not trustworthy enough for a final learned-probe claim.
+- Natural train same-image pairs show larger state change under different goals than same goals (`0.020433` vs `0.003009` RMSE), but sample counts are only 21 vs 4 and actual CoT also changes; this cannot override the failed retrieval gate.
+
+Decision: retain SFT1 projector as the visual anchor candidate, but do not start T1 residual-WM training. A stronger controlled goal probe/counterfactual gate is required first. Any learned diagnostic readout, projector calibration or WM training needs a separate authorization.
+
+Integrity: `result.json` SHA256 `9b821d0b09581e407ce80ae4871663b7a37823911ed1b92a8dd904270293d25e`; float32 NPZ SHA256 `32077f60e749d9b10fd8ff76d0bd2cdd2a290dafbfeb2b04f8413733e20c5bb3`. All eight arrays were re-opened and validated for exact shape, dtype and finiteness. W&B: `https://wandb.ai/art2nd-hong-kong-university-of-science-and-technology/nimloth-recon/runs/nimloth-recon-id59-id176-sft1-goal-audit`.

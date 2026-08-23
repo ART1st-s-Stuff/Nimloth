@@ -196,7 +196,7 @@ ID57 Job`528490`已在original-observation DINO teacher路径上完成前六项�
 
 因此当前优先级已确定为state projector/interface：actual projected state没有被充分锚定到视觉teacher，而WM prediction被直接DINO loss拉向另一分布。先对actual current/next projector state施加对称视觉/目标约束并建立frozen/EMA target，再优化WM深度。
 
-尚未完成的诊断为goal retention及ValueHead在actual/depth1--4 predicted state上的校准；现有archive没有validated goal labels或matched same-observation/different-goal pairs，禁止用启发式标签伪造goal probe。
+尚未完成的诊断为可靠goal retention gate及ValueHead在actual/depth1--4 predicted state上的校准。ID59已从实际source config asset为archive建立唯一instruction→`targetObjectType`标签并找到少量真实same-image/different-goal pairs；但迁移category与source config大量不一致，使原train/validation task-disjoint语义不再足够可信，且当前无充分规模的matched counterfactual。禁止用启发式标签或把当前kNN结果冒充最终goal probe。
 
 ## 7. 执行阶段
 
@@ -234,6 +234,20 @@ ID58 retry2 Job`528812`在normal/dgx-27以`COMPLETED 0:0`、`00:02:56`完成。9
 - online和vision-EMA在本样本上的projected state完全相同。权重侧审计显示390个BF16 vision tensor中282个不同，但parameter RMSE仅`1.3149e-6`、max abs`2.1267e-4`，在当前BF16 forward中量化为相同state；当前EMA sidecar没有形成可测的state target差异。
 
 因此：SFT1 projector可作为**视觉**anchor，暂不重训SFT1；但在有效goal probe前不能宣称其完整统一visual-goal state已经健康。优先修SFT2 projector/interface，并用每个主要action的copy-relative skill门禁T1 canary，禁止只看aggregate skill。
+
+#### ID59部署actor与grounded-goal结果
+
+ID59 Job`528906`在normal/dgx-10以`COMPLETED 0:0`、`00:13:23`完成。它使用全部3,211条pre-RL train首状态作为gallery、355条validation首状态作为query，所有CoT均为对应归档observation下的真实assistant response；没有生成、optimizer、更新或checkpoint。
+
+- 固定SFT1 projector时，SFT1→部署ID176 actor validation state RMSE仅`0.018796`。
+- ID176+SFT1 projector的validation DINO RMSE/cosine为`0.846426/0.642177`，SFT1+SFT1为`0.846767/0.641844`；部署路径视觉非劣门禁通过。
+- 同一ID176 hidden换为ID74 projector时state drift RMSE=`0.885311`，DINO RMSE/cosine退化为`1.119524/0.402734`；ID58的projector/interface定位在部署actor上复现。
+- 目标标签来自exact instruction与source config实际asset中唯一`targetObjectType`的匹配，不使用迁移category或启发式标签。迁移category与实际source config在train `587/3211`、validation `67/355`行不一致。
+- ID176+SFT1 flattened-K16目标检索top1/top5/MRR=`0.086455/0.288184/0.196890`，低于冻结DINO的`0.109510/0.371758/0.242340`；goal-above-DINO门禁失败。majority top1=`0.070423`。
+- 检索覆盖347条、20个gallery中已有的validation目标；8条`Footstool`因gallery无该目标而显式排除；exact-image candidate排除1个。
+- train自然same-image/different-goal pair的state RMSE均值`0.020433`，高于same-goal pair`0.003009`，但计数仅21对与4对且真实CoT同步变化，只能证明少量目标敏感性，不能覆盖检索失败。
+
+因此：SFT1 projector保留为视觉anchor候选，但完整visual-goal gate未通过。在更强的受控goal probe或counterfactual门禁前，不启动T1 residual WM。下一诊断应使用冻结state、显式图像/DINO和多数类基线、按真实source task划分的低容量goal readout；任何learned readout、projector校准或WM训练均需独立实验身份和授权。
 
 ### 阶段A：State projector gate
 
@@ -304,7 +318,7 @@ skill_d=1-\frac{MSE(\hat z_{t+d},z_{t+d})}
 ## 10. 推荐执行顺序
 
 1. 阶段0的SFT1/SFT2 checkpoint只读矩阵已完成：主要故障定位到SFT2 projector/interface，backbone drift很小，当前EMA没有可测state差异；
-2. 在有validated goal labels或真实matched counterfactual后补齐goal probe；当前禁止伪造标签；
+2. ID59已完成部署ID176 actor+SFT1 projector视觉确认和grounded target-object kNN；视觉通过但goal-above-DINO失败。下一步是在不改backbone/projector的前提下，使用可靠source split和匹配基线完成低容量goal readout及更充分真实counterfactual门禁；
 3. 完成ValueHead在actual及depth1--4 predicted state上的校准审计；阶段0先覆盖同一pre-RL样本上的depth1；
 4. 根据诊断确定主要故障在projector、WM、slot/normalization还是ValueHead；
 5. 建立canonical visual-goal state合同；
