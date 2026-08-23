@@ -206,7 +206,7 @@ ID57 Job`528490`已在original-observation DINO teacher路径上完成前六项�
 
 目的：在任何重训前隔离backbone/vision drift、projector drift及ID74 online/vision-EMA安装差异。
 
-- 数据：ID74使用的pre-RL validation JSONL；Base/Common/Long Horizon各确定性选择32条至少有两个动作的step0 transition，共96条；使用记录中的真实CoT和original observation。
+- 数据：ID74使用的pre-RL validation JSONL；Base/Common/Long Horizon各确定性选择32条step0--3 early transition，共96条且每条trajectory至多选择一次；每条都有exact next decision state，使用记录中的真实CoT和original observation。初始preflight发现全部step0动作都是action0，因此改为early-step action round-robin，避免把一步WM/Q诊断退化为单动作审计。
 - checkpoint组合：
   1. SFT1 backbone/vision + SFT1 projector；
   2. SFT1 backbone/vision + ID74 projector；

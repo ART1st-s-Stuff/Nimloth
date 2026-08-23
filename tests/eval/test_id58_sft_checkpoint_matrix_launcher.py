@@ -22,6 +22,7 @@ def test_id58_runner_uses_fresh_output_and_explicit_server_python() -> None:
     assert "VAGEN_ROLLOUT_BROWSER" not in text
     assert "sft_checkpoint_state_matrix" in text
     assert "--samples-per-source 32" in text
+    assert "--max-step-index 3" in text
     assert "--batch-size 2" in text
     assert "--output-dir" in text
     assert "training is forbidden" in text

@@ -32,54 +32,67 @@ def _stable_key(record: dict[str, Any]) -> str:
     return hashlib.sha256(str(record["id"]).encode("utf-8")).hexdigest()
 
 
-def select_step0_records(
+def select_early_transition_records(
     records: Sequence[dict[str, Any]],
     *,
     per_source: int,
+    max_step_index: int = 3,
     expected_sources: Sequence[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Select deterministic, source-balanced records with action diversity.
+    """Select deterministic, source-balanced early transitions.
 
-    Every selected trajectory has a real next decision state (at least two
-    actions). Within each source, candidates are consumed round-robin by the
-    first executed action after stable hash ordering.
+    Every selected transition has an exact following decision state/action.
+    Within each source, candidates from steps 0..``max_step_index`` are
+    consumed round-robin by executed action after stable hash ordering. At
+    most one transition is selected per trajectory.
     """
 
     if per_source < 1:
         raise ValueError("per_source must be positive")
+    if max_step_index < 0:
+        raise ValueError("max_step_index must be nonnegative")
     eligible = [row for row in records if len(row.get("action_indices", ())) >= 2]
     if not eligible:
         raise ValueError("selection requires trajectories with at least two actions")
     sources = tuple(expected_sources or sorted({str(row["data_source"]) for row in eligible}))
     selected: list[dict[str, Any]] = []
     for source in sources:
-        by_action: dict[int, list[dict[str, Any]]] = defaultdict(list)
-        for row in eligible:
-            if str(row.get("data_source")) == source:
-                by_action[int(row["action_indices"][0])].append(row)
-        for candidates in by_action.values():
-            candidates.sort(key=_stable_key)
-        if sum(len(rows) for rows in by_action.values()) < per_source:
+        source_records = [row for row in eligible if str(row.get("data_source")) == source]
+        if len(source_records) < per_source:
             raise ValueError(
                 f"source {source!r} has fewer than {per_source} trajectories "
                 "with at least two actions"
             )
+        by_action: dict[int, list[tuple[dict[str, Any], int]]] = defaultdict(list)
+        for row in source_records:
+            actions = list(row["action_indices"])
+            for step_index in range(min(max_step_index + 1, len(actions) - 1)):
+                by_action[int(actions[step_index])].append((row, step_index))
+        for candidates in by_action.values():
+            candidates.sort(key=lambda item: (_stable_key(item[0]), item[1]))
         source_selected: list[dict[str, Any]] = []
+        used_records: set[str] = set()
         action_ids = sorted(by_action)
         offsets = {action_id: 0 for action_id in action_ids}
         while len(source_selected) < per_source:
             progressed = False
             for action_id in action_ids:
-                offset = offsets[action_id]
                 candidates = by_action[action_id]
-                if offset >= len(candidates):
-                    continue
-                source_selected.append(candidates[offset])
-                offsets[action_id] += 1
-                progressed = True
+                while offsets[action_id] < len(candidates):
+                    row, step_index = candidates[offsets[action_id]]
+                    offsets[action_id] += 1
+                    record_id = str(row["id"])
+                    if record_id in used_records:
+                        continue
+                    selected_row = dict(row)
+                    selected_row["_selected_step_index"] = int(step_index)
+                    source_selected.append(selected_row)
+                    used_records.add(record_id)
+                    progressed = True
+                    break
                 if len(source_selected) == per_source:
                     break
-            if not progressed:  # pragma: no cover - protected by count check
+            if not progressed:  # pragma: no cover - protected by source count
                 raise RuntimeError(f"selection stalled for source {source!r}")
         selected.extend(source_selected)
     return selected
@@ -409,7 +422,7 @@ def _render_html(result: dict[str, Any]) -> str:
 <style>body{{font-family:system-ui;margin:20px;background:#f5f7fa;color:#17202a}}table{{border-collapse:collapse;background:white;font-size:12px}}th,td{{padding:6px;border:1px solid #ccd;text-align:right}}th:first-child,td:first-child{{text-align:left;white-space:nowrap}}.warn{{background:#fff4d6;padding:12px}}</style></head><body>
 <h1>ID58 SFT1 / ID74 checkpoint state matrix</h1>
 <p class=\"warn\">Read-only pre-RL validation diagnostic. ID74 WM and ValueHead on non-ID74 cells measure cross-component compatibility only. No validated goal labels were available, so no goal probe or counterfactual claim is included.</p>
-<p>Samples: {result['sample_count']} ({html.escape(str(result['source_counts']))}); git <code>{html.escape(result['git_commit'])}</code>.</p>
+<p>Samples: {result['sample_count']}; sources {html.escape(str(result['source_counts']))}; actions {html.escape(str(result['action_counts']))}; steps {html.escape(str(result['step_counts']))}; git <code>{html.escape(result['git_commit'])}</code>.</p>
 <h2>Overall matrix</h2><table><tr><th>combination</th>{head}</tr>{rows}</table>
 <h2>Selected state drift</h2><table><tr><th>comparison</th><th>RMSE</th></tr>{drift_rows}</table>
 <p>Full per-source/per-action metrics, sample identities, checkpoint hashes, and raw float32 tensors are in <code>result.json</code> and <code>matrix_states.npz</code>.</p>
@@ -437,6 +450,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--id74-checkpoint", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--samples-per-source", type=int, default=32)
+    parser.add_argument("--max-step-index", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--max-length", type=int, default=12000)
     parser.add_argument("--max-pixels", type=int, default=100352)
@@ -474,30 +488,31 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             raise FileExistsError(f"fresh output directory contains unexpected files: {sorted(unexpected)}")
 
     records = _read_jsonl(args.val_jsonl)
-    selected_records = select_step0_records(
+    selected_records = select_early_transition_records(
         records,
         per_source=args.samples_per_source,
+        max_step_index=args.max_step_index,
         expected_sources=DEFAULT_SOURCES,
     )
     samples = []
-    next_samples = []
     metadata = []
     for record in selected_records:
         transitions = expand_record_transitions(record)
-        samples.append(transitions[0])
-        next_samples.append(transitions[1])
+        step_index = int(record["_selected_step_index"])
+        samples.append(transitions[step_index])
         metadata.append(
             {
                 "record_id": str(record["id"]),
                 "data_source": str(record["data_source"]),
                 "seed": int(record["env_seed"]),
                 "success": bool(record["success"]),
-                "current_action": int(transitions[0].action_index),
-                "next_action": int(transitions[1].action_index),
-                "current_return": float(transitions[0].action_value_target),
-                "next_return": float(transitions[1].action_value_target),
-                "current_image_path": str(transitions[0].current_image_path),
-                "next_image_path": str(transitions[0].next_image_path),
+                "step_index": step_index,
+                "current_action": int(transitions[step_index].action_index),
+                "next_action": int(transitions[step_index + 1].action_index),
+                "current_return": float(transitions[step_index].action_value_target),
+                "next_return": float(transitions[step_index + 1].action_value_target),
+                "current_image_path": str(transitions[step_index].current_image_path),
+                "next_image_path": str(transitions[step_index].next_image_path),
             }
         )
 
@@ -691,11 +706,21 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     }
 
     source_counts = {source: int(np.sum(sources == source)) for source in DEFAULT_SOURCES}
+    action_counts = {
+        str(action): int(np.sum(current_actions == action))
+        for action in sorted(set(current_actions.tolist()))
+    }
+    step_counts = {
+        str(step): sum(int(row["step_index"]) == step for row in metadata)
+        for step in sorted({int(row["step_index"]) for row in metadata})
+    }
     result: dict[str, Any] = {
         "schema": "nimloth_sft_checkpoint_state_matrix_v1",
         "read_only": True,
         "sample_count": len(samples),
         "source_counts": source_counts,
+        "action_counts": action_counts,
+        "step_counts": step_counts,
         "selection": metadata,
         "combinations": combinations,
         "state_drift_rmse": state_drift,
@@ -761,6 +786,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             config={
                 "read_only": True,
                 "samples_per_source": args.samples_per_source,
+                "max_step_index": args.max_step_index,
                 "batch_size": args.batch_size,
                 "sft1_checkpoint": str(args.sft1_checkpoint),
                 "id74_checkpoint": str(args.id74_checkpoint),
