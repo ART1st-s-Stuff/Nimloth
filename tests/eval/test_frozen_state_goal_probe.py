@@ -4,6 +4,9 @@ import numpy as np
 import pytest
 
 from nimloth.eval.frozen_state_goal_probe import (
+    _classification_metrics,
+    _fit_linear_probe,
+    _train_final_probe,
     aggregate_task_probe_features,
     goal_probe_gate,
     parse_source_row_metadata,
@@ -71,3 +74,32 @@ def test_goal_probe_gate_requires_state_to_beat_visual_baseline() -> None:
     )
     assert failing["passed"] is False
     assert failing["micro_margin"] is False
+
+
+def test_linear_probe_fits_explicit_goal_signal() -> None:
+    torch = pytest.importorskip("torch")
+    labels = np.repeat(np.arange(3, dtype=np.int64), 12)
+    features = np.eye(3, dtype=np.float32)[labels]
+    fit = np.tile(np.arange(12) < 8, 3)
+    selected_epochs = _fit_linear_probe(
+        features[fit],
+        labels[fit],
+        features[~fit],
+        labels[~fit],
+        class_count=3,
+        device=torch.device("cpu"),
+        seed=7,
+        max_epochs=100,
+        patience=20,
+    )
+    logits, _ = _train_final_probe(
+        features,
+        labels,
+        features,
+        class_count=3,
+        device=torch.device("cpu"),
+        seed=7,
+        epochs=selected_epochs,
+    )
+    metrics, _ = _classification_metrics(logits, labels, ["a", "b", "c"])
+    assert metrics["micro_top1"] == 1.0
