@@ -166,7 +166,7 @@ def _render_html(record: dict[str, Any], rows: list[dict[str, Any]]) -> str:
 {''.join(cards)}</body></html>"""
 
 
-def render_guided_successor_page(
+def render_guided_successor_page_with_model(
     *,
     rollout_path: Path,
     checkpoint: Path,
@@ -175,12 +175,15 @@ def render_guided_successor_page(
     cfg_scale: float,
     seed: int,
     chunk_size: int,
-    device: torch.device,
+    model: TokenConditionedFlowUNet,
+    checkpoint_payload: dict[str, Any],
 ) -> dict[str, Any]:
+    """Render one rollout while reusing an already-loaded frozen CFM."""
+
     if output_dir.exists():
         raise FileExistsError(f"derived output already exists: {output_dir}")
     record, turns = load_guided_turn_states(rollout_path)
-    model, checkpoint_payload = _load_cfm(checkpoint, device)
+    device = next(model.parameters()).device
     conditions = []
     for turn in turns:
         conditions.extend(
@@ -262,6 +265,33 @@ def render_guided_successor_page(
         shutil.rmtree(temporary, ignore_errors=True)
         raise
     return metadata
+
+
+def render_guided_successor_page(
+    *,
+    rollout_path: Path,
+    checkpoint: Path,
+    output_dir: Path,
+    steps: int,
+    cfg_scale: float,
+    seed: int,
+    chunk_size: int,
+    device: torch.device,
+) -> dict[str, Any]:
+    """Load the frozen CFM once and render one rollout."""
+
+    model, checkpoint_payload = _load_cfm(checkpoint, device)
+    return render_guided_successor_page_with_model(
+        rollout_path=rollout_path,
+        checkpoint=checkpoint,
+        output_dir=output_dir,
+        steps=steps,
+        cfg_scale=cfg_scale,
+        seed=seed,
+        chunk_size=chunk_size,
+        model=model,
+        checkpoint_payload=checkpoint_payload,
+    )
 
 
 def _upload_wandb(
