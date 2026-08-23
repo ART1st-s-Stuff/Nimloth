@@ -11,6 +11,7 @@ def test_id54_is_frozen_pre_rl_cfm_derived_browser() -> None:
     slurm = SLURM.read_text()
     runner = RUNNER.read_text()
     contract = CONTRACT.read_text()
+    assert "#SBATCH --account=peilab" in slurm
     assert "#SBATCH --partition=normal" in slurm
     assert "#SBATCH --gres=gpu:1" in slurm
     assert "#SBATCH --time=00:30:00" in slurm
