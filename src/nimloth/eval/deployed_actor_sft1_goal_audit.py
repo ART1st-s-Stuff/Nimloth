@@ -349,33 +349,44 @@ def _goal_metrics(
     val_labels = np.asarray([row["target_object_type"] for row in val_meta])
     train_hashes = np.asarray([row["image_sha256"] for row in train_meta])
     val_hashes = np.asarray([row["image_sha256"] for row in val_meta])
-    if not set(val_labels).issubset(set(train_labels)):
-        raise ValueError("validation goal labels must all occur in training gallery")
+    seen_mask = np.isin(val_labels, np.unique(train_labels))
+    unseen_labels = sorted(set(val_labels[~seen_mask].tolist()))
+    if not np.any(seen_mask):
+        raise ValueError("validation has no goal label represented in the train gallery")
+    seen_labels = val_labels[seen_mask]
+    seen_hashes = val_hashes[seen_mask]
+    seen_val_state = val_state[seen_mask]
+    seen_val_dino = val_dino[seen_mask]
 
     representations = {
-        "slot_mean": (train_state.mean(axis=1), val_state.mean(axis=1)),
-        "slot_flattened": (train_state.reshape(len(train_state), -1), val_state.reshape(len(val_state), -1)),
+        "slot_mean": (train_state.mean(axis=1), seen_val_state.mean(axis=1)),
+        "slot_flattened": (
+            train_state.reshape(len(train_state), -1),
+            seen_val_state.reshape(len(seen_val_state), -1),
+        ),
     }
     result = {
         name: goal_retrieval_metrics(
             gallery_embeddings=gallery,
             query_embeddings=query,
             gallery_labels=train_labels,
-            query_labels=val_labels,
+            query_labels=seen_labels,
             gallery_image_sha256=train_hashes,
-            query_image_sha256=val_hashes,
+            query_image_sha256=seen_hashes,
         )
         for name, (gallery, query) in representations.items()
     }
+    result["unseen_query_count"] = int((~seen_mask).sum())
+    result["unseen_query_labels"] = unseen_labels
     result["visual_controlled_top1_accuracy"] = _visual_controlled_accuracy(
         state_gallery=representations["slot_flattened"][0],
         state_query=representations["slot_flattened"][1],
         dino_gallery=train_dino.reshape(len(train_dino), -1),
-        dino_query=val_dino.reshape(len(val_dino), -1),
+        dino_query=seen_val_dino.reshape(len(seen_val_dino), -1),
         gallery_labels=train_labels,
-        query_labels=val_labels,
+        query_labels=seen_labels,
         gallery_hashes=train_hashes,
-        query_hashes=val_hashes,
+        query_hashes=seen_hashes,
     )
     return result
 

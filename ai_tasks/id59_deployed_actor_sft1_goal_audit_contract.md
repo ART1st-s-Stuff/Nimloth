@@ -32,7 +32,7 @@ No heuristic or generated label is permitted. Declared-versus-actual mismatch co
 For three states—SFT1+SFT1 projector, ID176+SFT1 projector, and ID176+ID74 projector:
 
 - validation state/DINO RMSE, cosine, token-centered cosine and scale;
-- target-object retrieval from the 3,211-row train gallery to 355 validation queries using slot-mean and flattened-K16 cosine;
+- target-object retrieval from the 3,211-row train gallery to validation queries using slot-mean and flattened-K16 cosine; queries whose grounded target type is absent from the gallery are excluded and reported explicitly;
 - top1, top5, MRR and macro-top1;
 - exact-image train candidates are excluded;
 - a visual-controlled retrieval metric first restricts candidates to 64 DINO-nearest train images;
