@@ -25,6 +25,7 @@ RL 只在真实 rollout 时用独立的 planning horizon 自回归预测多个�
 | `evaluate.py` | validation 与分布式指标聚合 |
 | `reporting.py` | CSV、W&B 与 epoch 摘要 |
 | `checkpoint.py` | SFT2 artifact、恢复状态与保存触发策略 |
+| `residual_t1_canary.py` | 在冻结canonical state cache上训练严格copy初始化的一步Residual WM，并执行per-action门禁 |
 | `mcts_evaluation.py` | pre-RL MCTS评估所需的完整checkpoint、H/K和value语义门禁 |
 | `diagnosis/` | 不进入生产训练的 packed/KV 等价性诊断 |
 
