@@ -1,6 +1,6 @@
 # ID56 — ID189 WM versus frozen ID45 CFM decoder diagnostic
 
-Status: implementation/preflight
+Status: ready for production submission
 
 ## Question
 
@@ -54,7 +54,7 @@ Pixel L1 is averaged over four deterministic matched noise seeds. Frozen DINOv2-
 - Euler50, CFG2, CFM chunk4, four matched noise seeds.
 - Output: `outputs/experiments/evaluation/reconstruction/2026-08-23/56_id189source20_wm_vs_id45cfm_oraclenext_all1742_s4_euler50_cfg2`.
 - W&B project `nimloth-recon`, ID `nimloth-recon-id56-id189source20-wm-vs-id45cfm-oraclenext`.
-- Runtime commit: pending implementation commit.
+- Runtime commit: `d5c42a68f61b354d803e73c9a099530fa6e88391`.
 
 ## Interpretation
 
