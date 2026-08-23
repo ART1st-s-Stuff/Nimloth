@@ -27,6 +27,7 @@ class GuidedTurnState:
     action_name: str
     current_state: np.ndarray
     successor_state: np.ndarray
+    depth1_states: dict[int, np.ndarray]
     current_image: Path
     next_image: Path
     turn_record: dict[str, Any]
@@ -75,13 +76,14 @@ def load_guided_turn_states(
             raise ValueError("ID189 CFM input states must be finite")
         action = turn["executed_action"]
         action_id = int(action["id"])
-        candidates = [
+        depth1_nodes = [
             node
             for node in turn["planner"]["mcts_process"]["tree_nodes"]
             if int(node["depth"]) == 1
-            and node["sequence"] == [action_id]
+            and len(node["sequence"]) == 1
             and node["state_index"] is not None
         ]
+        candidates = [node for node in depth1_nodes if node["sequence"] == [action_id]]
         if len(candidates) != 1:
             raise ValueError(
                 f"turn {turn_index} has {len(candidates)} executed depth-1 successors"
@@ -89,6 +91,15 @@ def load_guided_turn_states(
         state_index = int(candidates[0]["state_index"])
         if not 0 <= state_index < predicted.shape[0]:
             raise ValueError(f"turn {turn_index} successor state_index is out of range")
+        depth1_states: dict[int, np.ndarray] = {}
+        for node in depth1_nodes:
+            node_action = int(node["sequence"][0])
+            node_state_index = int(node["state_index"])
+            if node_action in depth1_states:
+                raise ValueError(f"turn {turn_index} has duplicate depth-1 action {node_action}")
+            if not 0 <= node_state_index < predicted.shape[0]:
+                raise ValueError(f"turn {turn_index} depth-1 state_index is out of range")
+            depth1_states[node_action] = predicted[node_state_index].copy()
         current_image = _checked_image(rollout_dir, turn["observation"])
         if position + 1 < len(record["turns"]):
             next_payload = record["turns"][position + 1]["observation"]
@@ -102,6 +113,7 @@ def load_guided_turn_states(
                 action_name=str(action["name"]),
                 current_state=current,
                 successor_state=predicted[state_index].copy(),
+                depth1_states=depth1_states,
                 current_image=current_image,
                 next_image=next_image,
                 turn_record=turn,
