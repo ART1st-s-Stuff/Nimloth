@@ -6,7 +6,7 @@ import numpy as np
 
 from nimloth.eval.sft_checkpoint_state_matrix import (
     combination_metrics,
-    select_step0_records,
+    select_early_transition_records,
 )
 
 
@@ -19,15 +19,15 @@ def _record(source: str, index: int, action: int, *, steps: int = 2) -> dict:
     }
 
 
-def test_select_step0_records_is_deterministic_and_source_balanced() -> None:
+def test_select_early_transition_records_is_deterministic_and_source_balanced() -> None:
     records = [
         _record(source, index, index % 2)
         for source in ("base", "common", "long")
         for index in range(6)
     ]
 
-    selected = select_step0_records(records, per_source=4)
-    repeated = select_step0_records(list(reversed(records)), per_source=4)
+    selected = select_early_transition_records(records, per_source=4)
+    repeated = select_early_transition_records(list(reversed(records)), per_source=4)
 
     assert [row["id"] for row in selected] == [row["id"] for row in repeated]
     assert Counter(row["data_source"] for row in selected) == {
@@ -39,10 +39,10 @@ def test_select_step0_records_is_deterministic_and_source_balanced() -> None:
         assert {row["action_indices"][0] for row in selected if row["data_source"] == source} == {0, 1}
 
 
-def test_select_step0_records_rejects_short_trajectories_and_missing_source() -> None:
+def test_select_early_transition_records_rejects_short_trajectories() -> None:
     records = [_record("base", index, 0, steps=1) for index in range(3)]
     try:
-        select_step0_records(records, per_source=1)
+        select_early_transition_records(records, per_source=1)
     except ValueError as error:
         assert "at least two actions" in str(error)
     else:  # pragma: no cover
