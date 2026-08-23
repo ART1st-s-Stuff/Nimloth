@@ -556,7 +556,8 @@ class ResidualTemporalSpatialGridPredictor(nn.Module):
                 {
                     "schema": "nimloth_residual_temporal_spatial_grid_v1",
                     "predictor": asdict(self.config),
-                    "delta_head_zero_initialized": True,
+                    "delta_head_initialization": "zeros",
+                    "prediction_form": "input_state_plus_delta",
                 },
                 indent=2,
                 sort_keys=True,
