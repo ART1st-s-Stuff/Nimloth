@@ -32,10 +32,10 @@ SFT1=${ROOT}/outputs/experiments/sft1_checkpoint_merge_fix/2026-07-24/3_k16_ep5_
 ID74=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-08-02/sft2/74_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16n3g844lw844_px100352/train_ws16/epoch_001
 VAL_JSONL=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-28/sft2/52_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga8_ws8_px100352/data/val_terminal_cot_migrated.jsonl
 DINO_CACHE=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-20/sft2/cache/k16_all3217_px100352_bf16_dino4x4_f32_b8659fe
-RUN_OUT=${ROOT}/outputs/experiments/evaluation/state_alignment/2026-08-23/58_sft1_id74_checkpoint_state_matrix_val96_early4
-WANDB_PROJECT=nimloth-recon
-WANDB_RUN_NAME=58_sft1id74_state_matrix_val96_early4_k16
-WANDB_RUN_ID=nimloth-recon-id58-sft1id74-state-matrix
+RUN_OUT=${ROOT}/outputs/experiments/evaluation/state_alignment/2026-08-23/58_sft1_id74_checkpoint_state_matrix_val96_early4_retry1
+RUN_WANDB_PROJECT=nimloth-recon
+RUN_WANDB_NAME=58_sft1id74_state_matrix_val96_early4_k16_retry1
+RUN_WANDB_ID=nimloth-recon-id58-sft1id74-state-matrix-retry1
 
 for path in \
   "${SFT1}/config.json" "${SFT1}/slot_projector.pt" \
@@ -51,8 +51,8 @@ cat >"${RUN_OUT}/README.md" <<EOF
 
 - purpose: read-only isolation of backbone/vision, projector, and ID74 vision-EMA drift
 - git commit: ${EXPECTED_COMMIT}
-- W&B project: ${WANDB_PROJECT}
-- W&B run: ${WANDB_RUN_NAME} (${WANDB_RUN_ID})
+- W&B project: ${RUN_WANDB_PROJECT}
+- W&B run: ${RUN_WANDB_NAME} (${RUN_WANDB_ID})
 - data: ID74 pre-RL validation JSONL; deterministic early-step (0--3) transitions, 32 each from Base/Common/Long Horizon, at most one transition per trajectory
 - checkpoint matrix: SFT1 and ID74-online/EMA backbones crossed with SFT1 and ID74 projectors
 - downstream readouts: frozen ID74 one-step WM and ValueHead; cross-component cells are compatibility diagnostics only
@@ -65,6 +65,11 @@ EOF
 set -a
 source /project/peilab/atst/flower/.env
 set +a
+# Shared credentials may define generic WANDB_* defaults. Reassert the
+# run-owned identity after sourcing and pass locked RUN_WANDB_* values below.
+export WANDB_PROJECT="${RUN_WANDB_PROJECT}"
+export WANDB_NAME="${RUN_WANDB_NAME}"
+export WANDB_RUN_ID="${RUN_WANDB_ID}"
 export WANDB_ENTITY=art2nd-hong-kong-university-of-science-and-technology
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPATH="${REPO}/src:${PYTHONPATH:-}"
@@ -87,6 +92,6 @@ exec "${PY}" -m nimloth.eval.sft_checkpoint_state_matrix \
   --max-length 12000 \
   --max-pixels 100352 \
   --git-commit "${EXPECTED_COMMIT}" \
-  --wandb-project "${WANDB_PROJECT}" \
-  --wandb-run-name "${WANDB_RUN_NAME}" \
-  --wandb-run-id "${WANDB_RUN_ID}"
+  --wandb-project "${RUN_WANDB_PROJECT}" \
+  --wandb-run-name "${RUN_WANDB_NAME}" \
+  --wandb-run-id "${RUN_WANDB_ID}"
