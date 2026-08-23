@@ -1,6 +1,6 @@
 # ID55 — full ID189 source20 Base/Common120 ID45 CFM guided successors
 
-Status: ready for production submission
+Status: completed, validated, downloaded and merged
 
 ## Purpose
 
@@ -44,3 +44,14 @@ Generate CFM current-state and executed-action depth-1 successor reconstructions
 ## Human decision
 
 After reviewing the one-rollout canary integrated into the old interface and the 1–2 hour end-to-end estimate, the human approved full reconstruction with “可以”.
+
+## Result
+
+- Job `528324` completed on `normal/dgx-10` in `00:10:37`, exit `0:0`, peak RSS about 1.52 GiB.
+- Produced and validated 120/120 per-rollout Browsers and exactly 1,862/1,862 comparison strips; global manifest SHA256 `84b9a8aafcb18b235f5f5b2b14744a9b4d9a79120a23f08111d44deed6131081`.
+- View payload is 139 MiB, SHA256 `fb054f1552b440ecb195ae33ba01858f83135223cea121cce1efeceebc8677b7`.
+- W&B ID55 is `finished`, history step0. No optimizer update or checkpoint exists.
+- Resumable transfer took about 37 minutes over the current ProxyJump path; archive hash and all 1,862 local strips passed.
+- Merged into the previous 120-rollout selector without changing the original Browser. Local entry: `nimloth-artifacts/id189_source20_base_common120_retry4_cfm_all_derived/extracted/index.html`.
+- Derived merger manifest records 120 reconstructed rollouts, 1,862 turns and original manifest SHA256 `6d555cd8...de60`; all 120 selector entries and all 120 rollout pages carry reconstruction markers.
+- Aggregate 8-bit strip diagnostics over 1,862 turns: current reconstruction→real current L1 `0.17478`; predicted successor reconstruction→real next `0.17488`; current reconstruction→real next `0.17545`; predicted/current reconstruction difference `0.05099`; predicted successor is closer than current reconstruction on `47.31%` of turns. Decoder/domain error remains large, so these images are qualitative aids rather than faithful action-effect ground truth.
