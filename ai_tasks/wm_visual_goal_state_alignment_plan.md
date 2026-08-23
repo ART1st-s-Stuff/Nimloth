@@ -1,6 +1,6 @@
 # WM视觉—目标state对齐优化计划
 
-状态：人类已授权并要求立即执行阶段0只读checkpoint矩阵（normal 1×H800、总执行时间不超过2小时）；尚未授权任何训练、新checkpoint或参数更新。
+状态：阶段0只读checkpoint矩阵已完成；尚未授权任何训练、新checkpoint或参数更新。
 
 ## 1. 设计目标
 
@@ -220,6 +220,21 @@ ID57 Job`528490`已在original-observation DINO teacher路径上完成前六项�
 - 资源和时限：人类确认normal 1×H800；Slurm硬上限1小时45分，从提交到结果交付总预算不超过2小时。
 - 冻结边界：所有backbone、vision、projector、WM、ValueHead和DINO cache只读；无optimizer、无backward、无参数更新、无新checkpoint、不得resume或覆盖旧产物。
 
+#### ID58结果
+
+ID58 retry2 Job`528812`在normal/dgx-27以`COMPLETED 0:0`、`00:02:56`完成。96条样本的action0/2/3/4/5计数为`25/23/23/22/3`。
+
+- 固定SFT1 projector时，SFT1→ID74-online backbone drift仅RMSE`0.020806`。
+- 更换projector造成RMSE`0.892000--0.892725`，远大于backbone drift。
+- SFT1 projector的current-DINO RMSE/cosine为`0.837607/0.656045`（SFT1 backbone）和`0.837198/0.656466`（ID74 online）；ID74 projector对应为`1.137054/0.381029`和`1.136279/0.382105`。视觉退化主要在SFT2 projector，而非backbone/vision。
+- ID74 canonical cell的behavior copy/predicted RMSE为`0.703430/0.640073`，aggregate skill`+0.172027`，但action0/2/3 skill分别为`-0.410761/-0.715589/-0.268277`；正aggregate主要受state-change较大的action4/5贡献，未通过主要action分别大于0的门禁。
+- canonical predicted-next对DINO优于actual-next：RMSE`0.962218` vs `1.128445`、cosine`0.516583` vs `0.392854`，再次确认predictor被拉向与actual projected state不同的视觉空间。
+- actual-next/predicted-next std=`0.984237/0.866125`，比例约`0.8800`，低于建议的0.9下界。
+- ValueHead executed-action return RMSE在actual-next/predicted-next为`0.460140/0.472018`，depth1 prediction略差。
+- online和vision-EMA在本样本上的projected state完全相同。权重侧审计显示390个BF16 vision tensor中282个不同，但parameter RMSE仅`1.3149e-6`、max abs`2.1267e-4`，在当前BF16 forward中量化为相同state；当前EMA sidecar没有形成可测的state target差异。
+
+因此：SFT1 projector可作为**视觉**anchor，暂不重训SFT1；但在有效goal probe前不能宣称其完整统一visual-goal state已经健康。优先修SFT2 projector/interface，并用每个主要action的copy-relative skill门禁T1 canary，禁止只看aggregate skill。
+
 ### 阶段A：State projector gate
 
 - 训练或校准统一的视觉—目标state encoder；
@@ -288,7 +303,7 @@ skill_d=1-\frac{MSE(\hat z_{t+d},z_{t+d})}
 
 ## 10. 推荐执行顺序
 
-1. 运行阶段0的SFT1/SFT2 checkpoint只读矩阵，隔离backbone、projector及vision EMA差异；
+1. 阶段0的SFT1/SFT2 checkpoint只读矩阵已完成：主要故障定位到SFT2 projector/interface，backbone drift很小，当前EMA没有可测state差异；
 2. 在有validated goal labels或真实matched counterfactual后补齐goal probe；当前禁止伪造标签；
 3. 完成ValueHead在actual及depth1--4 predicted state上的校准审计；阶段0先覆盖同一pre-RL样本上的depth1；
 4. 根据诊断确定主要故障在projector、WM、slot/normalization还是ValueHead；
