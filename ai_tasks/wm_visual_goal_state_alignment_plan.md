@@ -22,13 +22,13 @@ ID56在1,742个有exact actual-next behavior-time state的nonterminal transition
 - `copy -> actual_next` state RMSE均值：`0.11923`；
 - predicted在behavior-state RMSE上优于copy：`0/1742`；
 - executed action在8个depth-1 predicted states中的top-1：`46.67%`，随机基线`12.5%`；
-- predicted对真实next-image DINO target的RMSE：`0.83801`；
-- copy对同一DINO target的RMSE：`0.98837`；
-- predicted对DINO target在全部transition上优于copy。
+- ID56报告的predicted对next-image DINO RMSE：`0.83801`；
+- ID56报告的copy对同一DINO RMSE：`0.98837`；
+- 但后续代码审计确认ID56先把真实图片bicubic resize到CFM的`128×128`再送入DINO；这两项只能视为legacy decoder-resolution sensitivity，不能冒充WM训练时的original-observation DINO target。修正后的原图只读比较由ID57完成，见`E0144`。
 
 这组结果不应简单解释为“WM没有学到视觉变化”。更准确的现状是：
 
-1. WM已经包含动作和视觉变化信号；
+1. WM已经明确包含动作信号；视觉变化信号在legacy 128×128 DINO路径上存在，但必须由ID57 original-observation teacher路径复核；
 2. behavior-time projected state、WM predicted state、DINO teacher和ValueHead目前没有稳定处于同一state空间；
 3. MCTS递归时predicted state离ValueHead在真实state上见过的manifold较远，因而即使视觉方向有信号，K4递归仍可能不稳定。
 
