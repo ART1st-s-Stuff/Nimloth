@@ -11,12 +11,22 @@ actual_commit=$(git -C "${REPO}" rev-parse HEAD)
   echo "commit mismatch: expected=${EXPECTED_COMMIT} actual=${actual_commit}" >&2
   exit 2
 }
-[[ -z "$(git -C "${REPO}" status --porcelain --untracked-files=all)" ]] || {
-  echo "production worktree must be clean" >&2
-  git -C "${REPO}" status --short >&2
+for source_repo in \
+  "${REPO}" "${REPO}/external/VAGEN" "${REPO}/external/VAGEN/verl" \
+  "${REPO}/external/le-wm" "${REPO}/external/RCDM"; do
+  [[ -z "$(git -C "${source_repo}" status --porcelain --untracked-files=all)" ]] || {
+    echo "production source must be clean: ${source_repo}" >&2
+    git -C "${source_repo}" status --short >&2
+    exit 2
+  }
+done
+[[ -x "${PY}" ]] || { echo "missing server Python: ${PY}" >&2; exit 2; }
+[[ -n "${CUDA_VISIBLE_DEVICES:-}" && "${CUDA_VISIBLE_DEVICES}" != *,* ]] || {
+  echo "ID58 requires exactly one Slurm-visible GPU" >&2
   exit 2
 }
-[[ -x "${PY}" ]] || { echo "missing server Python: ${PY}" >&2; exit 2; }
+GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader)
+[[ "${GPU_NAME}" == *H800* ]] || { echo "expected H800, got ${GPU_NAME}" >&2; exit 2; }
 
 SFT1=${ROOT}/outputs/experiments/sft1_checkpoint_merge_fix/2026-07-24/3_k16_ep5_untied_lm_head_restore/hf_merged
 ID74=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-08-02/sft2/74_valuev3_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga4_ws16n3g844lw844_px100352/train_ws16/epoch_001
@@ -52,10 +62,15 @@ cat >"${RUN_OUT}/README.md" <<EOF
 - resource: normal 1xH800, Slurm walltime 01:45:00
 EOF
 
+set -a
+source /project/peilab/atst/flower/.env
+set +a
+export WANDB_ENTITY=art2nd-hong-kong-university-of-science-and-technology
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONPATH="${REPO}/src:${PYTHONPATH:-}"
-export HF_HOME=${ROOT}/.cache/huggingface
-export TRANSFORMERS_CACHE=${HF_HOME}/hub
+export HF_HOME=/project/peilab/atst/.cache/huggingface
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
 export WANDB_DIR="${RUN_OUT}/wandb"
 export TOKENIZERS_PARALLELISM=false
 export CUDA_DEVICE_MAX_CONNECTIONS=1
