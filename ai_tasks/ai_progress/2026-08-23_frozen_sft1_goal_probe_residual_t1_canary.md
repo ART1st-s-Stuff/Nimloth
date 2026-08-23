@@ -61,7 +61,7 @@ No projector calibration, T2/T4, ValueHead, MCTS or RL training is authorized by
 - [x] Write RED tests and experiment contracts.
 - [x] Implement immutable state cache and matched goal probe.
 - [x] Implement zero-copy-initialized residual T1 predictor and canary trainer.
-- [x] Complete local static and clean remote CPU gates (`17 passed` after metadata correction).
+- [x] Complete local static and clean remote CPU gates (`19 passed` after metadata correction, including real tiny probe/T1 optimization loops).
 - [ ] Run sequential normal 1xH800 job and monitor to completion.
 - [ ] Validate artifacts, update progress and report decision.
 
