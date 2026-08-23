@@ -10,6 +10,7 @@ def test_id58_slurm_contract_is_one_gpu_readonly_and_time_bounded() -> None:
     text = SLURM.read_text(encoding="utf-8")
     assert "#SBATCH --account=peilab" in text
     assert "#SBATCH --partition=normal" in text
+    assert "#SBATCH --exclude=dgx-09,dgx-13,dgx-32,dgx-51" in text
     assert "#SBATCH --nodes=1" in text
     assert "#SBATCH --gres=gpu:1" in text
     assert "#SBATCH --time=01:45:00" in text
