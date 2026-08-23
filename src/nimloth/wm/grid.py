@@ -454,6 +454,135 @@ class TemporalSpatialGridPredictor(nn.Module):
         return module
 
 
+class ResidualTemporalSpatialGridPredictor(nn.Module):
+    """以严格copy初始化的temporal-spatial grid predictor。
+
+    body保留原有action-conditioned时空建模能力；独立delta head零初始化，
+    因而第一次更新前的预测逐值等于输入state。这样T1训练必须从copy baseline
+    出发，不能依靠随机初始化制造看似有限但更差的successor state。
+    """
+
+    def __init__(self, config: GridPredictorConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.body = TemporalSpatialGridPredictor(config)
+        self.delta_head = nn.Linear(config.emb_dim, config.emb_dim)
+        nn.init.zeros_(self.delta_head.weight)
+        nn.init.zeros_(self.delta_head.bias)
+
+    @property
+    def grid_tokens(self) -> int:
+        return int(self.config.grid_tokens)
+
+    @property
+    def emb_dim(self) -> int:
+        return int(self.config.emb_dim)
+
+    @property
+    def action_dim(self) -> int:
+        return int(self.config.action_dim)
+
+    def is_zero_initialized(self) -> bool:
+        return bool(
+            torch.count_nonzero(self.delta_head.weight.detach()).item() == 0
+            and torch.count_nonzero(self.delta_head.bias.detach()).item() == 0
+        )
+
+    def predict_sequence(
+        self,
+        state_context: torch.Tensor,
+        action_context: torch.Tensor,
+    ) -> torch.Tensor:
+        features = self.body.predict_sequence(state_context, action_context)
+        baseline = state_context.to(dtype=self.delta_head.weight.dtype)
+        return baseline + self.delta_head(features)
+
+    def forward(
+        self,
+        state: torch.Tensor,
+        action_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        if state.ndim == 3 and action_indices.ndim == 1:
+            return self.predict_sequence(
+                state.unsqueeze(1),
+                action_indices.unsqueeze(1),
+            )[:, -1]
+        return self.predict_sequence(state, action_indices)
+
+    def rollout_from_history(
+        self,
+        state_history: torch.Tensor,
+        previous_actions: torch.Tensor,
+        future_actions: torch.Tensor,
+    ) -> torch.Tensor:
+        expected_tail = (self.grid_tokens, self.emb_dim)
+        if state_history.ndim != 4 or tuple(state_history.shape[2:]) != expected_tail:
+            raise ValueError(
+                "residual grid state_history must have shape "
+                f"(B,L,{self.grid_tokens},{self.emb_dim}), got {tuple(state_history.shape)}"
+            )
+        batch_size, history_steps = state_history.shape[:2]
+        if not 1 <= history_steps <= self.config.history_size:
+            raise ValueError("residual grid history length is outside configured context")
+        if previous_actions.shape != (batch_size, history_steps - 1):
+            raise ValueError("previous_actions do not align with residual grid history")
+        if (
+            future_actions.ndim != 2
+            or future_actions.shape[0] != batch_size
+            or future_actions.shape[1] < 1
+        ):
+            raise ValueError("future_actions must have shape (B,P) with P>=1")
+
+        all_states = state_history
+        all_actions = torch.cat((previous_actions, future_actions), dim=1)
+        predicted: list[torch.Tensor] = []
+        for future_step in range(future_actions.shape[1]):
+            state_index = history_steps - 1 + future_step
+            context_start = max(0, state_index - self.config.history_size + 1)
+            next_state = self.predict_sequence(
+                all_states[:, context_start : state_index + 1],
+                all_actions[:, context_start : state_index + 1],
+            )[:, -1]
+            predicted.append(next_state)
+            all_states = torch.cat((all_states, next_state.unsqueeze(1)), dim=1)
+        return torch.stack(predicted, dim=1)
+
+    def save_checkpoint(self, path: str | Path) -> None:
+        path = Path(path)
+        path.mkdir(parents=True, exist_ok=True)
+        torch.save(self.state_dict(), path / "predictor.pt")
+        (path / "config.json").write_text(
+            json.dumps(
+                {
+                    "schema": "nimloth_residual_temporal_spatial_grid_v1",
+                    "predictor": asdict(self.config),
+                    "delta_head_zero_initialized": True,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    @classmethod
+    def load_checkpoint(
+        cls,
+        path: str | Path,
+        *,
+        map_location: str | torch.device = "cpu",
+    ) -> "ResidualTemporalSpatialGridPredictor":
+        path = Path(path)
+        payload = json.loads((path / "config.json").read_text(encoding="utf-8"))
+        if payload.get("schema") != "nimloth_residual_temporal_spatial_grid_v1":
+            raise ValueError("unsupported residual grid predictor checkpoint schema")
+        module = cls(GridPredictorConfig(**payload["predictor"]))
+        module.load_state_dict(
+            torch.load(path / "predictor.pt", map_location=map_location, weights_only=True)
+        )
+        return module
+
+
 class GridWorldModel(WorldModel):
     """16-slot WM；state 就是可训练的 SFT1 projector 输出。"""
 
@@ -513,5 +642,6 @@ __all__ = [
     "GridWorldModel",
     "SharedSlotProjector",
     "TemporalSpatialGridPredictor",
+    "ResidualTemporalSpatialGridPredictor",
     "load_sft1_slot_projector",
 ]
