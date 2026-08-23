@@ -58,9 +58,16 @@ No projector calibration, T2/T4, ValueHead, MCTS or RL training is authorized by
 
 - [x] Human approved design and resource boundary.
 - [x] Discovered row-level source config/seed identity is invalid; human approved conservative image-decontaminated continuation.
-- [ ] Write RED tests and experiment contracts.
-- [ ] Implement immutable state cache and matched goal probe.
-- [ ] Implement zero-copy-initialized residual T1 predictor and canary trainer.
-- [ ] Complete local and clean remote CPU gates.
+- [x] Write RED tests and experiment contracts.
+- [x] Implement immutable state cache and matched goal probe.
+- [x] Implement zero-copy-initialized residual T1 predictor and canary trainer.
+- [x] Complete local static and clean remote CPU gates (`17 passed` after metadata correction).
 - [ ] Run sequential normal 1xH800 job and monitor to completion.
 - [ ] Validate artifacts, update progress and report decision.
+
+## CPU preflight evidence
+
+- Train/validation records: `3211/355`; unique early state prompts: `16052/1775`; step0--3 transitions: `12841/1420`.
+- Train action0/1/2/3/4/5: `9663/11/1092/1702/363/10`; validation: `1047/0/143/194/32/4`. Therefore the external per-action gate applies to 0,2,3,4 only.
+- Exact `(initial image, instruction)` dedup leaves `3208/355` observed probe rows before cross-split exclusion; one exact initial image crosses train/validation.
+- Source config+seed keys carrying multiple archived instructions: train `466` keys/`932` rows; validation `50` keys/`100` rows. This is direct evidence for E0147 and the conservative interpretation boundary.
