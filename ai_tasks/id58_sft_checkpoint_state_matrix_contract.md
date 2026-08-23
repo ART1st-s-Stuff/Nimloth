@@ -1,6 +1,6 @@
 # ID58 SFT1 / ID74 checkpoint state matrix contract
 
-Status: human authorized the read-only stage-0 diagnostic on `normal 1×H800`, with total execution capped below two hours. No training is authorized. Attempt0 Job`528778` was cancelled after a W&B project override; retry1 Job`528804` failed on invalid EMA constructor decay before metrics; retry2 is the only valid result candidate.
+Status: complete. Retry2 Job`528812` is the only valid result; no training was authorized or performed. Attempt0 Job`528778` was cancelled after a W&B project override; retry1 Job`528804` failed on invalid EMA constructor decay before metrics.
 
 ## Purpose
 
@@ -73,3 +73,18 @@ No goal probe is run because this archive has no validated goal labels or real m
 - Retry2 W&B project/name/ID: `nimloth-recon` / `58_sft1id74_state_matrix_val96_early4_k16_retry2` / `nimloth-recon-id58-sft1id74-state-matrix-retry2`. Locked `RUN_WANDB_*` values are reasserted after sourcing credentials; EMA construction uses valid checkpoint decay `0.999`.
 - Slurm: `normal`, one node, one GPU (H800), 16 CPUs, 96 GiB RAM, hard walltime `01:45:00`; excludes `dgx-09,dgx-13,dgx-32,dgx-51`.
 - Source commit: recorded in the run-owned README from `EXPECTED_COMMIT`; production worktree must be clean and exactly match it.
+
+## Result
+
+- Job`528812`: `COMPLETED 0:0`, normal/dgx-27, elapsed`00:02:56`.
+- W&B: `nimloth-recon/58_sft1id74_state_matrix_val96_early4_k16_retry2`, finished, one history row, status`passed`.
+- Selection: 96 unique trajectories; sources32/32/32; action0/2/3/4/5=`25/23/23/22/3`; step0/1/2/3=`25/31/19/21`.
+- SFT1→ID74-online backbone drift with fixed SFT1 projector: RMSE`0.020806`.
+- Projector drift: RMSE`0.892000--0.892725`.
+- Current-DINO RMSE/cosine: SFT1 projector`0.8372--0.8376/0.6560--0.6565`; ID74 projector`1.1363--1.1371/0.3810--0.3821`.
+- Canonical ID74 behavior copy/predicted RMSE=`0.703430/0.640073`, aggregate skill`+0.172027`; action0/2/3/4/5 skill=`-0.410761/-0.715589/-0.268277/+0.314698/+0.122861`.
+- Canonical actual-next/predicted-next DINO RMSE=`1.128445/0.962218`; state std=`0.984237/0.866125`.
+- Canonical ValueHead executed-action return RMSE on actual-next/predicted-next=`0.460140/0.472018`.
+- ID74 online and vision-EMA projected states are identical on this sample. Direct weight audit: 282/390 BF16 vision tensors differ, parameter RMSE`1.3149e-6`, max abs`2.1267e-4`; the change is below the observed BF16 state-output resolution.
+- Decision: visual degradation is dominated by SFT2 projector drift. SFT1 projector is a visual anchor, but goal health remains unproven. Do not retrain SFT1 yet; prioritize separately authorized SFT2 projector/interface repair and per-action-gated frozen-projector T1 residual-WM canary.
+- Result SHA256: `result.json`=`de61930358e92a686a93a738732571af2db8416905349875acfa90af3d2b547b`; `matrix_states.npz`=`c3067f21668089d2953bb5acc16ea1c5f6bacfe1cfa2bee28e4ff6c4aaac6ad1`; `summary.html`=`912e9713f8b3ac284c079ac1feb5ebe7b8037a575118bb8b1ae546e4cb0eefb2`.
