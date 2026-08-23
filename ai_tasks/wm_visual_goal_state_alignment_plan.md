@@ -1,6 +1,6 @@
 # WM视觉—目标state对齐优化计划
 
-状态：人类要求持久化的设计计划；尚未授权实现、新训练或新GPU实验。
+状态：人类已授权并要求立即执行阶段0只读checkpoint矩阵（normal 1×H800、总执行时间不超过2小时）；尚未授权任何训练、新checkpoint或参数更新。
 
 ## 1. 设计目标
 
@@ -198,9 +198,27 @@ ID57 Job`528490`已在original-observation DINO teacher路径上完成前六项�
 
 尚未完成的诊断为goal retention及ValueHead在actual/depth1--4 predicted state上的校准；现有archive没有validated goal labels或matched same-observation/different-goal pairs，禁止用启发式标签伪造goal probe。
 
-## 7. 训练课程
+## 7. 执行阶段
 
 训练数据只使用批准的pre-RL数据；ID189/source20只能作为冻结heldout domain-transfer评估，禁止进入训练。
+
+### 阶段0：SFT1/SFT2 checkpoint只读矩阵（已授权）
+
+目的：在任何重训前隔离backbone/vision drift、projector drift及ID74 online/vision-EMA安装差异。
+
+- 数据：ID74使用的pre-RL validation JSONL；Base/Common/Long Horizon各确定性选择32条至少有两个动作的step0 transition，共96条；使用记录中的真实CoT和original observation。
+- checkpoint组合：
+  1. SFT1 backbone/vision + SFT1 projector；
+  2. SFT1 backbone/vision + ID74 projector；
+  3. ID74 online backbone/vision + SFT1 projector；
+  4. ID74 online backbone/vision + ID74 projector；
+  5. ID74 vision EMA + SFT1 projector；
+  6. ID74 vision EMA + ID74 projector。
+- 只读指标：actual current/next到original-observation DINO、current→next copy距离、ID74 WM一步预测相对actual/copy/DINO的误差、ID74 ValueHead在actual current/next及predicted next上的return calibration，以及关键组合之间的state drift。
+- 解释边界：ID74 WM/ValueHead应用到非ID74组合时只表示cross-component compatibility；不得解释为对应SFT1 checkpoint自身训练出的WM/Q质量。
+- 当前数据没有validated goal labels或matched same-observation/different-goal pairs，本阶段不得生成启发式伪标签或声称完成goal反事实probe。
+- 资源和时限：人类确认normal 1×H800；Slurm硬上限1小时45分，从提交到结果交付总预算不超过2小时。
+- 冻结边界：所有backbone、vision、projector、WM、ValueHead和DINO cache只读；无optimizer、无backward、无参数更新、无新checkpoint、不得resume或覆盖旧产物。
 
 ### 阶段A：State projector gate
 
@@ -270,13 +288,15 @@ skill_d=1-\frac{MSE(\hat z_{t+d},z_{t+d})}
 
 ## 10. 推荐执行顺序
 
-1. 扩展ID56只读诊断，补齐actual-state到DINO及goal probe；
-2. 根据诊断确定主要故障在projector、WM、slot/normalization还是ValueHead；
-3. 建立canonical visual-goal state合同；
-4. 对称监督actual current/next state并冻结或EMA target projector；
-5. 训练pre-RL-only、零初始化的T1 residual WM；
-6. 通过copy-relative和DINO/goal双门禁后扩到T2/T4；
-7. 重新校准ValueHead/Q；
-8. 最后才恢复K4 MCTS和新的joint RL实验。
+1. 运行阶段0的SFT1/SFT2 checkpoint只读矩阵，隔离backbone、projector及vision EMA差异；
+2. 在有validated goal labels或真实matched counterfactual后补齐goal probe；当前禁止伪造标签；
+3. 完成ValueHead在actual及depth1--4 predicted state上的校准审计；阶段0先覆盖同一pre-RL样本上的depth1；
+4. 根据诊断确定主要故障在projector、WM、slot/normalization还是ValueHead；
+5. 建立canonical visual-goal state合同；
+6. 仅在人类另行授权后，对称监督actual current/next state并冻结或EMA target projector；
+7. 仅在人类另行授权后，训练pre-RL-only、零初始化的T1 residual WM；
+8. 通过copy-relative和DINO/goal双门禁后扩到T2/T4；
+9. 重新校准ValueHead/Q；
+10. 最后才恢复K4 MCTS和新的joint RL实验。
 
 在以上诊断和门禁完成前，不建议通过增加epoch、调学习率或扩大predictor来延续当前WM训练；这些操作不能修复state空间接口不一致。
