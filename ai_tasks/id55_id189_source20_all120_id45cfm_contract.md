@@ -1,6 +1,6 @@
 # ID55 — full ID189 source20 Base/Common120 ID45 CFM guided successors
 
-Status: implementation/preflight
+Status: ready for production submission
 
 ## Purpose
 
@@ -30,7 +30,7 @@ Generate CFM current-state and executed-action depth-1 successor reconstructions
 - W&B project: `nimloth-recon`.
 - W&B run name: `55_id189source20_basecommon120_id45cfm_guidednext_all_euler50_cfg2`.
 - W&B ID: `nimloth-recon-id55-id189source20-all120-id45cfm-guidednext`.
-- Runtime commit: pending implementation commit.
+- Runtime commit: `1ae7dc32ae570a2b42ca8c20eaf69dee2888ba39`.
 
 ## Validation gates
 
