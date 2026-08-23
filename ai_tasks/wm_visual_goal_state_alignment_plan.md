@@ -161,6 +161,22 @@ actual state和predicted state必须共享同一个visual adapter、normalizatio
 
 ID56没有保存exact terminal K16 state，因此仍只允许审计1,742个nonterminal transition；最后120个transition不得重放或填placeholder。
 
+### ID57只读结果
+
+ID57 Job`528490`已在original-observation DINO teacher路径上完成前六项主要state诊断：
+
+- actual same-image state：RMSE`0.97769`、cosine`0.36629`、token-centered cosine`0.35176`；
+- next DINO：copy RMSE/cosine=`0.98095/0.36005`，actual-next=`0.97866/0.36391`，predicted=`0.83053/0.62777`；
+- predicted相对copy的canonical-DINO skill=`+0.28099`，相对actual-next=`+0.27750`；
+- behavior-state skill仍为`-9.44815`，predicted对copy为`0/1742`；
+- actual-next/predicted/DINO std=`0.47804/0.82286/1.04802`，slot-deviation RMS=`0.25585/0.46168/0.76248`；
+- fixed slot permutation只降低`0.169%` identity cost，排除slot ordering为主要原因；
+- original-observation与legacy128结果接近，视觉信号方向经E0144修正后仍成立。
+
+因此当前优先级已确定为state projector/interface：actual projected state没有被充分锚定到视觉teacher，而WM prediction被直接DINO loss拉向另一分布。先对actual current/next projector state施加对称视觉/目标约束并建立frozen/EMA target，再优化WM深度。
+
+尚未完成的诊断为goal retention及ValueHead在actual/depth1--4 predicted state上的校准；现有archive没有validated goal labels或matched same-observation/different-goal pairs，禁止用启发式标签伪造goal probe。
+
 ## 7. 训练课程
 
 训练数据只使用批准的pre-RL数据；ID189/source20只能作为冻结heldout domain-transfer评估，禁止进入训练。

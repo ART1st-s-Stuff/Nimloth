@@ -1,6 +1,6 @@
 # ID57 — ID189 actual/predicted state versus DINO alignment
 
-Status: approved and preflighted; ready for read-only submission on confirmed `normal` 1×H800.
+Status: completed, validated and downloaded.
 
 ## Question
 
@@ -72,3 +72,25 @@ Goal-specific probing is explicitly unavailable in this run: the archived Browse
 ## Human authorization
 
 The human authorized continuing the read-only comparison: “你可以继续进行只读比较”, then explicitly selected `Normal 1×H800（推荐）` after being shown the 5--15 minute estimate and frozen/no-checkpoint boundary. This authorizes no training or model modification.
+
+## Result
+
+- Job `528490` completed on `normal/dgx-37` in `00:03:10`, exit `0:0`, peak batch RSS `2,398,264 KiB`.
+- Runtime commit: `a8b34accd8ddad533143ef1c3667a79bf95a8b0a`.
+- All 120 rollouts, 1,862 unique turns and 1,742 exact nonterminal transitions validated. W&B finished with one step0 row. No model replay, optimizer, update or checkpoint occurred.
+- Actual same-image state has DINO RMSE `0.97769`, flattened cosine `0.36629` and token-centered cosine `0.35176`: actual projector states are weakly aligned to the intended visual teacher.
+- Against canonical original-observation next DINO, copy RMSE/cosine is `0.98095/0.36005`, actual-next is `0.97866/0.36391`, and predicted-next is `0.83053/0.62777`.
+- Prediction has copy-relative canonical-DINO skill `+0.28099` and actual-next-relative skill `+0.27750`; it beats copy on `100%` and actual-next on `99.885%` of transitions.
+- Behavior-state prediction remains poor: RMSE `0.52598` versus copy `0.11923`, skill `-9.44815`, with `0%` better-than-copy.
+- Mean state standard deviation is actual-next `0.47804`, prediction `0.82286`, DINO `1.04802`; slot-deviation RMS is `0.25585/0.46168/0.76248`. WM output lies between the behavior-state and DINO distributions.
+- A best global fixed slot permutation reduces identity assignment cost by only `0.169%`; slot ordering is not the main issue.
+- The corrected original-observation result is close to legacy128 (`0.83053` versus `0.83801`; skill `+0.28099` versus `+0.27888`). Thus the prior visual-signal direction survives E0144 correction, but ID57 is the canonical metric.
+- Base and Common Sense both show approximately `+0.28` DINO skill. Every recorded action class is positive, with low confidence for rare actions.
+- Goal retention remains unmeasured because no validated labels or matched goal-counterfactual observations exist in the archive.
+
+Conclusion: actual projected state and WM predicted state implement incompatible interfaces. Actual state is weakly DINO-aligned, while WM is strongly pulled toward DINO and leaves the behavior-state manifold consumed by recursive WM/ValueHead. The next optimization should anchor actual current/next projector states with symmetric visual/goal supervision and a frozen or EMA canonical target before changing search depth.
+
+- Server output: `outputs/experiments/evaluation/state_alignment/2026-08-23/57_id189source20_state_dino_alignment_all1742`.
+- Summary SHA256: `fa6e8fa90ea6268ecfbb14ee360a5fd561245f58af7d6561a51738348fc32ea7`.
+- Payload SHA256: `e59d89c11da786d99e07a0945c16b4b32f8740b2c3066f8d0f4194151b79c232`.
+- Local report: `/workspace/remote2/nimloth-artifacts/id57_id189_state_dino_alignment/extracted/index.html`.
