@@ -32,7 +32,7 @@ Current/successor reconstructions use matched Gaussian noise, Euler50 and CFG2.
 ## Runtime and output
 
 - Entry: `python -m nimloth.eval.id189_cfm_browser`.
-- Runtime code commit: `60250ebdb0a685da7072a12397df22ab7be55d78`.
+- Runtime code commit: `76b0fab1d5d8f0c986522ef258051d1629eb7ad7` (adds required `peilab` Slurm account after the first pre-allocation submission rejection).
 - Resource: normal 1xH800, 16 CPU, 96 GiB, 30 minutes.
 - Output: `outputs/experiments/evaluation/reconstruction/2026-08-23/54_id189source20_base2_id45cfm_guidednext_euler50_cfg2`.
 - Existing source Browser is read-only; output directory must be fresh and atomic at the derived-browser level.
