@@ -119,7 +119,12 @@ No projector calibration, T2/T4, ValueHead, MCTS or RL training is authorized by
 
 - 人类批准从same-generation ID176 hidden到统一K16 state的bounded rank-64 residual方向canary；旧ID74/ID75/Value/RL全部冻结且不可复用。
 - Job`529701`在commit`0746e6e3`、normal/dgx-14于12秒preflight失败：runner误把ID74 trained projector SHA `e789...`绑定为SFT1 source hash，正确SFT1 `slot_projector.pt` SHA为`340d...`。
-- Attempt0没有创建output/W&B，没有model load或optimizer update，不可resume。登记E0149；修正版必须使用fresh retry1 output和W&B identity，同时保留对ID60完整checkpoint identity的代码级比较。
+- Attempt0没有创建output/W&B，没有model load或optimizer update，不可resume。登记E0149；修正版使用fresh retry1 output和W&B identity，同时保留对ID60完整checkpoint identity的代码级比较。
+- Retry1 Job`529703`在commit`4aece337`、normal/dgx-14以`COMPLETED 0:0`/`00:28:49`完成，W&B finished，overall gate=false。same-generation hidden经SFT1 projector严格重现ID60 state，RMSE/max均为0。
+- Goal micro state/hidden/candidate/DINO=`0.06936/0.05491/0.07803/0.10983`，candidate-minus-DINO CI=`[-0.06647,+0.00289]`，goal gate失败。
+- Outcome AUC state/hidden/candidate/DINO：forward=`0.89074/0.86537/0.86995/0.87067`，right=`0.72328/0.69015/0.72636/0.71099`，left=`0.69514/0.62475/0.62192/0.77842`。candidate-left显著低于DINO且不改善state，lateral calibration失败。
+- Visual anchor通过：DINO RMSE=`0.83401->0.83174`、cosine=`0.65757->0.65960`；但hidden point estimate对goal与两类lateral outcome都低于projected state。结论：SFT1 projector不是已证实瓶颈，拒绝hidden-only bounded adapter方向，不得扩大或复用该adapter。下一state设计需直接引入更强current-observation视觉/几何证据并保留明确goal语义。
+- Result SHA=`1e1307c24b0d0187191476c87dee570ad261b98ee51facfd77cb38aab35006bb`。
 
 ## CPU preflight evidence
 

@@ -69,3 +69,20 @@ on all pre-RL train rows before one external evaluation.
   `nimloth-sft2-id191-state-interface-canary-retry1`, resume forbidden.
 - Shared `.env` is sourced before locked W&B values are exported; initialized
   project/run identity is verified fail-closed.
+
+## Actual retry1 result
+
+Job `529703` completed `0:0` in `00:28:49` on `normal/dgx-14`; W&B finished. The canary gate failed.
+
+- Recomputed same-generation hidden projects through frozen SFT1 to every ID60 state exactly: RMSE/max-abs=`0.0/0.0`.
+- Goal micro/macro top1 state/hidden/candidate/DINO:
+  `0.06936/0.04729`, `0.05491/0.03575`, `0.07803/0.04865`, `0.10983/0.06905`. Candidate-minus-DINO paired top1 CI=`[-0.06647,+0.00289]`; goal gate failed.
+- Outcome AUC state/hidden/candidate/DINO:
+  - forward `0.89074/0.86537/0.86995/0.87067`;
+  - right `0.72328/0.69015/0.72636/0.71099`;
+  - left `0.69514/0.62475/0.62192/0.77842`.
+- Candidate left-minus-DINO AUC=`-0.15701`, paired CI=`[-0.23582,-0.08064]`; candidate does not improve state and lateral calibration gates fail.
+- Visual anchor passes: external DINO RMSE `0.83401 -> 0.83174`, cosine `0.65757 -> 0.65960`, residual mean/max fraction `0.02755/0.10000`.
+- Hidden point estimates are below projected state for goal and both lateral outcomes. The frozen SFT1 projector is not established as the bottleneck; a bounded hidden-only adapter is rejected as a retraining direction and may not be enlarged or reused.
+- The next unified state design must expose stronger current-observation visual/geometry evidence directly and preserve explicit goal semantics; it still requires separate authorization.
+- Result SHA256=`1e1307c24b0d0187191476c87dee570ad261b98ee51facfd77cb38aab35006bb`.
