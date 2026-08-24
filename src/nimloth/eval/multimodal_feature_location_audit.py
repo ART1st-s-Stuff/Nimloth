@@ -849,6 +849,10 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 "path": feature_path.name,
                 "sha256": _sha256(feature_path),
                 "selected_state_count": len(selected_state_indices),
+                "arrays": {
+                    name: {"shape": list(value.shape), "dtype": str(value.dtype)}
+                    for name, value in extracted.items()
+                },
             },
             "diagnostic_readouts": {
                 "path": weights_path.name,
