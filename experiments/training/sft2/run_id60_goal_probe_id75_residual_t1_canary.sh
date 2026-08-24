@@ -50,6 +50,7 @@ for path in \
   "${DINO_CACHE}/val/dino_grid4/manifest.json"; do
   [[ -r "${path}" ]] || { echo "missing required input: ${path}" >&2; exit 2; }
 done
+mkdir -p "$(dirname "${PROBE_OUT}")" "$(dirname "${CANARY_OUT}")"
 [[ ! -e "${PROBE_OUT}" ]] || { echo "fresh PROBE_OUT exists: ${PROBE_OUT}" >&2; exit 2; }
 [[ ! -e "${CANARY_OUT}" ]] || { echo "fresh CANARY_OUT exists: ${CANARY_OUT}" >&2; exit 2; }
 

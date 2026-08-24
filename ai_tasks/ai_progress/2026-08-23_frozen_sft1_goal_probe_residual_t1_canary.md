@@ -50,7 +50,7 @@ No projector calibration, T2/T4, ValueHead, MCTS or RL training is authorized by
 ## Outputs and identities
 
 - ID60 W&B: project `nimloth-recon`, run `60_id176_sft1_frozen_goal_probe_early4_k16`, ID `nimloth-recon-id60-frozen-state-goal-probe`.
-- ID75 W&B: project `nimloth-sft2`, run `75_frozen_sft1_residual_t1_canary_early4_k16`, ID `nimloth-sft2-id75-frozen-sft1-residual-t1-canary`.
+- Original ID75 identity was never initialized because Job `528931` failed before ID75 output creation. Per fresh-retry policy, retry1 W&B is project `nimloth-sft2`, run `75_frozen_sft1_residual_t1_canary_early4_k16_retry1`, ID `nimloth-sft2-id75-frozen-sft1-residual-t1-canary-retry1`.
 - Fresh outputs under server `outputs/experiments/evaluation/state_alignment/.../60_*` and `outputs/experiments/training/sft2/.../75_*`.
 - Neither experiment may overwrite or resume ID74, ID59 or any previous output.
 
@@ -62,8 +62,22 @@ No projector calibration, T2/T4, ValueHead, MCTS or RL training is authorized by
 - [x] Implement immutable state cache and matched goal probe.
 - [x] Implement zero-copy-initialized residual T1 predictor and canary trainer.
 - [x] Complete local static and clean remote CPU gates (`19 passed` after metadata correction, including real tiny probe/T1 optimization loops).
-- [ ] Run sequential normal 1xH800 job and monitor to completion.
-- [ ] Validate artifacts, update progress and report decision.
+- [x] Run and validate ID60 on normal 1xH800.
+- [ ] Run the ID75-only retry1 authorized by the user's instruction to continue.
+- [ ] Validate ID75 artifacts, update progress and report decision.
+
+## ID60 actual result and first-launch failure
+
+- Job `528931` ran at commit `d286a9257f755497b3bc0814697e205dfa60d29e` on one H800 (`normal`, `dgx-10`).
+- ID60 completed and W&B finished before the sequential job failed:
+  - state micro/macro top1 `0.057803/0.040432`;
+  - DINO micro/macro top1 `0.106936/0.067128`;
+  - majority top1 `0.072254`;
+  - paired-bootstrap state-minus-DINO 95% interval `[-0.080925, -0.017341]`;
+  - goal gate failed on every required clause. This diagnostic does not accept frozen ID176+SFT1 state as a goal-sufficient canonical interface.
+- Canonical ID60 cache SHA256 is `0fa994139d038d7f89b5a02a83d9036f9367b34a25f25e6b8cb84204f0daf8b6`; all eleven arrays were reopened and validated for exact shape, dtype and finite values.
+- Job `528931` then failed before ID75 output creation or W&B initialization because the dated parent directory did not exist. This is a launcher failure, not an ID75 model result; it is recorded as E0148.
+- ID75 retry1 consumes only immutable hash-pinned ID60 inputs and uses a fresh `_retry1` output/W&B identity. The user instructed the agent to continue after the failure.
 
 ## CPU preflight evidence
 
