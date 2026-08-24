@@ -126,6 +126,12 @@ No projector calibration, T2/T4, ValueHead, MCTS or RL training is authorized by
 - Visual anchor通过：DINO RMSE=`0.83401->0.83174`、cosine=`0.65757->0.65960`；但hidden point estimate对goal与两类lateral outcome都低于projected state。结论：SFT1 projector不是已证实瓶颈，拒绝hidden-only bounded adapter方向，不得扩大或复用该adapter。下一state设计需直接引入更强current-observation视觉/几何证据并保留明确goal语义。
 - Result SHA=`1e1307c24b0d0187191476c87dee570ad261b98ee51facfd77cb38aab35006bb`。
 
+## ID192 feature-location audit attempt0
+
+- 人类批准冻结ID176并在同次Transformer forward捕获current-image pre-LLM vision grid、final image tokens与exact instruction token features。Hook smoke Job`529749`在真实H800通过。
+- Formal attempt0 Job`529767`在commit`69ce3dc0`、normal/dgx-37于2:14失败：Qwen BPE把部分instruction末尾标点与下一换行合并，隔离tokenize的instruction ID序列无法在真实prompt中exact匹配。
+- 无feature cache、diagnostic readout、result或optimizer update；W&B finished failed，不可resume。登记E0150；retry1必须tokenize包含真实prefix/suffix的完整archived instruction field，并以offset mapping选取exact character span，禁止丢弃边界token或近似匹配。
+
 ## CPU preflight evidence
 
 - Train/validation records: `3211/355`; unique early state prompts: `16052/1775`; step0--3 transitions: `12841/1420`.

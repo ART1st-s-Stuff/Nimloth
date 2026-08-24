@@ -196,15 +196,40 @@ def _visual_module(model: Any) -> Any:
     raise RuntimeError("Qwen visual module could not be located")
 
 
-def _instruction_query_ids(tokenizer: Any, instruction: str) -> list[list[int]]:
-    variants = [
-        " " + instruction,
-        instruction,
-        "Human Instruction: " + instruction,
-    ]
-    result = [tokenizer.encode(value, add_special_tokens=False) for value in variants]
-    if any(not value for value in result):
-        raise ValueError("instruction tokenization is empty")
+def _instruction_queries(
+    tokenizer: Any,
+    instruction: str,
+) -> list[tuple[list[int], int, int]]:
+    """Tokenize instruction with its real boundaries and retain its token span.
+
+    Qwen BPE can merge the final punctuation with the following newline, so an
+    instruction tokenized in isolation is not guaranteed to be a subsequence of
+    the chat prompt. Offset mappings on the complete archived field preserve the
+    exact context without guessing or dropping boundary tokens.
+    """
+
+    prefix = "Human Instruction: "
+    suffixes = ("\nDecide your next action", "\nDecide your next action(s).")
+    result: list[tuple[list[int], int, int]] = []
+    for suffix in suffixes:
+        text = prefix + instruction + suffix
+        encoded = tokenizer(
+            text,
+            add_special_tokens=False,
+            return_offsets_mapping=True,
+        )
+        ids = list(encoded["input_ids"])
+        offsets = [tuple(value) for value in encoded["offset_mapping"]]
+        char_start = len(prefix)
+        char_stop = char_start + len(instruction)
+        selected = [
+            index
+            for index, (start, stop) in enumerate(offsets)
+            if int(stop) > char_start and int(start) < char_stop
+        ]
+        if not ids or not selected or selected != list(range(selected[0], selected[-1] + 1)):
+            raise ValueError("instruction boundary tokenization is invalid")
+        result.append((ids, selected[0], selected[-1] + 1))
     return result
 
 
@@ -214,12 +239,13 @@ def _instruction_span(
     tokenizer: Any,
     instruction: str,
 ) -> tuple[int, int]:
-    for query in _instruction_query_ids(tokenizer, instruction):
+    for query, local_start, local_stop in _instruction_queries(tokenizer, instruction):
         try:
-            return find_last_subsequence(input_ids, query)
+            query_start, _query_stop = find_last_subsequence(input_ids, query)
+            return query_start + local_start, query_start + local_stop
         except ValueError:
             continue
-    raise ValueError(f"exact instruction span is absent: {instruction!r}")
+    raise ValueError(f"exact bounded instruction span is absent: {instruction!r}")
 
 
 def _capture_feature_batch(
