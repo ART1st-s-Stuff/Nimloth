@@ -29,10 +29,10 @@ STATE_METADATA=${ID60}/frozen_state_cache_metadata.json
 ID60_RESULT=${ID60}/result.json
 ID75_RESULT=${ID75}/result.json
 PREDICTOR=${ID75}/residual_t1_checkpoint
-OUT=${ROOT}/outputs/experiments/evaluation/state_alignment/2026-08-24/61_id75_action_outcome_audit
+OUT=${ROOT}/outputs/experiments/evaluation/state_alignment/2026-08-24/61_id75_action_outcome_audit_retry1
 RUN_WANDB_PROJECT=nimloth-recon
-RUN_WANDB_NAME=61_id75_action_outcome_audit
-RUN_WANDB_ID=nimloth-recon-id61-id75-action-outcome-audit
+RUN_WANDB_NAME=61_id75_action_outcome_audit_retry1
+RUN_WANDB_ID=nimloth-recon-id61-id75-action-outcome-audit-retry1
 
 for spec in \
   "${TRAIN_JSONL}:d43ada06d66c0b5cafa50e9da8ecc354445ca3b9686d1639b18050a981247b97" \
@@ -61,6 +61,7 @@ cat >"${OUT}/README.md" <<EOF
 - labels: exact archived environment feedback after each action, not trajectory success or an image proxy
 - source: hash-pinned ID60 state cache and ID75 retry1 predictor
 - purpose: test whether move_left execution failures and train/validation outcome shift explain its negative copy-relative skill
+- retry1: Job 529539 completed the read-only calculation but initialized W&B under flower because shared .env overrode a generic launcher variable (E0145); this identity is fresh
 EOF
 
 set -a

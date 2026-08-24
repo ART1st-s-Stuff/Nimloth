@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import argparse
+
 import numpy as np
 import pytest
 
@@ -7,6 +9,7 @@ from nimloth.eval.id75_action_outcome_audit import (
     binary_auc,
     parse_step_action_success,
     stratified_outcome_metrics,
+    _validate_wandb_identity,
 )
 
 
@@ -37,6 +40,19 @@ def test_binary_auc_is_rank_based_and_rejects_one_class() -> None:
     assert binary_auc(labels, np.asarray([0.8, 0.1, 0.9, 0.2])) == pytest.approx(0.0)
     with pytest.raises(ValueError, match="both classes"):
         binary_auc(np.asarray([True, True]), np.asarray([0.1, 0.2]))
+
+
+def test_id61_wandb_identity_rejects_shared_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    args = argparse.Namespace(
+        wandb_project="nimloth-recon",
+        wandb_run_id="nimloth-recon-id61-id75-action-outcome-audit-retry1",
+    )
+    monkeypatch.setenv("WANDB_PROJECT", "flower")
+    monkeypatch.setenv("WANDB_RUN_ID", args.wandb_run_id)
+    with pytest.raises(ValueError, match="effective WANDB_PROJECT"):
+        _validate_wandb_identity(args)
+    monkeypatch.setenv("WANDB_PROJECT", args.wandb_project)
+    _validate_wandb_identity(args)
 
 
 def test_stratified_metrics_expose_blocked_harm_and_success_benefit() -> None:

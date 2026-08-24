@@ -467,8 +467,20 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     return result
 
 
+def _validate_wandb_identity(args: argparse.Namespace) -> None:
+    if args.wandb_project != "nimloth-recon":
+        raise ValueError(f"ID61 W&B project must be nimloth-recon, got {args.wandb_project!r}")
+    if not args.wandb_run_id.startswith("nimloth-recon-id61-id75-action-outcome-audit"):
+        raise ValueError("ID61 W&B run ID is outside the locked experiment namespace")
+    if os.environ.get("WANDB_PROJECT") != args.wandb_project:
+        raise ValueError("effective WANDB_PROJECT differs from the locked ID61 project")
+    if os.environ.get("WANDB_RUN_ID") != args.wandb_run_id:
+        raise ValueError("effective WANDB_RUN_ID differs from the locked ID61 identity")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
+    _validate_wandb_identity(args)
     import wandb
 
     handle = wandb.init(
@@ -479,6 +491,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         config={"git_commit": args.git_commit, "read_only": True},
     )
     try:
+        if handle.project != args.wandb_project or handle.id != args.wandb_run_id:
+            raise RuntimeError("initialized W&B identity differs from the locked ID61 identity")
         result = run(args)
         hypothesis = result["hypothesis"]
         handle.log({f"move_left/{key}": value for key, value in hypothesis.items()})
