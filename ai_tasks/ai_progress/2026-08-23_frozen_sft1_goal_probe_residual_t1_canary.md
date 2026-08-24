@@ -115,6 +115,12 @@ No projector calibration, T2/T4, ValueHead, MCTS or RL training is authorized by
 - DINO move-left AUC `0.76169` rejects a pure single-frame-impossibility explanation. Both representation loss and WM outcome modeling require correction; lateral calibration is also poor under train/external shift.
 - Result SHA256=`2e2e1675317d252bc6e503ac78507328c81bf1925aceb487ed8e506f8b70c113`; diagnostic readouts are not authorized downstream.
 
+## ID191 direction canary attempt0
+
+- 人类批准从same-generation ID176 hidden到统一K16 state的bounded rank-64 residual方向canary；旧ID74/ID75/Value/RL全部冻结且不可复用。
+- Job`529701`在commit`0746e6e3`、normal/dgx-14于12秒preflight失败：runner误把ID74 trained projector SHA `e789...`绑定为SFT1 source hash，正确SFT1 `slot_projector.pt` SHA为`340d...`。
+- Attempt0没有创建output/W&B，没有model load或optimizer update，不可resume。登记E0149；修正版必须使用fresh retry1 output和W&B identity，同时保留对ID60完整checkpoint identity的代码级比较。
+
 ## CPU preflight evidence
 
 - Train/validation records: `3211/355`; unique early state prompts: `16052/1775`; step0--3 transitions: `12841/1420`.
