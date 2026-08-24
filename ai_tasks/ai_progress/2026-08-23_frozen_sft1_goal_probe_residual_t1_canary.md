@@ -103,6 +103,18 @@ No projector calibration, T2/T4, ValueHead, MCTS or RL training is authorized by
 - Failed images are `100%` exact unchanged and successful images `0%` unchanged. Actual state-change outcome AUC=`0.99977`; ID75 predicted-change outcome AUC=`0.61650`.
 - The corrected hypothesis is supported: ID75 learns beneficial successful movement but weakly distinguishes blocked outcomes and hallucinates movement on them; outcome-rate shift makes external action3 aggregate negative. The original “most move-left training examples fail” clause is false.
 
+## ID71 frozen-state outcome predictability probe
+
+- Human approved matched action-specific linear readouts on frozen full-K16 state and DINO. Job `529619` completed `0:0` in `00:00:59` on `normal/dgx-18`; locked `nimloth-recon` W&B finished.
+- External state/DINO/ID75 outcome ROC-AUC:
+  - move_forward `0.87276/0.87375/0.73801`;
+  - move_right `0.61707/0.71802/0.53983`;
+  - move_left `0.67356/0.76169/0.61650`.
+- State is above chance for every movement action. Move-left state-minus-DINO paired AUC CI=`[-0.16659,-0.01324]`, establishing significant collision-information loss in the frozen SFT1 state; move-right mean difference is also negative but CI crosses zero, while forward is equivalent.
+- ID75 is below the direct state readout for every action, so WM objective/selection underuses information that remains in state.
+- DINO move-left AUC `0.76169` rejects a pure single-frame-impossibility explanation. Both representation loss and WM outcome modeling require correction; lateral calibration is also poor under train/external shift.
+- Result SHA256=`2e2e1675317d252bc6e503ac78507328c81bf1925aceb487ed8e506f8b70c113`; diagnostic readouts are not authorized downstream.
+
 ## CPU preflight evidence
 
 - Train/validation records: `3211/355`; unique early state prompts: `16052/1775`; step0--3 transitions: `12841/1420`.
