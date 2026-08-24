@@ -54,6 +54,10 @@ and paired-DINO goal gate.
   distillation rather than another hidden-only projector.
 - Visual passes but instruction fails: redesign the instruction/goal encoder.
 
+## Preflight evidence
+
+Job `529749` completed `0:0` in 33 seconds on one H800. A two-state actual-prefix smoke captured finite float32 `k16_hidden`, `vision_pre_llm`, and `fused_image_final` arrays of shape `[2,16,2048]`, plus `instruction_embedding` and `instruction_final` arrays of shape `[2,2048]`. No optimizer or W&B run was created.
+
 ## Planned runtime
 
 - Entrypoint: `nimloth.eval.multimodal_feature_location_audit`.
