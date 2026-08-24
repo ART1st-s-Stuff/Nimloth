@@ -30,10 +30,10 @@ STATE_METADATA=${ID60}/frozen_state_cache_metadata.json
 ID60_RESULT=${ID60}/result.json
 ID191_RESULT=${ID191}/result.json
 ID191_HIDDEN=${ID191}/frozen_same_generation_hidden.npz
-OUT=${ROOT}/outputs/experiments/evaluation/state_alignment/2026-08-24/192_frozen_multimodal_feature_location_audit_retry1
+OUT=${ROOT}/outputs/experiments/evaluation/state_alignment/2026-08-24/192_frozen_multimodal_feature_location_audit_retry2
 RUN_WANDB_PROJECT=nimloth-recon
-RUN_WANDB_NAME=192_frozen_multimodal_feature_location_audit_retry1
-RUN_WANDB_ID=nimloth-recon-id192-feature-location-audit-retry1
+RUN_WANDB_NAME=192_frozen_multimodal_feature_location_audit_retry2
+RUN_WANDB_ID=nimloth-recon-id192-feature-location-audit-retry2
 
 for spec in \
   "${TRAIN_JSONL}:d43ada06d66c0b5cafa50e9da8ecc354445ca3b9686d1639b18050a981247b97" \

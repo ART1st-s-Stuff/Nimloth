@@ -130,7 +130,9 @@ No projector calibration, T2/T4, ValueHead, MCTS or RL training is authorized by
 
 - 人类批准冻结ID176并在同次Transformer forward捕获current-image pre-LLM vision grid、final image tokens与exact instruction token features。Hook smoke Job`529749`在真实H800通过。
 - Formal attempt0 Job`529767`在commit`69ce3dc0`、normal/dgx-37于2:14失败：Qwen BPE把部分instruction末尾标点与下一换行合并，隔离tokenize的instruction ID序列无法在真实prompt中exact匹配。
-- 无feature cache、diagnostic readout、result或optimizer update；W&B finished failed，不可resume。登记E0150；retry1必须tokenize包含真实prefix/suffix的完整archived instruction field，并以offset mapping选取exact character span，禁止丢弃边界token或近似匹配。
+- 无feature cache、diagnostic readout、result或optimizer update；W&B finished failed，不可resume。登记E0150；retry1 tokenized包含真实prefix/suffix的完整archived instruction field，并以offset mapping选取exact character span。
+- Retry1 Job`529788`完成全部2,229次冻结forward，但保留数千个Torch-backed NumPy chunks导致post-loop assembly在41:26仍未开始atomic cache；为避免45分钟硬超时手动取消。Peak RSS约23GiB，无cache/result/readout/checkpoint/optimizer update，W&B不得resume。
+- 登记E0151；retry2必须预分配最终float32数组、按source-state index直接写batch并记录阶段时间，使用fresh output/W&B identity。
 
 ## CPU preflight evidence
 

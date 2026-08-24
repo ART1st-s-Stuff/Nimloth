@@ -16,7 +16,7 @@ def test_id192_launcher_locks_frozen_same_forward_audit() -> None:
     assert "dgx-09,dgx-13,dgx-32,dgx-51" in slurm
     assert "nimloth.eval.multimodal_feature_location_audit" in runner
     assert "192_frozen_multimodal_feature_location_audit" in runner
-    assert "nimloth-recon-id192-feature-location-audit-retry1" in runner
+    assert "nimloth-recon-id192-feature-location-audit-retry2" in runner
     assert '[[ ! -e "${OUT}" ]]' in runner
     assert "--encode-batch-size 8" in runner
     assert "1e1307c24b0d0187191476c87dee570ad261b98ee51facfd77cb38aab35006bb" in runner
