@@ -1,7 +1,7 @@
 # ID188 pre-RL step0 rollout browser comparison contract
 
 Date: 2026-08-21
-Status: Job 525618 cancelled unallocated after human selected heterogeneous 6+2; independent retry3 prepared
+Status: one-rollout attempts remained unallocated; human requested migration to full Base60+Common60 evaluation; implementation complete, remote preflight blocked by VPN/SSH timeout
 
 ## Purpose
 
@@ -70,3 +70,37 @@ This is a stochastic cross-run comparison. The environment transport URL is part
 7. W&B contains only evaluation step0 and finishes.
 8. Cleanup leaves no runtime-owned process.
 9. After both runs finish, compare task text, success/reward/turn count, executed actions, priors, direct Q, backed-up MCTS root values/visits, and snapshot/source identity. Clearly disclose that stochastic draws are not paired.
+
+## Full Base60+Common60 migration
+
+The user requested the previously planned full pre-RL evaluation and declined
+additional policy/split questions. The adopted comparison is the direct
+apples-to-apples default: ID176 actor + frozen ID74 planner, evaluated with the
+same held-out Base60+Common60, t20, K4/100-simulation protocol as ID189.
+
+- Parent implementation commit: `fa821410`; VAGEN feature commit: `b640182`.
+- Config: `joint_id188_step0_base_common120.yaml`, phase
+  `step0_base_common120`.
+- Runner: `run_vagen_k4_id188_step0_base_common120_normal4x2.sh`.
+- Slurm: `id188_step0_base_common120_normal4x2.slurm`, normal 4x2 H800,
+  64 CPU/256 GiB, five-hour limit; expected 1--3 hours and 40--60 GiB output.
+- Data: exact held-out Base/Common assets, seeds1..60 each, zero train-scene
+  overlap; 120 unique rows.
+- Initialization: ID176 actor and ID74 planning source step776;
+  `resume_mode=disable`, global step0. Every module is frozen and no checkpoint
+  may be written.
+- Output:
+  `/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-08-24/188_eval_rollout_browser_k4_dp8_tp8_step0_base_common120_t20_s100_normal_4x2`.
+- W&B project/name/ID: `vagen` /
+  `188_eval_rollout_browser_k4_dp8_tp8_step0_base_common120_t20_s100_normal_4x2` /
+  `nimloth-id188-eval-rollout-browser-k4-step0-base-common120-normal-4x2`;
+  resume never.
+- Browser target: `evaluation_browser/global_step_0/index.html`; 120 rollouts,
+  full float32 state archives and all 100 chronological MCTS simulations per
+  turn. Ray must observe browser packing workers=`8` on every batch.
+- A failed formal identity cannot resume or be overwritten.
+
+Local syntax and diff checks passed. The first remote test connection timed out
+before any server command ran, so no Slurm job/output/W&B identity exists. VPN
+restoration is required before remote regression, production worktree creation,
+checkpoint/output/W&B preflight and submission.
