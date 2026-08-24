@@ -93,6 +93,16 @@ No projector calibration, T2/T4, ValueHead, MCTS or RL training is authorized by
 - Predictor/result SHA256 are `7c79cb06b8a349ab96cda9064541917ef97702be32e7d1b8f7eb2392122804ad` and `e56bfdcd656f24d642a6b7dcb94806dd018ea231fddee2d1255c94016958a796`; checkpoint tensors were reopened and verified finite, with exact config/hash identity.
 - Route decision: stop before T2/T4, fresh ValueHead, MCTS or RL. The ID60 goal gate and ID75 action3 gate both failed, so neither the fixed state interface nor this T1 checkpoint is accepted for downstream use. Any projector calibration or new T1 design requires a separate human decision.
 
+## ID61 action-outcome diagnosis
+
+- Exact archived `observation_texts[t+1]` contains an authoritative per-step environment outcome for every transition; trajectory-level success is not used.
+- Attempt0 Job `529539` calculated the metrics but initialized W&B under `flower` because E0145 recurred; it is diagnostic-only. Formal retry1 Job `529546` completed `0:0` in `00:00:37`, with locked `nimloth-recon` W&B finished.
+- Early `move_left` failures are train `386/1702=22.68%` versus decontaminated external `75/193=38.86%`, a `+16.18pp` shift; failures are not the majority.
+- Successful subset skill is `+0.16330` with bootstrap copy-minus-prediction MSE 95% CI `[+0.00175,+0.01941]`.
+- Failed/no-op subset skill is `-9.91418`; copy/prediction RMSE=`0.05526/0.18255`, with bootstrap 95% CI `[-0.04258,-0.01959]`.
+- Failed images are `100%` exact unchanged and successful images `0%` unchanged. Actual state-change outcome AUC=`0.99977`; ID75 predicted-change outcome AUC=`0.61650`.
+- The corrected hypothesis is supported: ID75 learns beneficial successful movement but weakly distinguishes blocked outcomes and hallucinates movement on them; outcome-rate shift makes external action3 aggregate negative. The original “most move-left training examples fail” clause is false.
+
 ## CPU preflight evidence
 
 - Train/validation records: `3211/355`; unique early state prompts: `16052/1775`; step0--3 transitions: `12841/1420`.
