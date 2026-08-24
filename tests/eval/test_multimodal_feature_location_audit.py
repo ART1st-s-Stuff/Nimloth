@@ -2,6 +2,7 @@ import numpy as np
 import torch
 
 from nimloth.eval.multimodal_feature_location_audit import (
+    _instruction_span,
     adaptive_pool_image_tokens,
     feature_location_decision,
     find_last_subsequence,
@@ -18,6 +19,28 @@ def test_find_last_subsequence_returns_last_exact_span() -> None:
         assert "subsequence" in str(error)
     else:
         raise AssertionError("missing subsequence was accepted")
+
+
+def test_instruction_span_uses_complete_field_offsets() -> None:
+    class BoundaryMergingTokenizer:
+        def __call__(self, text, *, add_special_tokens, return_offsets_mapping):
+            assert add_special_tokens is False and return_offsets_mapping is True
+            prefix = "Human Instruction: "
+            instruction = "Find it."
+            start = len(prefix)
+            stop = start + len(instruction)
+            # Token 12 overlaps the instruction's final period and suffix newline.
+            return {
+                "input_ids": [10, 11, 12, 13],
+                "offset_mapping": [(0, start), (start, stop - 1), (stop - 1, stop + 1), (stop + 1, len(text))],
+            }
+
+    span = _instruction_span(
+        [99, 10, 11, 12, 13, 98],
+        tokenizer=BoundaryMergingTokenizer(),
+        instruction="Find it.",
+    )
+    assert span == (2, 4)
 
 
 def test_adaptive_pool_image_tokens_preserves_row_major_grid() -> None:

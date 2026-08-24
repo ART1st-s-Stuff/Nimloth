@@ -58,12 +58,14 @@ and paired-DINO goal gate.
 
 Job `529749` completed `0:0` in 33 seconds on one H800. A two-state actual-prefix smoke captured finite float32 `k16_hidden`, `vision_pre_llm`, and `fused_image_final` arrays of shape `[2,16,2048]`, plus `instruction_embedding` and `instruction_final` arrays of shape `[2,2048]`. No optimizer or W&B run was created.
 
-## Planned runtime
+## Attempt0 and corrected runtime
 
+- Attempt0 Job `529767` failed `1:0` after `00:02:14`: isolated instruction tokenization did not preserve a Qwen BPE punctuation/newline boundary. No feature cache, probe, optimizer update or result was produced; W&B finished failed. It is not resumable.
+- Retry1 tokenizes the complete archived instruction field, uses offset mappings for the exact character span, and never drops or approximates boundary tokens.
 - Entrypoint: `nimloth.eval.multimodal_feature_location_audit`.
 - One H800 on `normal`, 45-minute limit, 128 GiB host memory.
-- Fresh output:
-  `outputs/experiments/evaluation/state_alignment/2026-08-24/192_frozen_multimodal_feature_location_audit`.
-- W&B project `nimloth-recon`, run ID
-  `nimloth-recon-id192-feature-location-audit`, resume forbidden.
+- Corrected fresh output:
+  `outputs/experiments/evaluation/state_alignment/2026-08-24/192_frozen_multimodal_feature_location_audit_retry1`.
+- W&B project `nimloth-recon`, retry1 run ID
+  `nimloth-recon-id192-feature-location-audit-retry1`, resume forbidden.
 - A failed attempt cannot overwrite or resume; it requires fresh output and W&B identity.
