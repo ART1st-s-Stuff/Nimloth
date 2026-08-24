@@ -253,7 +253,8 @@ ID59 Job`528906`在normal/dgx-10以`COMPLETED 0:0`、`00:13:23`完成。它使�
 
 - ID60 Job`528931`完成冻结goal probe：state micro/macro top1=`0.057803/0.040432`，低于DINO=`0.106936/0.067128`与majority=`0.072254`；paired-bootstrap state-minus-DINO 95%区间=`[-0.080925,-0.017341]`。goal gate所有条款失败。
 - ID75 retry1 Job`529411`使用上述immutable cache并保持exact-copy初始化与raw-DINO-loss=0。overall skill=`+0.365064`、macro primary skill=`+0.210312`、std ratio=`0.981491`且next-DINO优于copy；但action0/2/3/4 skill=`+0.354206/+0.053946/-0.132927/+0.566024`，action3失败。
-- 结论：aggregate T1学习信号真实存在，但不能覆盖goal接口失败与action3退化。SFT1 projector仍只保留为视觉anchor，ID75 predictor仅为诊断checkpoint；两者均未获准进入T2/T4、ValueHead、MCTS或RL。
+- ID61进一步用exact archived environment feedback分层：early `move_left`失败率train/external=`22.68%/38.86%`；成功子集skill=`+0.16330`，失败/no-op子集skill=`-9.91418`，且failed image `100%`不变。actual/predicted state-change outcome AUC=`0.99977/0.61650`。因此action3失败来自弱outcome判别与`+16.18pp` outcome shift，而非多数训练样本失败；同类blocked hallucination也见于move_forward/right。
+- 结论：aggregate T1学习信号真实存在，但不能覆盖goal接口失败与movement outcome退化。SFT1 projector仍只保留为视觉anchor，ID75 predictor仅为诊断checkpoint；两者均未获准进入T2/T4、ValueHead、MCTS或RL。
 
 ### 阶段A：State projector gate
 
@@ -326,12 +327,13 @@ skill_d=1-\frac{MSE(\hat z_{t+d},z_{t+d})}
 1. 阶段0的SFT1/SFT2 checkpoint只读矩阵已完成：主要故障定位到SFT2 projector/interface，backbone drift很小，当前EMA没有可测state差异；
 2. ID59与ID60已完成部署视觉、grounded kNN和低容量goal probe；视觉anchor通过，但state goal probe显著低于DINO与majority，representation gate失败；
 3. ID75零初始化Residual-T1已完成；aggregate、std与next-DINO检查通过，但action3 skill为负，one-step dynamics gate失败；
-4. 停止T2/T4、fresh ValueHead、MCTS和RL。可先做不训练的action3误差/状态变化分层分析，但不得靠aggregate指标覆盖该失败；
-5. 若人类另行授权projector校准，以SFT1视觉anchor开始，使用actual current/next对称视觉监督、可信目标监督、SFT1权重anchor与FP32 EMA target；
-6. projector通过visual、goal与CoT不变性门禁后，建立新的canonical visual-goal state合同；
-7. 仅在人类另行授权后，在新canonical state上重新训练fresh、零初始化T1；不得把ID75 checkpoint跨坐标系复用；
-8. 新T1通过每个主要action的copy-relative和DINO/goal双门禁后才扩到T2/T4；
-9. 重新训练并校准ValueHead/Q；
-10. 最后才恢复K4 MCTS和新的joint RL实验。
+4. ID61已完成action3分层：WM在成功movement上改善、在blocked/no-op上严重幻觉移动，且train/external outcome分布漂移。停止T2/T4、fresh ValueHead、MCTS和RL；
+5. 后续新数据必须持久化逐步`last_action_success`，并按每个movement action的successful/blocked子集分别报告；该标签只用于监督/诊断，禁止作为部署时已知输入泄露未来。若人类授权新WM设计，可比较success-probability/mixture successor与保持copy-safe的outcome-aware门禁；
+6. 若人类另行授权projector校准，以SFT1视觉anchor开始，使用actual current/next对称视觉监督、可信目标监督、SFT1权重anchor与FP32 EMA target；
+7. projector通过visual、goal与CoT不变性门禁后，建立新的canonical visual-goal state合同；
+8. 仅在人类另行授权后，在新canonical state上重新训练fresh、零初始化T1；不得把ID75 checkpoint跨坐标系复用；
+9. 新T1通过每个主要action及其successful/blocked子集的copy-relative和DINO/goal门禁后才扩到T2/T4；
+10. 重新训练并校准ValueHead/Q；
+11. 最后才恢复K4 MCTS和新的joint RL实验。
 
 在以上诊断和门禁完成前，不建议通过增加epoch、调学习率或扩大predictor来延续当前WM训练；这些操作不能修复state空间接口不一致。

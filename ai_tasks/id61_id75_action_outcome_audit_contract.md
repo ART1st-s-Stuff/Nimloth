@@ -42,3 +42,14 @@ T2/T4, ValueHead, MCTS or RL.
 - Attempt0 Job `529539` completed the calculation but violated E0145 by initializing W&B under `flower`; it is diagnostic evidence only, not the formal result.
 - Formal retry1 W&B project `nimloth-recon`, run ID `nimloth-recon-id61-id75-action-outcome-audit-retry1`, resume forbidden.
 - Fresh formal output `outputs/experiments/evaluation/state_alignment/2026-08-24/61_id75_action_outcome_audit_retry1`.
+
+## Actual result
+
+Formal retry1 Job `529546` completed `0:0` in `00:00:37` on one H800 (`normal/dgx-10`); W&B `nimloth-recon` finished.
+
+- Early `move_left` failure rate shifted from train `386/1702=22.68%` to decontaminated external `75/193=38.86%` (`+16.18pp`). Failures were not the majority.
+- Successful subset: copy/prediction RMSE `0.25315/0.23156`, skill `+0.16330`, copy-minus-prediction MSE bootstrap 95% CI `[+0.00175,+0.01941]`.
+- Failed subset: copy/prediction RMSE `0.05526/0.18255`, skill `-9.91418`, bootstrap 95% CI `[-0.04258,-0.01959]`.
+- Failed external images were `100%` exact unchanged; successful images were `0%` unchanged. Actual state-change success AUC was `0.99977`, while predicted-change success AUC was only `0.61650`.
+- Conclusion: the core mixture/outcome-prediction hypothesis is supported, but the claim that most training `move_left` actions fail is false. ID75 improves successful lateral moves and hallucinates movement on blocked/no-op transitions; weak outcome discrimination plus train/external outcome shift makes aggregate action3 skill negative.
+- Result SHA256: `bace6fcbc5ec85fdeed59e6ba30ff61b58bbe382f88af51f9dd591a8105a28e4`.
