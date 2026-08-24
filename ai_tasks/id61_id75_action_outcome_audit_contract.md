@@ -39,6 +39,6 @@ T2/T4, ValueHead, MCTS or RL.
 ## Runtime
 
 - Slurm `normal`, one H800, at most 15 minutes.
-- W&B project `nimloth-recon`, run ID
-  `nimloth-recon-id61-id75-action-outcome-audit`, resume forbidden.
-- Fresh output `outputs/experiments/evaluation/state_alignment/2026-08-24/61_id75_action_outcome_audit`.
+- Attempt0 Job `529539` completed the calculation but violated E0145 by initializing W&B under `flower`; it is diagnostic evidence only, not the formal result.
+- Formal retry1 W&B project `nimloth-recon`, run ID `nimloth-recon-id61-id75-action-outcome-audit-retry1`, resume forbidden.
+- Fresh formal output `outputs/experiments/evaluation/state_alignment/2026-08-24/61_id75_action_outcome_audit_retry1`.
