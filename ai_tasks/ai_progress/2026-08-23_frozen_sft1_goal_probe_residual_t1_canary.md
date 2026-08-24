@@ -63,8 +63,8 @@ No projector calibration, T2/T4, ValueHead, MCTS or RL training is authorized by
 - [x] Implement zero-copy-initialized residual T1 predictor and canary trainer.
 - [x] Complete local static and clean remote CPU gates (`19 passed` after metadata correction, including real tiny probe/T1 optimization loops).
 - [x] Run and validate ID60 on normal 1xH800.
-- [ ] Run the ID75-only retry1 authorized by the user's instruction to continue.
-- [ ] Validate ID75 artifacts, update progress and report decision.
+- [x] Run the ID75-only retry1 authorized by the user's instruction to continue.
+- [x] Validate ID75 artifacts, update progress and report decision.
 
 ## ID60 actual result and first-launch failure
 
@@ -78,6 +78,20 @@ No projector calibration, T2/T4, ValueHead, MCTS or RL training is authorized by
 - Canonical ID60 cache SHA256 is `0fa994139d038d7f89b5a02a83d9036f9367b34a25f25e6b8cb84204f0daf8b6`; all eleven arrays were reopened and validated for exact shape, dtype and finite values.
 - Job `528931` then failed before ID75 output creation or W&B initialization because the dated parent directory did not exist. This is a launcher failure, not an ID75 model result; it is recorded as E0148.
 - ID75 retry1 consumes only immutable hash-pinned ID60 inputs and uses a fresh `_retry1` output/W&B identity. The user instructed the agent to continue after the failure.
+
+## ID75 actual result
+
+- Job `529411` completed `0:0` in `00:10:23` at commit `5ad733db15b760d38db0df36803f57e616294162` on one H800 (`normal`, `dgx-35`); W&B finished.
+- Contract checks passed: exact-copy initial prediction, `raw_dino_training_loss_weight=0`, frozen actor/projector/DINO, residual predictor as the sole trainable module, optimizer-free saved checkpoint.
+- External validation (`1413` transitions):
+  - overall copy-relative skill `+0.365064`;
+  - macro primary-action skill `+0.210312`;
+  - primary action0/2/3/4 skills `+0.354206/+0.053946/-0.132927/+0.566024`;
+  - predicted/actual std ratio `0.981491`;
+  - predicted/copy next-DINO RMSE `0.837010/0.854832`.
+- T1 gate failed solely because action3 did not beat copy. The stronger overall-skill signal passed, but it cannot replace the per-action gate.
+- Predictor/result SHA256 are `7c79cb06b8a349ab96cda9064541917ef97702be32e7d1b8f7eb2392122804ad` and `e56bfdcd656f24d642a6b7dcb94806dd018ea231fddee2d1255c94016958a796`; checkpoint tensors were reopened and verified finite, with exact config/hash identity.
+- Route decision: stop before T2/T4, fresh ValueHead, MCTS or RL. The ID60 goal gate and ID75 action3 gate both failed, so neither the fixed state interface nor this T1 checkpoint is accepted for downstream use. Any projector calibration or new T1 design requires a separate human decision.
 
 ## CPU preflight evidence
 

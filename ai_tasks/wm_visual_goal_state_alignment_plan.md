@@ -249,6 +249,12 @@ ID59 Job`528906`在normal/dgx-10以`COMPLETED 0:0`、`00:13:23`完成。它使�
 
 因此：SFT1 projector保留为视觉anchor候选，但完整visual-goal gate未通过。ID60使用冻结state、匹配图像/DINO和多数类基线训练低容量goal readout；由于row级task identity不可恢复，人类批准按exact image分组、去重和跨split排除的保守诊断，结果不得称为正式task-generalization。任何projector校准或后续WM训练仍需独立实验身份和授权。
 
+#### ID60 goal probe与ID75 Residual-T1实际结果
+
+- ID60 Job`528931`完成冻结goal probe：state micro/macro top1=`0.057803/0.040432`，低于DINO=`0.106936/0.067128`与majority=`0.072254`；paired-bootstrap state-minus-DINO 95%区间=`[-0.080925,-0.017341]`。goal gate所有条款失败。
+- ID75 retry1 Job`529411`使用上述immutable cache并保持exact-copy初始化与raw-DINO-loss=0。overall skill=`+0.365064`、macro primary skill=`+0.210312`、std ratio=`0.981491`且next-DINO优于copy；但action0/2/3/4 skill=`+0.354206/+0.053946/-0.132927/+0.566024`，action3失败。
+- 结论：aggregate T1学习信号真实存在，但不能覆盖goal接口失败与action3退化。SFT1 projector仍只保留为视觉anchor，ID75 predictor仅为诊断checkpoint；两者均未获准进入T2/T4、ValueHead、MCTS或RL。
+
 ### 阶段A：State projector gate
 
 - 训练或校准统一的视觉—目标state encoder；
@@ -318,14 +324,14 @@ skill_d=1-\frac{MSE(\hat z_{t+d},z_{t+d})}
 ## 10. 推荐执行顺序
 
 1. 阶段0的SFT1/SFT2 checkpoint只读矩阵已完成：主要故障定位到SFT2 projector/interface，backbone drift很小，当前EMA没有可测state差异；
-2. ID59已完成部署ID176 actor+SFT1 projector视觉确认和grounded target-object kNN；视觉通过但goal-above-DINO失败。下一步是在不改backbone/projector的前提下，使用可靠source split和匹配基线完成低容量goal readout及更充分真实counterfactual门禁；
-3. 完成ValueHead在actual及depth1--4 predicted state上的校准审计；阶段0先覆盖同一pre-RL样本上的depth1；
-4. 根据诊断确定主要故障在projector、WM、slot/normalization还是ValueHead；
-5. 建立canonical visual-goal state合同；
-6. 仅在人类另行授权后，对称监督actual current/next state并冻结或EMA target projector；
-7. 仅在人类另行授权后，训练pre-RL-only、零初始化的T1 residual WM；
-8. 通过copy-relative和DINO/goal双门禁后扩到T2/T4；
-9. 重新校准ValueHead/Q；
+2. ID59与ID60已完成部署视觉、grounded kNN和低容量goal probe；视觉anchor通过，但state goal probe显著低于DINO与majority，representation gate失败；
+3. ID75零初始化Residual-T1已完成；aggregate、std与next-DINO检查通过，但action3 skill为负，one-step dynamics gate失败；
+4. 停止T2/T4、fresh ValueHead、MCTS和RL。可先做不训练的action3误差/状态变化分层分析，但不得靠aggregate指标覆盖该失败；
+5. 若人类另行授权projector校准，以SFT1视觉anchor开始，使用actual current/next对称视觉监督、可信目标监督、SFT1权重anchor与FP32 EMA target；
+6. projector通过visual、goal与CoT不变性门禁后，建立新的canonical visual-goal state合同；
+7. 仅在人类另行授权后，在新canonical state上重新训练fresh、零初始化T1；不得把ID75 checkpoint跨坐标系复用；
+8. 新T1通过每个主要action的copy-relative和DINO/goal双门禁后才扩到T2/T4；
+9. 重新训练并校准ValueHead/Q；
 10. 最后才恢复K4 MCTS和新的joint RL实验。
 
 在以上诊断和门禁完成前，不建议通过增加epoch、调学习率或扩大predictor来延续当前WM训练；这些操作不能修复state空间接口不一致。
