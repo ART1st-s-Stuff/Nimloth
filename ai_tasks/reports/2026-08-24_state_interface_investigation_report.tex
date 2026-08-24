@@ -59,7 +59,7 @@ Nimloth希望让智能体先在内部预测动作后果，再选择真实动作�
 
 本报告汇总ID54--ID75、ID191和ID192等近期调查。主要结论有三点。第一，部署中的语言与视觉主模型本身基本健康，严重漂移主要发生在旧训练阶段的状态压缩模块。第二，当前16位置状态几乎没有保留任务目标，并削弱了部分左右碰撞信息；世界模型又进一步没有充分利用剩余信息，尤其容易把被障碍挡住的移动预测成成功移动。第三，最新调查已经找到更可靠的信息来源：任务目标在原始任务指令（instruction）表示中几乎可被完全读出；经过语言模型处理后的当前图片表示，在三个主要移动方向上接近DINO视觉基准，但左右动作的外部样本仍不足以通过严格统计门槛。
 
-因此，下一步不应继续修补旧世界模型或扩大旧适配器。更稳妥的路线是先用现有缓存扩大只读统计检查，再把当前图片表示和任务指令表示融合成一个新的统一状态；只有该状态通过视觉、目标和动作结果检查后，才从头训练新的世界模型、价值模型和搜索策略。
+因此，下一步不应继续修补旧世界模型或扩大旧适配器。本报告进一步对比了当前SFT1监督与建议的新监督：当前训练只有成功示范的回答/动作损失和把状态直接拟合到DINO的视觉损失，缺少任务指令、动作被挡和目标--画面关系监督。更稳妥的路线是重新监督SFT1的16位置状态提取；只有新状态同时通过视觉、目标、动作可行性和策略保持检查后，才从头训练新的世界模型、价值模型和搜索策略。
 \end{abstract}
 
 \tableofcontents
@@ -407,50 +407,185 @@ DINO和语言模型处理后的当前图片表示都能较好地区分向左、�
   \item 没有足够证据把视觉和目标拆成两个独立部署状态。项目仍应输出一个统一的16位置状态。
 \end{itemize}
 
+\section{当前SFT1监督与建议监督的对比}
+
+\subsection{当前SFT1实际在学习什么}
+
+历史SFT1的16位置状态训练代码使用成功轨迹中的单步前缀。16个状态查询词元本身不计算词元预测损失；它们通过后续回答/动作损失和DINO视觉损失得到梯度。训练目标可以概括为：
+
+\begin{equation}
+  L_{\mathrm{current}}
+  =L_{\mathrm{response/action}}^{\mathrm{successful\ demonstrations}}
+  +\lambda_d\frac{1}{16}\sum_{i=1}^{16}
+  \left\|z_{t,i}-d_{t,i}^{\mathrm{DINO}}\right\|_2^2.
+\end{equation}
+
+视觉模块保持冻结，语言模型使用LoRA这种低参数量更新方法，16个查询词元有可训练的附加向量，\code{SharedSlotProjector}把每个查询位置映射到1024维。DINO目标来自当前图片的$4\times4$区域表示，状态被逐位置、逐元素直接拉向DINO。
+
+这个目标适合得到视觉网格，却没有明确要求状态保存instruction，也没有要求状态判断移动会不会被挡住。只使用成功示范做回答/动作模仿，也不能充分覆盖失败动作。更重要的是，直接惩罚$z-DINO$会使任何DINO没有的额外信息都增加损失，不适合作为完整视觉--目标状态的唯一表示目标。
+
+\subsection{逐项对比}
+
+\begin{longtable}{p{3.0cm}p{5.6cm}p{6.0cm}}
+\toprule
+\textbf{方面} & \textbf{当前SFT1} & \textbf{建议的新SFT1} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{方面} & \textbf{当前SFT1} & \textbf{建议的新SFT1} \\
+\midrule
+\endhead
+状态是否继承旧状态 & 训练新查询表示和压缩模块，但最终状态被直接拟合到DINO & 不把旧SFT1或ID74状态作为目标；旧状态只作比较基准 \\
+视觉监督 & $z$逐元素拟合DINO网格 & 从完整状态经共享的小型线性读取模块恢复DINO方向和16个区域间的空间关系 \\
+任务指令 & 没有独立监督 & 匹配冻结ID176从exact instruction得到的固定表示；目标类别分类只作检查或小型辅助 \\
+动作被挡 & 没有独立监督 & 从$(z,a)$预测动作是否成功；优先为同一模拟器状态采集所有主要移动动作的结果 \\
+目标与画面关系 & 没有可靠监督 & 重新采集目标是否可见；可见时监督左/中/右位置和大致距离 \\
+训练数据 & 回答/动作模仿主要使用成功轨迹 & 视觉和instruction使用所有pre-RL观察；动作结果使用全部转移并保留失败；只有模仿损失使用成功示范 \\
+策略保护 & 回答/动作损失同时改变状态和策略 & 用冻结ID176的动作分布约束新查询词元，不允许状态改善以actor退化为代价 \\
+checkpoint选择 & 主要看总训练/验证损失 & 视觉、目标、逐动作成功判断和策略保持分别过门槛；不允许一项高分掩盖另一项失败 \\
+\bottomrule
+\end{longtable}
+
+\subsection{建议的新监督信号}
+
+训练时允许增加几个容量很小的读取模块。它们从同一个完整状态读取信息，只用于监督和检查，部署时删除；这不会把状态拆成视觉和目标两个分支。
+
+\paragraph{视觉空间。}
+令$R_v$为16个位置共用的线性读取模块，$d_{t,i}$为原始观察图片的DINO区域表示：
+
+\begin{equation}
+  \hat d_{t,i}=R_v(z_{t,i}),
+\end{equation}
+
+定义$S(x)_{ij}=\cos(x_i,x_j)$，即任意两个区域之间的相似度。视觉损失为：
+
+\begin{equation}
+  L_{\mathrm{visual}}
+  =\frac{1}{16}\sum_i\left[1-\cos(\hat d_{t,i},d_{t,i})\right]
+  +\eta\left\|S(\hat d_t)-S(d_t)\right\|_F^2.
+\end{equation}
+
+第一项保存每个区域的视觉内容，第二项保存16个区域之间的空间关系。它们不要求整个状态等于DINO。
+
+\paragraph{任务指令。}
+用冻结ID176对完整、真实instruction生成固定目标：
+
+\begin{equation}
+  g_t^{\mathrm{teacher}}
+  =\operatorname{stopgrad}\!\left(E_{\mathrm{ID176}}(\mathrm{instruction}_t)\right),
+\end{equation}
+
+\begin{equation}
+  L_{\mathrm{instruction}}
+  =1-\cos\!\left(
+  R_g\!\left(\frac{1}{16}\sum_i z_{t,i}\right),
+  g_t^{\mathrm{teacher}}
+  \right).
+\end{equation}
+
+教师表示必须预先计算并固定，不能与新模型一起移动。ID192已经验证该表示能够可靠读出目标。目标类别准确率继续作为外部检查，避免只匹配无关措辞。
+
+\paragraph{动作可行性。}
+理想数据应在同一个模拟器状态的独立副本中分别尝试向前、向左和向右，得到每个动作的真实成功标签$y_t^{(a)}$：
+
+\begin{equation}
+  L_{\mathrm{feasibility}}
+  =\sum_{a\in\mathcal A_{\mathrm{move}}}
+  \operatorname{BCE}\!\left(R_a(z_t,a),y_t^{(a)}\right).
+\end{equation}
+
+现有归档只有实际执行动作的下一条环境反馈，可用于较弱的小规模验证，不能替代全动作标签。真实结果只能作为训练目标，绝不能作为部署输入。
+
+\paragraph{目标与画面的关系。}
+正式状态还应监督目标当前是否可见；仅在可见时监督目标在画面的左/中/右位置和大致距离。看不见时不强制预测全局最短距离，因为该信息可能无法从现有观察和历史推断。现有归档的逐行任务身份不可靠，这部分需要新的、身份严格绑定的pre-RL采集。
+
+\paragraph{策略保持。}
+改变状态查询词元可能改变后续动作概率。应固定ID176教师动作分布，并约束：
+
+\begin{equation}
+  L_{\mathrm{policy}}
+  =D_{\mathrm{KL}}\!\left(
+  \pi_{\mathrm{ID176}}(a\mid o_t,\mathrm{instruction},\mathrm{history})
+  \;\|\;
+  \pi_{\mathrm{new}}(a\mid o_t,\mathrm{instruction},\mathrm{history})
+  \right).
+\end{equation}
+
+如果后续解冻Qwen参数，还要保留原始成功示范的回答/动作损失，防止CoT、格式和动作能力退化。
+
+\subsection{建议目标及其边界}
+
+正式状态训练目标为：
+
+\begin{equation}
+  L_{\mathrm{state}}
+  =\lambda_vL_{\mathrm{visual}}
+  +\lambda_gL_{\mathrm{instruction}}
+  +\lambda_aL_{\mathrm{feasibility}}
+  +\lambda_rL_{\mathrm{relation}},
+\end{equation}
+
+\begin{equation}
+  L_{\mathrm{total}}
+  =L_{\mathrm{state}}+\lambda_pL_{\mathrm{policy}},
+\end{equation}
+
+若解冻Qwen，再加入$\lambda_{\mathrm{SFT}}L_{\mathrm{SFT}}$。各损失先按样本平均并检查其对状态查询位置产生的梯度大小，避免某一项比其他项大几十倍。checkpoint仍按各项外部门槛分别选择，不按加权总分选择。
+
+不应作为新状态监督的信号包括：旧SFT1或ID74状态、旧世界模型预测、旧ValueHead/Q、trajectory reward、旧decoder重建、图片变化代理、fixed CoT及任何post-RL heldout数据。
+
+\subsection{当前可用数据与缺口}
+
+\begin{table}[htbp]
+\centering
+\caption{建议监督信号的数据准备情况}
+\small
+\begin{tabularx}{\textwidth}{p{4.0cm}p{2.4cm}X}
+\toprule
+\textbf{信号} & \textbf{当前是否可用} & \textbf{说明} \\
+\midrule
+原始图片DINO网格 & 是 & 已有冻结cache，但正式新状态应重新锁定exact source和原图处理身份 \\
+冻结instruction表示 & 是 & ID192已有3,566条record级固定表示，可覆盖现有train/validation \\
+实际执行动作的成功/失败 & 是 & 来自下一条精确环境反馈；有策略选择偏差，只适合小规模验证 \\
+同一状态的全动作可行性 & 否 & 需要在模拟器状态副本中逐动作测试并保存 \\
+目标可见性及可见时位置 & 否 & 需要逐行任务身份正确的新pre-RL采集 \\
+冻结ID176动作分布 & 可只读生成 & 需要从同一次前缀计算并固定，不能使用更新后的模型重算教师 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
 \section{建议的后续路线}
 
 \subsection{第一步：扩大只读统计检查}
 
-ID192已经保存14,261个状态的冻结特征缓存。建议先进行按原始图片内容分组的五折交叉验证：每次使用四组训练小型分类器，在剩余一组产生从未参与该分类器训练的预测，最后合并所有预测。
+ID192已经保存14,261个状态的冻结特征缓存。先进行按原始图片内容分组的五折交叉验证，缩小“语言模型后图片表示与DINO相差多少”的统计范围。该检查不能冒充新的外部验证；现有归档外部验证仍是主要外部结果。
 
-该检查的目的只是缩小“语言模型后图片表示与DINO相差多少”的统计范围。它不能冒充新的外部验证；现有归档外部验证结果仍应作为主要外部结果。该步骤不需要重新运行主模型，也不更新任何部署参数。
+\subsection{第二步：使用现有数据做状态监督小规模验证}
 
-\subsection{第二步：训练新的统一状态小规模验证}
-
-如果第一步支持语言模型后图片表示，可以测试：
+冻结Qwen和视觉模块，只训练16个查询词元的附加参数、新\code{SharedSlotProjector}和训练用读取模块。使用：
 
 \begin{equation}
-  z_{\mathrm{new}}=
-  G\!\left(
-    z_{\mathrm{anchor}},
-    A_v(v_{\mathrm{image}}),
-    A_g(h_{\mathrm{instruction}})
-  \right),
+  L_{\mathrm{visual}}+L_{\mathrm{instruction}}
+  +L_{\mathrm{actual\ action\ result}}+L_{\mathrm{policy}}.
 \end{equation}
 
-其中$v_{\mathrm{image}}$是同一次模型计算中、经过语言模型处理的当前图片表示，$h_{\mathrm{instruction}}$是精确instruction表示。$A_v$和$A_g$只负责把尺寸转成可融合形式，$G$最终仍输出一个$16\times1024$状态。
+这一步只验证查询词元能否主动读取ID192定位的图片和instruction信息。由于缺少全动作与可靠目标关系标签，它不能直接建立正式统一状态。
 
-新状态至少应同时通过：
+\subsection{第三步：重新采集正式监督数据}
 
-\begin{itemize}
-  \item 视觉结构与DINO的比较；
-  \item 目标分类；
-  \item 向前、向左、向右动作结果的AUC、精确率--召回率和概率校准；
-  \item 对真实回答措辞变化的稳定性；
-  \item 训练与外部验证之间的稳定性。
-\end{itemize}
+在身份严格绑定的pre-RL模拟器状态中保存所有主要移动动作的可行性、目标是否可见，以及可见时的位置和距离。失败与被挡转移必须保留。视觉和instruction监督可使用所有观察；只有回答/动作模仿损失使用成功示范。
 
-如果语言模型后图片表示在扩大检查中确实不足，再考虑用DINO作教师进行蒸馏，或修正视觉编码器。DINO优先作为训练和评估的教师，不默认成为部署时的第二个视觉模型。
+\subsection{第四步：正式重训SFT1状态提取}
 
-\subsection{第三步：从头训练能表示动作失败的一步世界模型}
+使用完整四类状态监督和策略保持约束。先保持Qwen冻结；如果查询词元仍无法读取信息，再只解冻语言模型上层少量参数并加入原始SFT损失。现有SFT1状态只作基准，不作为新状态输入或训练目标。
 
-新世界模型应预测动作成功概率，并分别建模“成功移动后的状态”和“动作被挡住后的状态”。真实动作结果只可用于监督和评估，部署时不能作为已知输入。
+\subsection{第五步：从头训练能表示动作失败的一步世界模型}
 
-一步模型必须按每个主要动作，以及成功和被挡住子集分别优于复制基准。通过后才可扩展到第2步和第4步。
+新世界模型应预测动作成功概率，并分别建模“成功移动后的状态”和“动作被挡住后的状态”。一步模型必须按每个主要动作，以及成功和被挡住子集分别优于复制基准。通过后才扩展到第2步和第4步。
 
-\subsection{第四步：重新训练价值模型并恢复搜索}
+\subsection{第六步：重新训练价值模型并恢复搜索}
 
-新状态定义确定后，应从头训练并校准ValueHead和动作价值。先检查真实状态和一步预测状态，再检查第2--4层预测。只有预测深度增加时价值排序和回报校准没有持续恶化，才恢复K4搜索和新的联合强化学习。
+新状态定义确定后，从头训练并校准ValueHead和动作价值。先检查真实状态和一步预测状态，再检查第2--4层预测。只有预测深度增加时价值排序和回报校准没有持续恶化，才恢复K4搜索和新的联合强化学习。
 
 \section{尚未解决的问题}
 
@@ -495,10 +630,11 @@ ID192正式尝试0因词元边界处理错误而在特征生成前失败；retry
   \item 即使使用较健康的SFT1压缩模块，当前16位置状态仍几乎丢失instruction目标，并削弱部分左右碰撞信息；
   \item 旧世界模型进一步没有充分使用剩余信息，尤其不能可靠预测动作被挡住；
   \item 目标信息已经明确定位在instruction表示中；
-  \item 经过语言模型处理后的当前图片表示是最有希望的视觉来源，但还需要更大分组检查来缩小不确定范围。
+  \item 经过语言模型处理后的当前图片表示是最有希望的视觉来源，但还需要更大分组检查来缩小不确定范围；
+  \item 当前SFT1的“成功示范回答/动作损失加状态直接拟合DINO”没有覆盖任务指令、动作被挡和目标--画面关系，监督目标需要重做。
 \end{enumerate}
 
-在这些证据下，继续增加旧世界模型训练轮数、扩大ID191适配器，或直接恢复K4强化学习，都不能解决基础输入问题。合理顺序是：扩大冻结统计检查，建立新的统一状态，通过视觉、目标和动作结果门槛，再从头训练一步世界模型、长预测、价值模型和搜索策略。
+在这些证据下，继续增加旧世界模型训练轮数、扩大ID191适配器，或直接恢复K4强化学习，都不能解决基础输入问题。合理顺序是：扩大冻结统计检查，用现有数据验证新的监督能否驱动16个查询位置读取图片和instruction；随后补采全动作可行性与目标关系标签，正式重训SFT1状态提取；新状态通过所有独立门槛后，再从头训练一步世界模型、长预测、价值模型和搜索策略。
 
 \appendix
 \section{内部资料索引}
@@ -509,6 +645,7 @@ ID192正式尝试0因词元边界处理错误而在特征生成前失败；retry
   \item \url{ai_tasks/wm_visual_goal_state_alignment_plan.md}
   \item \url{ai_tasks/ai_progress/2026-08-23_frozen_sft1_goal_probe_residual_t1_canary.md}
   \item \url{ai_tasks/id191_state_interface_direction_canary_contract.md}
+  \item 历史SFT1 DINO-grid监督实现：commit \code{6c1828a09615d8fc9eb9ac77b5723eefa1c6eb2e}中的\code{experiments/training/sft1/train\_dino\_grid.py}与\code{src/nimloth/training/sft1/dino\_grid.py}
   \item \url{ai_tasks/id192_multimodal_feature_location_audit_contract.md}
   \item \url{/workspace/remote2/nimloth-artifacts/id61_id75_action_outcome_audit_retry1/result.json}
   \item \url{/workspace/remote2/nimloth-artifacts/id71_frozen_state_action_outcome_probe/result.json}
