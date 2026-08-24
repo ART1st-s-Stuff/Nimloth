@@ -387,15 +387,21 @@ def _extract_features(
         latent_token_count=16,
         mask_latent_query_labels=True,
     )
-    selected = np.zeros(len(prompts), dtype=np.bool_)
-    selected[selected_state_indices] = True
-    spatial_chunks: dict[str, list[np.ndarray]] = {
-        "vision_pre_llm": [],
-        "fused_image_final": [],
+    selected_output_row = np.full(len(prompts), -1, dtype=np.int64)
+    selected_output_row[selected_state_indices] = np.arange(
+        len(selected_state_indices), dtype=np.int64
+    )
+    spatial_output = {
+        name: np.empty((len(selected_state_indices), 16, 2048), dtype=np.float32)
+        for name in _VISUAL_SOURCES
     }
-    instruction_by_record: dict[str, list[np.ndarray | None]] = {
-        "instruction_embedding": [None] * len(record_metadata),
-        "instruction_final": [None] * len(record_metadata),
+    instruction_by_record = {
+        name: np.empty((len(record_metadata), 2048), dtype=np.float32)
+        for name in _GOAL_SOURCES
+    }
+    instruction_seen = {
+        name: np.zeros(len(record_metadata), dtype=np.bool_)
+        for name in _GOAL_SOURCES
     }
     k16_squared_error = 0.0
     k16_max_error = 0.0
@@ -403,7 +409,6 @@ def _extract_features(
     instruction_squared_error = 0.0
     instruction_max_error = 0.0
     instruction_count = 0
-    selected_order: list[int] = []
     started = time.monotonic()
     with torch.inference_mode():
         for start in range(0, len(prompts), batch_size):
@@ -437,14 +442,16 @@ def _extract_features(
             ):
                 for name in _GOAL_SOURCES:
                     value = features[name][local].astype(np.float32)
-                    reference = instruction_by_record[name][int(record_index)]
+                    record_row = int(record_index)
                     if int(step_index) == 0:
-                        if reference is not None:
+                        if instruction_seen[name][record_row]:
                             raise ValueError("duplicate initial instruction feature")
-                        instruction_by_record[name][int(record_index)] = value
+                        instruction_by_record[name][record_row] = value
+                        instruction_seen[name][record_row] = True
                     else:
-                        if reference is None:
+                        if not instruction_seen[name][record_row]:
                             raise ValueError("instruction suffix appeared before its initial state")
+                        reference = instruction_by_record[name][record_row]
                         delta = value.astype(np.float64) - reference.astype(np.float64)
                         instruction_squared_error += float(np.square(delta).sum())
                         instruction_max_error = max(
@@ -452,11 +459,12 @@ def _extract_features(
                             float(np.max(np.abs(delta))),
                         )
                         instruction_count += delta.size
-            keep = selected[global_indices]
+            output_rows = selected_output_row[global_indices]
+            keep = output_rows >= 0
             if keep.any():
-                selected_order.extend(global_indices[keep].tolist())
+                destination = output_rows[keep]
                 for name in _VISUAL_SOURCES:
-                    spatial_chunks[name].append(features[name][keep].astype(np.float32))
+                    spatial_output[name][destination] = features[name][keep]
             batch_index = start // batch_size + 1
             if batch_index % 25 == 0 or start + len(chunk) == len(prompts):
                 print(
@@ -468,18 +476,24 @@ def _extract_features(
                     ),
                     flush=True,
                 )
+    print(
+        json.dumps({"feature_stage": "forwards_complete", "seconds": time.monotonic() - started}),
+        flush=True,
+    )
     del loaded
     torch.cuda.empty_cache()
-    if selected_order != selected_state_indices.tolist():
-        raise ValueError("captured state order differs from requested state indices")
+    print(
+        json.dumps({"feature_stage": "model_released", "seconds": time.monotonic() - started}),
+        flush=True,
+    )
     output: dict[str, np.ndarray] = {
         "source_state_index": selected_state_indices.astype(np.int64),
-        **{name: np.concatenate(chunks) for name, chunks in spatial_chunks.items()},
+        **spatial_output,
     }
     for name, values in instruction_by_record.items():
-        if any(value is None for value in values):
+        if not instruction_seen[name].all():
             raise ValueError(f"record-level {name} extraction is incomplete")
-        output[name] = np.stack(values).astype(np.float32)
+        output[name] = values
     identity = {
         "k16_hidden_rmse": float(math.sqrt(k16_squared_error / k16_count)),
         "k16_hidden_max_abs": k16_max_error,
@@ -731,6 +745,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         max_pixels=args.max_pixels,
     )
     feature_path = output_dir / "same_forward_feature_cache.npz"
+    print(json.dumps({"feature_stage": "cache_write_started"}), flush=True)
     _atomic_npz(feature_path, extracted)
     with np.load(feature_path, allow_pickle=False) as saved:
         if set(saved.files) != set(extracted):
@@ -738,6 +753,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         for key in saved.files:
             if saved[key].dtype not in (np.float32, np.int64) or not np.isfinite(saved[key]).all():
                 raise ValueError(f"saved feature cache {key} is invalid")
+    print(json.dumps({"feature_stage": "cache_validated", "bytes": feature_path.stat().st_size}), flush=True)
 
     source_lookup = np.full(len(state), -1, dtype=np.int64)
     source_lookup[selected_state_indices] = np.arange(len(selected_state_indices))
@@ -758,6 +774,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         ],
         dtype=np.bool_,
     )
+    print(json.dumps({"feature_stage": "outcome_probes_started"}), flush=True)
     outcome_result, outcome_weights = _outcome_probes(
         feature_sets=state_feature_sets,
         current_feature_row=current_feature_row,
@@ -784,6 +801,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         "instruction_final": extracted["instruction_final"],
         "dino": dino[initial_state].mean(axis=1),
     }
+    print(json.dumps({"feature_stage": "goal_probes_started"}), flush=True)
     goal_result: dict[str, Any] = {}
     goal_correct: dict[str, np.ndarray] = {}
     readout_weights = dict(outcome_weights)

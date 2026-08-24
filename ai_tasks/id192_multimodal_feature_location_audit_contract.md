@@ -61,11 +61,12 @@ Job `529749` completed `0:0` in 33 seconds on one H800. A two-state actual-prefi
 ## Attempt0 and corrected runtime
 
 - Attempt0 Job `529767` failed `1:0` after `00:02:14`: isolated instruction tokenization did not preserve a Qwen BPE punctuation/newline boundary. No feature cache, probe, optimizer update or result was produced; W&B finished failed. It is not resumable.
-- Retry1 tokenizes the complete archived instruction field, uses offset mappings for the exact character span, and never drops or approximates boundary tokens.
+- Retry1 fixed token boundaries and completed all 2,229 forwards, but retained thousands of Torch-backed NumPy chunks for post-loop concatenation. Job `529788` was manually cancelled at `00:41:26` before cache creation; peak RSS was about 23 GiB. No result/readout/checkpoint/optimizer update exists and its interrupted W&B run must not be resumed.
+- Retry2 tokenizes the complete archived instruction field with offsets, preallocates each final float32 feature array, copies every selected batch directly by source-state index, and logs forward/model-release/cache/probe stages.
 - Entrypoint: `nimloth.eval.multimodal_feature_location_audit`.
 - One H800 on `normal`, 45-minute limit, 128 GiB host memory.
 - Corrected fresh output:
-  `outputs/experiments/evaluation/state_alignment/2026-08-24/192_frozen_multimodal_feature_location_audit_retry1`.
-- W&B project `nimloth-recon`, retry1 run ID
-  `nimloth-recon-id192-feature-location-audit-retry1`, resume forbidden.
+  `outputs/experiments/evaluation/state_alignment/2026-08-24/192_frozen_multimodal_feature_location_audit_retry2`.
+- W&B project `nimloth-recon`, retry2 run ID
+  `nimloth-recon-id192-feature-location-audit-retry2`, resume forbidden.
 - A failed attempt cannot overwrite or resume; it requires fresh output and W&B identity.
