@@ -3,6 +3,7 @@ import json
 import numpy as np
 import torch
 
+from nimloth.training.sft2.id191_state_interface_canary import _train_canary
 from nimloth.training.sft2.state_interface_canary import (
     ResidualStateInterfaceCanary,
     StateInterfaceCanaryConfig,
@@ -139,6 +140,56 @@ def test_multitask_objective_updates_only_canary_parameters() -> None:
         losses.append(float(loss.detach()))
     assert losses[-1] < losses[0]
     assert not torch.equal(model.calibrated_state(hidden, baseline), baseline)
+
+
+def test_canary_training_uses_record_indices_for_visual_and_state_indices_for_goal() -> None:
+    rng = np.random.default_rng(22)
+    hidden = rng.normal(size=(20, 3, 8)).astype(np.float32)
+    baseline = rng.normal(size=(20, 3, 4)).astype(np.float32)
+    dino = baseline + 0.05 * rng.normal(size=baseline.shape).astype(np.float32)
+    state_record = np.repeat(np.arange(4), 5)
+    transition_current = np.repeat(np.asarray([0, 5, 10, 15]), 3)
+    actions = np.tile(np.asarray([0, 2, 3]), 4)
+    outcomes = np.repeat(np.asarray([False, True, False, True]), 3)
+    model, selected_epoch, history = _train_canary(
+        config=StateInterfaceCanaryConfig(
+            hidden_dim=8,
+            state_dim=4,
+            grid_tokens=3,
+            adapter_rank=2,
+            goal_classes=2,
+            movement_actions=(0, 2, 3),
+            max_residual_fraction=0.1,
+        ),
+        hidden=hidden,
+        baseline=baseline,
+        dino=dino,
+        state_record_index=state_record,
+        visual_record_indices=np.asarray([0, 1]),
+        goal_state_indices=np.asarray([0, 5]),
+        goal_labels=np.asarray([0, 1]),
+        transition_indices=np.arange(6),
+        transition_current_index=transition_current,
+        transition_actions=actions,
+        transition_outcomes=outcomes,
+        device="cpu",
+        batch_size=4,
+        epochs=2,
+        learning_rate=0.01,
+        weight_decay=0.001,
+        anchor_weight=0.25,
+        seed=4,
+        selection={
+            "record_indices": np.asarray([2, 3]),
+            "goal_state_indices": np.asarray([10, 15]),
+            "goal_labels": np.asarray([0, 1]),
+            "transition_indices": np.arange(6, 12),
+        },
+        patience=1,
+    )
+    assert isinstance(model, ResidualStateInterfaceCanary)
+    assert selected_epoch in {1, 2}
+    assert history and "selection_outcome_macro_auc" in history[0]
 
 
 def test_checkpoint_is_optimizer_free_and_reloads_exactly(tmp_path) -> None:
