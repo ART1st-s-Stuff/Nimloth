@@ -33,10 +33,12 @@ VIS_ENABLE_WANDB=${ID185_VIS_ENABLE_WANDB:-false}
 VIS_WANDB_RUN_ID=${ID185_VIS_WANDB_RUN_ID:-nimloth-id185-k4-visualize-base-fail-seed2-retry2}
 VIS_PARTITION=${ID185_VIS_EXPECTED_PARTITION:-normal}
 VIS_SOURCE_BOUNDARY=${ID185_VIS_SOURCE_BOUNDARY:-20}
+VAGEN_ROLLOUT_BROWSER_PACK_WORKERS=${VAGEN_ROLLOUT_BROWSER_PACK_WORKERS:-8}
 [[ "${VIS_PARTITION}" =~ ^(normal|preempt)$ ]]
 [[ "${VIS_SOURCE_BOUNDARY}" =~ ^(0|20)$ ]]
 [[ "${VIS_EXPECTED_OUTCOME}" =~ ^(failure|success|any)$ ]]
 [[ "${VIS_ENABLE_WANDB}" =~ ^(true|false)$ ]]
+[[ "${VAGEN_ROLLOUT_BROWSER_PACK_WORKERS}" == 8 ]]
 RUN_OUT=${ROOT}/outputs/experiments/training/rl/${RUN_DATE}/${RUN_NAME}
 RUNNER=${ID185_VIS_RUNNER_OVERRIDE:-${REPO}/experiments/training/rl/run_vagen_k4_id185_visualize_base_failure.sh}
 PHASE_TAG=${ID185_VIS_PHASE_TAG_OVERRIDE:-vis1}
@@ -411,6 +413,7 @@ COMMON_ENV=(
   VLLM_ALLREDUCE_USE_SYMM_MEM=0
   VLLM_USE_FLASHINFER_SAMPLER=0
   NIMLOTH_LATENT_TOKEN_COUNT=16
+  VAGEN_ROLLOUT_BROWSER_PACK_WORKERS="${VAGEN_ROLLOUT_BROWSER_PACK_WORKERS}"
   NCCL_SOCKET_IFNAME="${FABRIC_IFACE}"
   GLOO_SOCKET_IFNAME="${FABRIC_IFACE}"
   WANDB_ENTITY=art2nd-hong-kong-university-of-science-and-technology
@@ -547,6 +550,7 @@ def probe_node():
         'hf_home':os.environ.get('HF_HOME'),
         'torch_home':os.environ.get('TORCH_HOME'),
         'vllm_worker_multiproc_method':os.environ.get('VLLM_WORKER_MULTIPROC_METHOD'),
+        'rollout_browser_pack_workers':os.environ.get('VAGEN_ROLLOUT_BROWSER_PACK_WORKERS'),
         'id185_train_config':os.environ.get('ID185_TRAIN_CONFIG'),
         'id185_source_checkpoint':os.environ.get('ID185_SOURCE_CHECKPOINT'),
         'wandb_run_id':os.environ.get('WANDB_RUN_ID'),
@@ -572,6 +576,7 @@ assert all(row['nccl_socket_ifname'] for row in probes)
 assert all(row['hf_home']=='/project/peilab/atst/.cache/huggingface' for row in probes)
 assert all(row['torch_home']=='/project/peilab/atst/flower/.cache/torch' for row in probes)
 assert all(row['vllm_worker_multiproc_method']=='spawn' for row in probes)
+assert all(row['rollout_browser_pack_workers']=='8' for row in probes)
 assert all(row['id185_train_config'] for row in probes)
 if os.environ['EXPECTED_SOURCE_BOUNDARY'] == '20':
     assert all(row['id185_source_checkpoint'].endswith('/global_step_20') for row in probes)
