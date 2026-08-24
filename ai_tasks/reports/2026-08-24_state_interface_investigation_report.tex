@@ -1,0 +1,521 @@
+\documentclass[UTF8,11pt,a4paper,fontset=none]{ctexart}
+
+\usepackage[a4paper,margin=2.25cm]{geometry}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\setmainfont{DejaVu Serif}
+\setsansfont{DejaVu Sans}
+\setmonofont{DejaVu Sans Mono}
+\setCJKmainfont{Noto Serif CJK SC}
+\setCJKsansfont{Noto Sans CJK SC}
+\setCJKmonofont{Noto Sans Mono CJK SC}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,longtable,tabularx,array,multirow}
+\usepackage[table]{xcolor}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{xurl}
+\usepackage{microtype}
+\usepackage{fancyhdr}
+\usepackage{caption}
+
+\definecolor{NimlothBlue}{HTML}{28557A}
+\definecolor{NimlothLight}{HTML}{EEF4F8}
+\definecolor{NimlothGreen}{HTML}{2E6B4F}
+\definecolor{NimlothRed}{HTML}{A33A3A}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=NimlothBlue,
+  urlcolor=NimlothBlue,
+  citecolor=NimlothBlue,
+  pdftitle={Nimloth近期状态接口与世界模型调查报告}
+}
+\captionsetup{font=small,labelfont=bf}
+\setlist{leftmargin=2em,itemsep=0.25em,topsep=0.35em}
+\renewcommand{\arraystretch}{1.18}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.25em}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{Nimloth近期调查报告}
+\fancyhead[R]{2026年8月}
+\fancyfoot[C]{\thepage}
+
+\newcommand{\good}[1]{\textcolor{NimlothGreen}{\textbf{#1}}}
+\newcommand{\bad}[1]{\textcolor{NimlothRed}{\textbf{#1}}}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\R}{\mathbb{R}}
+
+\title{\textbf{Nimloth近期状态接口与世界模型调查报告}\\[0.5em]
+\large 从长期规划失败到视觉与任务信息的定位}
+\author{Nimloth项目}
+\date{2026年8月24日}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Nimloth希望让智能体先在内部预测动作后果，再选择真实动作。近期评估表明，当前系统已经能够完成一部分短任务，但在长期任务上明显不足。调查随后集中到一个基础问题：模型交给世界模型的内部状态，是否真的保留了规划所需的画面、任务目标和动作可行性信息？
+
+本报告汇总ID54--ID75、ID191和ID192等近期调查。主要结论有三点。第一，部署中的语言与视觉主模型本身基本健康，严重漂移主要发生在旧训练阶段的状态压缩模块。第二，当前16位置状态几乎没有保留任务目标，并削弱了部分左右碰撞信息；世界模型又进一步没有充分利用剩余信息，尤其容易把被障碍挡住的移动预测成成功移动。第三，最新调查已经找到更可靠的信息来源：任务目标在原始任务指令（instruction）表示中几乎可被完全读出；经过语言模型处理后的当前图片表示，在三个主要移动方向上接近DINO视觉基准，但左右动作的外部样本仍不足以通过严格统计门槛。
+
+因此，下一步不应继续修补旧世界模型或扩大旧适配器。更稳妥的路线是先用现有缓存扩大只读统计检查，再把当前图片表示和任务指令表示融合成一个新的统一状态；只有该状态通过视觉、目标和动作结果检查后，才从头训练新的世界模型、价值模型和搜索策略。
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{报告范围与核心问题}
+
+本轮调查由正式规划评估中的两个现象触发：
+
+\begin{itemize}
+  \item 训练到第20次更新后的K4搜索策略，在300个测试任务上成功率为$110/300=36.67\%$；
+  \item 分类型看，长期任务只有$2/60$成功，远低于其他类型。
+\end{itemize}
+
+随后完成的Base与Common Sense各60条只读评估中，成功数分别为$26/60$和$29/60$。这些结果说明系统并非完全失效，但搜索深度增加后并没有稳定带来长期能力。为了判断原因，我们依次调查了以下问题：
+
+\begin{enumerate}
+  \item 世界模型预测的内部状态，是否仍处在真实状态通常出现的范围内？
+  \item 失败来自部署中的主模型，还是来自把主模型输出压缩成16位置状态的模块？
+  \item 当前状态是否保留了任务目标？
+  \item 当前状态是否能判断向前、向左或向右移动会成功还是被挡住？
+  \item 如果信息丢失，它是在视觉编码、语言与图像融合、instruction表示，还是最后的16位置压缩阶段丢失？
+\end{enumerate}
+
+本报告重点回答这些问题。ValueHead在第2--4层预测状态上的完整校准调查尚未完成，因此不在本报告中给出确定结论。
+
+\section{系统中“状态”的含义}
+
+每个真实时刻，智能体会看到当前图片、任务instruction和此前交互，并生成当前回答。项目使用这次真实生成得到的内部表示，压缩成16个位置，每个位置有1024个数：
+
+\begin{equation}
+  z_t \in \R^{16\times 1024}.
+\end{equation}
+
+报告中将$z_t$称为“16位置状态”。它应当是对当前局面的简洁描述，至少保留：
+
+\begin{itemize}
+  \item 当前画面中的空间与障碍信息；
+  \item instruction指定的任务目标；
+  \item 目标与当前画面的关系；
+  \item 对动作后果有用的信息。
+\end{itemize}
+
+世界模型根据当前状态和动作预测下一状态：
+
+\begin{equation}
+  \hat z_{t+1}=F(z_t,a_t).
+\end{equation}
+
+价值模型再读取真实或预测状态，估计动作的长期结果。搜索会重复使用世界模型和价值模型，因此第一层很小的状态偏差可能在第2--4层被放大。
+
+DINO在调查中只作为视觉比较基准。它擅长描述图片内容，但不知道instruction，因此不能独自定义完整状态。
+
+\section{调查方法与解释边界}
+
+\subsection{数据和冻结范围}
+
+主要状态调查使用强化学习之前的归档数据：3,211条训练轨迹和355条外部验证轨迹，并重点使用每条轨迹前4步。所有需要回答内容的状态都使用该观察对应的真实归档回答，没有填入固定、示例或人为编写的思考文本。
+
+除明确说明的诊断模型外，部署主模型、视觉模块、状态压缩模块、DINO、旧世界模型、价值模型和强化学习模块均保持固定。训练的小型分类器只用于回答“某种信息能否从特征中读出”，不能作为部署模型或后续checkpoint使用。
+
+\subsection{数据身份限制}
+
+归档中的部分\code{config\_id}、seed和UID不能可靠对应到每一条实际轨迹。因此，目标标签只从归档中的完整instruction与全局一致的目标类别映射得到。我们按原始图片内容分组，排除训练与验证间完全相同的图片，但不能把结果描述为正式的逐任务泛化评估。
+
+\subsection{主要指标如何理解}
+
+\paragraph{RMSE。}
+表示预测与目标之间的平均误差，单位与被比较的内部表示一致；越小越好。它适合比较同一类表示，但不同表示若尺度不同，RMSE不能单独决定哪一种语义更好。
+
+\paragraph{AUC。}
+用于判断一次移动会成功还是被挡住。$0.5$相当于随机猜测，$1.0$表示完全区分。AUC只衡量排序能力，不代表概率已经校准准确。
+
+\paragraph{目标分类准确率。}
+尝试从一种内部表示判断instruction中的目标类别。micro准确率按样本统计，macro准确率先分别计算每类准确率再平均，因此更不容易被常见类别主导。
+
+\paragraph{相对“保持不变”基准的改善。}
+世界模型的一步预测与“直接认为下一状态等于当前状态”比较：
+
+\begin{equation}
+  \mathrm{skill}=1-
+  \frac{\operatorname{MSE}(\hat z_{t+1},z_{t+1})}
+       {\operatorname{MSE}(z_t,z_{t+1})}.
+\end{equation}
+
+下文把这个数简称为skill（相对复制改善）。$\mathrm{skill}>0$表示世界模型优于“什么都没变”，小于0表示还不如直接复制当前状态。
+
+\section{调查过程概览}
+
+\begin{longtable}{p{1.7cm}p{4.7cm}p{8.0cm}}
+\toprule
+\textbf{调查} & \textbf{问题} & \textbf{主要发现} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{调查} & \textbf{问题} & \textbf{主要发现} \\
+\midrule
+\endhead
+ID56--57 & 世界模型预测是否与真实状态、原图视觉一致？ & 预测状态更接近DINO视觉表示，却严重偏离真实16位置状态；真实状态和预测状态没有处在同一稳定尺度。 \\
+ID58--59 & 漂移来自主模型还是状态压缩模块？ & 主模型变化很小；更换旧状态压缩模块会造成约$0.89$的状态RMSE变化，是主模型变化的40倍以上。 \\
+ID60 & 现有状态是否保留任务目标？ & 目标分类准确率低于DINO和多数类基准，目标门槛全部失败。 \\
+ID75 & 在固定状态上重新训练一步世界模型是否可行？ & 总体改善明显，但向左动作低于“保持不变”基准，因此不能继续训练更长预测。 \\
+ID61 & 为什么向左预测失败？ & 成功移动可以预测；被挡住时，模型会错误预测画面发生移动。验证集中被挡比例又更高。 \\
+ID71 & 碰撞信息在状态中是否存在？ & 状态保留一部分，但左右方向弱于DINO；世界模型又低于直接读取状态的小分类器。 \\
+ID191 & 状态压缩之前的最后隐藏表示能否用小适配器修复？ & 不能。适配器略改善视觉距离，但没有恢复目标和左右碰撞信息。 \\
+ID192 & 目标和视觉信息究竟在哪里？ & instruction表示几乎完整保留目标；语言模型处理后的当前图片表示接近DINO，是最有希望的视觉来源。 \\
+\bottomrule
+\end{longtable}
+
+\section{真实状态与世界模型预测不在同一坐标中}
+
+\subsection{ID56：预测状态远离真实状态}
+
+在1,742个有精确下一真实状态的转移中：
+
+\begin{itemize}
+  \item 世界模型预测到真实下一状态的RMSE均值为$0.526$；
+  \item 直接复制当前状态的RMSE只有$0.119$；
+  \item 1,742个样本中，没有一个预测在该指标上优于复制；
+  \item 真实状态的标准差约为$0.49$--$0.52$，预测状态约为$0.824$--$0.826$。
+\end{itemize}
+
+这些数字说明预测并非只是“稍微不准”。预测状态的尺度已经明显离开真实状态常见的范围。旧图像解码器即使输入真实状态也几乎不能恢复图片，因此解码图不能作为判断状态质量的可靠依据。
+
+\subsection{ID57：预测更像DINO，但不像真实状态}
+
+使用原始观察图片重新计算DINO后，结论仍然成立：
+
+\begin{itemize}
+  \item 预测状态到下一图片DINO的RMSE为$0.831$，优于复制的$0.981$；
+  \item 但预测到真实下一状态的相对复制能力为$-9.45$；
+  \item 固定地交换16个位置只能改善$0.169\%$，因此主要问题不是位置排列错误。
+\end{itemize}
+
+最合理的解释是：旧世界模型受到DINO损失影响，被拉向一种较强的视觉表示；真实状态压缩模块却输出另一种尺度和方向。价值模型主要在真实状态上学习，却在搜索深处读取预测状态，这为多层搜索带来明显风险。
+
+\section{主模型基本健康，旧状态压缩模块发生严重漂移}
+
+ID58比较了SFT1、旧SFT2和不同压缩模块的组合。
+
+\begin{table}[htbp]
+\centering
+\caption{主模型变化与状态压缩模块变化}
+\small
+\begin{tabularx}{\textwidth}{Xrr}
+\toprule
+\textbf{比较} & \textbf{状态RMSE变化} & \textbf{解释} \\
+\midrule
+固定SFT1压缩模块，只把SFT1主模型换成ID74主模型 & $0.0208$ & 主模型变化很小 \\
+固定ID176主模型，把SFT1压缩模块换成ID74压缩模块 & $0.8853$ & 压缩模块造成巨大变化 \\
+ID58各组合中的压缩模块更换 & $0.8920$--$0.8927$ & 约为主模型变化的40倍以上 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+SFT1压缩模块的视觉表现也明显更好：它到DINO的RMSE约$0.838$、余弦相似度约$0.656$；ID74压缩模块对应约$1.137$和$0.382$。ID59在实际部署主模型ID176上复现了同样结果，并确认ID176与SFT1主模型的状态差异只有$0.0188$。
+
+因此，近期调查没有发现部署主模型整体损坏的证据。旧SFT2训练后的状态压缩模块是旧接口失效的主要来源。不过，这不表示SFT1状态已经足够好；后续目标和动作结果调查证明它仍缺少规划需要的信息。
+
+\section{现有16位置状态几乎没有保留任务目标}
+
+ID60在冻结状态上训练了一个容量很小的目标分类器，并用相同方法比较DINO。
+
+\begin{table}[htbp]
+\centering
+\caption{ID60目标分类结果}
+\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{输入表示} & \textbf{micro top-1} & \textbf{macro top-1} \\
+\midrule
+现有16位置状态 & $5.78\%$ & $4.04\%$ \\
+DINO视觉表示 & $10.69\%$ & $6.71\%$ \\
+多数类基准 & $7.23\%$ & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+状态结果低于DINO，也低于始终猜测最常见目标的基准。状态减去DINO准确率的95\%区间为$[-8.09,-1.73]$个百分点。由此不能接受现有状态作为完整的“画面加任务目标”接口。
+
+DINO只看图片，因此它的目标分类能力可能来自物体共现或数据偏差。它高于当前状态并不表示DINO已经理解instruction；它只说明当前状态没有展现出更强、更可靠的目标信息。
+
+\section{一步世界模型能学习移动，但无法可靠处理被挡住的动作}
+
+\subsection{ID75：总体进步掩盖了向左失败}
+
+我们固定状态接口，重新训练了一个从“直接复制当前状态”开始的一步世界模型。外部验证共1,413个转移：
+
+\begin{itemize}
+  \item 总体skill为$+0.365$；
+  \item 主要动作平均skill为$+0.210$；
+  \item 预测与真实状态标准差之比为$0.981$；
+  \item 但是向前、向右平移、向左平移、向右转向动作的skill分别为
+  $+0.354$、$+0.054$、$-0.133$、$+0.566$。
+\end{itemize}
+
+向左动作没有超过复制基准，所以按照预先规定的逐动作门槛，调查在一步阶段停止，没有继续训练第2--4步世界模型。
+
+\subsection{ID61：失败集中在“动作被挡住”}
+
+归档中的下一条环境反馈可以直接说明每次移动是否成功。向左移动在训练集和外部验证集中的失败率分别为：
+
+\begin{equation}
+  22.68\% \quad\text{和}\quad 38.86\%.
+\end{equation}
+
+外部验证多了$16.18$个百分点的失败动作。分开计算后：
+
+\begin{itemize}
+  \item 成功向左时，世界模型skill为$+0.163$；
+  \item 被挡住时，skill为$-9.914$；
+  \item 被挡住的真实图片$100\%$保持不变；
+  \item 世界模型预测的状态变化只能以AUC $0.617$区分成功和失败。
+\end{itemize}
+
+因此，向左失败并不是因为训练数据中多数向左动作都失败。世界模型学到了“成功移动后画面如何变化”，却没有学好“何时根本不会移动”。当外部数据中障碍更多时，这个问题被放大。向前和向右也存在相似但程度不同的错误。
+
+\section{碰撞信息既在状态压缩中损失，也在世界模型中被进一步忽略}
+
+ID71用相同的小型分类器分别读取真实16位置状态、DINO和ID75世界模型预测，判断移动是否成功。
+
+\begin{table}[htbp]
+\centering
+\caption{ID71动作成功判断AUC}
+\small
+\begin{tabular}{lccc}
+\toprule
+\textbf{动作} & \textbf{16位置状态} & \textbf{DINO} & \textbf{世界模型预测} \\
+\midrule
+向前 & $0.873$ & $0.874$ & $0.738$ \\
+向右 & $0.617$ & $0.718$ & $0.540$ \\
+向左 & $0.674$ & $0.762$ & $0.617$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+这组结果把问题分成了两层：
+
+\begin{enumerate}
+  \item 真实状态仍然包含部分动作结果信息，但左右方向弱于DINO；向左状态减去DINO的AUC区间为$[-0.167,-0.013]$，可以确认状态压缩损失了信息。
+  \item 世界模型预测又低于直接读取真实状态的分类器，说明世界模型没有充分利用状态中剩余的信息。
+\end{enumerate}
+
+因此，仅扩大世界模型不能修复全部问题；仅重做状态也不能自动保证世界模型正确处理动作失败。两层都需要门槛。
+
+\section{从最后隐藏表示修补状态的路线没有成功}
+
+ID191检查了状态压缩之前、与动作生成来自同一次模型计算的隐藏表示。首先，这些隐藏表示经过冻结的SFT1压缩模块能够逐元素重现旧状态，RMSE和最大绝对误差均为0，证明数据链路一致。
+
+随后只训练一个受限的小型残差适配器。它略微改善了与DINO的视觉距离，但没有恢复目标或左右动作结果：
+
+\begin{itemize}
+  \item 目标micro准确率：旧状态$6.94\%$，压缩前隐藏表示$5.49\%$，适配后$7.80\%$，DINO$10.98\%$；
+  \item 向左AUC：旧状态$0.695$，压缩前隐藏表示$0.625$，适配后$0.622$，DINO$0.778$；
+  \item 向右AUC：适配后$0.726$，没有形成对旧状态的稳定改善。
+\end{itemize}
+
+这项调查否定的是“只读取最后隐藏表示，再加一个低容量适配器”的具体路线。它不能证明隐藏表示中绝对不存在任何复杂的非线性信息，但继续增加适配器维度、训练轮数或学习率缺乏证据支持。
+
+\section{ID192：任务目标和视觉信息的位置}
+
+ID192在同一次冻结主模型计算中读取四种特征：
+
+\begin{enumerate}
+  \item 语言模型之前的当前图片表示；
+  \item 经过语言模型处理后的当前图片表示；
+  \item instruction词元的输入表示；
+  \item instruction词元经过语言模型后的表示。
+\end{enumerate}
+
+它同时验证最后隐藏表示能够严格重现ID191状态，RMSE和最大绝对误差均为0。
+
+\subsection{任务目标在instruction中几乎完整存在}
+
+\begin{table}[htbp]
+\centering
+\caption{ID192目标分类结果}
+\small
+\begin{tabular}{lcc}
+\toprule
+\textbf{输入表示} & \textbf{micro top-1} & \textbf{macro top-1} \\
+\midrule
+instruction输入表示 & \good{$99.71\%$} & \good{$99.00\%$} \\
+instruction最终表示 & \good{$99.13\%$} & \good{$98.27\%$} \\
+经过语言模型的当前图片表示 & $6.94\%$ & $3.59\%$ \\
+最后16位置隐藏表示 & $5.49\%$ & $3.58\%$ \\
+现有状态 & $6.07\%$ & $4.26\%$ \\
+DINO & $5.78\%$ & $4.04\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+目标信息在原始instruction表示中非常清楚，但到最后16位置表示和状态时几乎消失。这是本轮调查中最明确的定位结果。新的统一状态应当直接保留instruction表示，而不应期待旧16位置隐藏表示自己恢复目标。
+
+\subsection{最有希望的视觉来源是语言模型处理后的当前图片表示}
+
+\begin{table}[htbp]
+\centering
+\caption{ID192动作成功判断AUC}
+\small
+\begin{tabular}{lcccc}
+\toprule
+\textbf{动作} & \textbf{语言模型前图片} & \textbf{语言模型后图片} & \textbf{最后隐藏表示} & \textbf{DINO} \\
+\midrule
+向前 & $0.835$ & $0.868$ & $0.865$ & $0.873$ \\
+向右 & $0.525$ & $0.740$ & $0.764$ & $0.719$ \\
+向左 & $0.718$ & $0.731$ & $0.599$ & $0.738$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+语言模型之前的图片表示在向右动作上接近随机。语言模型处理后的当前图片表示在三个方向上都接近DINO，并在向右的观测值上略高于DINO。这表明语言模型对图片和历史上下文的处理很重要，该表示是目前最值得继续验证的视觉来源。
+
+严格门槛仍未通过。外部验证中的向右和向左样本只有142和193条。语言模型后图片表示减去DINO AUC的95\%区间分别为：
+
+\begin{equation}
+  [-0.081,+0.125],\qquad [-0.081,+0.067].
+\end{equation}
+
+区间包含了“几乎相同”和“有一定差距”两种可能。因此当前证据支持它作为首选候选，但尚不足以证明它“不比DINO差超过0.02”。不能因为这个保守门槛没有通过，就直接断言必须部署第二个DINO视觉模型。
+
+\section{综合诊断}
+
+近期证据可以用三层问题概括。
+
+\subsection{第一层：目标在状态压缩时丢失}
+
+instruction表示的目标分类接近$100\%$，最后隐藏表示和现有状态只有约$5\%$--$7\%$。目标并非没有出现在输入中，而是在生成16位置表示的过程中没有被保留下来。
+
+\subsection{第二层：左右碰撞信息被削弱}
+
+DINO和语言模型处理后的当前图片表示都能较好地区分向左、向右移动是否成功。现有状态和最后隐藏表示在部分方向上明显较弱。视觉信息并非全部消失，但压缩过程没有稳定保留规划所需的侧向障碍信息。
+
+\subsection{第三层：世界模型没有正确处理动作失败}
+
+即使真实状态仍有部分动作结果信息，ID75预测也低于直接读取真实状态的小分类器。世界模型尤其容易把被挡住的动作预测为成功移动，并受训练与外部验证失败率变化影响。
+
+\subsection{目前没有证据支持的解释}
+
+\begin{itemize}
+  \item 没有证据表明部署主模型整体损坏；
+  \item 没有证据表明只要扩大旧适配器就能恢复信息；
+  \item 没有证据表明DINO可以直接替代统一状态，因为DINO不知道instruction；
+  \item 没有证据支持继续复用旧ID75世界模型或旧ValueHead；状态定义变化后，它们面对的是不同输入；
+  \item 没有足够证据把视觉和目标拆成两个独立部署状态。项目仍应输出一个统一的16位置状态。
+\end{itemize}
+
+\section{建议的后续路线}
+
+\subsection{第一步：扩大只读统计检查}
+
+ID192已经保存14,261个状态的冻结特征缓存。建议先进行按原始图片内容分组的五折交叉验证：每次使用四组训练小型分类器，在剩余一组产生从未参与该分类器训练的预测，最后合并所有预测。
+
+该检查的目的只是缩小“语言模型后图片表示与DINO相差多少”的统计范围。它不能冒充新的外部验证；现有归档外部验证结果仍应作为主要外部结果。该步骤不需要重新运行主模型，也不更新任何部署参数。
+
+\subsection{第二步：训练新的统一状态小规模验证}
+
+如果第一步支持语言模型后图片表示，可以测试：
+
+\begin{equation}
+  z_{\mathrm{new}}=
+  G\!\left(
+    z_{\mathrm{anchor}},
+    A_v(v_{\mathrm{image}}),
+    A_g(h_{\mathrm{instruction}})
+  \right),
+\end{equation}
+
+其中$v_{\mathrm{image}}$是同一次模型计算中、经过语言模型处理的当前图片表示，$h_{\mathrm{instruction}}$是精确instruction表示。$A_v$和$A_g$只负责把尺寸转成可融合形式，$G$最终仍输出一个$16\times1024$状态。
+
+新状态至少应同时通过：
+
+\begin{itemize}
+  \item 视觉结构与DINO的比较；
+  \item 目标分类；
+  \item 向前、向左、向右动作结果的AUC、精确率--召回率和概率校准；
+  \item 对真实回答措辞变化的稳定性；
+  \item 训练与外部验证之间的稳定性。
+\end{itemize}
+
+如果语言模型后图片表示在扩大检查中确实不足，再考虑用DINO作教师进行蒸馏，或修正视觉编码器。DINO优先作为训练和评估的教师，不默认成为部署时的第二个视觉模型。
+
+\subsection{第三步：从头训练能表示动作失败的一步世界模型}
+
+新世界模型应预测动作成功概率，并分别建模“成功移动后的状态”和“动作被挡住后的状态”。真实动作结果只可用于监督和评估，部署时不能作为已知输入。
+
+一步模型必须按每个主要动作，以及成功和被挡住子集分别优于复制基准。通过后才可扩展到第2步和第4步。
+
+\subsection{第四步：重新训练价值模型并恢复搜索}
+
+新状态定义确定后，应从头训练并校准ValueHead和动作价值。先检查真实状态和一步预测状态，再检查第2--4层预测。只有预测深度增加时价值排序和回报校准没有持续恶化，才恢复K4搜索和新的联合强化学习。
+
+\section{尚未解决的问题}
+
+\begin{enumerate}
+  \item 语言模型处理后的当前图片表示能否在更大、按图片分组的数据上稳定达到DINO水平？
+  \item 目标与当前画面的关系---例如目标是否可见、位于哪个方向、任务进行到哪一步---能否由新的统一状态读出？接近$100\%$的目标类别识别只证明instruction内容存在，不等于完整任务理解。
+  \item ValueHead在第2--4层预测状态上的均值、方差、动作排序和回报校准如何变化？
+  \item 当前归档缺少足够多的“相同图片、不同真实目标”样本，因此还不能做强目标因果检查。
+  \item ID189终止记录没有精确的最终16位置状态，相关诊断只能覆盖非终止转移。
+\end{enumerate}
+
+\section{可复现记录}
+
+\begin{longtable}{p{1.3cm}p{2.2cm}p{2.3cm}p{8.3cm}}
+\toprule
+\textbf{调查} & \textbf{Slurm Job} & \textbf{结果} & \textbf{关键产物或说明} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{调查} & \textbf{Slurm Job} & \textbf{结果} & \textbf{关键产物或说明} \\
+\midrule
+\endhead
+ID58 & 528812 & 完成 & checkpoint状态矩阵；定位压缩模块漂移。 \\
+ID59 & 528906 & 完成 & 部署主模型与SFT1视觉检查。 \\
+ID60 & 528931 & 完成 & 冻结目标分类；cache SHA256：\code{0fa99413...f0daf8b6}。 \\
+ID75 & 529411 & 完成，门槛失败 & 一步模型总体改善，但向左失败；result SHA256：\code{e56bfdcd...16958a796}。 \\
+ID61 & 529546 & 完成 & 动作成功/被挡分层；result SHA256：\code{bace6fcb...105a28e4}。 \\
+ID71 & 529619 & 完成 & 状态动作结果分类；result SHA256：\code{2e2e1675...b70c113}。 \\
+ID191 & 529703 & 完成，门槛失败 & 最后隐藏表示小适配器；result SHA256：\code{1e1307c2...506bb}。 \\
+ID192 & 529879 & 完成，部分门槛通过 & 目标来源明确；视觉候选仍受统计范围限制。feature cache SHA256：\code{a46278d4...f813c}；result SHA256：\code{4592b68d...e7717a}。 \\
+\bottomrule
+\end{longtable}
+
+ID192正式尝试0因词元边界处理错误而在特征生成前失败；retry1完成所有模型计算后因批次数组拼接过慢被人工取消。两次都没有生成可用分类器、checkpoint或参数更新。retry2改为按最终位置预分配连续数组后成功完成。这些失败不改变科学结论，但已记录以避免重复。
+
+\section{结论}
+
+近期调查已经把问题从笼统的“长期规划不好”缩小到可以行动的状态接口问题：
+
+\begin{enumerate}
+  \item 部署主模型基本健康，旧状态压缩模块曾发生严重漂移；
+  \item 即使使用较健康的SFT1压缩模块，当前16位置状态仍几乎丢失instruction目标，并削弱部分左右碰撞信息；
+  \item 旧世界模型进一步没有充分使用剩余信息，尤其不能可靠预测动作被挡住；
+  \item 目标信息已经明确定位在instruction表示中；
+  \item 经过语言模型处理后的当前图片表示是最有希望的视觉来源，但还需要更大分组检查来缩小不确定范围。
+\end{enumerate}
+
+在这些证据下，继续增加旧世界模型训练轮数、扩大ID191适配器，或直接恢复K4强化学习，都不能解决基础输入问题。合理顺序是：扩大冻结统计检查，建立新的统一状态，通过视觉、目标和动作结果门槛，再从头训练一步世界模型、长预测、价值模型和搜索策略。
+
+\appendix
+\section{内部资料索引}
+
+本报告数字来自以下项目文件和只读产物：
+
+\begin{itemize}
+  \item \path{ai_tasks/wm_visual_goal_state_alignment_plan.md}
+  \item \path{ai_tasks/ai_progress/2026-08-23_frozen_sft1_goal_probe_residual_t1_canary.md}
+  \item \path{ai_tasks/id191_state_interface_direction_canary_contract.md}
+  \item \path{ai_tasks/id192_multimodal_feature_location_audit_contract.md}
+  \item \path{/workspace/remote2/nimloth-artifacts/id61_id75_action_outcome_audit_retry1/result.json}
+  \item \path{/workspace/remote2/nimloth-artifacts/id71_frozen_state_action_outcome_probe/result.json}
+  \item \path{/workspace/remote2/nimloth-artifacts/id191_state_interface_direction_canary_retry1/result.json}
+  \item \path{/workspace/remote2/nimloth-artifacts/id192_multimodal_feature_location_audit_retry2/result.json}
+\end{itemize}
+
+这些资料同时保留了完整配置、split限制、置信区间、产物哈希和失败尝试记录。本报告为人类阅读而压缩了实现细节；若表格中的四舍五入数字与JSON存在末位差异，以对应\code{result.json}为准。
+
+\end{document}
