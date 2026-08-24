@@ -70,3 +70,36 @@ Job `529749` completed `0:0` in 33 seconds on one H800. A two-state actual-prefi
 - W&B project `nimloth-recon`, retry2 run ID
   `nimloth-recon-id192-feature-location-audit-retry2`, resume forbidden.
 - A failed attempt cannot overwrite or resume; it requires fresh output and W&B identity.
+
+## Actual retry2 result
+
+Job `529879` completed `0:0` in `00:25:13` on `normal/dgx-27`; W&B finished. Same-forward K16 identity RMSE/max is `0/0`.
+
+### Goal location
+
+Goal micro/macro top1:
+
+- exact instruction input embedding: `0.99711/0.99000`;
+- exact instruction final hidden: `0.99133/0.98266`;
+- DINO: `0.05780/0.04042`;
+- K16 hidden: `0.05491/0.03575`;
+- SFT1 state: `0.06069/0.04261`.
+
+Both instruction sources pass every goal gate; paired-minus-DINO lower CIs exceed `+0.90`. Goal semantics are available explicitly in the prompt and are lost by the K16/state interface.
+
+### Visual/outcome location
+
+Outcome AUC pre-LLM vision / fused-image final / K16 / DINO:
+
+- forward `0.83497/0.86799/0.86537/0.87294`;
+- right `0.52535/0.73952/0.76432/0.71889`;
+- left `0.71831/0.73119/0.59910/0.73831`.
+
+`fused_image_final` has the strongest consistent same-forward visual point estimates and is near DINO for all movements; raw pre-LLM vision is near chance on right. The strict 0.02 non-inferiority gate remains false because external right/left N=`142/193` gives wide fused-minus-DINO CIs `[-0.08063,+0.12466]` and `[-0.08142,+0.06734]`. This is unresolved uncertainty, not evidence of a large point deficit.
+
+### Decision
+
+- The exact instruction embedding is the preferred goal source.
+- `fused_image_final` is the preferred visual candidate by point estimate, but direct fusion is not formally authorized until larger exact-image-grouped out-of-fold diagnostics tighten its non-inferiority evidence while retaining archive-external results as primary heldout evidence.
+- Do not jump directly to a second deployed DINO encoder solely because the conservative gate is false. If grouped confirmation fails, then evaluate DINO-teacher distillation or visual-encoder repair.
+- Feature cache SHA256=`a46278d43fafdd964708af988123d8898c3990a5fb3a3d9f97d935c5645f813c`; result SHA256=`4592b68d6d039423b439bb9af0343818a615c7a82be1f9b55130b0ec58e7717a`.

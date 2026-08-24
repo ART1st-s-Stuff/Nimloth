@@ -132,7 +132,12 @@ No projector calibration, T2/T4, ValueHead, MCTS or RL training is authorized by
 - Formal attempt0 Job`529767`在commit`69ce3dc0`、normal/dgx-37于2:14失败：Qwen BPE把部分instruction末尾标点与下一换行合并，隔离tokenize的instruction ID序列无法在真实prompt中exact匹配。
 - 无feature cache、diagnostic readout、result或optimizer update；W&B finished failed，不可resume。登记E0150；retry1 tokenized包含真实prefix/suffix的完整archived instruction field，并以offset mapping选取exact character span。
 - Retry1 Job`529788`完成全部2,229次冻结forward，但保留数千个Torch-backed NumPy chunks导致post-loop assembly在41:26仍未开始atomic cache；为避免45分钟硬超时手动取消。Peak RSS约23GiB，无cache/result/readout/checkpoint/optimizer update，W&B不得resume。
-- 登记E0151；retry2必须预分配最终float32数组、按source-state index直接写batch并记录阶段时间，使用fresh output/W&B identity。
+- 登记E0151；retry2预分配最终float32数组、按source-state index直接写batch并记录阶段时间，使用fresh output/W&B identity。
+- Retry2 Job`529879`在commit`a57f6114`、normal/dgx-27以`COMPLETED 0:0`/`00:25:13`完成；W&B finished，K16 identity RMSE/max=`0/0`。
+- Goal micro/macro：exact instruction embedding=`0.99711/0.99000`、instruction final=`0.99133/0.98266`，远高于DINO=`0.05780/0.04042`、K16=`0.05491/0.03575`与state=`0.06069/0.04261`；两种instruction source所有goal gate均通过，证明目标语义在prompt中明确存在、被K16/state接口丢失。
+- Outcome AUC pre-LLM/fused-image-final/K16/DINO：forward=`0.83497/0.86799/0.86537/0.87294`、right=`0.52535/0.73952/0.76432/0.71889`、left=`0.71831/0.73119/0.59910/0.73831`。fused-image-final是最稳定same-forward visual候选，point estimate接近DINO；raw pre-LLM vision在right接近chance，说明LLM context/history interaction重要。
+- 严格0.02 non-inferiority仍因external right/left N=`142/193`导致wide CI而失败：fused-minus-DINO分别`[-0.08063,+0.12466]`、`[-0.08142,+0.06734]`。这是未决统计不确定性，不是已证实point deficit。下一步应复用immutable feature cache做larger exact-image-grouped OOF确认，同时保留archive-external为primary heldout；不能因保守gate=false直接增加部署DINO encoder。
+- Feature cache SHA=`a46278d4...813c`，result SHA=`4592b68d...e7717a`。
 
 ## CPU preflight evidence
 

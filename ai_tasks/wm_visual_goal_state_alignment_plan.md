@@ -256,11 +256,13 @@ ID59 Job`528906`在normal/dgx-10以`COMPLETED 0:0`、`00:13:23`完成。它使�
 - ID61进一步用exact archived environment feedback分层：early `move_left`失败率train/external=`22.68%/38.86%`；成功子集skill=`+0.16330`，失败/no-op子集skill=`-9.91418`，且failed image `100%`不变。actual/predicted state-change outcome AUC=`0.99977/0.61650`。因此action3失败来自弱outcome判别与`+16.18pp` outcome shift，而非多数训练样本失败；同类blocked hallucination也见于move_forward/right。
 - ID71 matched full-K16 linear probe的state/DINO/ID75 outcome AUC：forward=`0.87276/0.87375/0.73801`、right=`0.61707/0.71802/0.53983`、left=`0.67356/0.76169/0.61650`。left state-minus-DINO CI=`[-0.16659,-0.01324]`，确认SFT1 state相对raw visual evidence丢失侧向碰撞信息；ID75又低于state readout，说明WM同时未充分使用残余信息。
 - ID191进一步隔离projector前的same-generation hidden。hidden经冻结SFT1 projector严格重现ID60 state（RMSE/max=`0/0`），但goal micro state/hidden/candidate/DINO=`0.06936/0.05491/0.07803/0.10983`；outcome AUC state/hidden/candidate/DINO分别为forward=`0.89074/0.86537/0.86995/0.87067`、right=`0.72328/0.69015/0.72636/0.71099`、left=`0.69514/0.62475/0.62192/0.77842`。bounded hidden-only adapter只保住视觉，goal与lateral gate均失败。
-- 结论：aggregate T1学习信号真实存在，但不能覆盖goal接口失败、lateral collision representation loss与WM outcome退化。SFT1 projector不是已证实瓶颈；现有ID176 K16 hidden相对direct visual evidence已弱，不能靠扩大hidden-only projector/adapter修复。ID75 predictor与ID191 adapter均仅为诊断checkpoint，未获准进入T2/T4、ValueHead、MCTS或RL。
+- ID192把信息位置进一步明确：exact instruction embedding/final的goal micro/macro=`0.99711/0.99000`与`0.99133/0.98266`，而K16仅`0.05491/0.03575`；目标语义在prompt中明确存在、被K16压缩丢失。Outcome AUC pre-LLM/fused-image-final/K16/DINO为forward=`0.83497/0.86799/0.86537/0.87294`、right=`0.52535/0.73952/0.76432/0.71889`、left=`0.71831/0.73119/0.59910/0.73831`。fused-image-final point estimate最接近DINO，但N=`142/193`使严格non-inferiority CI仍过宽。
+- 结论：aggregate T1学习信号真实存在，但不能覆盖goal接口失败、lateral collision representation loss与WM outcome退化。SFT1 projector不是已证实瓶颈；现有ID176 K16 hidden不能靠hidden-only projector/adapter修复。未来统一state应显式融合exact instruction embedding，并优先验证same-forward fused current-image final tokens；在其larger grouped确认前，不直接引入部署DINO。ID75 predictor与ID191 adapter均仅为诊断checkpoint。
 
 ### 阶段A：Unified state-interface gate
 
-- ID191已否决只读取现有ID176 K16 hidden的projector/adapter校准；新encoder必须能直接读取更强的current-observation visual/geometry证据，并融合可信instruction/goal表示；
+- ID191已否决只读取现有ID176 K16 hidden的projector/adapter校准；ID192确认exact instruction embedding是可靠goal source，并把same-forward fused current-image final tokens定位为首选visual候选；
+- 新encoder必须显式读取exact instruction表示和通过更大grouped诊断的current-observation visual/geometry证据；DINO优先作teacher，不默认成为第二个部署视觉模型；
 - 输出仍是一个统一K16视觉—目标state，不创建独立部署visual/goal分支；
 - actual/predicted state共享同一visual/goal readout、slot和normalization；统一state本身不要求与raw DINO具有完全相同尺度；
 - 同时检查visual retrieval、goal probe、movement outcome与CoT/语言表面不变性，禁止只优化视觉指标；
@@ -334,12 +336,13 @@ skill_d=1-\frac{MSE(\hat z_{t+d},z_{t+d})}
 4. ID61已完成action3分层：WM在成功movement上改善、在blocked/no-op上严重幻觉移动，且train/external outcome分布漂移。停止T2/T4、fresh ValueHead、MCTS和RL；
 5. ID71已完成frozen-state outcome probe：state保留部分outcome信号，但侧向动作显著弱于DINO，且ID75进一步低于state readout。因此representation与WM两侧都需修正；
 6. ID191已完成hidden隔离与bounded adapter canary：hidden对goal和两类lateral outcome的point estimate均低于projected state，adapter又使left恶化；hidden-only projector校准方向被否决，禁止靠增加rank/epoch延续；
-7. 后续新数据必须持久化逐步`last_action_success`，并按每个movement action的successful/blocked子集分别报告；该标签只用于监督/诊断，禁止作为部署时已知输入泄露未来；
-8. 下一state设计需要在人类另行授权后，将更直接的current-observation visual/geometry grid和可信instruction/goal表示融合回同一个K16 state；可用低容量`A_v/A_g`监督或蒸馏，但不得解释为独立visual/goal state分支。SFT1 state只作视觉anchor，不能假定其hidden输入包含足够信息；
-9. 新接口通过visual、goal、outcome与CoT不变性门禁后，建立新的canonical visual-goal state合同；
-10. 仅在人类另行授权后，在新canonical state上重新训练fresh、零初始化、outcome-aware T1；比较success-probability/mixture successor与保持copy-safe的门禁，不得跨坐标系复用ID75；
-11. 新T1通过每个主要action及其successful/blocked子集的copy-relative和DINO/goal门禁后才扩到T2/T4；
-12. 重新训练并校准ValueHead/Q；
-13. 最后才恢复K4 MCTS和新的joint RL实验。
+7. ID192已定位exact instruction source并找到fused-image-final visual候选；goal证据充分，但strict visual non-inferiority受小external N产生的wide CI阻塞。先复用immutable 14,261-state cache做exact-image-grouped out-of-fold确认，archive external仍是primary heldout，禁止把OOF冒充新heldout；
+8. 后续新数据必须持久化逐步`last_action_success`，并按每个movement action的successful/blocked子集分别报告；该标签只用于监督/诊断，禁止作为部署时已知输入泄露未来；
+9. 若grouped确认通过，下一state canary在人类另行授权后，把same-forward fused current-image final grid和exact instruction embedding融合回同一个K16 state；可用低容量`A_v/A_g`监督或蒸馏，但不得解释为独立visual/goal state分支。若确认失败，再评估DINO-teacher distillation或visual encoder repair；
+10. 新接口通过visual、goal、outcome与CoT不变性门禁后，建立新的canonical visual-goal state合同；
+11. 仅在人类另行授权后，在新canonical state上重新训练fresh、零初始化、outcome-aware T1；比较success-probability/mixture successor与保持copy-safe的门禁，不得跨坐标系复用ID75；
+12. 新T1通过每个主要action及其successful/blocked子集的copy-relative和DINO/goal门禁后才扩到T2/T4；
+13. 重新训练并校准ValueHead/Q；
+14. 最后才恢复K4 MCTS和新的joint RL实验。
 
 在以上诊断和门禁完成前，不建议通过增加epoch、调学习率或扩大predictor来延续当前WM训练；这些操作不能修复state空间接口不一致。
