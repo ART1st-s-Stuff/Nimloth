@@ -62,9 +62,10 @@ on all pre-RL train rows before one external evaluation.
 ## Runtime and identity
 
 - One H800 on `normal`, 45-minute limit; excluded nodes follow project policy.
-- Fresh output:
-  `outputs/experiments/training/sft2/2026-08-24/191_state_interface_direction_canary`.
-- W&B project `nimloth-sft2`, run ID
-  `nimloth-sft2-id191-state-interface-canary`, resume forbidden.
+- Attempt0 Job `529701` failed shell preflight in 12 seconds because the runner incorrectly used the ID74 trained-projector hash for the SFT1 source. It created no output, W&B run, model load, or optimizer update and is not resumable.
+- Corrected retry1 fresh output:
+  `outputs/experiments/training/sft2/2026-08-24/191_state_interface_direction_canary_retry1`.
+- W&B project `nimloth-sft2`, corrected run ID
+  `nimloth-sft2-id191-state-interface-canary-retry1`, resume forbidden.
 - Shared `.env` is sourced before locked W&B values are exported; initialized
   project/run identity is verified fail-closed.

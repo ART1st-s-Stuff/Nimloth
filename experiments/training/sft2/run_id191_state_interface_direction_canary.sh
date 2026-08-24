@@ -30,10 +30,10 @@ STATE_CACHE=${ID60}/frozen_state_cache.npz
 STATE_METADATA=${ID60}/frozen_state_cache_metadata.json
 ID60_RESULT=${ID60}/result.json
 ID71_RESULT=${ID71}/result.json
-OUT=${ROOT}/outputs/experiments/training/sft2/2026-08-24/191_state_interface_direction_canary
+OUT=${ROOT}/outputs/experiments/training/sft2/2026-08-24/191_state_interface_direction_canary_retry1
 RUN_WANDB_PROJECT=nimloth-sft2
-RUN_WANDB_NAME=191_state_interface_direction_canary
-RUN_WANDB_ID=nimloth-sft2-id191-state-interface-canary
+RUN_WANDB_NAME=191_state_interface_direction_canary_retry1
+RUN_WANDB_ID=nimloth-sft2-id191-state-interface-canary-retry1
 
 for spec in \
   "${TRAIN_JSONL}:d43ada06d66c0b5cafa50e9da8ecc354445ca3b9686d1639b18050a981247b97" \
@@ -42,7 +42,7 @@ for spec in \
   "${STATE_METADATA}:b25163d390930d1ccdc172e4f4401a97cbea3dba561a8ec25ef33b9a09911682" \
   "${ID60_RESULT}:37243c37e265691cc0cd3acdbc03a35241661a765ce8efc5fb2b6a7995bcd0ea" \
   "${ID71_RESULT}:2e2e1675317d252bc6e503ac78507328c81bf1925aceb487ed8e506f8b70c113" \
-  "${SFT1}/slot_projector.pt:e789a67246022c785521324bbd800d903f46024d8e8d05c504fcbcdedd9d4063"; do
+  "${SFT1}/slot_projector.pt:340d90a84a17f7aba3525f2f49e20921fd4f73a6534149587de2b3c875542ce0"; do
   path=${spec%%:*}; expected=${spec##*:}
   [[ -s "${path}" ]] || { echo "missing input: ${path}" >&2; exit 2; }
   actual=$(sha256sum "${path}" | awk '{print $1}')
