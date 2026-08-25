@@ -1,0 +1,6 @@
+{"file":".trellis/spec/governance/authority-and-safety.md","reason":"Review authorization boundaries and honest reporting of static versus runtime evidence."}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"Review semi-linear graph shape, protected files, unrelated dirty state, and commit gates."}
+{"file":".trellis/spec/python/quality-and-testing.md","reason":"Defines Python/static/test evidence quality checks for the integrated source tree."}
+{"file":".trellis/spec/guides/investigation-and-uncertainty.md","reason":"Review unexpected conflicts, unverified tests, and stop conditions."}
+{"file":".trellis/tasks/08-25-integrate-id185-dev/research/integration-inventory.md","reason":"Provides expected SHAs, commit counts, source overlap, and known validation constraints."}
+{"file":"ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md","reason":"Check that no repository mutation escaped the intended integration/rebase worktrees."}

@@ -1,0 +1,5 @@
+{"file":".trellis/spec/governance/authority-and-safety.md","reason":"Defines authorization, uncertainty stop conditions, and protected actions for the integration."}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"Defines target-bound mutation, semi-linear merge, dirty-file preservation, and commit review gates."}
+{"file":".trellis/spec/guides/investigation-and-uncertainty.md","reason":"Requires evidence-first ancestry/submodule research and stopping on unexpected conflicts."}
+{"file":".trellis/tasks/08-25-integrate-id185-dev/research/integration-inventory.md","reason":"Records verified branch topology, exact submodule pins, overlap, and local validation limits."}
+{"file":"ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md","reason":"The task mutates multiple worktrees and must bind every command to its intended target."}
