@@ -1,25 +1,23 @@
 ---
 name: on-experiment-end
 description: >-
-  Runs the on-experiment-end event hook after an experiment stops. Use when any
-  training, evaluation, collection, calibration, rollout-train, remote long job,
-  or Slurm task completes, fails, is cancelled, or is paused—even if started by
+  Records a Nimloth experiment after completion, failure, cancellation, or
+  pause. Use whenever such an end state is observed, even for a run started by
   another session.
 ---
 
 # On Experiment End
 
-## 触发条件
+## Trigger
 
-以下实验性任务**结束、失败、取消或暂停后**立即启用本 skill（无论是否由当前会话启动）：
+Apply immediately after any training, evaluation, collection, calibration, rollout-train, remote long job, Slurm task, or other expensive computation completes, fails, is cancelled, or is paused.
 
-- 训练、评估、采集、校准
-- rollout-train
-- 远程长任务、Slurm 任务
-- 其他需要 GPU 或长时间运行的计算任务
+## Required actions
 
-## 必须执行
-
-1. 完整阅读 `ai_rules/events/on_experiment_end.md`。
-2. 逐条执行其中列出的步骤，不得跳过。
-3. 若 event 文件要求更新实验文档、进度文件或评估 memory，必须在**当前对话**中完成，不得推迟。
+1. Read [launch/lifecycle](../../../.trellis/spec/experiments/launch-and-lifecycle.md), [output/checkpoint evidence](../../../.trellis/spec/experiments/outputs-checkpoints-and-evidence.md), and [tasks/progress/memory](../../../.trellis/spec/governance/tasks-progress-and-memory.md).
+2. Update the run README/metadata with status, scheduler/runtime evidence, actual command/config/commit, data/split/checkpoint/output provenance, W&B identity, and train/freeze/objective boundary.
+3. Record key metrics/anomalies, failure/cancellation cause, whether the purpose was met, validity limits, and next recommendation.
+4. Record the latest checkpoint and exact resume method, or explain why faithful resume is impossible.
+5. Update `outputs/experiments/<group>/progress.md` with the latest **valid** result for the parameter setting; do not promote an invalid retry.
+6. Update active Trellis task evidence/checklist and a concise `AI_branch_progress.md` milestone when branch-level state changed. Do not create new legacy progress files.
+7. Apply the `on-progress` memory evaluation: recheck/upvote used memory only when helpful, add only non-duplicative reusable lessons, and never run human-only approval commands.

@@ -1,6 +1,6 @@
 # VAGEN navigation baseline (canonical)
 
-Canonical scripts for VAGEN navigation RL baseline per `ai_rules/03_experiments_and_data.md`.
+Canonical scripts for VAGEN navigation RL baseline under the [Trellis experiments contract](../../../.trellis/spec/experiments/index.md).
 
 **Do not add** node-specific or retry-numbered Slurm files here. Put one-off run details under `outputs/experiments/training/baseline/<date>/`.
 

@@ -1,0 +1,35 @@
+{
+  "id": "00-bootstrap-guidelines",
+  "name": "00-bootstrap-guidelines",
+  "title": "Migrate Nimloth AI Workflow Into Trellis",
+  "description": "Migrate the existing repository-owned AI workflow into a Trellis-primary three-platform workflow",
+  "status": "in_progress",
+  "dev_type": "docs",
+  "scope": "docs",
+  "package": null,
+  "priority": "P1",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-08-25",
+  "completedAt": null,
+  "branch": "chore/trellis-init",
+  "base_branch": "dev",
+  "worktree_path": "/workspace/remote2/nimloth-chore-trellis-init",
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "AGENTS.md",
+    ".trellis/workflow.md",
+    ".trellis/spec/",
+    ".agents/skills/",
+    "ai_rules/"
+  ],
+  "notes": "Generated bootstrap task was reset to planning so the reviewed migration design and implementation plan receive explicit human approval before broad edits.",
+  "meta": {
+    "kind": "workflow_migration",
+    "planning_review_required": true
+  }
+}

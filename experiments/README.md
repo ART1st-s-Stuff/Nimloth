@@ -1,8 +1,8 @@
 # Experiments
 
-**AI 在执行任何实验相关操作前，必须先阅读并遵守 [`ai_rules/03_experiments_and_data.md`](../ai_rules/03_experiments_and_data.md)。**
+**AI 在执行任何实验相关操作前，必须先阅读并遵守 [Trellis experiments contract](../.trellis/spec/experiments/index.md)，并使用专用 experiment task。**
 
-该规则涵盖：实验前确认项、dataset split 核实、输出目录与 resume、昂贵任务审批、实验组与 `outputs/experiments/<name>/progress.md` 记录方式等。本 README 只补充目录约定与反模式说明，不重复规则正文。
+该合同涵盖：实验前确认项、dataset split 核实、输出目录与 resume、昂贵任务审批、单独 launch approval、实验组与 `outputs/experiments/<name>/progress.md` 记录方式等。本 README 只补充目录约定与反模式说明，不重复规则正文。
 
 ---
 
@@ -46,7 +46,7 @@
 
 | 类型 | 存放位置 | 说明 |
 |------|----------|------|
-| 法则与硬性流程 | `ai_rules/03_experiments_and_data.md` | split 核实、输出、resume、昂贵任务审批 |
+| 法则与硬性流程 | [`.trellis/spec/experiments/`](../.trellis/spec/experiments/index.md) | task contract、split 核实、输出、resume、launch/end gate |
 | 稳定、高频、可复用的操作模板 | 专用 markdown（如 `experiments/training/*/README.md`、`.local/SERVER.md`） | 经人类确认后写入；写通用步骤，不写单次 job 参数 |
 | 有效期短的环境/集群经验 | **memory skill**（`./skill memory`） | 例如某分区资源查询习惯、SSH 重试策略；需经常更新，过期则 archive |
 | 单次实验的过程与结论 | `outputs/experiments/<name>/` + `progress.md` | 不提交到 `experiments/` 脚本树 |
@@ -58,7 +58,7 @@
 
 ## AI 自检（提交实验或改脚本前）
 
-1. 是否已读 `ai_rules/03_experiments_and_data.md`？
+1. 是否已读 `.trellis/spec/experiments/`，并建立完整的 experiment task contract？
 2. 新脚本是否是**通用模板**，还是又一次性节点/日期命名？
 3. 能否用现有 `configs/training/*.yaml` + 薄入口代替新 slurm 文件？
 4. 短期集群/运维技巧是否应写入 memory，而非新 slurm？

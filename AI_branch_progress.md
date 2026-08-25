@@ -1,8 +1,32 @@
-# AI_branch_progress.md — Nimloth 当前进展
+# AI_branch_progress.md — Nimloth 分支里程碑与历史进展
 
-本文件记录当前阶段的计划、进展、重要决策和失效记忆。每个 AI 会话开始后应阅读本文件。
+> Trellis 迁移后，新任务的详细要求、设计、执行状态和检查写入 `.trellis/tasks/`。本文件在迁移期只新增简短的 branch-level milestone；以下旧内容保留为历史证据，不再作为每个 AI 会话的默认任务入口。
 
 ---
+
+## 2026-08-25：Trellis 三平台初始化
+
+- 从本地 `dev` HEAD `44af540e` 创建 `chore/trellis-init` 分支和
+  `/workspace/remote2/nimloth-chore-trellis-init` worktree；共享 `.local`、`slurm` 与
+  `git-worktree` skill 链接已验证。
+- 使用 Trellis CLI `0.6.15` 以 single-repo 模式初始化 Pi、Claude Code 和 Codex，开发者身份为
+  `ARTI5T`。生成 `.trellis/`、三平台集成文件及 `00-bootstrap-guidelines` 任务；现有
+  `AGENTS.md` 保持不变。
+- `trellis platforms` 确认三平台均已配置，`trellis update --dry-run`、task/context 脚本和
+  `git diff --check` 通过。生成内容尚未提交；bootstrap spec 仍是默认 frontend/backend 模板，
+  尚未按 Nimloth 的 Python ML 结构整理。
+- 第一次调用 `trellis init` 时遗漏目标 `cd`，曾误写当前 `dev` worktree；已按生成清单卸载并清除
+  残留，保留原有 `.pi/task-tree` 和 `external/le-wm` 状态。该错误已登记为 `E0094`，后续仓库修改
+  命令必须在同一条 shell 中显式绑定并校验目标 worktree。
+- 人类已批准 `00-bootstrap-guidelines` 最终方案并完成迁移实现：`AGENTS.md` 改为 Trellis 安全入口，
+  `.trellis/spec/` 改为 governance/experiments/python/domains/guides，workflow 加入 task threshold、
+  experiment launch/end、known-error、memory/progress 与 finish review gate；legacy core rules/events 已按原 hash
+  归档，known errors 建立 97 文件分类索引，`git-worktree`/`slurm` 改为 repo-owned skill entity。
+- task/context、spec/phase、JSON/TOML/Trellis YAML、Python hooks、Markdown links、Pi TypeScript/`ctx.cwd` probe、
+  三平台检测、known-error coverage、memory/archive hash、`trellis update --dry-run` 与 `git diff --check` 已通过。
+  当前 implement 子 agent 能从本 worktree 加载 `.pi/agents/trellis-implement.md`；独立 `trellis-check`
+  已完成并修复 archive live links 与 task-specific known-error context。当前仅等待完整 diff review 和人类
+  commit approval；本任务未 commit、未运行实验或远程操作。
 
 ## 2026-08-20：最新 RL planner 可读性重构审查发现阻断性 API 迁移遗漏
 

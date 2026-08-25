@@ -1,0 +1,10 @@
+{"file": ".trellis/spec/governance/index.md", "reason": "Verify hard safety, task, memory, and worktree contracts"}
+{"file": ".trellis/spec/experiments/index.md", "reason": "Verify experiment/data/lifecycle semantics are retained"}
+{"file": ".trellis/spec/python/index.md", "reason": "Verify source-backed package and quality routing"}
+{"file": ".trellis/spec/domains/index.md", "reason": "Verify real module ownership and terminology routing"}
+{"file": ".trellis/spec/guides/index.md", "reason": "Verify investigation and known-error selection behavior"}
+{"file": ".trellis/tasks/00-bootstrap-guidelines/research/legacy-workflow-inventory.md", "reason": "Verify no legacy semantics or stores are lost"}
+{"file": ".trellis/tasks/00-bootstrap-guidelines/research/spec-taxonomy-evidence.md", "reason": "Verify final specs match real repository boundaries"}
+{"file": ".trellis/tasks/00-bootstrap-guidelines/research/pi-desktop-context-root.md", "reason": "Verify ctx.cwd root resolution and cache isolation"}
+{"file": "ai_rules/known_errors/E0045_do_not_invent_fixed_cot.md", "reason": "Verify the confirmed fixed-CoT failure remains explicitly prevented"}
+{"file": "ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md", "reason": "Verify repository-mutating commands remain bound to the intended worktree"}

@@ -26,7 +26,7 @@ Memory should be:
 - not a task log;
 - not a long explanation.
 
-Memory should usually answer: "What compact experience would save a future agent from repeating this discovery or mistake?" If the information already lives clearly in `AGENTS.md`, `ai_rules/`, an experiment README, or code comments, prefer linking/reading that source instead of creating redundant memory.
+Memory should usually answer: "What compact experience would save a future agent from repeating this discovery or mistake?" If the information already lives clearly in `AGENTS.md`, `.trellis/spec/`, an experiment/module README, or code comments, prefer linking/reading that source instead of creating redundant memory.
 
 ## Commands
 
@@ -81,7 +81,7 @@ AI may submit a pending memory when it captures a compact project lesson that is
 
 ```bash
 ./skill memory add "Dataset split must be verified from loader metadata" "For Nimloth experiments, split names alone are not evidence; verify split semantics from the actual dataset/config/code path before launch."
-./skill memory set M0001 'evidence=[{"filename":"ai_rules/03_experiments_and_data.md","line_start":12,"total_lines":9}]' 'tags=["experiments","data","split"]'
+./skill memory set M0001 'evidence=[{"filename":".trellis/spec/experiments/data-and-splits.md","line_start":1,"total_lines":18}]' 'tags=["experiments","data","split"]'
 ./skill memory human-verify M0001
 ```
 

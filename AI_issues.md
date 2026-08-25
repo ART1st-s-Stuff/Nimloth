@@ -1,4 +1,6 @@
-# AI_issues.md — 需要人类确认的问题
+# AI_issues.md — 历史问题记录
+
+> Trellis 迁移后，本文件只保留迁移前的问题、回答与决策证据，不再接收新的 live issue。新需求、待确认问题和批准记录写入当前 `.trellis/tasks/<task>/` artifact。
 
 ## 2026-06-10 memory skill/CLI 待确认
 

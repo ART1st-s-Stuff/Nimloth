@@ -2,6 +2,12 @@
 
 Nimloth is a Python machine-learning project for building a **World Model Agent**.
 
+## AI development workflow
+
+Repository AI work uses [Trellis](.trellis/workflow.md) as its only live development task system. All platforms enter through [AGENTS.md](AGENTS.md), load task-selected contracts from [`.trellis/spec/`](.trellis/spec/), and share project capabilities from [`.agents/skills/`](.agents/skills/). Existing `ai_tasks/`, `AI_issues.md`, and older `AI_branch_progress.md` entries are historical evidence; new task details belong in `.trellis/tasks/`.
+
+Pi TaskTree is intentionally unused and must remain empty. Experiments and remote jobs require the dedicated [experiment contract](.trellis/spec/experiments/index.md) and explicit launch approval.
+
 ## VAGEN 到 RL 的术语与关键参数
 
 本节固定 VAGEN navigation、SFT1、SFT2 和 RL 之间的公共用词。具体实验值必须从

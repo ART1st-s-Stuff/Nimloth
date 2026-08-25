@@ -1,6 +1,6 @@
 # Training experiments (by phase)
 
-**实验规则入口：** [`ai_rules/03_experiments_and_data.md`](../../ai_rules/03_experiments_and_data.md) · [`experiments/README.md`](../README.md)
+**实验规则入口：** [Trellis experiments contract](../../.trellis/spec/experiments/index.md) · [`experiments/README.md`](../README.md)
 
 | Directory | Phase | Description |
 |-----------|-------|-------------|

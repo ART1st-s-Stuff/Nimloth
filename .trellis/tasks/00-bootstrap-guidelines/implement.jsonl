@@ -1,0 +1,10 @@
+{"file": ".trellis/spec/governance/index.md", "reason": "Cross-platform safety, task, memory, and worktree authority"}
+{"file": ".trellis/spec/experiments/index.md", "reason": "Experiment contract and lifecycle migration boundary"}
+{"file": ".trellis/spec/python/index.md", "reason": "Source-backed Python package and quality taxonomy"}
+{"file": ".trellis/spec/domains/index.md", "reason": "Cross-module Nimloth terminology and ownership taxonomy"}
+{"file": ".trellis/spec/guides/index.md", "reason": "Investigation and selective known-error routing"}
+{"file": ".trellis/tasks/00-bootstrap-guidelines/research/legacy-workflow-inventory.md", "reason": "Existing AI workflow authority and persistence mapping"}
+{"file": ".trellis/tasks/00-bootstrap-guidelines/research/spec-taxonomy-evidence.md", "reason": "Source-backed Nimloth spec boundaries"}
+{"file": ".trellis/tasks/00-bootstrap-guidelines/research/pi-desktop-context-root.md", "reason": "Pi Desktop project-root compatibility requirement"}
+{"file": "ai_rules/known_errors/E0045_do_not_invent_fixed_cot.md", "reason": "Confirmed CoT failure pattern whose hard semantics must survive migration"}
+{"file": "ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md", "reason": "Confirmed initialization failure that defines this migration's worktree binding rule"}
