@@ -101,8 +101,8 @@ git status --short
 - [x] Update the bootstrap task checklist and concise `AI_branch_progress.md` milestone.
 - [x] Run `trellis-check` full-scope review (main session only; implement sub-agent recursion guard applies).
 - [x] Present all changed files, semantic mapping, validation evidence, intentional Trellis update conflicts, and unrecognized dirty files.
-- [ ] Obtain one-shot commit approval before creating work commits.
-- [ ] Invoke finish-work only after work commits are complete and the user accepts automatic bookkeeping commits.
+- [x] Obtain one-shot commit approval before creating work commits.
+- [x] Invoke finish-work only after work commits are complete and the user accepts automatic bookkeeping commits.
 
 ## Verification Evidence (implement agent)
 
@@ -131,7 +131,7 @@ Independent `trellis-check` review on 2026-08-25:
 - A foreign-OS-cwd Pi harness with a fake child CLI confirmed that callback `ctx.cwd` supplies this task and that same-session context caches remain isolated by active root.
 - No additional semantic, behavioral, or platform blockers remain from the check review.
 
-Pending main-session gates: present/accept the one-shot work commit plan, create approved work commits, then obtain acceptance before finish-work bookkeeping.
+Main-session gates completed: the human approved the one-shot plan, work commits `aa258e44` and `80301f46` were created, and the human separately approved finish-work bookkeeping.
 
 ## Guardrails
 
