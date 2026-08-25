@@ -34,6 +34,9 @@ def test_id188_step0_full_browser_uses_frozen_normal_4x2_contract() -> None:
     assert "source_step':776" in runner
     assert "not list((run/'checkpoints').glob('global_step_*'))" in runner
     assert "workers=8" in runner
+    assert "parent commit: ${EXPECTED_PARENT_COMMIT}" in runner
+    assert "VAGEN commit: ${EXPECTED_VAGEN_COMMIT}" in runner
+    assert "VERL commit: ${EXPECTED_VERL_COMMIT}" in runner
     assert "SOURCE_CHECKPOINT" not in runner
 
     assert config["joint_integration_gate"] == {

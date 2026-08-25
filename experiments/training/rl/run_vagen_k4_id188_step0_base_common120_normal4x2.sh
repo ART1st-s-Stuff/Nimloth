@@ -399,6 +399,7 @@ PY
 cat >"${RUN_OUT}/README.md" <<EOF
 # ID188 pre-RL step0 Base60+Common60 full-browser evaluation
 
+- parent commit: ${EXPECTED_PARENT_COMMIT}; VAGEN commit: ${EXPECTED_VAGEN_COMMIT}; VERL commit: ${EXPECTED_VERL_COMMIT}.
 - source: corrected ID176 post-SFT2 actor plus frozen ID74 planning sidecar, directly bootstrapped as source step776 before any joint PPO update.
 - selected episodes: all held-out Base seeds 1..60 and Common Sense seeds 1..60, exactly 120 unique semantic rollout rows.
 - execution: val-only K4/100 UCT/c1 Scheme-B alpha1 beta85.78297006578457, TP8/DP1 rollout and DP8 initialization. Actor, vision tower, projector, WM, ValueHead, and reference behavior are frozen; there is no backward, optimizer update, resume, or checkpoint.
