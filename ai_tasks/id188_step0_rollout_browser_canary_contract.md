@@ -1,7 +1,7 @@
 # ID188 pre-RL step0 rollout browser comparison contract
 
 Date: 2026-08-21
-Status: one-rollout attempts remained unallocated; human requested migration to full Base60+Common60 evaluation; implementation complete, remote preflight blocked by VPN/SSH timeout
+Status: full Base60+Common60 Job 530662 submitted on normal 4x2 and pending Priority
 
 ## Purpose
 
@@ -78,7 +78,7 @@ additional policy/split questions. The adopted comparison is the direct
 apples-to-apples default: ID176 actor + frozen ID74 planner, evaluated with the
 same held-out Base60+Common60, t20, K4/100-simulation protocol as ID189.
 
-- Parent implementation commit: `fa821410`; VAGEN feature commit: `b640182`.
+- Parent runtime commit: `19ea311badf8e76b2680ba73df42a6daee5ea2d0`; VAGEN feature commit: `9f1e89eb8c9839a406b6e62aa75703494a79e5b5`.
 - Config: `joint_id188_step0_base_common120.yaml`, phase
   `step0_base_common120`.
 - Runner: `run_vagen_k4_id188_step0_base_common120_normal4x2.sh`.
@@ -100,7 +100,4 @@ same held-out Base60+Common60, t20, K4/100-simulation protocol as ID189.
   turn. Ray must observe browser packing workers=`8` on every batch.
 - A failed formal identity cannot resume or be overwritten.
 
-Local syntax and diff checks passed. The first remote test connection timed out
-before any server command ran, so no Slurm job/output/W&B identity exists. VPN
-restoration is required before remote regression, production worktree creation,
-checkpoint/output/W&B preflight and submission.
+VPN recovered. Remote Parent/VAGEN regressions passed `14/11`, all five production trees are clean, and checkpoint/asset/split/output/W&B/hash preflight passed. Job `530662` requests normal 4x2 H800 and is pending Priority; the cluster query showed no currently free GPUs and Slurm estimated start `2026-08-25T17:25:32`. No output or W&B run exists before allocation.
