@@ -34,8 +34,8 @@ complete interactive Rollout Browser.
 
 ## Implementation
 
-- Parent implementation commit: `fa821410`.
-- VAGEN feature commit: `b640182` on the ARTI5T feature branch; true upstream
+- Parent runtime commit: `19ea311badf8e76b2680ba73df42a6daee5ea2d0`.
+- VAGEN feature commit: `9f1e89eb8c9839a406b6e62aa75703494a79e5b5` on the ARTI5T feature branch; true upstream
   main is unchanged.
 - Added full step0 config/gate, four-node runner, Slurm entrypoint and TDD
   contract tests.
@@ -51,12 +51,10 @@ complete interactive Rollout Browser.
 
 ## Validation and status
 
-- Local shell/Python syntax and diff checks passed.
-- Remote pytest/preflight is currently **blocked before execution**: SSH through
-  `superpod-csejzhang` timed out while opening the server connection, indicating
-  the required VPN path is unavailable. No Slurm job, output directory or W&B
-  identity has been created.
-- After VPN restoration: run the specified parent/VAGEN test set in the isolated
-  test worktree with bytecode/cache disabled, create a clean production
-  worktree, verify checkpoint hashes/output/W&B absence and current resources,
-  then submit and monitor through browser completion and read-only validation.
+- VPN recovered. Remote regression passed in the isolated test worktree with bytecode/cache disabled: Parent `14 passed`; VAGEN `11 passed` (three existing warnings only). Shell syntax and all parent/VAGEN/VERL/le-wm/RCDM clean-tree gates passed.
+- Clean production worktree:
+  `/project/peilab/atst/nimloth/.worktree/id188-step0-bc120-prod-19ea311b`.
+- Checkpoint hashes, exact heldout asset hashes and train-scene disjointness passed. The formal output is absent, W&B ID is absent, and the fixed Python/config sources are readable. NFS reported about 361 GiB available before submission.
+- The first `sbatch` command used a relative script path without changing to the production worktree and was rejected before creating a Slurm job; no output or W&B identity was touched. The corrected absolute-path submission created Job `530662`.
+- Job `530662` is currently `PENDING (Priority)` on `normal`, requesting four nodes, eight H800 total, 64 CPU and 256 GiB. Slurm estimated start `2026-08-25T17:25:32`; the resource query showed no currently free GPUs.
+- Continue monitoring through allocation, dynamic Navigation head qualification, Ray `[2,2,2,2]`, DP8/TP8 startup, all three 40-row browser batches, final validator, W&B finish and cleanup.
