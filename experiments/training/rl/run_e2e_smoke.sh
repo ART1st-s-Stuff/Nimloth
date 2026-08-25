@@ -2,9 +2,10 @@
 # Run inside a held single-node allocation with at least two GPUs.
 set -euo pipefail
 
-REPO=${REPO:-/project/peilab/atst/nimloth/.worktree/feat-rl-validation}
-ENV_REPO=${ENV_REPO:-/project/peilab/atst/nimloth/.worktree/exp-vagen-1action}
+: "${REPO:?set REPO to the pinned Nimloth worktree}"
+ENV_REPO=${ENV_REPO:-${REPO}}
 PYTHON=${PYTHON:-/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3}
+EXPECTED_VAGEN_COMMIT=${EXPECTED_VAGEN_COMMIT:-316d9d7}
 SFT2_ROOT=${SFT2_ROOT:-/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-06-22/sft2_llmlora_visionfull_1epoch_gamma1_ckpt100_keep2_stride2}
 RUN_OUT=${RUN_OUT:-/project/peilab/atst/nimloth/outputs/experiments/training/rl/2026-07-11/post_fsdp_fix_e2e_smoke_retry1}
 ENV_PORT=${ENV_PORT:-8500}
@@ -22,12 +23,16 @@ WANDB_MODE_REQUESTED=${WANDB_MODE_OVERRIDE:-disabled}
 WANDB_RUN_NAME_REQUESTED=${WANDB_RUN_NAME:-1_smoke_k1ep2_rl_e2e4x2_fsdp2_iter2}
 
 [[ -x "${PYTHON}" ]] || { echo "missing Python: ${PYTHON}" >&2; exit 1; }
+[[ "$(git -C "${ENV_REPO}/external/VAGEN" rev-parse --short=7 HEAD)" == "${EXPECTED_VAGEN_COMMIT}" ]] || {
+  echo "unexpected VAGEN revision; expected ${EXPECTED_VAGEN_COMMIT}" >&2
+  exit 1
+}
 [[ -f "${RL_CONFIG}" ]] || { echo "missing RL config: ${RL_CONFIG}" >&2; exit 1; }
 [[ -f "${MODEL}/config.json" ]] || { echo "missing model: ${MODEL}" >&2; exit 1; }
 for path in "${WM_CKPT}/state_proj.pt" "${WM_CKPT}/wm_predictor/predictor.pt" "${WM_CKPT}/value_head/value_head.pt"; do
   [[ -f "${path}" ]] || { echo "missing checkpoint file: ${path}" >&2; exit 1; }
 done
-[[ -f "${ENV_REPO}/external/VAGEN/vagen/env/navigation/datasets/base_train.json" ]] || {
+[[ -f "${ENV_REPO}/external/VAGEN/vagen/envs/navigation/assets/base_train.json" ]] || {
   echo "ENV_REPO does not contain the verified base_train dataset" >&2
   exit 1
 }
@@ -108,12 +113,13 @@ trap cleanup EXIT
   export PYTHONPATH=${ENV_REPO}/external/VAGEN
   source "${REPO}/experiments/training/baseline/setup_ai2thor_env.sh"
   cd "${ENV_REPO}/external/VAGEN"
-  exec "${PYTHON}" -m vagen.server.server \
-    server.host=0.0.0.0 \
-    server.port=${ENV_PORT} \
-    use_state_reward=False \
-    navigation.devices=[0] \
-    navigation.max_workers=1
+  exec "${PYTHON}" -m vagen.envs.navigation.serve \
+    --host=0.0.0.0 \
+    --port="${ENV_PORT}" \
+    --devices='[0]' \
+    --max_envs="$((NUM_EPISODES + 1))" \
+    --max_inflight="$((NUM_EPISODES + 1))" \
+    --thread_pool_size="$((NUM_EPISODES + 1))"
 ) >"${ENV_LOG}" 2>&1 &
 ENV_PID=$!
 

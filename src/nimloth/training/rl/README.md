@@ -15,8 +15,21 @@ warm start；SFT2 本身不运行这条 rollout 路径。
 | `nimloth.rollout` | Trajectory schema、JSONL、锚点/预测 state 与 behavior provenance |
 | `nimloth.config.agent`, `nimloth.config.rollout` | Stage-independent Agent and rollout configuration |
 | `nimloth.config.rl` | Strict typed RL-phase configuration |
-| `nimloth.training.rl` | RL 算法、组件装配、optimizer、checkpoint 和训练循环 |
+| `nimloth.training.rl` | RL 算法、组件装配、optimizer、checkpoint 和训练循环；`joint_critic.py`与`joint_scoring.py`保存VAGEN joint-policy尚未接线的critic snapshot及capture→Q纯scoring合同 |
 | `experiments/training/rl/rollout_env.py` | Thin standalone rollout entry point and pre-write validation |
+
+`joint_critic.py`严格复用`SharedSlotProjector -> slot mean -> ValueHead`，并可从同一
+SFT2/RL checkpoint root加载projector/head、创建显式
+`source_step + contract_id + score_dtype`绑定的内存frozen snapshot。
+`joint_scoring.py`严格消费same-generation capture v2：episode级`request_id`仅负责sticky
+routing，每次forward另有唯一`generation_id`；两者与token table、raw prior logits及
+snapshot身份共同进入immutable scoring record。scorer按snapshot参数dtype构造输入，输出
+dtype只来自snapshot中已哈希的contract `score_dtype`，调用者不能临时覆盖。当前没有
+`joint_behavior.py`另定义identity-bearing response trace与纯assembly helper：严格绑定
+request/generation/expected generation-spec、完整response IDs/mask/log-probs和真实decode文本，
+再把外部已选guided action组装成behavior/execution envelope；helper没有RNG或current-Q输入。
+当前仍没有optimizer、refresh schedule、Ray owner、agent-loop sampler或checkpoint lifecycle；
+不得据此移除VAGEN trainer的joint-policy fail-closed门禁。
 
 RL code must not construct an independent navigation prompt. Online action
 selection, PPO replay, and WM state encoding all use the policy query produced

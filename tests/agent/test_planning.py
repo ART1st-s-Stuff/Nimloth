@@ -248,6 +248,42 @@ def test_mcts_uses_h1_k_step_final_outgoing_action_value() -> None:
     assert set(value_head.state_depths) == {0, 3}
 
 
+def test_mcts_trace_captures_every_simulation_node_state_leaf_value_and_backup() -> None:
+    world_model = WorldModel(
+        state_proj=torch.nn.Identity(),
+        wm_predictor=_MCTSIncomingActionPredictor(),
+        value_head=_MCTSOutgoingActionValueHead(),
+    )
+    plan = WorldModelPlanner(
+        world_model,
+        horizon=4,
+        search_mode="mcts",
+        mcts_num_simulations=16,
+        mcts_exploration_constant=1.0,
+        capture_mcts_trace=True,
+    ).plan(
+        torch.tensor([[[0.0, 0.0, 0.0]]]),
+        torch.empty((1, 0), dtype=torch.long),
+    )
+
+    trace = plan.mcts_trace
+    assert trace is not None
+    assert trace["schema"] == "nimloth_k4_mcts_process_v1"
+    assert len(trace["simulations"]) == 16
+    assert trace["simulations"][0]["simulation_index"] == 0
+    assert trace["simulations"][-1]["simulation_index"] == 15
+    for simulation in trace["simulations"]:
+        assert len(simulation["selection_steps"]) == 4
+        assert len(simulation["backups"]) == 5
+        assert simulation["leaf"]["action_values"].shape == (8,)
+        assert simulation["leaf"]["value"] == simulation["backups"][-1]["mean_value_after"]
+    nodes = trace["tree_nodes"]
+    assert nodes[0]["sequence"] == ()
+    assert nodes[0]["predicted_state"] is None
+    assert all(node["predicted_state"].shape == (3,) for node in nodes[1:])
+    assert sum(node["depth"] == 4 for node in nodes) >= 1
+
+
 def test_mcts_rejects_non_h1_predictor() -> None:
     world_model = WorldModel(
         state_proj=torch.nn.Identity(),

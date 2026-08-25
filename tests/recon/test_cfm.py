@@ -7,6 +7,7 @@ from nimloth.recon.cfm import (
     TokenConditionedFlowUNet,
     conditional_flow_matching_loss,
     sample_euler,
+    sample_euler_cfg,
 )
 from nimloth.recon.rcdm.image_utils import image_to_diffusion_tensor
 from nimloth.training.reconstruction.cfm_sft2 import _load_image_uint8
@@ -88,6 +89,26 @@ def test_cfm_uint8_loader_matches_existing_image_normalization(tmp_path) -> None
     loaded = _load_image_uint8(path, 16)
     expected = image_to_diffusion_tensor(path, image_size=16)
     torch.testing.assert_close(loaded.float().div(127.5).sub(1.0), expected)
+
+
+def test_cfm_cfg_scale_one_matches_conditional_sampling() -> None:
+    torch.manual_seed(13)
+    model = _tiny_model().eval()
+    states = torch.randn(2, 12)
+    noise = torch.randn(2, 3, 16, 16)
+    expected = sample_euler(
+        model, states, noise, steps=2, device=torch.device("cpu"), chunk_size=1
+    )
+    actual = sample_euler_cfg(
+        model,
+        states,
+        noise,
+        steps=2,
+        cfg_scale=1.0,
+        device=torch.device("cpu"),
+        chunk_size=1,
+    )
+    torch.testing.assert_close(actual, expected, rtol=1e-4, atol=3e-6)
 
 
 def test_cfm_euler_sampling_is_deterministic() -> None:

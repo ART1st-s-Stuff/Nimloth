@@ -102,6 +102,50 @@ def condition_sensitivity(
 
 
 @torch.no_grad()
+def sample_euler_cfg(
+    model: nn.Module,
+    condition: torch.Tensor,
+    initial_noise: torch.Tensor,
+    *,
+    steps: int,
+    cfg_scale: float,
+    device: torch.device,
+    chunk_size: int = 8,
+) -> torch.Tensor:
+    """Integrate with classifier-free guidance and a zero condition."""
+
+    if steps < 1:
+        raise ValueError(f"steps must be >= 1, got {steps}")
+    if not torch.isfinite(torch.tensor(cfg_scale)):
+        raise ValueError("cfg_scale must be finite")
+    outputs: list[torch.Tensor] = []
+    model.eval()
+    for start in range(0, condition.shape[0], chunk_size):
+        cond = condition[start : start + chunk_size].to(
+            device=device, dtype=torch.float32
+        )
+        uncond = torch.zeros_like(cond)
+        image = initial_noise[start : start + chunk_size].to(
+            device=device, dtype=torch.float32
+        ).clone()
+        delta = 1.0 / steps
+        for index in range(steps):
+            time = torch.full(
+                (cond.shape[0],),
+                (index + 0.5) / steps,
+                device=device,
+                dtype=torch.float32,
+            )
+            velocity_uncond = model(image, time, uncond)
+            velocity_cond = model(image, time, cond)
+            image = image + delta * (
+                velocity_uncond + cfg_scale * (velocity_cond - velocity_uncond)
+            )
+        outputs.append(image.clamp(-1.0, 1.0).cpu())
+    return torch.cat(outputs, dim=0)
+
+
+@torch.no_grad()
 def sample_euler(
     model: nn.Module,
     condition: torch.Tensor,

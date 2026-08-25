@@ -36,28 +36,30 @@ for _dependency_root in (_REPO_ROOT / "src", _VAGEN_ROOT):
 
 from nimloth.agent import NimlothPromptTemplate
 
-try:
-    from vagen.envs.navigation.utils.nimloth_format import (
-        ACTION_NAMES,
-        ACTION_TO_IDX,
-        LATENT_STATE_TOKENS,
-        NIMLOTH_ACTION_BLOCK,
-        NIMLOTH_FORMAT_INSTRUCTION,
-        SPECIAL_TOKENS,
-    )
-except ModuleNotFoundError:
-    from vagen.env.navigation.nimloth_format import (
-        ACTION_NAMES,
-        ACTION_TO_IDX,
-        LATENT_STATE_TOKENS,
-        NIMLOTH_ACTION_BLOCK,
-        NIMLOTH_FORMAT_INSTRUCTION,
-        SPECIAL_TOKENS,
-    )
+from vagen.envs.navigation.utils.nimloth_format import (
+    ACTION_NAMES,
+    action_block,
+    latent_state_tokens,
+)
+from vagen.envs.navigation.utils.prompt import get_format_instruction
 
+LATENT_STATE_TOKENS = latent_state_tokens(16)
 ACTION_NAMES = list(ACTION_NAMES)
-ACTION_TO_IDX = dict(ACTION_TO_IDX)
-SPECIAL_TOKENS = list(SPECIAL_TOKENS)
+ACTION_TO_IDX = {name: index for index, name in enumerate(ACTION_NAMES)}
+NIMLOTH_ACTION_BLOCK = action_block(latent_token_count=16)
+NIMLOTH_FORMAT_BODY = (
+    "Respond in this format:\n"
+    f"<think>...</think>{NIMLOTH_ACTION_BLOCK}\n"
+    "where idx is one of: "
+    + ", ".join(f"{index}={name}" for index, name in enumerate(ACTION_NAMES))
+    + "."
+)
+SPECIAL_TOKENS = [
+    *LATENT_STATE_TOKENS,
+    "<|action_start|>",
+    "<|action_end|>",
+    *(f"<|action_({index})|>" for index in range(len(ACTION_NAMES))),
+]
 AGENT_PROMPT = NimlothPromptTemplate(
     latent_token_count=len(LATENT_STATE_TOKENS),
     action_count=len(ACTION_NAMES),
@@ -109,11 +111,11 @@ def rewrite_prompt_instruction(content: str) -> str:
         (
             "You can optionally think first, then give your action. Respond in this format:\n"
             "<think>...</think><action>some_action</action>",
-            "You can optionally think first, then give your action. " + NIMLOTH_FORMAT_INSTRUCTION,
+            "You can optionally think first, then give your action. " + NIMLOTH_FORMAT_BODY,
         ),
         (
             "Respond in this format:\n<think>...</think><action>some_action</action>",
-            NIMLOTH_FORMAT_INSTRUCTION,
+            NIMLOTH_FORMAT_BODY,
         ),
         (
             "<think>...</think><action>some_action</action>",

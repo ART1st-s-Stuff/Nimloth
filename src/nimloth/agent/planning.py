@@ -53,6 +53,7 @@ class WorldModelPlan:
     selected_action_index: int
     candidate_visit_counts: torch.Tensor | None = None
     root_visit_counts: torch.Tensor | None = None
+    mcts_trace: dict[str, Any] | None = None
 
 
 @dataclass
@@ -101,6 +102,7 @@ class WorldModelPlanner:
         beam_width: int | None = None,
         mcts_num_simulations: int | None = None,
         mcts_exploration_constant: float | None = None,
+        capture_mcts_trace: bool = False,
     ) -> None:
         if horizon < 1:
             raise ValueError(f"planning horizon must be positive, got {horizon}")
@@ -126,14 +128,16 @@ class WorldModelPlanner:
         elif (
             mcts_num_simulations is not None
             or mcts_exploration_constant is not None
+            or capture_mcts_trace
         ):
-            raise ValueError("MCTS parameters are only valid for mcts search")
+            raise ValueError("MCTS parameters and trace capture are only valid for mcts search")
         self.world_model = world_model
         self.horizon = int(horizon)
         self.search_mode = search_mode
         self.beam_width = beam_width
         self.mcts_num_simulations = mcts_num_simulations
         self.mcts_exploration_constant = mcts_exploration_constant
+        self.capture_mcts_trace = bool(capture_mcts_trace)
 
     def _score_sequences(
         self,
@@ -264,24 +268,62 @@ class WorldModelPlanner:
 
         root = _MCTSNode(state=state_history[:, -1], sequence=())
         leaf_stats: dict[tuple[int, ...], _MCTSLeafStats] = {}
-        for _simulation in range(self.mcts_num_simulations):
+        simulations: list[dict[str, Any]] = []
+        for simulation_index in range(self.mcts_num_simulations):
             node = root
             path = [root]
+            selection_steps: list[dict[str, Any]] = []
             while len(node.sequence) < self.horizon:
-                if len(node.children) < action_count:
+                parent = node
+                if len(parent.children) < action_count:
                     action_index = next(
                         action
                         for action in range(action_count)
-                        if action not in node.children
+                        if action not in parent.children
                     )
                     child = _MCTSNode(
-                        state=self._mcts_child_state(node.state, action_index),
-                        sequence=(*node.sequence, action_index),
+                        state=self._mcts_child_state(parent.state, action_index),
+                        sequence=(*parent.sequence, action_index),
                     )
-                    node.children[action_index] = child
-                    node = child
+                    parent.children[action_index] = child
+                    operation = "expand"
+                    uct_candidates: list[dict[str, Any]] = []
                 else:
-                    node = self._select_uct_child(node)
+                    if parent.visit_count < 1:
+                        raise RuntimeError("cannot select from an unvisited MCTS node")
+                    log_parent_visits = math.log(parent.visit_count)
+                    assert self.mcts_exploration_constant is not None
+                    uct_candidates = []
+                    for candidate_action, candidate_child in sorted(parent.children.items()):
+                        exploration = self.mcts_exploration_constant * math.sqrt(
+                            log_parent_visits / candidate_child.visit_count
+                        )
+                        uct_candidates.append(
+                            {
+                                "action_id": candidate_action,
+                                "child_sequence": candidate_child.sequence,
+                                "visit_count": candidate_child.visit_count,
+                                "mean_value": candidate_child.mean_value,
+                                "exploration_bonus": exploration,
+                                "uct_score": candidate_child.mean_value + exploration,
+                            }
+                        )
+                    child = self._select_uct_child(parent)
+                    action_index = child.sequence[-1]
+                    operation = "select"
+                if self.capture_mcts_trace:
+                    selection_steps.append(
+                        {
+                            "depth": len(parent.sequence),
+                            "parent_sequence": parent.sequence,
+                            "parent_visit_count": parent.visit_count,
+                            "operation": operation,
+                            "action_id": action_index,
+                            "child_sequence": child.sequence,
+                            "uct_candidates": uct_candidates,
+                        }
+                    )
+                node = child
                 path.append(node)
 
             final_action = node.sequence[-1]
@@ -300,9 +342,38 @@ class WorldModelPlanner:
             stats = leaf_stats.setdefault(node.sequence, _MCTSLeafStats())
             stats.visit_count += 1
             stats.value_sum += leaf_value
+            backups: list[dict[str, Any]] = []
             for visited in path:
+                before_visits = visited.visit_count
+                before_sum = visited.value_sum
                 visited.visit_count += 1
                 visited.value_sum += leaf_value
+                if self.capture_mcts_trace:
+                    backups.append(
+                        {
+                            "sequence": visited.sequence,
+                            "visit_count_before": before_visits,
+                            "value_sum_before": before_sum,
+                            "visit_count_after": visited.visit_count,
+                            "value_sum_after": visited.value_sum,
+                            "mean_value_after": visited.mean_value,
+                        }
+                    )
+            if self.capture_mcts_trace:
+                simulations.append(
+                    {
+                        "simulation_index": simulation_index,
+                        "selection_steps": selection_steps,
+                        "leaf": {
+                            "sequence": node.sequence,
+                            "decision_sequence": path[-2].sequence,
+                            "action_id": final_action,
+                            "action_values": leaf_action_values[0].detach().clone(),
+                            "value": leaf_value,
+                        },
+                        "backups": backups,
+                    }
+                )
 
         if len(root.children) != action_count:
             raise RuntimeError("MCTS did not expand every root action")
@@ -341,6 +412,35 @@ class WorldModelPlanner:
             dtype=torch.long,
             device=state_history.device,
         )
+        mcts_trace = None
+        if self.capture_mcts_trace:
+            tree_nodes: list[dict[str, Any]] = []
+
+            def visit_tree(node: _MCTSNode) -> None:
+                tree_nodes.append(
+                    {
+                        "sequence": node.sequence,
+                        "depth": len(node.sequence),
+                        "predicted_state": (
+                            None if not node.sequence else node.state[0].detach().clone()
+                        ),
+                        "visit_count": node.visit_count,
+                        "value_sum": node.value_sum,
+                        "mean_value": node.mean_value,
+                    }
+                )
+                for action_id in sorted(node.children):
+                    visit_tree(node.children[action_id])
+
+            visit_tree(root)
+            mcts_trace = {
+                "schema": "nimloth_k4_mcts_process_v1",
+                "num_simulations": self.mcts_num_simulations,
+                "horizon": self.horizon,
+                "exploration_constant": self.mcts_exploration_constant,
+                "tree_nodes": tree_nodes,
+                "simulations": simulations,
+            }
         return WorldModelPlan(
             candidate_sequences=candidate_sequences,
             candidate_scores=candidate_scores,
@@ -348,6 +448,7 @@ class WorldModelPlanner:
             selected_action_index=selected_action_index,
             candidate_visit_counts=candidate_visit_counts,
             root_visit_counts=root_visit_counts,
+            mcts_trace=mcts_trace,
         )
 
     def plan(

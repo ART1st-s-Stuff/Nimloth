@@ -1,8 +1,7 @@
-"""Tests for VAGEN navigation prompt_format=nimloth_wm."""
+"""Tests for the upstream VAGEN K16 Nimloth navigation protocol."""
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 from pathlib import Path
 
@@ -10,84 +9,71 @@ _VAGEN_ROOT = Path(__file__).resolve().parents[1] / "external" / "VAGEN"
 if _VAGEN_ROOT.is_dir() and str(_VAGEN_ROOT) not in sys.path:
     sys.path.insert(0, str(_VAGEN_ROOT))
 
-
-def _load_module(relpath: str, name: str):
-    path = _VAGEN_ROOT / relpath
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+from vagen.envs.navigation.utils.nimloth_format import latent_state_tokens
+from vagen.envs.navigation.utils.parse import parse_response
+from vagen.envs.navigation.utils.prompt import system_prompt
 
 
-nimloth_format = _load_module(
-    "vagen/env/navigation/nimloth_format.py",
-    "vagen.env.navigation.nimloth_format",
-)
-prompt = _load_module(
-    "vagen/env/navigation/prompt.py",
-    "vagen.env.navigation.prompt",
-)
-parse = _load_module(
-    "vagen/env/utils/parse_utils.py",
-    "vagen.env.utils.parse_utils",
-)
+def _response(action_index: int) -> str:
+    return (
+        "<think>Use one real action and reassess.</think>"
+        + "".join(latent_state_tokens(16))
+        + f"<|action_start|><|action_({action_index})|><|action_end|>"
+    )
 
 
-def test_nimloth_wm_prompt_has_latent_before_action_start() -> None:
-    text = prompt.format_prompt["nimloth_wm"](
+def test_nimloth_prompt_has_exact_k16_block_before_action_start() -> None:
+    text = system_prompt(
+        format_name="nimloth",
         max_actions_per_step=1,
-        add_example=False,
+        example_count=0,
+        latent_token_count=16,
     )
-    latent_pos = text.index("<|latent_state|>")
-    action_start_pos = text.index("<|action_start|>")
-    assert latent_pos < action_start_pos
-    assert "<observation>" in text
-    assert "<prediction>" in text
-    assert "<action>" not in text
+    block = "".join(latent_state_tokens(16))
+    assert block + "<|action_start|>" in text
+    assert "Choose exactly one valid action" in text
+    assert "take multiple actions" not in text
 
 
-def test_nimloth_prompt_keeps_latent_before_action_start() -> None:
-    text = prompt.system_prompt(format_name="nimloth", max_actions_per_step=1, example_count=0)
-    body = nimloth_format.NIMLOTH_FORMAT_BODY
-    assert body.index("<|latent_state|>") < body.index("<|action_start|>")
-
-
-def test_parse_nimloth_wm_success() -> None:
-    response = (
-        "<observation>Garbage can on the left.</observation>"
-        "<think>Turn left first.</think>"
-        "<|latent_state|><|action_start|><|action_(3)|><|action_end|>"
-        "<prediction>The can will appear closer on the left.</prediction>"
+def test_parse_nimloth_k16_success() -> None:
+    parsed = parse_response(
+        _response(3),
+        prompt_format="nimloth",
+        max_actions=1,
+        latent_token_count=16,
     )
-    parsed = parse.parse_nimloth_wm(response, max_actions=1)
     assert parsed["format_correct"] is True
     assert parsed["actions"] == ["move_left"]
-    assert parsed["observation_content"] == "Garbage can on the left."
-    assert parsed["prediction_content"].startswith("The can")
 
 
-def test_parse_nimloth_wm_rejects_latent_after_action_start() -> None:
-    response = (
-        "<observation>Garbage can on the left.</observation>"
-        "<think>Turn left first.</think>"
-        "<|action_start|><|latent_state|><|action_(3)|><|action_end|>"
-        "<prediction>The can will appear closer on the left.</prediction>"
-    )
-    parsed = parse.parse_nimloth_wm(response, max_actions=1)
-    assert parsed["format_correct"] is False
-    assert parsed["actions"] == []
-
-
-def test_parse_nimloth_requires_latent_before_action_start() -> None:
-    good = (
-        "<think>Turn left first.</think>"
+def test_parse_nimloth_rejects_k1_or_old_wm_envelope() -> None:
+    k1 = (
+        "<think>Turn left.</think>"
         "<|latent_state|><|action_start|><|action_(3)|><|action_end|>"
     )
-    bad = (
-        "<think>Turn left first.</think>"
-        "<|action_start|><|action_(3)|><|action_end|>"
+    old_wm = _response(3) + "<prediction>future</prediction>"
+    for response in (k1, old_wm):
+        parsed = parse_response(
+            response,
+            prompt_format="nimloth",
+            max_actions=1,
+            latent_token_count=16,
+        )
+        assert parsed["format_correct"] is False
+        assert parsed["actions"] == []
+
+
+def test_parse_nimloth_rejects_latent_after_action_start() -> None:
+    response = (
+        "<think>Turn left.</think><|action_start|>"
+        + "".join(latent_state_tokens(16))
+        + "<|action_(3)|><|action_end|>"
     )
-    assert parse.parse_nimloth(good, max_actions=1)["format_correct"] is True
-    assert parse.parse_nimloth(bad, max_actions=1)["format_correct"] is False
+    parsed = parse_response(
+        response,
+        prompt_format="nimloth",
+        max_actions=1,
+        latent_token_count=16,
+    )
+    assert parsed["format_correct"] is False
+    assert parsed["actions"] == []

@@ -20,6 +20,7 @@ from nimloth.environment.navigation.collector import VAGENNavigationRolloutColle
 from nimloth.environment.navigation.vagen import (
     navigation_environment_config,
     vagen_eval_nimloth_observation_text,
+    vagen_eval_nimloth_system_prompt,
 )
 from nimloth.rollout import RolloutTrajectory, save_trajectories
 from nimloth.rollout.record_format import STEP_REWARD_PROVENANCE
@@ -160,15 +161,17 @@ def test_vagen_eval_navigation_profile_is_an_explicit_rollout_setting() -> None:
     )
 
     assert args.navigation_profile == "vagen_eval"
-    current = navigation_environment_config("base")["env_config"]
-    historical = navigation_environment_config("base", profile="vagen_eval")[
-        "env_config"
-    ]
+    current = navigation_environment_config("base")
+    historical = navigation_environment_config("base", profile="vagen_eval")
     assert current["step_length"] == 0.5
     assert current["success_threshold"] == 1.5
+    assert current["prompt_format"] == "nimloth"
+    assert current["latent_token_count"] == 16
+    assert current["max_actions_per_step"] == 1
+    assert current["success_reward"] == 10.0
     assert historical["step_length"] == 0.3
     assert historical["success_threshold"] == 1.0
-    assert historical["format_reward"] == 0.01
+    assert historical["format_reward"] == 0.0
     assert historical["per_turn_format_reward"] == 0.01
     assert historical["success_reward"] == 1.0
 
@@ -197,9 +200,14 @@ def test_vagen_eval_nimloth_observation_uses_source_prompt_wording() -> None:
         initial=False,
     )
 
+    system = vagen_eval_nimloth_system_prompt(latent_token_count=16)
+    assert system.startswith("You are a home robot")
+    assert "move_forward: Move forward by some distance" in system
+    assert "Choose exactly one valid action" in system
+    assert "Do not output multiple actions" in system
     assert "Human Instruction: go to the couch" in initial
     assert "Decide your next action(s)." in initial
-    assert "<|action_start|><|action_(idx)|><|action_end|>" in initial
+    assert "<|latent_state_15|><|action_start|><|action_(idx)|><|action_end|>" in initial
     assert "current format text" not in initial
     assert later.startswith("After your action,")
     assert later.endswith("Decide your next action(s).")

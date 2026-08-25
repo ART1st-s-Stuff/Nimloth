@@ -17,6 +17,10 @@ from nimloth.training.common import (
     action_value_loss,
     world_model_loss,
 )
+from nimloth.training.common.value_semantics import (
+    PLANNER_POLICY_TRAINING_OBJECTIVE,
+    PLANNER_TRAINING_OBJECTIVE,
+)
 from nimloth.training.rl.credit import expand_step_advantages, token_level_gae
 from nimloth.training.rl.episodes import ExecutedTransition
 from nimloth.training.rl.policy import (
@@ -28,10 +32,6 @@ from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.training.rl.value import ppo_action_value_loss
 from nimloth.util.module import move_to_device
 from nimloth.wm import SequenceSIGReg
-
-
-PLANNER_TRAINING_OBJECTIVE = "receding_horizon_decision_state_ppo_value_v1"
-PLANNER_POLICY_TRAINING_OBJECTIVE = "receding_horizon_planner_policy_ppo_v1"
 
 
 @dataclass(frozen=True)

@@ -15,7 +15,8 @@ from nimloth.training.rl.episodes import ExecutedTransition
 
 
 PLANNER_VERL_SCHEMA_VERSION = 4
-PINNED_VERL_COMMIT = "65316156d1011d71d62e0542e4b954f9499e872e"
+# VAGEN-Lite capture transport commit; direct parent is upstream 3fe0a299.
+PINNED_VERL_COMMIT = "084f042b71b8fe03785a279cf227f4085def0391"
 PLANNER_POLICY_OBJECTIVE = "receding_horizon_planner_policy_ppo_v1"
 
 

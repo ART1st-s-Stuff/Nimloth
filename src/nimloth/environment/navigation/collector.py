@@ -50,7 +50,7 @@ class VAGENNavigationRolloutCollector:
         eval_sets: tuple[str, ...] = ("base", "common_sense"),
         split: str = "eval",
         agent_config: AgentConfig | None = None,
-        latent_token_count: int = 1,
+        latent_token_count: int = 16,
         seed_per_eval_set: bool = False,
         navigation_profile: str = "current",
         max_episode_attempts: int = 1,
@@ -64,6 +64,12 @@ class VAGENNavigationRolloutCollector:
             )
         if max_episode_attempts < 1:
             raise ValueError("max_episode_attempts must be positive")
+        if (
+            isinstance(latent_token_count, bool)
+            or not isinstance(latent_token_count, int)
+            or latent_token_count < 1
+        ):
+            raise ValueError("latent_token_count must be a positive int")
         self._env_url = env_url.rstrip("/")
         self._episode_counter = seed_offset
         self._seed_per_eval_set = bool(seed_per_eval_set)
@@ -107,13 +113,30 @@ class VAGENNavigationRolloutCollector:
     @property
     def client(self) -> Any:
         if self._client is None:
-            from vagen.server.client import BatchEnvClient
+            from nimloth.environment.navigation.vagen_batch import (
+                VAGENBatchEnvClient,
+            )
 
-            self._client = BatchEnvClient(
+            self._client = VAGENBatchEnvClient(
                 base_url=self._env_url,
                 timeout=NAVIGATION_REQUEST_TIMEOUT_SECONDS,
             )
         return self._client
+
+    def close(self) -> None:
+        """Release the cached upstream client after the collector is retired."""
+
+        client = self._client
+        self._client = None
+        if client is None:
+            return
+        shutdown = getattr(client, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+        else:
+            close_batch = getattr(client, "close_batch", None)
+            if callable(close_batch):
+                close_batch()
 
     def collect(
         self,
@@ -182,6 +205,7 @@ class VAGENNavigationRolloutCollector:
                     episode_id=episode_id,
                     eval_set=eval_set,
                     navigation_profile=self._navigation_profile,
+                    latent_token_count=self._latent_token_count,
                 )
                 try:
                     episode = EpisodeRunner(runtime).run(
@@ -340,6 +364,7 @@ class VAGENBatchedNavigationRolloutCollector(VAGENNavigationRolloutCollector):
                 vagen_eval_nimloth_observation_text(
                     raw_observation,
                     initial=initial,
+                    latent_token_count=self._latent_token_count,
                 )
                 if self._navigation_profile == "vagen_eval"
                 else observation_text(raw_observation)
@@ -414,18 +439,19 @@ class VAGENBatchedNavigationRolloutCollector(VAGENNavigationRolloutCollector):
                     episode_id: navigation_environment_config(
                         eval_set,
                         profile=self._navigation_profile,
+                        latent_token_count=self._latent_token_count,
                     )
                     for _index, episode_id, eval_set, _seed in identities
                 }
             )
             open_env_ids.update(env_ids)
-            system_prompts = self.client.get_system_prompts_batch(env_ids)
             reset_rows = self.client.reset_batch(
                 {
                     episode_id: seed
                     for _index, episode_id, _eval_set, seed in identities
                 }
             )
+            system_prompts = self.client.get_system_prompts_batch(env_ids)
             if set(system_prompts) != set(env_ids) or set(reset_rows) != set(env_ids):
                 raise RuntimeError(
                     "VAGEN batch reset did not return every requested environment"
@@ -433,7 +459,9 @@ class VAGENBatchedNavigationRolloutCollector(VAGENNavigationRolloutCollector):
             for index, episode_id, eval_set, seed in identities:
                 system_prompt = str(system_prompts.get(episode_id, ""))
                 if self._navigation_profile == "vagen_eval":
-                    system_prompt = vagen_eval_nimloth_system_prompt()
+                    system_prompt = vagen_eval_nimloth_system_prompt(
+                        latent_token_count=self._latent_token_count
+                    )
                 if not system_prompt:
                     raise RuntimeError(
                         f"environment {episode_id} returned an empty system prompt"

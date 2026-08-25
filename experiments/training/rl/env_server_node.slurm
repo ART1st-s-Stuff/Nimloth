@@ -15,7 +15,12 @@
 # After it starts, note the IP:PORT and pass as ENV_URL to the training job.
 
 set -euo pipefail
-REPO=/project/peilab/atst/nimloth-feat-rl
+: "${REPO:?export REPO as the pinned Nimloth worktree before sbatch}"
+EXPECTED_VAGEN_COMMIT=${EXPECTED_VAGEN_COMMIT:-316d9d7}
+[[ "$(git -C "${REPO}/external/VAGEN" rev-parse --short=7 HEAD)" == "${EXPECTED_VAGEN_COMMIT}" ]] || {
+    echo "unexpected VAGEN revision; expected ${EXPECTED_VAGEN_COMMIT}" >&2
+    exit 1
+}
 
 export PATH=/project/peilab/atst/nimloth/.venv-vagen-main/bin:$PATH
 source "${REPO}/experiments/training/baseline/setup_ai2thor_env.sh"
@@ -28,9 +33,10 @@ echo "=== Env server on $(hostname) ${HEAD_IP}:${ENV_PORT} ==="
 echo "ENV_URL=http://${HEAD_IP}:${ENV_PORT}"
 
 cd "${REPO}/external/VAGEN"
-exec python3 -m vagen.server.server \
-    server.host=0.0.0.0 \
-    server.port=${ENV_PORT} \
-    use_state_reward=False \
-    navigation.devices=[0] \
-    navigation.max_workers=4
+exec python3 -m vagen.envs.navigation.serve \
+    --host=0.0.0.0 \
+    --port="${ENV_PORT}" \
+    --devices='[0]' \
+    --max_envs=4 \
+    --max_inflight=4 \
+    --thread_pool_size=4

@@ -2,15 +2,42 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
+from types import SimpleNamespace
+
+import numpy as np
 import pytest
 import torch
 
 from nimloth.backbone.qwen25vl.vllm_hidden import (
+    _jsonable_planning_evidence,
     PolicyStateCaptureWorkerExtension,
+    async_abort_policy_state_capture_for_request,
+    async_pop_latent_state_capture_for_request,
+    async_pop_policy_state_capture_for_request,
+    async_start_policy_state_capture_for_request,
     pop_policy_state_capture,
     pop_policy_state_captures,
     start_policy_state_capture,
 )
+
+
+def test_predicted_planning_state_uses_binary_transport() -> None:
+    state = torch.arange(16 * 1024, dtype=torch.float32).reshape(16, 1024)
+    payload = _jsonable_planning_evidence(
+        {"predicted_state": state, "value": torch.tensor([1.0, 2.0])}
+    )
+
+    encoded = payload["predicted_state"]
+    assert encoded["schema"] == "nimloth_float32_tensor_base64_v1"
+    assert encoded["dtype"] == "float32_le"
+    assert encoded["shape"] == [16, 1024]
+    restored = np.frombuffer(
+        base64.b64decode(encoded["data"], validate=True), dtype="<f4"
+    ).reshape(encoded["shape"])
+    np.testing.assert_array_equal(restored, state.numpy())
+    assert payload["value"] == [1.0, 2.0]
 
 
 class _Model(torch.nn.Module):
@@ -189,3 +216,244 @@ def test_frontend_returns_batched_states_in_requested_identity_order() -> None:
     assert list(states) == ["request-b", "request-a"]
     assert states["request-b"].latent_hidden.shape == (2, 2)
     assert states["request-a"].action_logits.tolist() == [1030.0, 2060.0]
+
+
+class _AsyncEngine(_Engine):
+    async def collective_rpc(self, method, args=()):
+        return super().collective_rpc(method, args=args)
+
+
+def test_worker_request_scoped_capture_survives_out_of_order_pop() -> None:
+    worker = _Worker()
+    worker.nimloth_start_policy_state_capture_for_request(
+        "request-a", (101, 102), 103, (10, 20)
+    )
+    worker.nimloth_start_policy_state_capture_for_request(
+        "request-b", (101, 102), 103, (10, 20)
+    )
+    _batched_decode(worker, {"request-a": [101], "request-b": [101]})
+    _batched_decode(worker, {"request-b": [102], "request-a": [102]})
+    _batched_decode(worker, {"request-a": [103], "request-b": [103]})
+
+    prepared_b = worker.nimloth_prepare_policy_state_capture_for_request(
+        "request-b"
+    )
+    result_b = worker.nimloth_finish_policy_state_capture_for_request("request-b")
+    prepared_a = worker.nimloth_prepare_policy_state_capture_for_request(
+        "request-a"
+    )
+    result_a = worker.nimloth_finish_policy_state_capture_for_request("request-a")
+
+    assert prepared_b["latent_hidden"] == [[101.0, 101.5], [102.0, 102.5]]
+    assert result_b["action_logits"] == [1030.0, 2060.0]
+    assert prepared_a["latent_hidden"] == [[101.0, 101.5], [102.0, 102.5]]
+    assert result_a["action_logits"] == [1030.0, 2060.0]
+
+
+def test_worker_request_abort_does_not_clear_another_request() -> None:
+    worker = _Worker()
+    for request_id in ("request-a", "request-b"):
+        worker.nimloth_start_policy_state_capture_for_request(
+            request_id, (101, 102), 103, (10, 20)
+        )
+    _batched_decode(worker, {"request-a": [101], "request-b": [101, 102, 103]})
+
+    assert worker.nimloth_abort_policy_state_capture_for_request("request-a") is True
+    worker.nimloth_prepare_policy_state_capture_for_request("request-b")
+    result_b = worker.nimloth_finish_policy_state_capture_for_request("request-b")
+
+    assert result_b["action_logits"] == [1030.0, 2060.0]
+    with pytest.raises(RuntimeError, match="not active"):
+        worker.nimloth_prepare_policy_state_capture_for_request("request-a")
+
+
+def test_terminal_latent_capture_does_not_require_action_start_or_compute_logits() -> None:
+    async def exercise() -> None:
+        workers = [_Worker(), _Worker()]
+        engine = _AsyncEngine(workers)
+        calls = [0, 0]
+        for rank, worker in enumerate(workers):
+            worker.nimloth_start_policy_state_capture_for_request(
+                "terminal-a", (101, 102), 103, (10, 20)
+            )
+            original = worker.model_runner.model.compute_logits
+
+            def tracked(hidden, *, rank=rank, original=original):
+                calls[rank] += 1
+                return original(hidden)
+
+            worker.model_runner.model.compute_logits = tracked
+            _batched_decode(worker, {"terminal-a": [101, 102]})
+        hidden = await async_pop_latent_state_capture_for_request(
+            engine,
+            request_id="terminal-a",
+        )
+        assert hidden.tolist() == [[101.0, 101.5], [102.0, 102.5]]
+        assert calls == [0, 0]
+
+    asyncio.run(exercise())
+
+
+def test_worker_prepare_failure_happens_before_any_rank_computes_logits() -> None:
+    workers = [_Worker(), _Worker()]
+    engine = _AsyncEngine(workers)
+    for worker in workers:
+        worker.nimloth_start_policy_state_capture_for_request(
+            "request-a", (101, 102), 103, (10, 20)
+        )
+    _batched_decode(workers[0], {"request-a": [101, 102, 103]})
+    _batched_decode(workers[1], {"request-a": [101, 102]})
+    calls = [0, 0]
+    for rank, worker in enumerate(workers):
+        original = worker.model_runner.model.compute_logits
+
+        def tracked(hidden, *, rank=rank, original=original):
+            calls[rank] += 1
+            return original(hidden)
+
+        worker.model_runner.model.compute_logits = tracked
+
+    with pytest.raises(RuntimeError, match="policy state sequence"):
+        asyncio.run(
+            async_pop_policy_state_capture_for_request(
+                engine,
+                request_id="request-a",
+            )
+        )
+
+    assert calls == [0, 0]
+
+
+def test_worker_rejects_duplicate_request_capture_identity() -> None:
+    worker = _Worker()
+    worker.nimloth_start_policy_state_capture_for_request(
+        "request-a", (101, 102), 103, (10, 20)
+    )
+
+    with pytest.raises(RuntimeError, match="already active"):
+        worker.nimloth_start_policy_state_capture_for_request(
+            "request-a", (101, 102), 103, (10, 20)
+        )
+
+
+def test_worker_installs_and_scores_k4_planner_only_on_tp_rank_zero(
+    monkeypatch,
+) -> None:
+    import nimloth.backbone.qwen25vl.vllm_hidden as hidden_module
+
+    snapshot = SimpleNamespace(
+        snapshot_id="sha256:" + "2" * 64,
+        source_step=776,
+        contract_id="contract-k4",
+        score_dtype="float32",
+        planning_config=SimpleNamespace(
+            horizon=4,
+            num_simulations=100,
+            exploration_constant=1.0,
+            to_mapping=lambda: {
+                "horizon": 4,
+                "num_simulations": 100,
+                "exploration_constant": 1.0,
+            },
+        ),
+    )
+
+    class _FrozenPlanner(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.marker = torch.nn.Parameter(torch.zeros(()), requires_grad=False)
+            self.snapshot_id = snapshot.snapshot_id
+            self.source_step = snapshot.source_step
+            self.contract_id = snapshot.contract_id
+            self.score_dtype = snapshot.score_dtype
+            self.planning_config = snapshot.planning_config
+
+        def score(self, root, *, capture_mcts_trace=False):
+            assert root.shape == (1, 2, 2)
+            assert capture_mcts_trace is False
+            return SimpleNamespace(
+                current_state=torch.zeros((1, 16, 1024)),
+                mcts_trace=None,
+                direct_all_action_q=torch.arange(8, dtype=torch.float32).unsqueeze(0),
+                planner_root_mean_values=torch.arange(8, dtype=torch.float32).unsqueeze(0) / 10.0,
+                root_visit_counts=torch.tensor(
+                    [[13, 13, 13, 13, 12, 12, 12, 12]]
+                ),
+                candidate_sequences=torch.tensor([[[0, 1, 2, 3]] * 100]),
+                candidate_mean_values=torch.full((1, 100), 0.5),
+                candidate_visit_counts=torch.ones((1, 100), dtype=torch.long),
+            )
+
+    planner = _FrozenPlanner()
+    from nimloth.training.rl import joint_planner as planner_module
+
+    monkeypatch.setattr(
+        planner_module,
+        "load_frozen_planning_snapshot_file",
+        lambda _path, *, device: planner.to(device),
+    )
+    transport_path = "/tmp/frozen-k4.pt"
+
+    rank_zero = _Worker()
+    rank_zero.model_runner.model.marker = torch.nn.Parameter(torch.zeros(()))
+    monkeypatch.setattr(rank_zero, "_nimloth_tensor_parallel_rank", lambda: 0)
+    installed = rank_zero.nimloth_install_frozen_k4_planner(
+        transport_path,
+        snapshot.snapshot_id,
+        snapshot.source_step,
+        snapshot.contract_id,
+        3,
+    )
+    scored = rank_zero.nimloth_score_frozen_k4_planner(
+        [[1.0, 2.0], [3.0, 4.0]],
+        snapshot.snapshot_id,
+        3,
+    )
+    assert installed["owns_planner"] is True
+    assert installed["tensor_parallel_rank"] == 0
+    assert scored["direct_all_action_q"] == [float(index) for index in range(8)]
+    assert scored["planner_root_visit_counts"] == [13, 13, 13, 13, 12, 12, 12, 12]
+
+    rank_one = _Worker()
+    monkeypatch.setattr(rank_one, "_nimloth_tensor_parallel_rank", lambda: 1)
+    skipped = rank_one.nimloth_install_frozen_k4_planner(
+        transport_path,
+        snapshot.snapshot_id,
+        snapshot.source_step,
+        snapshot.contract_id,
+        3,
+    )
+    assert skipped["owns_planner"] is False
+    assert skipped["tensor_parallel_rank"] == 1
+    assert rank_one.nimloth_score_frozen_k4_planner(
+        [[1.0, 2.0], [3.0, 4.0]],
+        snapshot.snapshot_id,
+        3,
+    )["scored"] is False
+
+
+def test_async_frontend_binds_capture_to_exact_request() -> None:
+    async def exercise() -> None:
+        workers = [_Worker(), _Worker()]
+        engine = _AsyncEngine(workers)
+        await async_start_policy_state_capture_for_request(
+            engine,
+            request_id="request-a",
+            latent_token_ids=(101, 102),
+            action_start_token_id=103,
+            action_token_ids=(10, 20),
+        )
+        for worker in workers:
+            _batched_decode(worker, {"request-a": [101, 102, 103]})
+        state = await async_pop_policy_state_capture_for_request(
+            engine,
+            request_id="request-a",
+        )
+        assert state.latent_hidden.shape == (2, 2)
+        assert state.action_logits.tolist() == [1030.0, 2060.0]
+        await async_abort_policy_state_capture_for_request(
+            engine,
+            request_id="request-a",
+        )
+
+    asyncio.run(exercise())
