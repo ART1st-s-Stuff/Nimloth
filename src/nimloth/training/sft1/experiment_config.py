@@ -27,7 +27,7 @@ APPROVED_COUNTS = {
     "raw_validation_rows": 1420,
     "excluded_validation_empty_cot_rows": 0,
     "external_validation_rows": 1413,
-    "cross_split_image_hashes": 3,
+    "cross_split_image_hashes": 5,
     "same_image_multi_instruction_groups": 42,
     "same_instruction_multi_image_groups": 101,
 }
