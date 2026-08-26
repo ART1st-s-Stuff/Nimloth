@@ -185,6 +185,27 @@ def test_pre_rl_index_excludes_only_source_empty_cot_rows(tmp_path: Path) -> Non
     assert audit.excluded_validation_empty_cot_rows == 0
 
 
+def test_external_mask_checks_initial_current_and_next_image_lineage(
+    tmp_path: Path,
+) -> None:
+    train, _ = pre_rl_trajectory_record(tmp_path, record_id="train-row")
+    validation, _ = pre_rl_trajectory_record(
+        tmp_path, record_id="validation-row", split="val"
+    )
+    # Current validation image is distinct; only its next observation overlaps
+    # the train state lineage, matching the pre-registered ID60 boundary.
+    validation["image_paths"][1] = train["image_paths"][1]
+
+    rows, audit = index_early4_rows(
+        _small_config(tmp_path, train, validation),
+        enforce_approved_counts=False,
+    )
+
+    validation_row = next(row for row in rows if row.split == "val")
+    assert validation_row.external_eligible is False
+    assert audit.external_validation_rows == 0
+
+
 @pytest.mark.parametrize(
     ("mutation", "match"),
     [

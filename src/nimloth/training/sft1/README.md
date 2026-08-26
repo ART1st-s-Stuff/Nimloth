@@ -14,9 +14,13 @@ rank keeps a zero autograd graph and never invents a label.
 without widening that public interface. `experiment_config.py` separately owns
 the strict `nimloth_sft1_state_v2_experiment_v1` early-4 launch schema: source,
 data, teacher/cache/output identities, approved 12,836 valid train + 5 excluded
-empty-CoT / 1,420 raw validation + 0 excluded / 1,413 external row counts,
-all objective constants, dual AdamW rates, three epochs, fixed contrastive-B2
-budgets, FSDP/checkpoint/report fields, and unknown-field rejection.
+empty-CoT / 1,420 raw validation + 0 excluded / 1,413 external row counts.
+External eligibility reproduces the pre-registered ID60 boundary: validation
+record-initial, current, and next original-image SHA256 values must all be
+absent from the corresponding train state lineage; this is stricter than
+current-row-only overlap. The same schema locks all objective constants, dual
+AdamW rates, three epochs, fixed contrastive-B2 budgets,
+FSDP/checkpoint/report fields, and unknown-field rejection.
 `launch_config.py` can publish one immutable resolved launch config only when
 every commit/path/processor/W&B/topology value is explicit; it reloads the
 persisted YAML and requires the same config identity before atomic publication.

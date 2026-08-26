@@ -103,7 +103,7 @@ class SFT1V2RowAudit:
     same_instruction_multi_image_groups: int
     source_record_schema: str = PRE_RL_ARCHIVE_SCHEMA
     instruction_source: str = "observation_texts[0]:Human Instruction bounded span"
-    overlap_key: str = "original_image_sha256"
+    overlap_key: str = "record_initial_and_current_next_original_image_sha256"
 
 
 @dataclass(frozen=True)
@@ -308,21 +308,40 @@ def _selected_rows(
     source_path: Path,
     source_sha256: str,
     split: str,
-    train_image_hashes: frozenset[str],
+    train_state_image_hashes: frozenset[str],
+    train_initial_image_hashes: frozenset[str],
     ordinal_start: int,
-) -> tuple[list[SFT1V2Early4Row], int, frozenset[str]]:
+) -> tuple[list[SFT1V2Early4Row], int, frozenset[str], frozenset[str]]:
     rows: list[SFT1V2Early4Row] = []
     excluded_empty_cot = 0
-    source_image_hashes: set[str] = set()
+    source_state_image_hashes: set[str] = set()
+    source_initial_image_hashes: set[str] = set()
     for trajectory in records:
-        for step_index in EARLY4_STEPS:
-            if step_index >= trajectory.num_steps:
-                continue
-            image_path = Path(trajectory.image_paths[step_index])
-            if not image_path.is_file():
-                raise FileNotFoundError(f"original observation image is missing: {image_path}")
-            image_sha = sha256_file(image_path)
-            source_image_hashes.add(image_sha)
+        selected_steps = tuple(
+            step_index
+            for step_index in EARLY4_STEPS
+            if step_index < trajectory.num_steps
+        )
+        required_state_indices = sorted(
+            {index for step_index in selected_steps for index in (step_index, step_index + 1)}
+        )
+        state_paths = {
+            index: Path(trajectory.image_paths[index])
+            for index in required_state_indices
+        }
+        missing = [path for path in state_paths.values() if not path.is_file()]
+        if missing:
+            raise FileNotFoundError(f"original observation image is missing: {missing[0]}")
+        state_hashes = {
+            index: sha256_file(path) for index, path in state_paths.items()
+        }
+        source_state_image_hashes.update(state_hashes.values())
+        if selected_steps:
+            source_initial_image_hashes.add(state_hashes[0])
+        for step_index in selected_steps:
+            image_path = state_paths[step_index]
+            image_sha = state_hashes[step_index]
+            next_image_sha = state_hashes[step_index + 1]
             if not trajectory.think_texts[step_index].strip():
                 excluded_empty_cot += 1
                 continue
@@ -358,10 +377,22 @@ def _selected_rows(
                 archived_assistant_response=response,
                 executed_action_index=int(trajectory.action_indices[step_index]),
                 movement_success=_movement_success(trajectory, step_index),
-                external_eligible=split != "val" or image_sha not in train_image_hashes,
+                external_eligible=(
+                    split != "val"
+                    or (
+                        state_hashes[0] not in train_initial_image_hashes
+                        and image_sha not in train_state_image_hashes
+                        and next_image_sha not in train_state_image_hashes
+                    )
+                ),
                 record=trajectory.raw,
             ))
-    return rows, excluded_empty_cot, frozenset(source_image_hashes)
+    return (
+        rows,
+        excluded_empty_cot,
+        frozenset(source_state_image_hashes),
+        frozenset(source_initial_image_hashes),
+    )
 
 
 def _group_count(rows: Sequence[SFT1V2Early4Row], group: str, varying: str) -> int:
@@ -386,14 +417,27 @@ def index_early4_rows(
     validation_records = _read_records(validation_path, config.data.validation_sha256, config.data.validation_split)
 
     # First pass obtains train image identities before external eligibility is assigned.
-    train_rows, excluded_train_empty_cot, train_source_images = _selected_rows(
+    (
+        train_rows,
+        excluded_train_empty_cot,
+        train_state_images,
+        train_initial_images,
+    ) = _selected_rows(
         train_records, source_path=train_path, source_sha256=config.data.train_sha256,
-        split="train", train_image_hashes=frozenset(), ordinal_start=0,
+        split="train", train_state_image_hashes=frozenset(),
+        train_initial_image_hashes=frozenset(), ordinal_start=0,
     )
-    validation_rows, excluded_validation_empty_cot, validation_images = _selected_rows(
+    (
+        validation_rows,
+        excluded_validation_empty_cot,
+        validation_state_images,
+        _,
+    ) = _selected_rows(
         validation_records, source_path=validation_path,
         source_sha256=config.data.validation_sha256, split="val",
-        train_image_hashes=train_source_images, ordinal_start=len(train_rows),
+        train_state_image_hashes=train_state_images,
+        train_initial_image_hashes=train_initial_images,
+        ordinal_start=len(train_rows),
     )
     all_rows = (*train_rows, *validation_rows)
 
@@ -413,8 +457,8 @@ def index_early4_rows(
         raw_validation_rows=len(validation_rows),
         excluded_validation_empty_cot_rows=excluded_validation_empty_cot,
         external_validation_rows=sum(row.external_eligible for row in validation_rows),
-        train_unique_images=len(train_source_images), validation_unique_images=len(validation_images),
-        cross_split_image_hashes=len(train_source_images & validation_images),
+        train_unique_images=len(train_state_images), validation_unique_images=len(validation_state_images),
+        cross_split_image_hashes=len(train_state_images & validation_state_images),
         action_counts=action_counts, movement_outcome_counts=outcomes,
         same_image_multi_instruction_groups=_group_count(validation_rows, "image_content_group", "instruction_equivalence_group"),
         same_instruction_multi_image_groups=_group_count(validation_rows, "instruction_equivalence_group", "image_content_group"),
