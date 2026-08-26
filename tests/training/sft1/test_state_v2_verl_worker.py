@@ -171,7 +171,8 @@ def test_factory_assembles_the_complete_root_before_optimizer(
             reduce_dtype=torch.float32,
             buffer_dtype=torch.float32,
         ),
-        learning_rate=1e-3,
+        query_learning_rate=1e-4,
+        projector_readout_learning_rate=1e-3,
         weight_decay=0.0,
         adam_betas=(0.9, 0.95),
         adam_epsilon=1e-8,
@@ -192,6 +193,11 @@ def test_factory_assembles_the_complete_root_before_optimizer(
         for parameter in assembly.root.parameters()
         if parameter.requires_grad
     }
+    assert len(assembly.optimizer.param_groups) == 2
+    assert [group["group_name"] for group in assembly.optimizer.param_groups] == [
+        "query_adapter", "projector_readouts"
+    ]
+    assert [group["lr"] for group in assembly.optimizer.param_groups] == [1e-4, 1e-3]
 
 
 def test_worker_accumulates_micro_batches_and_updates_once(monkeypatch, tmp_path) -> None:

@@ -207,6 +207,11 @@ def test_complete_root_enforces_fresh_projector_and_gradient_ownership() -> None
     state_output = root(batch, targets, normalization)
     state_output.total_loss.backward()
     assert state_output.state.shape == (2, GRID_TOKENS, STATE_DIM)
+    assert state_output.visual_prediction.shape == (2, GRID_TOKENS, STATE_DIM)
+    assert state_output.instruction_prediction.shape == (2, INSTRUCTION_DIM)
+    assert state_output.feasibility_logits.shape == (2, 3)
+    assert state_output.actor_student_logits.shape == (2, 8)
+    assert state_output.state_policy_logits.shape == (2, 8)
     assert any(
         parameter.grad is not None and torch.count_nonzero(parameter.grad) > 0
         for parameter in projector.parameters()

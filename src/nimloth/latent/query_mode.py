@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from typing import Any, Iterator, Literal, Sequence, cast
+from typing import Any, Iterator, Literal, Mapping, Sequence, cast
 
 import torch
 from torch import nn
@@ -100,6 +100,7 @@ def install_query_embedding_adapter(
 @contextmanager
 def materialize_query_embedding_adapter(
     model: nn.Module,
+    state_dict: Mapping[str, torch.Tensor] | None = None,
 ) -> Iterator[dict[str, torch.Tensor] | None]:
     """Fold the query adapter into cloned base rows for HF serialization.
 
@@ -112,23 +113,57 @@ def materialize_query_embedding_adapter(
         yield None
         return
     embedding = model.get_input_embeddings()
-    embedding_storage = embedding.weight.untyped_storage().data_ptr()
-    state_dict: dict[str, torch.Tensor] = {}
+    if state_dict is None:
+        live_state = model.state_dict()
+        embedding_storage = embedding.weight.untyped_storage().data_ptr()
+        embedding_keys = {
+            key
+            for key, value in live_state.items()
+            if value.untyped_storage().data_ptr() == embedding_storage
+        }
+        source = dict(live_state)
+    else:
+        # A full FSDP state is already authoritative. Do not call state_dict()
+        # on an inner FSDP-managed Qwen from rank zero alone: its hooks may
+        # require collectives. The caller verifies the complete key set before
+        # entering this materialization helper.
+        source = dict(state_dict)
+        module_names = [
+            name for name, module in model.named_modules() if module is embedding
+        ]
+        if len(module_names) != 1:
+            raise ValueError("could not identify one Qwen input embedding owner")
+        embedding_keys = {f"{module_names[0]}.weight"}
+    delta_key = next(
+        (
+            key for key in source
+            if key.endswith("nimloth_query_embedding_adapter.delta")
+        ),
+        None,
+    )
+    token_ids_key = next(
+        (
+            key for key in source
+            if key.endswith("nimloth_query_embedding_adapter.token_ids")
+        ),
+        None,
+    )
+    if delta_key is None or token_ids_key is None:
+        raise ValueError("query adapter export state is incomplete")
+    delta = source[delta_key].detach().cpu()
+    token_ids = source[token_ids_key].detach().cpu().long()
+    result: dict[str, torch.Tensor] = {}
     materialized_embedding: torch.Tensor | None = None
-    for key, value in model.state_dict().items():
+    for key, value in source.items():
         if "nimloth_query_embedding_adapter" in key:
             continue
-        if value.untyped_storage().data_ptr() == embedding_storage:
+        if key in embedding_keys:
             if materialized_embedding is None:
                 materialized_embedding = value.detach().to(device="cpu", copy=True)
-                materialized_embedding.index_add_(
-                    0,
-                    adapter.token_ids.cpu(),
-                    adapter.delta.detach().cpu(),
-                )
+                materialized_embedding.index_add_(0, token_ids, delta)
             value = materialized_embedding
-        state_dict[key] = value
-    yield state_dict
+        result[key] = value
+    yield result
 
 
 def resolve_latent_query_mode(

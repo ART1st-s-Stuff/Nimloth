@@ -74,6 +74,11 @@ class SFT1V2ObjectiveOutput:
     """Complete K16 state and independently reportable objective terms."""
 
     state: torch.Tensor
+    visual_prediction: torch.Tensor
+    instruction_prediction: torch.Tensor
+    feasibility_logits: torch.Tensor
+    actor_student_logits: torch.Tensor
+    state_policy_logits: torch.Tensor
     losses: Mapping[str, torch.Tensor]
     total_loss: torch.Tensor
     loss_sums: Mapping[str, torch.Tensor]
@@ -246,7 +251,7 @@ class SFT1V2Objective(nn.Module):
         state_flat: torch.Tensor,
         targets: SFT1V2Targets,
         normalization: SFT1V2Normalization,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         logits = self.feasibility_head(state_flat).float()
         actions = targets.executed_action_indices.detach().to(
             device=logits.device,
@@ -287,7 +292,7 @@ class SFT1V2Objective(nn.Module):
             float(normalization.gradient_average_world_size)
             / float(normalization.global_feasibility_valid_count)
         )
-        return loss, local_sum, local_count
+        return logits, loss, local_sum, local_count
 
     def forward(
         self,
@@ -375,6 +380,7 @@ class SFT1V2Objective(nn.Module):
 
         state_flat = state.flatten(1)
         (
+            feasibility_logits,
             observed_feasibility,
             observed_feasibility_sum,
             observed_feasibility_local_count,
@@ -439,6 +445,11 @@ class SFT1V2Objective(nn.Module):
         local_sample_count = sample_valid.sum()
         return SFT1V2ObjectiveOutput(
             state=state,
+            visual_prediction=visual_prediction,
+            instruction_prediction=instruction_prediction,
+            feasibility_logits=feasibility_logits,
+            actor_student_logits=actor_logits.float(),
+            state_policy_logits=state_policy_logits,
             losses=losses,
             total_loss=total,
             loss_sums={

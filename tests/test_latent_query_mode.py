@@ -59,4 +59,17 @@ def test_query_embedding_adapter_receives_gradient_and_materializes() -> None:
         assert state is not None
         assert not any("nimloth_query_embedding_adapter" in key for key in state)
         assert torch.equal(model(torch.tensor([[0, 1, 4, 5]])).detach(), adapted)
+    full_state = {
+        key: value.detach().cpu().clone() for key, value in model.state_dict().items()
+    }
+    full_state["nimloth_query_embedding_adapter.delta"].add_(1.0)
+    with materialize_query_embedding_adapter(model, state_dict=full_state) as state:
+        assert state is not None
+        expected = base.clone()
+        expected.index_add_(
+            0,
+            full_state["nimloth_query_embedding_adapter.token_ids"],
+            full_state["nimloth_query_embedding_adapter.delta"],
+        )
+        assert torch.equal(state["embed.weight"], expected)
     assert torch.equal(model.embed.weight, base)

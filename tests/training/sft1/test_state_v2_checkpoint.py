@@ -9,9 +9,11 @@ import torch
 from nimloth.training.sft1.checkpoint import (
     SFT1V2ControlState,
     SFT1V2RankState,
+    capture_sft1_v2_rank_state,
     export_sft1_v2_deployable,
     finalize_sft1_v2_checkpoint,
     load_sft1_v2_rank_state,
+    restore_sft1_v2_rank_state,
     save_sft1_v2_rank_state,
 )
 from nimloth.training.sft1.config import STATE_INTERFACE_OBJECTIVE_VERSION
@@ -19,6 +21,8 @@ from nimloth.training.sft1.config import STATE_INTERFACE_OBJECTIVE_VERSION
 
 MANIFEST_ID = "a" * 64
 CONFIG_ID = "b" * 64
+RUN_ID = "c" * 64
+SOURCE_COMMIT = "d" * 40
 
 
 def _rank_state(rank: int) -> SFT1V2RankState:
@@ -42,7 +46,32 @@ def _control(world_size: int = 2) -> SFT1V2ControlState:
         config_identity=CONFIG_ID,
         objective_version=STATE_INTERFACE_OBJECTIVE_VERSION,
         world_size=world_size,
+        run_identity=RUN_ID,
+        source_commit=SOURCE_COMMIT,
     )
+
+
+def test_local_trainable_optimizer_and_rng_state_restore_exactly() -> None:
+    model = torch.nn.Sequential(torch.nn.Linear(3, 2), torch.nn.Linear(2, 1))
+    model[1].requires_grad_(False)
+    optimizer = torch.optim.AdamW(model[0].parameters(), lr=1e-3)
+    model(torch.ones(1, 3)).sum().backward()
+    optimizer.step()
+    captured = capture_sft1_v2_rank_state(model, optimizer)
+    expected = {name: value.clone() for name, value in captured.model.items()}
+    with torch.no_grad():
+        for parameter in model[0].parameters():
+            parameter.add_(10)
+    optimizer.state.clear()
+    restore_sft1_v2_rank_state(model, optimizer, captured)
+    restored = {
+        name: parameter.detach().cpu()
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad
+    }
+    assert set(restored) == set(expected)
+    assert all(torch.equal(restored[name], expected[name]) for name in expected)
+    assert optimizer.state
 
 
 def test_resume_checkpoint_round_trips_full_training_and_control_state(tmp_path) -> None:
@@ -62,6 +91,8 @@ def test_resume_checkpoint_round_trips_full_training_and_control_state(tmp_path)
         expected_world_size=2,
         expected_manifest_identity=MANIFEST_ID,
         expected_config_identity=CONFIG_ID,
+        expected_run_identity=RUN_ID,
+        expected_source_commit=SOURCE_COMMIT,
     )
 
     assert control.global_step == 7
@@ -108,6 +139,8 @@ def test_resume_checkpoint_rejects_partial_or_mismatched_identity(tmp_path) -> N
             expected_world_size=1,
             expected_manifest_identity="0" * 64,
             expected_config_identity=CONFIG_ID,
+            expected_run_identity=RUN_ID,
+            expected_source_commit=SOURCE_COMMIT,
         )
 
 

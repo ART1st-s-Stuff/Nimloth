@@ -101,7 +101,10 @@ class Qwen25VLBackbone(Backbone):
             raise TypeError("Qwen25VLBackbone.model must implement save_pretrained()")
         for key, value in (metadata or {}).items():
             setattr(model.config, key, value)
-        with materialize_query_embedding_adapter(model) as materialized_state:
+        with materialize_query_embedding_adapter(
+            model,
+            state_dict=state_dict,
+        ) as materialized_state:
             save_state = materialized_state if materialized_state is not None else state_dict
             kwargs: dict[str, Any] = {"safe_serialization": True}
             if save_state is not None:

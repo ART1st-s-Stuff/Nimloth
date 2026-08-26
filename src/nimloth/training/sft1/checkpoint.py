@@ -4,18 +4,21 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
+import random
 from tempfile import NamedTemporaryFile
 from typing import Any
 
+import numpy as np
 import torch
 
 from nimloth.training.sft1.config import STATE_INTERFACE_OBJECTIVE_VERSION
 
 
-SFT1_V2_CHECKPOINT_SCHEMA = "nimloth_sft1_state_v2_checkpoint_v1"
+SFT1_V2_CHECKPOINT_SCHEMA = "nimloth_sft1_state_v2_checkpoint_v2"
 SFT1_V2_EXPORT_SCHEMA = "nimloth_state_interface_v2_deployable_v1"
 _COMPLETE_MARKER = "COMPLETED"
 _HEX = frozenset("0123456789abcdef")
@@ -23,6 +26,14 @@ _HEX = frozenset("0123456789abcdef")
 
 def _is_sha256(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and set(value) <= _HEX
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -33,6 +44,8 @@ class SFT1V2ControlState:
     config_identity: str
     objective_version: str
     world_size: int
+    run_identity: str
+    source_commit: str
 
     def __post_init__(self) -> None:
         if self.global_step < 0 or self.world_size < 1:
@@ -43,6 +56,10 @@ class SFT1V2ControlState:
             raise ValueError("checkpoint manifest/config identities must be SHA256 digests")
         if self.objective_version != STATE_INTERFACE_OBJECTIVE_VERSION:
             raise ValueError("checkpoint uses an old state objective")
+        if not _is_sha256(self.run_identity):
+            raise ValueError("checkpoint run identity must be a SHA256 digest")
+        if len(self.source_commit) != 40 or any(char not in _HEX for char in self.source_commit):
+            raise ValueError("checkpoint source commit must be a lowercase Git SHA")
 
 
 @dataclass(frozen=True)
@@ -152,10 +169,15 @@ def finalize_sft1_v2_checkpoint(
     ]
     if missing:
         raise FileNotFoundError(f"checkpoint rank shards are incomplete: {missing}")
+    shard_hashes = {
+        str(rank): _sha256_file(_rank_path(checkpoint, rank, control.world_size))
+        for rank in range(control.world_size)
+    }
     _atomic_json(
         {
             "schema": SFT1_V2_CHECKPOINT_SCHEMA,
             **asdict(control),
+            "rank_shard_sha256": shard_hashes,
         },
         checkpoint / "control.json",
     )
@@ -176,6 +198,8 @@ def load_sft1_v2_rank_state(
     expected_world_size: int,
     expected_manifest_identity: str,
     expected_config_identity: str,
+    expected_run_identity: str,
+    expected_source_commit: str,
 ) -> tuple[SFT1V2RankState, SFT1V2ControlState]:
     checkpoint = Path(path)
     if not (checkpoint / _COMPLETE_MARKER).is_file():
@@ -183,6 +207,13 @@ def load_sft1_v2_rank_state(
     control_raw = json.loads((checkpoint / "control.json").read_text(encoding="utf-8"))
     if control_raw.pop("schema", None) != SFT1_V2_CHECKPOINT_SCHEMA:
         raise ValueError("unsupported or legacy SFT1-v2 checkpoint schema")
+    shard_hashes = control_raw.pop("rank_shard_sha256", None)
+    if not isinstance(shard_hashes, dict) or set(shard_hashes) != {str(value) for value in range(expected_world_size)}:
+        raise ValueError("checkpoint shard hash index is incomplete")
+    for shard_rank in range(expected_world_size):
+        shard_path = _rank_path(checkpoint, shard_rank, expected_world_size)
+        if not shard_path.is_file() or _sha256_file(shard_path) != shard_hashes[str(shard_rank)]:
+            raise ValueError("checkpoint rank shard hash mismatch")
     control = SFT1V2ControlState(**control_raw)
     if control.world_size != expected_world_size:
         raise ValueError("checkpoint world size differs from the resume world size")
@@ -190,6 +221,10 @@ def load_sft1_v2_rank_state(
         raise ValueError("checkpoint manifest identity mismatch")
     if control.config_identity != expected_config_identity:
         raise ValueError("checkpoint config identity mismatch")
+    if control.run_identity != expected_run_identity:
+        raise ValueError("checkpoint run identity mismatch")
+    if control.source_commit != expected_source_commit:
+        raise ValueError("checkpoint source commit mismatch")
     payload = torch.load(
         _rank_path(checkpoint, rank, expected_world_size),
         map_location="cpu",
@@ -212,6 +247,71 @@ def load_sft1_v2_rank_state(
         ),
         control,
     )
+
+
+def capture_sft1_v2_rank_state(
+    root: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+) -> SFT1V2RankState:
+    """Capture only local trainable shards plus exact optimizer/RNG state."""
+
+    model = {
+        name: parameter.detach().cpu().clone()
+        for name, parameter in root.named_parameters()
+        if parameter.requires_grad
+    }
+    if not model:
+        raise ValueError("SFT1-v2 checkpoint has no trainable model state")
+    rng: dict[str, Any] = {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch_cpu": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        rng["torch_cuda"] = torch.cuda.get_rng_state()
+    return SFT1V2RankState(
+        model=model,
+        optimizer=optimizer.state_dict(),
+        scheduler={},
+        rng=rng,
+    )
+
+
+def restore_sft1_v2_rank_state(
+    root: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    state: SFT1V2RankState,
+) -> None:
+    """Restore exact local trainable shards; frozen ID176 reloads from source."""
+
+    current = {
+        name: parameter
+        for name, parameter in root.named_parameters()
+        if parameter.requires_grad
+    }
+    if set(current) != set(state.model):
+        raise ValueError("checkpoint trainable model key set mismatch")
+    with torch.no_grad():
+        for name, parameter in current.items():
+            value = state.model[name]
+            if not isinstance(value, torch.Tensor) or value.shape != parameter.shape:
+                raise ValueError(f"checkpoint trainable tensor shape mismatch: {name}")
+            parameter.copy_(value.to(device=parameter.device, dtype=parameter.dtype))
+    optimizer.load_state_dict(dict(state.optimizer))
+    if state.scheduler:
+        raise ValueError("SFT1-v2 constant-LR checkpoint must not contain scheduler state")
+    rng = state.rng
+    required = {"python", "numpy", "torch_cpu"}
+    if not required <= set(rng):
+        raise ValueError("checkpoint RNG state is incomplete")
+    random.setstate(rng["python"])
+    np.random.set_state(rng["numpy"])
+    torch.set_rng_state(rng["torch_cpu"])
+    if torch.cuda.is_available():
+        cuda_state = rng.get("torch_cuda")
+        if not isinstance(cuda_state, torch.Tensor):
+            raise ValueError("CUDA resume requires exact CUDA RNG state")
+        torch.cuda.set_rng_state(cuda_state)
 
 
 def export_sft1_v2_deployable(
@@ -315,8 +415,10 @@ __all__ = [
     "SFT1V2RankState",
     "SFT1_V2_CHECKPOINT_SCHEMA",
     "SFT1_V2_EXPORT_SCHEMA",
+    "capture_sft1_v2_rank_state",
     "export_sft1_v2_deployable",
     "finalize_sft1_v2_checkpoint",
     "load_sft1_v2_rank_state",
+    "restore_sft1_v2_rank_state",
     "save_sft1_v2_rank_state",
 ]
