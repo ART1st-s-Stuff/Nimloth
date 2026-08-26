@@ -103,6 +103,69 @@ def trajectory_record(
     return trajectory.to_record(), before
 
 
+def pre_rl_trajectory_record(
+    tmp_path: Path,
+    *,
+    record_id: str = "row-1",
+    split: str = "train",
+    action_index: int = 0,
+    feedback: str = "Last action is executed successfully.",
+    latent_token_count: int = 8,
+) -> tuple[dict[str, object], Path]:
+    """Mirror the exact 28-field approved pre-RL archive schema."""
+
+    full, image = trajectory_record(
+        tmp_path,
+        record_id=record_id,
+        split=split,
+        action_index=action_index,
+        feedback=feedback,
+        latent_token_count=latent_token_count,
+    )
+    instruction = "Find the target object."
+    observation_texts = list(full["observation_texts"])
+    observation_texts[0] = (
+        "[Initial Observation]:\n<image>\n"
+        f"Human Instruction: {instruction}\n"
+        "Decide your next action(s).\nUse the archived response protocol."
+    )
+    action_names = (
+        "move_forward", "move_backward", "move_right", "move_left",
+        "turn_right", "turn_left", "look_up", "look_down",
+    )
+    record: dict[str, object] = {
+        "action_indices": [action_index],
+        "action_space_id": "navigation",
+        "action_space_version": 1,
+        "actions": [action_names[action_index]],
+        "assistant_responses": list(full["assistant_responses"]),
+        "data_source": "navigation_base_train",
+        "env_seed": 1,
+        "eval_set": "base_train",
+        "id": record_id,
+        "image_paths": list(full["image_paths"]),
+        "observation_texts": observation_texts,
+        "record_format": "nimloth_trajectory_v1",
+        "reward": 0.0,
+        "reward_provenance": STEP_REWARD_PROVENANCE,
+        "score": 0.0,
+        "shard": "shard_001_040",
+        "source_jsonl": "/immutable/source/0.jsonl",
+        "source_line_index": 0,
+        "split": split,
+        "step": 1,
+        "success": True,
+        "system_prompt": str(full["system_prompt"]),
+        "terminal_assistant_prefix": str(full["terminal_assistant_prefix"]),
+        "think_texts": ["The observation supports this executed action."],
+        "traj_success": 1.0,
+        "uid": "navigation_base_train:1:base_train",
+        "validation_issues": [],
+        "warnings": [],
+    }
+    return record, image
+
+
 def teacher_row(
     image_path: Path,
     *,

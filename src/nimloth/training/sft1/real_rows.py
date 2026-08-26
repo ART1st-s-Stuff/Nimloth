@@ -11,6 +11,7 @@ from typing import Any, Mapping, Sequence
 
 import torch
 
+from nimloth.agent.template import bind_image_placeholders
 from nimloth.backbone.qwen25vl.batch import collect_message_images, render_messages
 from nimloth.backbone.qwen25vl.state_training import (
     exact_instruction_token_span,
@@ -22,12 +23,31 @@ from nimloth.latent import (
     latent_state_block,
     special_token_ids,
 )
-from nimloth.rollout import RolloutTrajectory
+from nimloth.rollout.record_format import (
+    TRAJECTORY_RECORD_FORMAT,
+    require_trajectory_record,
+)
 from nimloth.training.sft1.experiment_config import EARLY4_STEPS, SFT1V2Config
 from nimloth.training.sft1.data import sha256_file
 
 
-EARLY4_ROW_SCHEMA = "nimloth_sft1_state_v2_early4_row_v1"
+EARLY4_ROW_SCHEMA = "nimloth_sft1_state_v2_early4_row_v2"
+PRE_RL_ARCHIVE_SCHEMA = "nimloth_sft1_state_v2_pre_rl_archive_v1"
+_INSTRUCTION_PREFIX = "Human Instruction: "
+_INSTRUCTION_SUFFIX = "\nDecide your next action(s)."
+_ACTION_NAMES = (
+    "move_forward", "move_backward", "move_right", "move_left",
+    "turn_right", "turn_left", "look_up", "look_down",
+)
+_PRE_RL_FIELDS = frozenset({
+    "action_indices", "action_space_id", "action_space_version", "actions",
+    "assistant_responses", "data_source", "env_seed", "eval_set", "id",
+    "image_paths", "observation_texts", "record_format", "reward",
+    "reward_provenance", "score", "shard", "source_jsonl",
+    "source_line_index", "split", "step", "success", "system_prompt",
+    "terminal_assistant_prefix", "think_texts", "traj_success", "uid",
+    "validation_issues", "warnings",
+})
 
 
 @dataclass(frozen=True)
@@ -43,6 +63,7 @@ class SFT1V2Early4Row:
     original_image_sha256: str
     image_content_group: str
     instruction: str
+    instruction_char_span: tuple[int, int]
     instruction_equivalence_group: str
     archived_assistant_response: str
     executed_action_index: int
@@ -78,6 +99,8 @@ class SFT1V2RowAudit:
     movement_outcome_counts: Mapping[str, Mapping[int, Mapping[str, int]]]
     same_image_multi_instruction_groups: int
     same_instruction_multi_image_groups: int
+    source_record_schema: str = PRE_RL_ARCHIVE_SCHEMA
+    instruction_source: str = "observation_texts[0]:Human Instruction bounded span"
     overlap_key: str = "original_image_sha256"
 
 
@@ -91,7 +114,149 @@ class SFT1V2RenderedRow:
     encoded_tensors: Mapping[str, torch.Tensor]
 
 
-def _movement_success(trajectory: RolloutTrajectory, step_index: int) -> bool | None:
+@dataclass(frozen=True)
+class _SFT1V2PreRLRecord:
+    raw: Mapping[str, Any]
+    record_id: str
+    split: str
+    system_prompt: str
+    image_paths: tuple[str, ...]
+    observation_texts: tuple[str, ...]
+    action_indices: tuple[int, ...]
+    assistant_responses: tuple[str, ...]
+    instruction: str
+    instruction_char_span: tuple[int, int]
+
+    @property
+    def num_steps(self) -> int:
+        return len(self.action_indices)
+
+    def state_messages(self, step_index: int) -> list[dict[str, Any]]:
+        if not 0 <= step_index < self.num_steps:
+            raise IndexError(f"state step {step_index} outside archived actions")
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": self.system_prompt}
+        ]
+        for prior in range(step_index):
+            messages.append({"role": "user", "content": self.observation_texts[prior]})
+            messages.append({"role": "assistant", "content": self.assistant_responses[prior]})
+        response = self.assistant_responses[step_index]
+        boundary_token = LatentActionTokens().action_start
+        if response.count(boundary_token) != 1:
+            raise ValueError("archived response must contain one exact action boundary")
+        boundary = response.index(boundary_token) + len(boundary_token)
+        prefix = response[:boundary]
+        if not prefix.startswith("<think>") or not prefix.endswith(boundary_token):
+            raise ValueError("archived state prefix lacks real CoT/action boundary")
+        messages.append({"role": "user", "content": self.observation_texts[step_index]})
+        messages.append({"role": "assistant", "content": prefix})
+        return bind_image_placeholders(messages, self.image_paths[: step_index + 1])
+
+
+def _required_list(raw: Mapping[str, Any], field: str) -> list[Any]:
+    value = raw[field]
+    if not isinstance(value, list):
+        raise ValueError(f"pre-RL field {field} must be a list")
+    return value
+
+
+def _parse_pre_rl_record(raw: Mapping[str, Any]) -> _SFT1V2PreRLRecord:
+    fields = set(raw)
+    if fields != _PRE_RL_FIELDS:
+        missing = sorted(_PRE_RL_FIELDS - fields)
+        extra = sorted(fields - _PRE_RL_FIELDS)
+        raise ValueError(
+            "pre-RL record must use the exact 28-field schema: "
+            f"missing={missing[:1]}, extra={extra[:1]}"
+        )
+    require_trajectory_record(raw)
+    if raw["record_format"] != TRAJECTORY_RECORD_FORMAT:
+        raise ValueError("pre-RL record format identity mismatch")
+    record_id = raw["id"]
+    split = raw["split"]
+    system_prompt = raw["system_prompt"]
+    if not isinstance(record_id, str) or not record_id:
+        raise ValueError("pre-RL record id must be non-empty")
+    if not isinstance(split, str) or not split:
+        raise ValueError("pre-RL split must be non-empty")
+    if not isinstance(system_prompt, str) or not system_prompt:
+        raise ValueError("pre-RL system prompt must be non-empty")
+    if raw["action_space_id"] != "navigation" or raw["action_space_version"] != 1:
+        raise ValueError("pre-RL action-space identity mismatch")
+    if raw["validation_issues"] != [] or raw["warnings"] != []:
+        raise ValueError("pre-RL source carries migration issues or warnings")
+    for field in ("data_source", "eval_set", "shard", "source_jsonl", "uid"):
+        if not isinstance(raw[field], str) or not raw[field]:
+            raise ValueError(f"pre-RL provenance field {field} must be non-empty")
+    for field in ("env_seed", "source_line_index", "step"):
+        if isinstance(raw[field], bool) or not isinstance(raw[field], int) or raw[field] < 0:
+            raise ValueError(f"pre-RL provenance field {field} must be a non-negative integer")
+    if not isinstance(raw["success"], bool):
+        raise ValueError("pre-RL field success must be boolean")
+    for field in ("reward", "score", "traj_success"):
+        if (
+            isinstance(raw[field], bool)
+            or not isinstance(raw[field], (int, float))
+            or not math.isfinite(float(raw[field]))
+        ):
+            raise ValueError(f"pre-RL field {field} must be finite numeric")
+    if not isinstance(raw["terminal_assistant_prefix"], str) or not raw["terminal_assistant_prefix"]:
+        raise ValueError("pre-RL terminal assistant prefix must be non-empty")
+
+    image_paths = _required_list(raw, "image_paths")
+    observations = _required_list(raw, "observation_texts")
+    action_indices = _required_list(raw, "action_indices")
+    action_names = _required_list(raw, "actions")
+    responses = _required_list(raw, "assistant_responses")
+    think_texts = _required_list(raw, "think_texts")
+    steps = len(action_indices)
+    if not (
+        len(image_paths) == len(observations) == steps + 1
+        and len(action_names) == len(responses) == len(think_texts) == steps
+    ):
+        raise ValueError("pre-RL trajectory fields are not step aligned")
+    if not all(isinstance(path, str) and path for path in image_paths):
+        raise ValueError("pre-RL image paths must be non-empty strings")
+    if not all(isinstance(value, str) and value for value in observations):
+        raise ValueError("pre-RL observations must be non-empty strings")
+    if not all(isinstance(value, str) and value for value in responses):
+        raise ValueError("pre-RL assistant responses must be non-empty strings")
+    normalized_actions: list[int] = []
+    for index, (action, name, response, thought) in enumerate(
+        zip(action_indices, action_names, responses, think_texts, strict=True)
+    ):
+        if isinstance(action, bool) or not isinstance(action, int) or not 0 <= action < 8:
+            raise ValueError(f"pre-RL action index is invalid at step {index}")
+        if name != _ACTION_NAMES[action]:
+            raise ValueError(f"pre-RL action name disagrees with action index at step {index}")
+        if not isinstance(thought, str) or not response.startswith(f"<think>{thought}</think>"):
+            raise ValueError(f"pre-RL think text disagrees with assistant response at step {index}")
+        tokens = LatentActionTokens()
+        action_block = tokens.action_start + tokens.action_tokens[action] + tokens.action_end
+        if response.count(action_block) != 1:
+            raise ValueError(f"pre-RL assistant action token disagrees at step {index}")
+        normalized_actions.append(action)
+
+    initial = observations[0]
+    if initial.count(_INSTRUCTION_PREFIX) != 1 or initial.count(_INSTRUCTION_SUFFIX) != 1:
+        raise ValueError("pre-RL observation must contain exactly one Human Instruction boundary")
+    start = initial.index(_INSTRUCTION_PREFIX) + len(_INSTRUCTION_PREFIX)
+    stop = initial.index(_INSTRUCTION_SUFFIX, start)
+    instruction = initial[start:stop]
+    if not instruction or "\n" in instruction or instruction != instruction.strip():
+        raise ValueError("pre-RL bounded instruction is empty or non-canonical")
+
+    return _SFT1V2PreRLRecord(
+        raw=dict(raw), record_id=record_id, split=split,
+        system_prompt=system_prompt,
+        image_paths=tuple(image_paths), observation_texts=tuple(observations),
+        action_indices=tuple(normalized_actions),
+        assistant_responses=tuple(responses), instruction=instruction,
+        instruction_char_span=(start, stop),
+    )
+
+
+def _movement_success(trajectory: _SFT1V2PreRLRecord, step_index: int) -> bool | None:
     action = int(trajectory.action_indices[step_index])
     if action not in (0, 2, 3):
         return None
@@ -107,13 +272,17 @@ def _movement_success(trajectory: RolloutTrajectory, step_index: int) -> bool | 
     return success
 
 
-def _read_records(path: Path, expected_sha256: str, expected_split: str) -> list[dict[str, Any]]:
+def _read_records(
+    path: Path,
+    expected_sha256: str,
+    expected_split: str,
+) -> list[_SFT1V2PreRLRecord]:
     if not path.is_file():
         raise FileNotFoundError(f"trajectory source is missing: {path}")
     actual = sha256_file(path)
     if actual != expected_sha256:
         raise ValueError(f"trajectory source hash mismatch: {path}")
-    records: list[dict[str, Any]] = []
+    records: list[_SFT1V2PreRLRecord] = []
     with path.open("r", encoding="utf-8") as stream:
         for line_number, line in enumerate(stream, start=1):
             try:
@@ -122,18 +291,15 @@ def _read_records(path: Path, expected_sha256: str, expected_split: str) -> list
                 raise ValueError(f"invalid trajectory JSON at {path}:{line_number}") from error
             if not isinstance(raw, dict):
                 raise ValueError(f"trajectory row is not an object at {path}:{line_number}")
-            trajectory = RolloutTrajectory.from_record(raw)
+            trajectory = _parse_pre_rl_record(raw)
             if trajectory.split != expected_split:
                 raise ValueError(f"trajectory split mismatch at {path}:{line_number}")
-            if set(raw) != set(trajectory.to_record()):
-                unknown = sorted(set(raw) - set(trajectory.to_record()))
-                raise ValueError(f"unknown trajectory field at {path}:{line_number}: {unknown[0]}")
-            records.append(raw)
+            records.append(trajectory)
     return records
 
 
 def _selected_rows(
-    records: Sequence[dict[str, Any]],
+    records: Sequence[_SFT1V2PreRLRecord],
     *,
     source_path: Path,
     source_sha256: str,
@@ -142,8 +308,7 @@ def _selected_rows(
     ordinal_start: int,
 ) -> list[SFT1V2Early4Row]:
     rows: list[SFT1V2Early4Row] = []
-    for record in records:
-        trajectory = RolloutTrajectory.from_record(record)
+    for trajectory in records:
         for step_index in EARLY4_STEPS:
             if step_index >= trajectory.num_steps:
                 continue
@@ -165,8 +330,6 @@ def _selected_rows(
                 raise FileNotFoundError(f"original observation image is missing: {image_path}")
             image_sha = sha256_file(image_path)
             instruction = trajectory.instruction
-            if not isinstance(instruction, str) or not instruction:
-                raise ValueError("trajectory instruction must be non-empty")
             instruction_group = hashlib.sha256(instruction.encode("utf-8")).hexdigest()
             rows.append(SFT1V2Early4Row(
                 schema=EARLY4_ROW_SCHEMA,
@@ -180,12 +343,13 @@ def _selected_rows(
                 original_image_sha256=image_sha,
                 image_content_group=image_sha,
                 instruction=instruction,
+                instruction_char_span=trajectory.instruction_char_span,
                 instruction_equivalence_group=instruction_group,
                 archived_assistant_response=response,
                 executed_action_index=int(trajectory.action_indices[step_index]),
                 movement_success=_movement_success(trajectory, step_index),
                 external_eligible=split != "val" or image_sha not in train_image_hashes,
-                record=record,
+                record=trajectory.raw,
             ))
     return rows
 
@@ -298,8 +462,8 @@ def audit_rendered_token_upper_bound(
     )
     maximum = 0
     for row in rows:
-        trajectory = RolloutTrajectory.from_record(dict(row.record))
-        messages = trajectory.build_state_prompt(row.step_index).bound_messages()
+        trajectory = _parse_pre_rl_record(row.record)
+        messages = trajectory.state_messages(row.step_index)
         rendered = render_messages(
             messages,
             processor,
@@ -340,7 +504,7 @@ def render_early4_row(
 
     if max_length < 1:
         raise ValueError("max_length must be positive")
-    trajectory = RolloutTrajectory.from_record(dict(row.record))
+    trajectory = _parse_pre_rl_record(row.record)
     if trajectory.record_id != row.record_id or row.step_index >= trajectory.num_steps:
         raise ValueError("early-4 row record identity mismatch")
     response = trajectory.assistant_responses[row.step_index]
@@ -351,8 +515,12 @@ def render_early4_row(
     if response.count(k8 + LatentActionTokens().action_start) != 1:
         raise ValueError("historical response must contain exactly one K8 structural block")
     expected_prefix = response[: response.index(LatentActionTokens().action_start) + len(LatentActionTokens().action_start)]
-    prompt = trajectory.build_state_prompt(row.step_index)
-    messages = prompt.bound_messages()
+    if (
+        trajectory.instruction != row.instruction
+        or trajectory.instruction_char_span != row.instruction_char_span
+    ):
+        raise ValueError("archived instruction span changed after indexing")
+    messages = trajectory.state_messages(row.step_index)
     rendered = render_messages(messages, processor, add_generation_prompt=False, latent_token_count=16)
     if (k8 + LatentActionTokens().action_start) in rendered or rendered.count(k16) < 1:
         raise ValueError("inject renderer did not normalize K8 structural queries to K16")
@@ -407,7 +575,7 @@ def render_early4_row(
 
 
 __all__ = [
-    "EARLY4_ROW_SCHEMA", "SFT1V2Early4Row", "SFT1V2RenderedRow",
+    "EARLY4_ROW_SCHEMA", "PRE_RL_ARCHIVE_SCHEMA", "SFT1V2Early4Row", "SFT1V2RenderedRow",
     "SFT1V2RowAudit", "audit_rendered_token_upper_bound",
     "index_early4_rows", "render_early4_row",
 ]

@@ -17,7 +17,7 @@ from nimloth.training.sft1.real_rows import SFT1V2RenderedRow
 
 
 TEACHER_CACHE_SCHEMA = "nimloth_sft1_state_v2_teacher_cache_v1"
-TEACHER_CACHE_ROW_SCHEMA = "nimloth_sft1_state_v2_teacher_row_v1"
+TEACHER_CACHE_ROW_SCHEMA = "nimloth_sft1_state_v2_teacher_row_v2"
 TEACHER_CACHE_SHARD_SCHEMA = "nimloth_sft1_state_v2_teacher_shard_v1"
 COMPLETE_MARKER = "COMPLETED"
 
@@ -221,6 +221,7 @@ def _row_payload(
         "original_image_sha256": row.original_image_sha256,
         "image_content_group": row.image_content_group,
         "instruction_equivalence_group": row.instruction_equivalence_group,
+        "instruction_char_span": row.instruction_char_span,
         "executed_action_index": row.executed_action_index,
         "movement_success": row.movement_success,
         "external_eligible": row.external_eligible,

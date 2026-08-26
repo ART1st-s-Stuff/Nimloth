@@ -49,6 +49,7 @@ def _rows(tmp_path: Path, count: int = 4) -> tuple[SFT1V2RenderedRow, ...]:
             step_index=ordinal % 4, original_image_path=str(image),
             original_image_sha256=sha256_file(image),
             image_content_group=sha256_file(image), instruction=f"instruction-{ordinal}",
+            instruction_char_span=(0, len(f"instruction-{ordinal}")),
             instruction_equivalence_group=f"group-{ordinal}",
             archived_assistant_response="<think>real cot</think><|latent_state|><|action_start|>",
             executed_action_index=ordinal % 8, movement_success=True,

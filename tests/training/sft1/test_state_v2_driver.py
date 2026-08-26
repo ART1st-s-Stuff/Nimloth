@@ -101,6 +101,7 @@ def test_epoch_runner_executes_epoch0_three_epochs_checkpoints_and_reports(
             original_image_sha256="b" * 64,
             image_content_group=f"image-{index}",
             instruction="navigate to the Mug in the room and be as close as possible to it",
+            instruction_char_span=(0, 68),
             instruction_equivalence_group="group",
             archived_assistant_response="<think>real</think><|latent_state|><|action_start|>",
             executed_action_index=0,

@@ -79,7 +79,7 @@ teacher:
 cache:
   output_dir: LOCK_BEFORE_LAUNCH/cache
   shard_count: 64
-  row_schema: nimloth_sft1_state_v2_teacher_row_v1
+  row_schema: nimloth_sft1_state_v2_teacher_row_v2
   parity_dino_path: /project/peilab/atst/nimloth/outputs/experiments/evaluation/state_alignment/2026-08-23/60_id176_sft1_frozen_goal_probe_early4/frozen_state_cache.npz
   parity_dino_sha256: 0fa994139d038d7f89b5a02a83d9036f9367b34a25f25e6b8cb84204f0daf8b6
   parity_instruction_path: /project/peilab/atst/nimloth/outputs/experiments/evaluation/state_alignment/2026-08-24/192_frozen_multimodal_feature_location_audit_retry2/same_forward_feature_cache.npz

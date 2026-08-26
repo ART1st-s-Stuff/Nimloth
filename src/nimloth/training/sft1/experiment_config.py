@@ -435,7 +435,7 @@ def parse_sft1_v2_config(raw: Mapping[str, Any]) -> SFT1V2Config:
         parity_instruction_path=_text(cache_raw["parity_instruction_path"], "cache.parity_instruction_path"),
         parity_instruction_sha256=_sha256(cache_raw["parity_instruction_sha256"], "cache.parity_instruction_sha256"),
     )
-    _exact(cache.row_schema, "nimloth_sft1_state_v2_teacher_row_v1", "cache.row_schema")
+    _exact(cache.row_schema, "nimloth_sft1_state_v2_teacher_row_v2", "cache.row_schema")
 
     optimizer_raw = _strict_section(raw, "optimizer", set(SFT1V2OptimizerConfig.__dataclass_fields__))
     betas_raw = optimizer_raw["betas"]

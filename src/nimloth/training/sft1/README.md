@@ -17,12 +17,18 @@ data, teacher/cache/output identities, approved 12,841/1,420/1,413 row counts,
 all objective constants, dual AdamW rates, three epochs, fixed contrastive-B2
 budgets, FSDP/checkpoint/report fields, and unknown-field rejection.
 `launch_config.py` can publish one immutable resolved launch config only when
-every commit/path/processor/W&B/topology value is explicit.
+every commit/path/processor/W&B/topology value is explicit; it reloads the
+persisted YAML and requires the same config identity before atomic publication.
 
-`real_rows.py` reopens immutable current-format trajectories, selects executed
-steps 0–3, hashes each original image, derives exact image/instruction groups,
-and applies the existing Qwen inject renderer. Its K8→K16 check permits only the
-structural query replacement and locks the archived CoT and action boundary.
+`real_rows.py` reopens the hash-pinned exact 28-field pre-RL archive schema,
+selects executed steps 0–3, hashes each original image, and derives exact
+image/instruction groups. RL replay fields such as archived `action_log_probs`
+are neither required nor invented. The authoritative instruction is the single
+bounded `Human Instruction: ...\nDecide your next action(s).` span in the actual
+first observation; its character offsets feed complete-context BPE selection.
+`actions` and `think_texts` are cross-checks only, never aliases or fallbacks.
+The K8→K16 renderer permits only structural query replacement and locks the
+archived CoT/action boundary.
 `teacher_cache.py` owns deterministic modulo shard ownership, chunked exact-
 prefix resume, detached `[16,1024]`/`[2048]`/`[8]` rows, one-time indexed reads,
 hash sidecars, and atomic root publication. `teachers.py` batches the real frozen
