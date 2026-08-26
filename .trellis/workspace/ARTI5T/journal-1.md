@@ -62,3 +62,38 @@ Semi-linearly integrated the complete ID185 history onto the Trellis dev baselin
 ### Next Steps
 
 - Human may review pending memories M0015-M0017 separately; no push was performed.
+
+
+## Session 3: Complete SFT1 state interface v2 code canary
+
+**Date**: 2026-08-26
+**Task**: Complete SFT1 state interface v2 code canary
+**Branch**: `feat/state-interface-v2-sft`
+
+### Summary
+
+Implemented and locally validated the strict DeepSight-style K16 SFT1-v2 code canary; archived the completed task without launching training.
+
+### Main Changes
+
+- Added same-forward Qwen K16/action output, unified seven-term state objective, strict data/manifest/DataProto contracts, complete-root FSDP worker, checkpoint/export, and non-launching canary config.
+- Committed feature and test changes in the feature worktree after human approval.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c4b2a357` | (see git log) |
+| `8df9b853` | (see git log) |
+
+### Testing
+
+- [OK] Focused plus adjacent CPU structural gate: 48 passed in 3.71s; AST/config/task/diff and submodule cleanliness checks passed.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Create a dedicated experiment task and source-verify the real-data teacher/cache, checkpoint, metrics, resources, outputs, and exact launch command before requesting launch approval.
