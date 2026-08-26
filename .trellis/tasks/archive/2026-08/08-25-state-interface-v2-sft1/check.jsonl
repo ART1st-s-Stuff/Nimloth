@@ -1,0 +1,18 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/governance/authority-and-safety.md", "reason": "Review scope, honesty, protected files, and experiment boundaries."}
+{"file": ".trellis/spec/governance/cot-and-state.md", "reason": "Review every touched state path for real observation-aligned CoT."}
+{"file": ".trellis/spec/domains/terminology-and-ownership.md", "reason": "Review exact state/action/checkpoint terms and module ownership."}
+{"file": ".trellis/spec/domains/world-model-and-training.md", "reason": "Review state axes, gradients, train/freeze, and checkpoint ownership."}
+{"file": ".trellis/spec/python/quality-and-testing.md", "reason": "Full-scope Python and ML-specific validation requirements."}
+{"file": ".trellis/tasks/08-25-state-interface-v2-sft1/research/source-audit.md", "reason": "Compare implementation claims against verified baseline evidence and limitations."}
+{"file": "ai_rules/known_errors/E0045_do_not_invent_fixed_cot.md", "reason": "Reject fixed or fallback thought in tests and production path."}
+{"file": "ai_rules/known_errors/E0019_sft1_format_eval_must_inject_masked_latent_queries.md", "reason": "Check query label mask and deployment protocol consistency."}
+{"file": "ai_rules/known_errors/E0065_do_not_hide_sft1_projector_behind_grid_encoder.md", "reason": "Check that only one deployable state/projector exists."}
+{"file": "ai_rules/known_errors/E0035_do_not_preencode_backbone_states_before_gradient_policy.md", "reason": "Check student gradients are not silently cut by caches."}
+{"file": "ai_rules/known_errors/E0086_gradient_checkpointing_requires_train_mode.md", "reason": "Check runtime mode evidence, not only config values."}
+{"file": "ai_rules/known_errors/E0058_do_not_replace_ddp_with_manual_gradient_sync.md", "reason": "Search final diff for unauthorized manual gradient synchronization."}
+{"file": "ai_rules/known_errors/E0117_new_auxiliary_modules_must_move_to_rank_device_before_ddp.md", "reason": "Check every parameter/buffer device before wrapping."}
+{"file": "ai_rules/known_errors/E0144_dino_wm_audit_must_use_original_observation_input.md", "reason": "Check canonical DINO teacher preprocessing and provenance."}
+{"file": "ai_rules/known_errors/E0150_token_spans_must_preserve_real_bpe_boundaries.md", "reason": "Check exact instruction span extraction and failure behavior."}
+{"file": "ai_rules/known_errors/E0007_use_peft_loader_for_adapter_resume.md", "reason": "Check exact adapter resume and saved-key parity."}
+{"file": "ai_rules/known_errors/E0136_preflight_tests_must_not_dirty_production_worktree.md", "reason": "Verify tests and syntax checks leave the feature worktree and initialized submodules clean."}

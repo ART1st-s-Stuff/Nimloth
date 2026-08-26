@@ -1,0 +1,18 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/governance/authority-and-safety.md", "reason": "Authorization, fail-closed implementation, and protected-action boundaries."}
+{"file": ".trellis/spec/governance/cot-and-state.md", "reason": "Hard real-CoT and observation-aligned state semantics."}
+{"file": ".trellis/spec/domains/agent-rollout-and-state.md", "reason": "Observation-to-response-to-state and rollout ownership contract."}
+{"file": ".trellis/spec/domains/world-model-and-training.md", "reason": "State projector, training objective, gradient, and checkpoint ownership."}
+{"file": ".trellis/spec/python/configuration-and-interfaces.md", "reason": "Typed config and cross-module dependency boundaries."}
+{"file": ".trellis/tasks/08-25-state-interface-v2-sft1/research/source-audit.md", "reason": "Verified current SFT1, VAGEN/VERL, and scientific evidence summary."}
+{"file": "ai_rules/known_errors/E0045_do_not_invent_fixed_cot.md", "reason": "Prevents fixed/default thought from entering the state path."}
+{"file": "ai_rules/known_errors/E0019_sft1_format_eval_must_inject_masked_latent_queries.md", "reason": "Keeps inject query training and policy evaluation protocols aligned."}
+{"file": "ai_rules/known_errors/E0065_do_not_hide_sft1_projector_behind_grid_encoder.md", "reason": "Requires one deployable projector/state rather than a second encoder."}
+{"file": "ai_rules/known_errors/E0035_do_not_preencode_backbone_states_before_gradient_policy.md", "reason": "Teacher caches must not remove the student query/projector gradient path."}
+{"file": "ai_rules/known_errors/E0086_gradient_checkpointing_requires_train_mode.md", "reason": "Runtime must prove checkpoint-enabled modules are actually in train mode."}
+{"file": "ai_rules/known_errors/E0058_do_not_replace_ddp_with_manual_gradient_sync.md", "reason": "Requires one official complete synchronization root."}
+{"file": "ai_rules/known_errors/E0117_new_auxiliary_modules_must_move_to_rank_device_before_ddp.md", "reason": "All new heads/buffers must move before distributed wrapping."}
+{"file": "ai_rules/known_errors/E0144_dino_wm_audit_must_use_original_observation_input.md", "reason": "DINO targets must use original archived observation preprocessing."}
+{"file": "ai_rules/known_errors/E0150_token_spans_must_preserve_real_bpe_boundaries.md", "reason": "Exact instruction teacher spans must preserve contextual BPE boundaries."}
+{"file": "ai_rules/known_errors/E0007_use_peft_loader_for_adapter_resume.md", "reason": "Query/LoRA resume must use verified PEFT loading rather than permissive raw state loading."}
+{"file": "ai_rules/known_errors/E0136_preflight_tests_must_not_dirty_production_worktree.md", "reason": "Run tests with bytecode/cache isolation and recheck parent/submodule cleanliness."}
