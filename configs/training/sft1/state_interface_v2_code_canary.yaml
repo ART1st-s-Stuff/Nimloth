@@ -1,0 +1,35 @@
+# Code/interface fixture only. These values are not an approved experiment,
+# launch contract, quality threshold, or production training configuration.
+schema: nimloth_sft1_state_v2_config_v1
+state:
+  objective_version: nimloth_state_interface_v2_canary
+  latent_query_mode: inject
+  query_tune: adapter
+  grid_tokens: 16
+  qwen_hidden_dim: 2048
+  state_dim: 1024
+  projector_hidden_dim: 2048
+  instruction_teacher_dim: 2048
+  action_dim: 8
+  movement_action_indices: [0, 2, 3]
+objective:
+  visual_weight: 1.0
+  visual_relation_coefficient: 1.0
+  instruction_weight: 1.0
+  instruction_contrastive_coefficient: 1.0
+  observed_feasibility_weight: 1.0
+  actor_preservation_weight: 1.0
+  state_policy_weight: 1.0
+  policy_temperature: 1.0
+  contrastive_temperature: 1.0
+freeze:
+  freeze_qwen_language_body: true
+  freeze_vision_tower: true
+  freeze_dino_teacher: true
+  freeze_instruction_action_teacher: true
+  train_query_adapter: true
+  train_fresh_projector: true
+  train_readouts: true
+optimizer:
+  learning_rate: 0.0001
+  weight_decay: 0.0

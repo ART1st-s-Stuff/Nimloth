@@ -12,6 +12,7 @@
 | `vllm_logits.py` | 把 turn 状态机接入 vLLM V1 per-request logits processor |
 | `checkpoint.py` | PEFT 与 full vision artifact |
 | `latent.py` | final hidden 捕获与 latent query 提取 |
+| `state_training.py` | SFT1-v2：验证真实 archived response/CoT，并在同一 Qwen forward 返回 K16 hidden 与 action-boundary 八动作 logits |
 | `tuning.py` | LLM/vision `freeze | lora | full` 配置 |
 | `vision_ema.py` | 可训练视觉参数 EMA |
 | `monkey_patch.py` | 只供诊断脚本启用的局部实验 patch |
@@ -26,5 +27,8 @@ vLLM turn mode 在一个多模态 request 中采样 CoT、约束注入 latent/ac
 reasoning finish reason 和 truncation 状态。训练 replay 用 `logits_to_keep` 只计算
 loss-mask 位置的 vocabulary logits，reasoning 使用屏蔽 Nimloth 注入 token 的词表，
 action 使用八 token 词表；注入或强制补全的 token 不进入 PPO。
+SFT1-v2 state-training 是独立的可微能力：输入必须携带每行真实 archived assistant
+response/CoT provenance；K16 hidden 和 exact action-boundary logits 只允许来自一次模型
+forward。普通 `Backbone.forward()`、Agent policy 与 PPO replay 的既有输出不因此改变。
 latent query的注入边界按tokenizer解码后的字面`</think>`匹配，而不是假设该文本只有
 一种token ID切分；达到reasoning上限时才强制补入canonical close token序列。

@@ -4,7 +4,8 @@ Canonical location for SFT1 per `ai_tasks/sft1_exp.md`.
 
 | File | Purpose |
 |------|---------|
-| `train.py` | Qwen2.5-VL SFT on Nimloth rollout records |
+| `train.py` | Historical Qwen2.5-VL format SFT on Nimloth rollout records |
+| `state_interface_v2_canary.py` | Non-launching SFT1-v2 config/manifest/source preflight; never starts training, Ray, W&B, or Slurm |
 | `train_8gpu.slurm` | 8-GPU DDP train (`SFT1_TUNE_MODE=lora\|embedlr`) |
 | `build_preprocess_cache.slurm` | CPU-only BF16 preprocess-cache build |
 | `submit_cache_then_train_8gpu.sh` | Submit cache, then dependency-gated training |
@@ -28,7 +29,22 @@ Config: `configs/training/sft1/qwen25vl_lora.yaml`; k=8 run manifest: `configs/t
 
 Latent query token count can be set with `LATENT_TOKEN_COUNT=<k>` in Slurm wrappers or `--latent-token-count <k>` in `train.py`. Select the protocol with YAML `latent.query_mode` or `--latent-query-mode inject|generate`: `inject` masks query-token CE labels and uses staged format evaluation, while `generate` supervises and freely generates the query-token block. `--[no-]mask-latent-query-labels` remains a deprecated compatibility alias; conflicting settings fail fast.
 
-Library (planned): `src/nimloth/training/phase1_sft/`
+Reusable state-interface-v2 code lives in `src/nimloth/training/sft1/`.
+The strict code fixture is
+`configs/training/sft1/state_interface_v2_code_canary.yaml`; its explicit
+weights are interface-test values, not an approved experiment configuration or
+quality threshold. The preflight additionally requires a separately generated,
+identity-bound manifest:
+
+```bash
+python experiments/training/sft1/state_interface_v2_canary.py \
+  --config configs/training/sft1/state_interface_v2_code_canary.yaml \
+  --manifest /path/from/a/later/approved/experiment/manifest.json
+```
+
+A passing preflight proves schema/source compatibility only. Teacher-cache
+creation, accelerator training, model-quality evaluation, and SFT2 remain
+separately gated.
 
 ## Paths
 

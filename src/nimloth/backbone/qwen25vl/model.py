@@ -11,6 +11,11 @@ from torch import nn
 from nimloth.backbone.base import Backbone, BackboneBatch, BackboneOutput
 from nimloth.backbone.qwen25vl.checkpoint import save_full_vision_state
 from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
+from nimloth.backbone.qwen25vl.state_training import (
+    QwenStateTrainingBatch,
+    QwenStateTrainingOutput,
+    forward_qwen_state_training,
+)
 from nimloth.latent import materialize_query_embedding_adapter
 
 
@@ -58,6 +63,20 @@ class Qwen25VLBackbone(Backbone):
         return BackboneOutput(
             hidden=hidden,
             lm_loss=lm_loss if include_lm_loss else None,
+        )
+
+    def forward_state_training(
+        self,
+        batch: QwenStateTrainingBatch,
+    ) -> QwenStateTrainingOutput:
+        """Expose v2 K16 hidden and action logits from one explicit Qwen call."""
+
+        return forward_qwen_state_training(
+            self.model,
+            batch,
+            self.token_id_map,
+            self.device,
+            latent_token_count=self.latent_token_count,
         )
 
     def with_model(self, model: nn.Module) -> "Qwen25VLBackbone":
