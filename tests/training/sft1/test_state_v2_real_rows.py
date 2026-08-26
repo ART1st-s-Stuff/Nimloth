@@ -164,6 +164,7 @@ def test_pre_rl_index_excludes_only_source_empty_cot_rows(tmp_path: Path) -> Non
     validation, _ = pre_rl_trajectory_record(
         tmp_path, record_id="validation-row", split="val"
     )
+    validation["image_paths"][0] = train["image_paths"][0]
     train["think_texts"][0] = ""
     response = train["assistant_responses"][0]
     train["assistant_responses"][0] = response.replace(
@@ -178,6 +179,8 @@ def test_pre_rl_index_excludes_only_source_empty_cot_rows(tmp_path: Path) -> Non
     )
 
     assert [row.split for row in rows] == ["val"]
+    assert rows[0].external_eligible is False
+    assert audit.external_validation_rows == 0
     assert audit.excluded_train_empty_cot_rows == 1
     assert audit.excluded_validation_empty_cot_rows == 0
 
