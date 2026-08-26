@@ -12,7 +12,7 @@ Unified training logic for Nimloth phases. See `ai_tasks/sft2_phase2_plan.md`.
 | `nimloth.rollout/` | 跨训练阶段使用的 rollout schema、collector 和存储 |
 | `nimloth.config/` | Agent、rollout、SFT2 和 RL 配置 |
 | `nimloth.util/` | dist、schedule、profiling、cache、metrics、W&B |
-| `training/sft1/` | Legacy SFT1 config plus the strict state-interface-v2 canary objective/data/worker/checkpoint path |
+| `training/sft1/` | Legacy SFT1 plus separate state-interface-v2 code-canary and report-first experiment config/cache/FSDP/checkpoint/validation paths |
 | `training/verl/` | Exact source verification and reusable complete-root FSDP/optimizer mechanics; no stage objective semantics |
 | `training/sft2/` | SFT2 数据、梯度策略、训练循环、验证和 checkpoint |
 | `training/rl/` | RL loss、rollout iteration、验证和 checkpoint |

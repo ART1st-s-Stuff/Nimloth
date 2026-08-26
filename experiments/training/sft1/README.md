@@ -5,7 +5,13 @@ Canonical location for SFT1 per `ai_tasks/sft1_exp.md`.
 | File | Purpose |
 |------|---------|
 | `train.py` | Historical Qwen2.5-VL format SFT on Nimloth rollout records |
-| `state_interface_v2_canary.py` | Non-launching SFT1-v2 config/manifest/source preflight; never starts training, Ray, W&B, or Slurm |
+| `state_interface_v2_canary.py` | Historical non-launching SFT1-v2 config/manifest/source preflight |
+| `state_interface_v2_identity_audit.py` | CPU-only complete ID176 processor/token/template/K16-action identity audit |
+| `state_interface_v2_resolve_config.py` | Publish one immutable launch-locked config from explicit approved values |
+| `state_interface_v2_controller.py` | Strict phase preflight/transaction for cache→smoke→resume-smoke→formal→report |
+| `state_interface_v2_cache.py` | Launch-locked distributed fresh ID176/DINO target generation or CPU cache inspection |
+| `state_interface_v2_train.py` | Launch-locked production FSDP smoke, exact resume-smoke, or formal three-epoch runtime |
+| `state_interface_v2_canary.slurm` | Resource-unspecified sequential wrapper; executes only the separately approved resolved phase command |
 | `train_8gpu.slurm` | 8-GPU DDP train (`SFT1_TUNE_MODE=lora\|embedlr`) |
 | `build_preprocess_cache.slurm` | CPU-only BF16 preprocess-cache build |
 | `submit_cache_then_train_8gpu.sh` | Submit cache, then dependency-gated training |
@@ -30,11 +36,15 @@ Config: `configs/training/sft1/qwen25vl_lora.yaml`; k=8 run manifest: `configs/t
 Latent query token count can be set with `LATENT_TOKEN_COUNT=<k>` in Slurm wrappers or `--latent-token-count <k>` in `train.py`. Select the protocol with YAML `latent.query_mode` or `--latent-query-mode inject|generate`: `inject` masks query-token CE labels and uses staged format evaluation, while `generate` supervises and freely generates the query-token block. `--[no-]mask-latent-query-labels` remains a deprecated compatibility alias; conflicting settings fail fast.
 
 Reusable state-interface-v2 code lives in `src/nimloth/training/sft1/`.
-The strict code fixture is
-`configs/training/sft1/state_interface_v2_code_canary.yaml`; its explicit
-weights are interface-test values, not an approved experiment configuration or
-quality threshold. The preflight additionally requires a separately generated,
-identity-bound manifest:
+The unchanged code/interface fixture is
+`configs/training/sft1/state_interface_v2_code_canary.yaml`. The separate
+experiment template `state_interface_v2_early4_report_first.yaml` records the
+approved early-4 data and optimizer/objective values, but deliberately retains
+`launch_locked=false`,
+`LOCK_BEFORE_LAUNCH` outputs, and zero processor/token/prompt digests. It cannot
+pass launch preflight until the later identity/topology/output approval updates
+all of those fields in a committed clean worktree. The historical manifest
+preflight additionally requires a separately generated identity-bound manifest:
 
 ```bash
 python experiments/training/sft1/state_interface_v2_canary.py \
@@ -42,9 +52,13 @@ python experiments/training/sft1/state_interface_v2_canary.py \
   --manifest /path/from/a/later/approved/experiment/manifest.json
 ```
 
-A passing preflight proves schema/source compatibility only. Teacher-cache
-creation, accelerator training, model-quality evaluation, and SFT2 remain
-separately gated.
+A passing local test or preflight proves schema/source compatibility only. The
+Slurm file intentionally omits partition/GPU/CPU/memory/time directives and
+cannot execute while the config is unresolved/unlocked. With a separately
+approved resolved config it runs exactly one controller phase; formal remains
+blocked until cache, smoke, and resume-smoke markers all pass. Cache creation,
+GPU/FSDP execution, W&B identity selection, model-quality interpretation, and
+every SFT2/WM/ValueHead action remain separately gated.
 
 ## Paths
 

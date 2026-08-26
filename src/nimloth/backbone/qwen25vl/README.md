@@ -30,5 +30,8 @@ action 使用八 token 词表；注入或强制补全的 token 不进入 PPO。
 SFT1-v2 state-training 是独立的可微能力：输入必须携带每行真实 archived assistant
 response/CoT provenance；K16 hidden 和 exact action-boundary logits 只允许来自一次模型
 forward。普通 `Backbone.forward()`、Agent policy 与 PPO replay 的既有输出不因此改变。
+`Qwen25VLBackbone.save_pretrained()`可接收官方FSDP聚合后的完整state dict；query delta
+只在该完整副本中materialize到embedding行，训练中的sharded参数保持不变，adapter私有key
+不会进入HF artifact。
 latent query的注入边界按tokenizer解码后的字面`</think>`匹配，而不是假设该文本只有
 一种token ID切分；达到reasoning上限时才强制补入canonical close token序列。
