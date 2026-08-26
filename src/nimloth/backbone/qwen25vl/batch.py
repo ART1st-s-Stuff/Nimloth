@@ -142,7 +142,9 @@ def assistant_char_spans(
     return [(start, end)] if start < end else []
 
 
-def _collect_message_images(messages: list[dict[str, Any]]) -> list[Image.Image]:
+def collect_message_images(messages: list[dict[str, Any]]) -> list[Image.Image]:
+    """Load bound message images in prompt order for processor parity."""
+
     imgs: list[Image.Image] = []
     for msg in messages:
         content = msg.get("content")
@@ -153,6 +155,11 @@ def _collect_message_images(messages: list[dict[str, Any]]) -> list[Image.Image]
                     # without corrupting the cached decoded RGB image.
                     imgs.append(_load_rgb_image(str(part["image"])).copy())
     return imgs
+
+
+# Internal historical name retained for adjacent callers; new code uses the
+# public owner above rather than reaching into a private helper.
+_collect_message_images = collect_message_images
 
 
 def _mask_latent_query_labels(

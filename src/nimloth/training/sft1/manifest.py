@@ -17,7 +17,7 @@ from nimloth.training.verl.source import (
 )
 
 
-SFT1_V2_MANIFEST_SCHEMA = "nimloth_sft1_state_v2_manifest_v1"
+SFT1_V2_MANIFEST_SCHEMA = "nimloth_sft1_state_v2_manifest_v2"
 SFT1_V2_SUPERVISION_SCHEMA = "nimloth_sft1_state_v2_supervision_v1"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -27,14 +27,21 @@ class SFT1V2Manifest:
     schema: str
     objective_version: str
     supervision_schema: str
+    source_commit: str
     vagen_commit: str
     verl_commit: str
     actor_checkpoint_sha256: str
+    actor_config_sha256: str
+    actor_model_index_sha256: str
+    actor_model_shards_sha256: tuple[str, ...]
     processor_sha256: str
+    tokenizer_sha256: str
     prompt_template_sha256: str
     token_table_sha256: str
-    dino_identity_sha256: str
-    trajectory_sha256: str
+    dino_checkpoint_sha256: str
+    dino_processor_sha256: str
+    train_trajectory_sha256: str
+    validation_trajectory_sha256: str
     teacher_cache_sha256: str
     latent_query_mode: str
     query_count: int
@@ -69,22 +76,39 @@ def parse_sft1_v2_manifest(raw: Mapping[str, Any]) -> SFT1V2Manifest:
     _strict_fields(raw, fields)
     hashes = {
         "actor_checkpoint_sha256",
+        "actor_config_sha256",
+        "actor_model_index_sha256",
         "processor_sha256",
+        "tokenizer_sha256",
         "prompt_template_sha256",
         "token_table_sha256",
-        "dino_identity_sha256",
-        "trajectory_sha256",
+        "dino_checkpoint_sha256",
+        "dino_processor_sha256",
+        "train_trajectory_sha256",
+        "validation_trajectory_sha256",
         "teacher_cache_sha256",
     }
     for field in hashes:
         if not isinstance(raw[field], str) or _SHA256_RE.fullmatch(raw[field]) is None:
             raise ValueError(f"manifest {field} must be a lowercase SHA256 digest")
+    shard_hashes = raw["actor_model_shards_sha256"]
+    if (
+        not isinstance(shard_hashes, (list, tuple))
+        or not shard_hashes
+        or any(not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None for value in shard_hashes)
+    ):
+        raise ValueError("manifest actor_model_shards_sha256 must contain SHA256 digests")
     if raw["schema"] != SFT1_V2_MANIFEST_SCHEMA:
         raise ValueError("unsupported SFT1-v2 manifest schema")
     if raw["objective_version"] != STATE_INTERFACE_OBJECTIVE_VERSION:
         raise ValueError("manifest contains an old state objective")
     if raw["supervision_schema"] != SFT1_V2_SUPERVISION_SCHEMA:
         raise ValueError("unsupported SFT1-v2 supervision schema")
+    if (
+        not isinstance(raw["source_commit"], str)
+        or re.fullmatch(r"[0-9a-f]{40}", raw["source_commit"]) is None
+    ):
+        raise ValueError("manifest source_commit must be a lowercase Git SHA")
     if raw["vagen_commit"] != PINNED_VAGEN_COMMIT:
         raise ValueError("manifest VAGEN commit differs from the pinned source")
     if raw["verl_commit"] != PINNED_VERL_COMMIT:
@@ -125,8 +149,12 @@ def parse_sft1_v2_manifest(raw: Mapping[str, Any]) -> SFT1V2Manifest:
         raise ValueError("manifest train/external-validation split identities are invalid")
     return SFT1V2Manifest(
         **{
-            **{field: raw[field] for field in fields - {"action_token_ids"}},
+            **{
+                field: raw[field]
+                for field in fields - {"action_token_ids", "actor_model_shards_sha256"}
+            },
             "action_token_ids": tuple(action_token_ids),
+            "actor_model_shards_sha256": tuple(shard_hashes),
         }
     )
 

@@ -31,14 +31,21 @@ def manifest_raw() -> dict[str, object]:
         "schema": SFT1_V2_MANIFEST_SCHEMA,
         "objective_version": STATE_INTERFACE_OBJECTIVE_VERSION,
         "supervision_schema": SFT1_V2_SUPERVISION_SCHEMA,
+        "source_commit": "9" * 40,
         "vagen_commit": PINNED_VAGEN_COMMIT,
         "verl_commit": PINNED_VERL_COMMIT,
         "actor_checkpoint_sha256": digest,
+        "actor_config_sha256": "2" * 64,
+        "actor_model_index_sha256": "3" * 64,
+        "actor_model_shards_sha256": ["4" * 64, "5" * 64],
         "processor_sha256": "b" * 64,
+        "tokenizer_sha256": "6" * 64,
         "prompt_template_sha256": "c" * 64,
         "token_table_sha256": "d" * 64,
-        "dino_identity_sha256": "e" * 64,
-        "trajectory_sha256": "f" * 64,
+        "dino_checkpoint_sha256": "e" * 64,
+        "dino_processor_sha256": "7" * 64,
+        "train_trajectory_sha256": "f" * 64,
+        "validation_trajectory_sha256": "8" * 64,
         "teacher_cache_sha256": "1" * 64,
         "latent_query_mode": "inject",
         "query_count": 16,
@@ -60,8 +67,9 @@ def trajectory_record(
     split: str = "train",
     action_index: int = 0,
     feedback: str = "Last action is executed successfully.",
+    latent_token_count: int = 16,
 ) -> tuple[dict[str, object], Path]:
-    prompt = NimlothPromptTemplate(latent_token_count=16, action_count=8)
+    prompt = NimlothPromptTemplate(latent_token_count=latent_token_count, action_count=8)
     before = tmp_path / f"{record_id}-before.png"
     after = tmp_path / f"{record_id}-after.png"
     before.write_bytes(f"before-{record_id}".encode())

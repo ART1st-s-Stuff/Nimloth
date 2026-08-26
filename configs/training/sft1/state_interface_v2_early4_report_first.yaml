@@ -1,0 +1,133 @@
+# Approved Milestones 1-5 early-4 experiment contract. GPU topology, unique output,
+# and W&B identity remain separately gated, so this config is fail-closed for launch.
+schema: nimloth_sft1_state_v2_experiment_v1
+state:
+  objective_version: nimloth_state_interface_v2_canary
+  latent_query_mode: inject
+  query_tune: adapter
+  grid_tokens: 16
+  qwen_hidden_dim: 2048
+  state_dim: 1024
+  projector_hidden_dim: 2048
+  instruction_teacher_dim: 2048
+  action_dim: 8
+  movement_action_indices: [0, 2, 3]
+objective:
+  visual_weight: 1.0
+  visual_relation_coefficient: 1.0
+  instruction_weight: 1.0
+  instruction_contrastive_coefficient: 0.25
+  observed_feasibility_weight: 1.0
+  actor_preservation_weight: 10.0
+  state_policy_weight: 1.0
+  policy_temperature: 1.0
+  contrastive_temperature: 0.1
+freeze:
+  freeze_qwen_language_body: true
+  freeze_lm_head: true
+  freeze_vision_tower: true
+  freeze_dino_teacher: true
+  freeze_instruction_action_teacher: true
+  train_query_adapter: true
+  train_fresh_projector: true
+  train_readouts: true
+selection:
+  steps: [0, 1, 2, 3]
+  train_records: 3211
+  train_rows: 12841
+  validation_records: 355
+  raw_validation_rows: 1420
+  external_validation_rows: 1413
+  cross_split_image_hashes: 3
+  same_image_multi_instruction_groups: 42
+  same_instruction_multi_image_groups: 101
+source:
+  # Replaced in an immutable resolved config after commit/push authorization.
+  repo: LOCK_BEFORE_LAUNCH
+  expected_commit: LOCK_BEFORE_LAUNCH
+  vagen_commit: 9f1e89eb8c9839a406b6e62aa75703494a79e5b5
+  verl_commit: 494f264494b2525f2c13595f63ac4912963e6d2f
+  interpreter: /project/peilab/atst/nimloth/.venv-vagen-main/bin/python3
+data:
+  train_jsonl: /project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-28/sft2/52_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga8_ws8_px100352/data/train_terminal_cot_migrated.jsonl
+  train_sha256: d43ada06d66c0b5cafa50e9da8ecc354445ca3b9686d1639b18050a981247b97
+  validation_jsonl: /project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-28/sft2/52_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga8_ws8_px100352/data/val_terminal_cot_migrated.jsonl
+  validation_sha256: 4c092fb4069fb71ad92bca73566d5f20f572569a093bf4712467ca137615212e
+  record_format: nimloth_trajectory_v1
+  train_split: train
+  validation_split: val
+  overlap_key: original_image_sha256
+teacher:
+  actor_checkpoint: /project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint
+  actor_completion_sha256: 37a40f08d8548dba289b9b0bb35bcf63b359f6d37ee86044ebc6b6da080b9ec1
+  actor_config_sha256: f0fbb6c34bb4ce9056f83ad5e92c72084bfe66bb64fee757bf1b91c6831932f2
+  actor_model_index_sha256: 32acf7bf413e8b87f295e816fe3d68c965e0ab196fbf30b32858b52df41cc97e
+  actor_model_shards_sha256:
+    - 63c933b6ebadae3ee64a4663b5bd1ec71676f64629faf2cda6c15393e534e563
+    - fcfec9497bc08d1faeb91c07e954b8a9638a1dfa7882f7c3f8b6824d269e2d51
+  actor_action_head_sha256: a3c33ca3fda81896249bdcadd2d54289bc19e92d1591ba08a91a1b1e8de90e6f
+  action_token_ids: [151683, 151684, 151685, 151686, 151687, 151688, 151689, 151690]
+  # Full processor/token/prompt hashes are deliberately unresolved until login preflight.
+  processor_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+  tokenizer_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+  prompt_template_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+  token_table_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+  dino_source: facebook/dinov2-large
+  dino_revision: 47b73eefe95e8d44ec3623f8890bd894b6ea2d6c
+  dino_processor_fingerprint: 7d65a7de8788e87d
+  fresh_targets_only: true
+cache:
+  output_dir: LOCK_BEFORE_LAUNCH/cache
+  shard_count: 64
+  row_schema: nimloth_sft1_state_v2_teacher_row_v1
+  parity_dino_path: /project/peilab/atst/nimloth/outputs/experiments/evaluation/state_alignment/2026-08-23/60_id176_sft1_frozen_goal_probe_early4/frozen_state_cache.npz
+  parity_dino_sha256: 0fa994139d038d7f89b5a02a83d9036f9367b34a25f25e6b8cb84204f0daf8b6
+  parity_instruction_path: /project/peilab/atst/nimloth/outputs/experiments/evaluation/state_alignment/2026-08-24/192_frozen_multimodal_feature_location_audit_retry2/same_forward_feature_cache.npz
+  parity_instruction_sha256: a46278d43fafdd964708af988123d8898c3990a5fb3a3d9f97d935c5645f813c
+optimizer:
+  name: adamw
+  query_learning_rate: 0.0001
+  projector_readout_learning_rate: 0.001
+  weight_decay: 0.0
+  betas: [0.9, 0.95]
+  epsilon: 0.00000001
+  scheduler: none
+  warmup_steps: 0
+runtime:
+  epochs: 3
+  max_grad_norm: 1.0
+  fsdp_sharding: full_shard
+  fsdp_use_orig_params: true
+  gradient_checkpointing: true
+  train_mode: true
+  attention_implementation: flash_attention_2
+  model_dtype: bfloat16
+  max_sequence_length: 12000
+  max_pixels: 100352
+  teacher_batch_size: 8
+  max_padded_tokens: 24000
+  max_rows_per_micro_batch: 2
+  rows_per_rank_update: 2
+  world_size: 1
+  launch_locked: false
+checkpoint:
+  cadence_steps: 100
+  at_epoch_boundary: true
+  exact_resume: true
+  immutable_shards: true
+validation:
+  epochs: [0, 1, 2, 3]
+  report_first: true
+  bootstrap_seed: 176
+  bootstrap_resamples: 2000
+  actor_mean_kl_stop: 0.1
+  actor_top1_agreement_stop: 0.9
+  external_only: true
+output:
+  experiment_group: outputs/experiments/training/sft1_state_interface_v2
+  run_dir: LOCK_BEFORE_LAUNCH/formal
+  wandb_project: nimloth-sft1
+  wandb_run_name: LOCK_BEFORE_LAUNCH
+  wandb_run_id: LOCK_BEFORE_LAUNCH
+  minimum_free_bytes: 100000000000
+  overwrite: false
