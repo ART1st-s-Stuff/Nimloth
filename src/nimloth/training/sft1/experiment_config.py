@@ -21,9 +21,11 @@ STATE_INTERFACE_OBJECTIVE_VERSION = "nimloth_state_interface_v2_canary"
 EARLY4_STEPS = (0, 1, 2, 3)
 APPROVED_COUNTS = {
     "train_records": 3211,
-    "train_rows": 12841,
+    "train_rows": 12836,
+    "excluded_train_empty_cot_rows": 5,
     "validation_records": 355,
     "raw_validation_rows": 1420,
+    "excluded_validation_empty_cot_rows": 0,
     "external_validation_rows": 1413,
     "cross_split_image_hashes": 3,
     "same_image_multi_instruction_groups": 42,
@@ -69,8 +71,10 @@ class SFT1V2SelectionConfig:
     steps: tuple[int, ...]
     train_records: int
     train_rows: int
+    excluded_train_empty_cot_rows: int
     validation_records: int
     raw_validation_rows: int
+    excluded_validation_empty_cot_rows: int
     external_validation_rows: int
     cross_split_image_hashes: int
     same_image_multi_instruction_groups: int

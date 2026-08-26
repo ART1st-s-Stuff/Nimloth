@@ -34,9 +34,11 @@ freeze:
 selection:
   steps: [0, 1, 2, 3]
   train_records: 3211
-  train_rows: 12841
+  train_rows: 12836
+  excluded_train_empty_cot_rows: 5
   validation_records: 355
   raw_validation_rows: 1420
+  excluded_validation_empty_cot_rows: 0
   external_validation_rows: 1413
   cross_split_image_hashes: 3
   same_image_multi_instruction_groups: 42

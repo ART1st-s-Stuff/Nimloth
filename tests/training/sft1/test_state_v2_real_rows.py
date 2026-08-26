@@ -159,6 +159,29 @@ def test_exact_pre_rl_schema_extracts_instruction_from_real_observation_span(
     assert "action_log_probs" not in row.record
 
 
+def test_pre_rl_index_excludes_only_source_empty_cot_rows(tmp_path: Path) -> None:
+    train, _ = pre_rl_trajectory_record(tmp_path, record_id="train-row")
+    validation, _ = pre_rl_trajectory_record(
+        tmp_path, record_id="validation-row", split="val"
+    )
+    train["think_texts"][0] = ""
+    response = train["assistant_responses"][0]
+    train["assistant_responses"][0] = response.replace(
+        "<think>The observation supports this executed action.</think>",
+        "<think></think>",
+        1,
+    )
+
+    rows, audit = index_early4_rows(
+        _small_config(tmp_path, train, validation),
+        enforce_approved_counts=False,
+    )
+
+    assert [row.split for row in rows] == ["val"]
+    assert audit.excluded_train_empty_cot_rows == 1
+    assert audit.excluded_validation_empty_cot_rows == 0
+
+
 @pytest.mark.parametrize(
     ("mutation", "match"),
     [

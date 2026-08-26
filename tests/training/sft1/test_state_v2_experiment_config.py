@@ -17,8 +17,10 @@ def test_early4_report_first_yaml_is_strict_and_deliberately_launch_locked() -> 
         ROOT / "configs/training/sft1/state_interface_v2_early4_report_first.yaml"
     )
     assert config.selection.steps == (0, 1, 2, 3)
-    assert (config.selection.train_rows, config.selection.raw_validation_rows) == (12841, 1420)
+    assert (config.selection.train_rows, config.selection.raw_validation_rows) == (12836, 1420)
     assert config.selection.external_validation_rows == 1413
+    assert config.selection.excluded_train_empty_cot_rows == 5
+    assert config.selection.excluded_validation_empty_cot_rows == 0
     assert config.optimizer.scheduler == "none"
     assert config.runtime.epochs == 3
     assert config.validation.report_first is True

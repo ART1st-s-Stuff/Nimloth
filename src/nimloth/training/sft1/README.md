@@ -13,7 +13,8 @@ rank keeps a zero autograd graph and never invents a label.
 `config.py` retains the code-canary objective schema and historical CLI defaults
 without widening that public interface. `experiment_config.py` separately owns
 the strict `nimloth_sft1_state_v2_experiment_v1` early-4 launch schema: source,
-data, teacher/cache/output identities, approved 12,841/1,420/1,413 row counts,
+data, teacher/cache/output identities, approved 12,836 valid train + 5 excluded
+empty-CoT / 1,420 raw validation + 0 excluded / 1,413 external row counts,
 all objective constants, dual AdamW rates, three epochs, fixed contrastive-B2
 budgets, FSDP/checkpoint/report fields, and unknown-field rejection.
 `launch_config.py` can publish one immutable resolved launch config only when
@@ -27,6 +28,8 @@ are neither required nor invented. The authoritative instruction is the single
 bounded `Human Instruction: ...\nDecide your next action(s).` span in the actual
 first observation; its character offsets feed complete-context BPE selection.
 `actions` and `think_texts` are cross-checks only, never aliases or fallbacks.
+Exactly five train and zero validation rows with empty migrated CoT are counted
+and excluded before selection; they are never accepted, repaired, or replaced.
 The K8→K16 renderer permits only structural query replacement and locks the
 archived CoT/action boundary.
 `teacher_cache.py` owns deterministic modulo shard ownership, chunked exact-

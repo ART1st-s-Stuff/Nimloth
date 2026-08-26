@@ -90,7 +90,9 @@ class SFT1V2RowAudit:
     train_records: int
     validation_records: int
     train_rows: int
+    excluded_train_empty_cot_rows: int
     raw_validation_rows: int
+    excluded_validation_empty_cot_rows: int
     external_validation_rows: int
     train_unique_images: int
     validation_unique_images: int
@@ -124,6 +126,7 @@ class _SFT1V2PreRLRecord:
     observation_texts: tuple[str, ...]
     action_indices: tuple[int, ...]
     assistant_responses: tuple[str, ...]
+    think_texts: tuple[str, ...]
     instruction: str
     instruction_char_span: tuple[int, int]
 
@@ -251,7 +254,8 @@ def _parse_pre_rl_record(raw: Mapping[str, Any]) -> _SFT1V2PreRLRecord:
         system_prompt=system_prompt,
         image_paths=tuple(image_paths), observation_texts=tuple(observations),
         action_indices=tuple(normalized_actions),
-        assistant_responses=tuple(responses), instruction=instruction,
+        assistant_responses=tuple(responses), think_texts=tuple(think_texts),
+        instruction=instruction,
         instruction_char_span=(start, stop),
     )
 
@@ -306,11 +310,15 @@ def _selected_rows(
     split: str,
     train_image_hashes: frozenset[str],
     ordinal_start: int,
-) -> list[SFT1V2Early4Row]:
+) -> tuple[list[SFT1V2Early4Row], int]:
     rows: list[SFT1V2Early4Row] = []
+    excluded_empty_cot = 0
     for trajectory in records:
         for step_index in EARLY4_STEPS:
             if step_index >= trajectory.num_steps:
+                continue
+            if not trajectory.think_texts[step_index].strip():
+                excluded_empty_cot += 1
                 continue
             response = require_archived_assistant_response(
                 trajectory.assistant_responses[step_index], source="archived"
@@ -351,7 +359,7 @@ def _selected_rows(
                 external_eligible=split != "val" or image_sha not in train_image_hashes,
                 record=trajectory.raw,
             ))
-    return rows
+    return rows, excluded_empty_cot
 
 
 def _group_count(rows: Sequence[SFT1V2Early4Row], group: str, varying: str) -> int:
@@ -376,12 +384,12 @@ def index_early4_rows(
     validation_records = _read_records(validation_path, config.data.validation_sha256, config.data.validation_split)
 
     # First pass obtains train image identities before external eligibility is assigned.
-    train_rows = _selected_rows(
+    train_rows, excluded_train_empty_cot = _selected_rows(
         train_records, source_path=train_path, source_sha256=config.data.train_sha256,
         split="train", train_image_hashes=frozenset(), ordinal_start=0,
     )
     train_images = frozenset(row.original_image_sha256 for row in train_rows)
-    validation_rows = _selected_rows(
+    validation_rows, excluded_validation_empty_cot = _selected_rows(
         validation_records, source_path=validation_path,
         source_sha256=config.data.validation_sha256, split="val",
         train_image_hashes=train_images, ordinal_start=len(train_rows),
@@ -400,7 +408,10 @@ def index_early4_rows(
         train_source_sha256=config.data.train_sha256,
         validation_source_sha256=config.data.validation_sha256,
         train_records=len(train_records), validation_records=len(validation_records),
-        train_rows=len(train_rows), raw_validation_rows=len(validation_rows),
+        train_rows=len(train_rows),
+        excluded_train_empty_cot_rows=excluded_train_empty_cot,
+        raw_validation_rows=len(validation_rows),
+        excluded_validation_empty_cot_rows=excluded_validation_empty_cot,
         external_validation_rows=sum(row.external_eligible for row in validation_rows),
         train_unique_images=len(train_images), validation_unique_images=len(validation_images),
         cross_split_image_hashes=len(train_images & validation_images),
@@ -413,7 +424,9 @@ def index_early4_rows(
             "train_records": config.selection.train_records,
             "validation_records": config.selection.validation_records,
             "train_rows": config.selection.train_rows,
+            "excluded_train_empty_cot_rows": config.selection.excluded_train_empty_cot_rows,
             "raw_validation_rows": config.selection.raw_validation_rows,
+            "excluded_validation_empty_cot_rows": config.selection.excluded_validation_empty_cot_rows,
             "external_validation_rows": config.selection.external_validation_rows,
             "cross_split_image_hashes": config.selection.cross_split_image_hashes,
             "same_image_multi_instruction_groups": config.selection.same_image_multi_instruction_groups,
