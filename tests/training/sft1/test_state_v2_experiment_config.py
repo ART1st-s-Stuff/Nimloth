@@ -21,6 +21,10 @@ def test_early4_report_first_yaml_is_strict_and_deliberately_launch_locked() -> 
     assert config.selection.external_validation_rows == 1413
     assert config.selection.excluded_train_empty_cot_rows == 5
     assert config.selection.excluded_validation_empty_cot_rows == 0
+    assert (
+        config.data.overlap_key
+        == "record_initial_and_current_next_original_image_sha256"
+    )
     assert config.optimizer.scheduler == "none"
     assert config.runtime.epochs == 3
     assert config.validation.report_first is True

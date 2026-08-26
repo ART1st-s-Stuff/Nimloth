@@ -397,7 +397,11 @@ def parse_sft1_v2_config(raw: Mapping[str, Any]) -> SFT1V2Config:
     )
     _exact(data.record_format, "nimloth_trajectory_v1", "data.record_format")
     _exact((data.train_split, data.validation_split), ("train", "val"), "data splits")
-    _exact(data.overlap_key, "original_image_sha256", "data.overlap_key")
+    _exact(
+        data.overlap_key,
+        "record_initial_and_current_next_original_image_sha256",
+        "data.overlap_key",
+    )
 
     teacher_raw = _strict_section(raw, "teacher", set(SFT1V2TeacherConfig.__dataclass_fields__))
     shard_hashes = teacher_raw["actor_model_shards_sha256"]

@@ -58,7 +58,7 @@ data:
   record_format: nimloth_trajectory_v1
   train_split: train
   validation_split: val
-  overlap_key: original_image_sha256
+  overlap_key: record_initial_and_current_next_original_image_sha256
 teacher:
   actor_checkpoint: /project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint
   actor_completion_sha256: 37a40f08d8548dba289b9b0bb35bcf63b359f6d37ee86044ebc6b6da080b9ec1
