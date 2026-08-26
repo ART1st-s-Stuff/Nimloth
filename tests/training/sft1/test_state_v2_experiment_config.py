@@ -63,6 +63,8 @@ def test_launch_resolution_requires_every_identity_and_preserves_contrastive_bat
     assert config.source.expected_commit == "a" * 40
     assert config.runtime.world_size == 4
     assert config.output.wandb_run_id == values["wandb_run_id"]
+    persisted = load_sft1_v2_config(tmp_path / "resolved.json")
+    assert persisted.identity == config.identity
 
     values["max_rows_per_micro_batch"] = 1
     with pytest.raises(ValueError, match="at least two rows"):

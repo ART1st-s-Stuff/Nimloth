@@ -9,8 +9,14 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, Mapping
 
+import yaml
+
 from nimloth.config import load_yaml_config
-from nimloth.training.sft1.experiment_config import SFT1V2Config, parse_sft1_v2_config
+from nimloth.training.sft1.experiment_config import (
+    SFT1V2Config,
+    load_sft1_v2_config,
+    parse_sft1_v2_config,
+)
 
 
 @dataclass(frozen=True)
@@ -41,7 +47,7 @@ def resolve_launch_config(
     output_path: Path,
     resolution: SFT1V2LaunchResolution,
 ) -> SFT1V2Config:
-    """Apply every launch-time value explicitly and publish JSON atomically."""
+    """Apply every launch-time value explicitly and publish YAML atomically."""
 
     raw = load_yaml_config(template_path)
     if not isinstance(raw, dict):
@@ -87,10 +93,12 @@ def resolve_launch_config(
             prefix=f".{destination.name}.", suffix=".tmp", delete=False,
         ) as stream:
             temporary = Path(stream.name)
-            json.dump(payload, stream, indent=2, sort_keys=True)
-            stream.write("\n")
+            yaml.safe_dump(payload, stream, sort_keys=True)
             stream.flush()
             os.fsync(stream.fileno())
+        reloaded = load_sft1_v2_config(temporary)
+        if reloaded.identity != config.identity:
+            raise ValueError("persisted launch config identity changed on reload")
         temporary.replace(destination)
     finally:
         if temporary is not None:
