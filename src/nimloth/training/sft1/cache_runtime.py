@@ -238,19 +238,47 @@ def audit_fresh_cache_parity(
     ) as old_instruction:
         transition_current = old_dino["transition_current_index"]
         transition_record = old_dino["transition_record_index"]
+        state_step = old_dino["state_step_index"]
         dino = old_dino["dino"]
         instruction = old_instruction["instruction_embedding"]
+        records = metadata.get("records")
+        if not isinstance(records, list) or len(instruction) != len(records):
+            raise ValueError("legacy parity record/instruction identities are misaligned")
+        if len(transition_current) != len(transition_record):
+            raise ValueError("legacy parity transition identities are misaligned")
+        legacy_rows: dict[tuple[str, int], tuple[int, int]] = {}
+        for current_value, record_value in zip(
+            transition_current, transition_record, strict=True
+        ):
+            current_index = int(current_value)
+            record_index = int(record_value)
+            if (
+                not 0 <= current_index < len(state_step)
+                or not 0 <= record_index < len(records)
+            ):
+                raise ValueError("legacy parity transition index is out of bounds")
+            record_id = records[record_index].get("record_id")
+            if not isinstance(record_id, str) or not record_id:
+                raise ValueError("legacy parity record identity is missing")
+            key = (record_id, int(state_step[current_index]))
+            if key in legacy_rows:
+                raise ValueError("legacy parity record/step identity is duplicated")
+            legacy_rows[key] = (current_index, record_index)
+
         dino_sq = instruction_sq = 0.0
         dino_max = instruction_max = 0.0
         count = reader.summary.row_count
         for ordinal in range(count):
             fresh = reader.load(ordinal)
-            record_index = int(transition_record[ordinal])
-            expected_record = metadata["records"][record_index]["record_id"]
-            if fresh.record_id != expected_record:
-                raise ValueError("parity row record identity mismatch")
+            key = (fresh.record_id, int(fresh.step_index))
+            try:
+                current_index, record_index = legacy_rows[key]
+            except KeyError as error:
+                raise ValueError(
+                    "fresh parity row has no legacy record/step identity"
+                ) from error
             old_dino_row = torch.from_numpy(
-                np.asarray(dino[int(transition_current[ordinal])])
+                np.asarray(dino[current_index])
             ).float()
             old_instruction_row = torch.from_numpy(
                 np.asarray(instruction[record_index])

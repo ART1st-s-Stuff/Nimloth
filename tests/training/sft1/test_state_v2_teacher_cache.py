@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 
+from nimloth.training.sft1.cache_runtime import audit_fresh_cache_parity
 from nimloth.training.sft1.data import sha256_file
 from nimloth.training.sft1.real_rows import (
     EARLY4_ROW_SCHEMA,
@@ -139,6 +143,74 @@ class _BatchTeacher(_FakeTeacher):
     def build_many(self, rendered):
         self.batch_sizes.append(len(rendered))
         return tuple(self.build(row) for row in rendered)
+
+
+def test_parity_audit_joins_legacy_rows_by_record_and_step_after_exclusion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy = tmp_path / "id60.npz"
+    metadata = tmp_path / "frozen_state_cache_metadata.json"
+    instruction = tmp_path / "id192.npz"
+    np.savez(
+        legacy,
+        transition_current_index=np.asarray([0, 1], dtype=np.int64),
+        transition_record_index=np.asarray([0, 1], dtype=np.int64),
+        state_step_index=np.asarray([0, 0], dtype=np.int64),
+        dino=np.stack([
+            np.full((16, 1024), 10.0, dtype=np.float32),
+            np.full((16, 1024), 20.0, dtype=np.float32),
+        ]),
+    )
+    metadata.write_text(json.dumps({
+        "records": [
+            {"record_id": "excluded-record"},
+            {"record_id": "kept-record"},
+        ]
+    }))
+    np.savez(instruction, instruction_embedding=np.stack([
+        np.full((2048,), 30.0, dtype=np.float32),
+        np.full((2048,), 40.0, dtype=np.float32),
+    ]))
+
+    fresh = SimpleNamespace(
+        record_id="kept-record",
+        step_index=0,
+        dino_regions=torch.full((16, 1024), 20.0),
+        instruction_teacher=torch.full((2048,), 40.0),
+    )
+
+    class _Reader:
+        def __init__(self, *_args, **_kwargs) -> None:
+            self.summary = SimpleNamespace(row_count=1, cache_identity="cache-id")
+
+        def load(self, ordinal: int):
+            assert ordinal == 0
+            return fresh
+
+    monkeypatch.setattr(
+        "nimloth.training.sft1.cache_runtime.SFT1V2TeacherCacheReader",
+        _Reader,
+    )
+    config = SimpleNamespace(cache=SimpleNamespace(
+        output_dir=str(tmp_path / "cache"),
+        parity_dino_path=str(legacy),
+        parity_dino_sha256=sha256_file(legacy),
+        parity_instruction_path=str(instruction),
+        parity_instruction_sha256=sha256_file(instruction),
+    ))
+    report_path = tmp_path / "parity.json"
+
+    audit_fresh_cache_parity(
+        config,
+        manifest_identity="manifest-id",
+        output_path=report_path,
+    )
+
+    report = json.loads(report_path.read_text())
+    assert report["row_count"] == 1
+    assert report["dino_rmse_mean"] == 0.0
+    assert report["instruction_rmse_mean"] == 0.0
 
 
 def test_cache_batches_fresh_forwards_and_reader_validates_once(
