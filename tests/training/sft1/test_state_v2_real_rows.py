@@ -246,6 +246,16 @@ def test_external_mask_checks_initial_current_and_next_image_lineage(
             ),
             "malformed structural format examples",
         ),
+        (
+            lambda record: record["observation_texts"].__setitem__(
+                0,
+                record["observation_texts"][0]
+                + latent_state_block(8)
+                + " separated "
+                + LatentActionTokens().action_start,
+            ),
+            "observation 0 has malformed structural format examples",
+        ),
         (lambda record: record["actions"].__setitem__(0, "move_left"), "action name"),
     ],
 )
@@ -266,18 +276,23 @@ def test_pre_rl_schema_rejects_aliases_ambiguous_instruction_and_action_drift(
         )
 
 
-def _production_style_system_prompt() -> str:
+def _production_style_structural_example() -> str:
     tokens = LatentActionTokens()
-    structural = (
+    return (
         latent_state_block(8)
         + tokens.action_start
         + tokens.action_tokens[0]
         + tokens.action_end
     )
-    return (
+
+
+def _add_production_style_context_examples(record: dict[str, object]) -> None:
+    structural = _production_style_structural_example()
+    record["system_prompt"] = (
         "Use this required action XML tag: " + structural + "\n"
         "Respond in this format after real thinking: <think>...</think>" + structural
     )
+    record["observation_texts"][0] += "\nUse this action format: " + structural
 
 
 def _extend_pre_rl_record_to_four_steps(
@@ -311,7 +326,7 @@ def test_actual_k8_structural_row_renders_k16_without_changing_cot_or_action_bou
     tmp_path: Path,
 ) -> None:
     record, image = pre_rl_trajectory_record(tmp_path, latent_token_count=8)
-    record["system_prompt"] = _production_style_system_prompt()
+    _add_production_style_context_examples(record)
     for path in record["image_paths"]:
         Image.new("RGB", (2, 2), color=(1, 2, 3)).save(path)
     response = record["assistant_responses"][0]
@@ -334,7 +349,7 @@ def test_actual_k8_structural_row_renders_k16_without_changing_cot_or_action_bou
 
     rendered = render_early4_row(row, processor=_Processor(), max_length=8192)
 
-    assert rendered.rendered_text.count(latent_state_block(16)) == 3
+    assert rendered.rendered_text.count(latent_state_block(16)) == 4
     assert latent_state_block(16) + LatentActionTokens().action_start in rendered.rendered_text
     assert latent_state_block(8) + LatentActionTokens().action_start not in rendered.rendered_text
     assert "The observation supports this executed action." in rendered.rendered_text
@@ -368,8 +383,8 @@ def test_multiturn_k8_history_selects_only_final_current_k16_action_boundary(
     validation, _ = pre_rl_trajectory_record(
         tmp_path, record_id="validation-row", split="val", latent_token_count=8
     )
-    train["system_prompt"] = _production_style_system_prompt()
-    validation["system_prompt"] = _production_style_system_prompt()
+    _add_production_style_context_examples(train)
+    _add_production_style_context_examples(validation)
     for record in (train, validation):
         for path in record["image_paths"]:
             Image.new("RGB", (2, 2), color=(1, 2, 3)).save(path)
@@ -391,7 +406,7 @@ def test_multiturn_k8_history_selects_only_final_current_k16_action_boundary(
     action_start_id = token_map[LatentActionTokens().action_start]
     for row in train_rows:
         rendered = render_early4_row(row, processor=processor, max_length=8192)
-        expected_pairs = 2 + row.step_index + 1
+        expected_pairs = 3 + row.step_index + 1
         blocks = find_all_latent_state_blocks(
             rendered.input_ids,
             token_map,

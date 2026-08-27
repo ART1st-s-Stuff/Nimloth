@@ -152,18 +152,37 @@ class _SFT1V2PreRLRecord:
         return bind_image_placeholders(messages, self.image_paths[: step_index + 1])
 
 
-def _system_structural_example_count(system_prompt: str) -> int:
+def _structural_example_count(text: str, *, source: str) -> int:
     tokens = LatentActionTokens()
     k8 = latent_state_block(8)
-    latent_count = system_prompt.count(k8)
-    action_count = system_prompt.count(tokens.action_start)
-    adjacent_count = system_prompt.count(k8 + tokens.action_start)
+    latent_count = text.count(k8)
+    action_count = text.count(tokens.action_start)
+    adjacent_count = text.count(k8 + tokens.action_start)
     if latent_count != action_count or latent_count != adjacent_count:
         raise ValueError(
-            "pre-RL system prompt has malformed structural format examples: "
+            f"pre-RL {source} has malformed structural format examples: "
             f"latent={latent_count}, action={action_count}, adjacent={adjacent_count}"
         )
     return adjacent_count
+
+
+def _context_structural_example_count(
+    trajectory: _SFT1V2PreRLRecord,
+    step_index: int,
+) -> int:
+    contexts = (
+        ("system prompt", trajectory.system_prompt),
+        *(
+            (f"observation {index}", observation)
+            for index, observation in enumerate(
+                trajectory.observation_texts[: step_index + 1]
+            )
+        ),
+    )
+    return sum(
+        _structural_example_count(text, source=source)
+        for source, text in contexts
+    )
 
 
 def _required_list(raw: Mapping[str, Any], field: str) -> list[Any]:
@@ -194,7 +213,7 @@ def _parse_pre_rl_record(raw: Mapping[str, Any]) -> _SFT1V2PreRLRecord:
         raise ValueError("pre-RL split must be non-empty")
     if not isinstance(system_prompt, str) or not system_prompt:
         raise ValueError("pre-RL system prompt must be non-empty")
-    _system_structural_example_count(system_prompt)
+    _structural_example_count(system_prompt, source="system prompt")
     if raw["action_space_id"] != "navigation" or raw["action_space_version"] != 1:
         raise ValueError("pre-RL action-space identity mismatch")
     if raw["validation_issues"] != [] or raw["warnings"] != []:
@@ -233,6 +252,8 @@ def _parse_pre_rl_record(raw: Mapping[str, Any]) -> _SFT1V2PreRLRecord:
         raise ValueError("pre-RL image paths must be non-empty strings")
     if not all(isinstance(value, str) and value for value in observations):
         raise ValueError("pre-RL observations must be non-empty strings")
+    for index, observation in enumerate(observations):
+        _structural_example_count(observation, source=f"observation {index}")
     if not all(isinstance(value, str) and value for value in responses):
         raise ValueError("pre-RL assistant responses must be non-empty strings")
     normalized_actions: list[int] = []
@@ -533,7 +554,7 @@ def audit_rendered_token_upper_bound(
             ids,
             token_map,
             expected_pair_count=(
-                _system_structural_example_count(trajectory.system_prompt)
+                _context_structural_example_count(trajectory, row.step_index)
                 + row.step_index
                 + 1
             ),
@@ -613,7 +634,7 @@ def render_early4_row(
         one_row,
         special_token_ids(processor.tokenizer, latent_token_count=16),
         expected_pair_count=(
-            _system_structural_example_count(trajectory.system_prompt)
+            _context_structural_example_count(trajectory, row.step_index)
             + row.step_index
             + 1
         ),

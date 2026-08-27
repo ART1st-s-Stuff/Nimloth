@@ -120,9 +120,17 @@ def test_multiturn_same_forward_selects_final_current_k16_and_rejects_drift() ->
     action_start = token_id_map[tokens.action_start]
     action_end = token_id_map[tokens.action_end]
     system_example = [61, *query_ids, action_start, 32, action_end]
+    observation_example = [62, *query_ids, action_start, 32, action_end]
     completed = [1, *query_ids, action_start, 32, action_end]
     current = [3, *query_ids, action_start, 2]
-    row = [*system_example, *system_example, *completed, *completed, *current]
+    row = [
+        *system_example,
+        *system_example,
+        *observation_example,
+        *completed,
+        *completed,
+        *current,
+    ]
     input_ids = torch.tensor([row])
     model = _SameForwardQwen()
 
@@ -133,7 +141,12 @@ def test_multiturn_same_forward_selects_final_current_k16_and_rejects_drift() ->
         torch.device("cpu"),
     )
 
-    final_query_start = 2 * len(system_example) + 2 * len(completed) + 1
+    final_query_start = (
+        2 * len(system_example)
+        + len(observation_example)
+        + 2 * len(completed)
+        + 1
+    )
     final_boundary = final_query_start + 16
     assert model.calls == 1
     assert model.logits_to_keep_seen == [final_boundary]
@@ -171,6 +184,7 @@ def test_multiturn_same_forward_selects_final_current_k16_and_rejects_drift() ->
     drifted = torch.tensor([[
         *system_example,
         *system_example,
+        *observation_example,
         *completed,
         *completed,
         3,
