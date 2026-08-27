@@ -34,8 +34,12 @@ first observation; its character offsets feed complete-context BPE selection.
 `actions` and `think_texts` are cross-checks only, never aliases or fallbacks.
 Exactly five train and zero validation rows with empty migrated CoT are counted
 and excluded before selection; they are never accepted, repaired, or replaced.
-The K8→K16 renderer permits only structural query replacement and locks the
-archived CoT/action boundary.
+The K8→K16 renderer permits only structural query replacement and locks every
+archived CoT/action boundary. The approved system prompt itself owns two format-
+example pairs, so a selected row requires the verified system-example count plus
+`step_index + 1` trajectory pairs. Only the final pair is the current state; the
+differentiable Qwen forward revalidates every pair and selects that final pair
+without treating system examples as trajectory state turns.
 `teacher_cache.py` owns deterministic modulo shard ownership, chunked exact-
 prefix resume, detached `[16,1024]`/`[2048]`/`[8]` rows, one-time indexed reads,
 hash sidecars, and atomic root publication. `teachers.py` batches the real frozen

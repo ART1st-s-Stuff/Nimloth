@@ -114,6 +114,81 @@ def test_same_forward_returns_row_major_k16_hidden_and_exact_boundary_actions() 
     torch.testing.assert_close(output.action_logits, full_logits[:, 17, action_ids])
 
 
+def test_multiturn_same_forward_selects_final_current_k16_and_rejects_drift() -> None:
+    tokens, token_id_map = _token_contract()
+    query_ids = [token_id_map[token] for token in latent_state_tokens(16, tokens)]
+    action_start = token_id_map[tokens.action_start]
+    action_end = token_id_map[tokens.action_end]
+    system_example = [61, *query_ids, action_start, 32, action_end]
+    completed = [1, *query_ids, action_start, 32, action_end]
+    current = [3, *query_ids, action_start, 2]
+    row = [*system_example, *system_example, *completed, *completed, *current]
+    input_ids = torch.tensor([row])
+    model = _SameForwardQwen()
+
+    output = forward_qwen_state_training(
+        model,
+        _state_training_batch(input_ids),
+        token_id_map,
+        torch.device("cpu"),
+    )
+
+    final_query_start = 2 * len(system_example) + 2 * len(completed) + 1
+    final_boundary = final_query_start + 16
+    assert model.calls == 1
+    assert model.logits_to_keep_seen == [final_boundary]
+    full_hidden = model.model.language_model.norm(
+        torch.arange(len(row) * 4, dtype=torch.float32).reshape(1, len(row), 4)
+    )
+    torch.testing.assert_close(
+        output.query_hidden,
+        full_hidden[:, final_query_start:final_boundary],
+    )
+
+    count_drift_model = _SameForwardQwen()
+    count_drifted = torch.tensor([[action_start, *row]])
+    with pytest.raises(ValueError, match="structural pair count mismatch"):
+        forward_qwen_state_training(
+            count_drift_model,
+            _state_training_batch(count_drifted),
+            token_id_map,
+            torch.device("cpu"),
+        )
+    assert count_drift_model.calls == 0
+
+    malformed_block_model = _SameForwardQwen()
+    malformed_block = torch.tensor([[query_ids[0], 63, *row]])
+    with pytest.raises(ValueError, match="malformed latent block"):
+        forward_qwen_state_training(
+            malformed_block_model,
+            _state_training_batch(malformed_block),
+            token_id_map,
+            torch.device("cpu"),
+        )
+    assert malformed_block_model.calls == 0
+
+    adjacency_drift_model = _SameForwardQwen()
+    drifted = torch.tensor([[
+        *system_example,
+        *system_example,
+        *completed,
+        *completed,
+        3,
+        *query_ids,
+        63,
+        action_start,
+        2,
+    ]])
+    with pytest.raises(ValueError, match="not adjacent"):
+        forward_qwen_state_training(
+            adjacency_drift_model,
+            _state_training_batch(drifted),
+            token_id_map,
+            torch.device("cpu"),
+        )
+    assert adjacency_drift_model.calls == 0
+
+
 def test_state_training_requires_real_archived_cot_and_has_no_fixed_fallback() -> None:
     real = (
         "<think>The doorway is open, so move forward.</think>"

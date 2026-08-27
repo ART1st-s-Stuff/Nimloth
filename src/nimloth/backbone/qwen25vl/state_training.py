@@ -9,7 +9,11 @@ import torch
 
 from nimloth.backbone.base import BackboneBatch
 from nimloth.backbone.qwen25vl.latent import _final_norm_module
-from nimloth.latent import LatentActionTokens, find_extraction_positions
+from nimloth.latent import (
+    ExtractionPositions,
+    LatentActionTokens,
+    find_all_latent_state_blocks,
+)
 
 
 @dataclass(frozen=True)
@@ -119,6 +123,77 @@ def exact_instruction_token_span(
     )
 
 
+def find_current_state_extraction_positions(
+    input_ids: Sequence[int] | torch.Tensor,
+    token_id_map: dict[str, int],
+    *,
+    expected_pair_count: int | None = None,
+    latent_token_count: int = 16,
+) -> ExtractionPositions:
+    """Validate every structural pair and select the final current boundary."""
+
+    if (
+        expected_pair_count is not None
+        and (
+            isinstance(expected_pair_count, bool)
+            or not isinstance(expected_pair_count, int)
+            or expected_pair_count < 1
+        )
+    ):
+        raise ValueError("expected structural pair count must be a positive integer")
+    tokens = LatentActionTokens()
+    latent_blocks = find_all_latent_state_blocks(
+        input_ids,
+        token_id_map,
+        tokens,
+        latent_token_count=latent_token_count,
+    )
+    ids = torch.as_tensor(input_ids, dtype=torch.long).flatten()
+    latent_start_id = token_id_map.get(tokens.latent_state)
+    if latent_start_id is None:
+        raise ValueError("state training latent-start token is unavailable")
+    latent_starts = torch.nonzero(
+        ids == int(latent_start_id),
+        as_tuple=False,
+    ).flatten().tolist()
+    if len(latent_starts) != len(latent_blocks):
+        raise ValueError(
+            "state training input contains a malformed latent block: "
+            f"starts={len(latent_starts)}, complete={len(latent_blocks)}"
+        )
+    action_start_id = token_id_map.get(tokens.action_start)
+    if action_start_id is None:
+        raise ValueError("state training action boundary token is unavailable")
+    action_boundaries = torch.nonzero(
+        ids == int(action_start_id),
+        as_tuple=False,
+    ).flatten().tolist()
+    if not latent_blocks or len(latent_blocks) != len(action_boundaries):
+        raise ValueError(
+            "state training structural pair count mismatch: "
+            f"latent={len(latent_blocks)}, action={len(action_boundaries)}"
+        )
+    if expected_pair_count is not None and len(latent_blocks) != expected_pair_count:
+        raise ValueError(
+            "state training structural pair count mismatch: "
+            f"expected={expected_pair_count}, actual={len(latent_blocks)}"
+        )
+    for turn_index, (latent_indices, boundary) in enumerate(
+        zip(latent_blocks, action_boundaries, strict=True)
+    ):
+        if latent_indices[-1] + 1 != boundary:
+            raise ValueError(
+                f"state training turn {turn_index} K16 block is not adjacent "
+                "to its action boundary"
+            )
+    current = tuple(latent_blocks[-1])
+    return ExtractionPositions(
+        latent_state_index=current[0],
+        latent_state_indices=current,
+        action_start_index=int(action_boundaries[-1]),
+    )
+
+
 def forward_qwen_state_training(
     model: torch.nn.Module,
     batch: QwenStateTrainingBatch,
@@ -160,10 +235,9 @@ def forward_qwen_state_training(
     query_positions: list[tuple[int, ...]] = []
     boundary_positions: list[int] = []
     for row in input_ids.detach().cpu():
-        positions = find_extraction_positions(
+        positions = find_current_state_extraction_positions(
             row,
             token_id_map,
-            tokens,
             latent_token_count=latent_token_count,
         )
         if positions.latent_state_indices is None or len(positions.latent_state_indices) != 16:
@@ -233,6 +307,7 @@ __all__ = [
     "QwenStateTrainingBatch",
     "QwenStateTrainingOutput",
     "exact_instruction_token_span",
+    "find_current_state_extraction_positions",
     "forward_qwen_state_training",
     "require_archived_assistant_response",
 ]

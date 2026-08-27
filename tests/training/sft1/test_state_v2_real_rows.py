@@ -11,7 +11,14 @@ import pytest
 import torch
 from PIL import Image
 
-from nimloth.latent import LatentActionTokens, latent_state_block, latent_state_tokens
+from nimloth.agent import NimlothPromptTemplate
+from nimloth.latent import (
+    LatentActionTokens,
+    find_all_latent_state_blocks,
+    latent_state_block,
+    latent_state_tokens,
+    special_token_ids,
+)
 from nimloth.training.sft1.data import sha256_file
 from nimloth.training.sft1.experiment_config import load_sft1_v2_config
 from nimloth.training.sft1.real_rows import (
@@ -106,6 +113,20 @@ class _Processor:
             "input_ids": torch.tensor([encoded["input_ids"]], dtype=torch.long),
             "attention_mask": torch.ones(1, len(encoded["input_ids"]), dtype=torch.long),
         }
+
+
+class _ExtraActionBoundaryProcessor(_Processor):
+    def apply_chat_template(self, messages, *, tokenize: bool, add_generation_prompt: bool):
+        rendered = super().apply_chat_template(
+            messages,
+            tokenize=tokenize,
+            add_generation_prompt=add_generation_prompt,
+        )
+        return rendered.replace(
+            "</assistant>",
+            LatentActionTokens().action_start + "</assistant>",
+            1,
+        )
 
 
 def _write_source(path: Path, record: dict[str, object]) -> str:
@@ -218,6 +239,13 @@ def test_external_mask_checks_initial_current_and_next_image_lineage(
             ),
             "exactly one Human Instruction",
         ),
+        (
+            lambda record: record.__setitem__(
+                "system_prompt",
+                latent_state_block(8) + " separated " + LatentActionTokens().action_start,
+            ),
+            "malformed structural format examples",
+        ),
         (lambda record: record["actions"].__setitem__(0, "move_left"), "action name"),
     ],
 )
@@ -238,10 +266,52 @@ def test_pre_rl_schema_rejects_aliases_ambiguous_instruction_and_action_drift(
         )
 
 
+def _production_style_system_prompt() -> str:
+    tokens = LatentActionTokens()
+    structural = (
+        latent_state_block(8)
+        + tokens.action_start
+        + tokens.action_tokens[0]
+        + tokens.action_end
+    )
+    return (
+        "Use this required action XML tag: " + structural + "\n"
+        "Respond in this format after real thinking: <think>...</think>" + structural
+    )
+
+
+def _extend_pre_rl_record_to_four_steps(
+    record: dict[str, object],
+    tmp_path: Path,
+) -> None:
+    prompt = NimlothPromptTemplate(latent_token_count=8, action_count=8)
+    action_names = (
+        "move_forward", "move_backward", "move_right", "move_left",
+        "turn_right", "turn_left", "look_up", "look_down",
+    )
+    for step_index, action_index in enumerate((2, 3, 4), start=1):
+        thought = f"Archived real thought for step {step_index}."
+        record["action_indices"].append(action_index)
+        record["actions"].append(action_names[action_index])
+        record["assistant_responses"].append(
+            prompt.assistant_response(action_index, thought=thought)
+        )
+        record["think_texts"].append(thought)
+        next_image = tmp_path / f"{record['id']}-after-{step_index}.png"
+        next_image.write_bytes(f"after-{record['id']}-{step_index}".encode())
+        record["image_paths"].append(str(next_image))
+        record["observation_texts"].append(
+            "After your action. The environment feedback is: "
+            "Last action is executed successfully.\n<image>"
+        )
+    record["step"] = 4
+
+
 def test_actual_k8_structural_row_renders_k16_without_changing_cot_or_action_boundary(
     tmp_path: Path,
 ) -> None:
     record, image = pre_rl_trajectory_record(tmp_path, latent_token_count=8)
+    record["system_prompt"] = _production_style_system_prompt()
     for path in record["image_paths"]:
         Image.new("RGB", (2, 2), color=(1, 2, 3)).save(path)
     response = record["assistant_responses"][0]
@@ -264,6 +334,7 @@ def test_actual_k8_structural_row_renders_k16_without_changing_cot_or_action_bou
 
     rendered = render_early4_row(row, processor=_Processor(), max_length=8192)
 
+    assert rendered.rendered_text.count(latent_state_block(16)) == 3
     assert latent_state_block(16) + LatentActionTokens().action_start in rendered.rendered_text
     assert latent_state_block(8) + LatentActionTokens().action_start not in rendered.rendered_text
     assert "The observation supports this executed action." in rendered.rendered_text
@@ -278,3 +349,75 @@ def test_actual_k8_structural_row_renders_k16_without_changing_cot_or_action_bou
         max_sequence_length=8192,
         max_pixels=100352,
     ) < 8192
+    with pytest.raises(ValueError, match="structural pair count mismatch"):
+        audit_rendered_token_upper_bound(
+            (row,),
+            processor=_ExtraActionBoundaryProcessor(),
+            max_sequence_length=8192,
+            max_pixels=100352,
+        )
+
+
+def test_multiturn_k8_history_selects_only_final_current_k16_action_boundary(
+    tmp_path: Path,
+) -> None:
+    train, _ = pre_rl_trajectory_record(
+        tmp_path, record_id="train-four-step", latent_token_count=8
+    )
+    _extend_pre_rl_record_to_four_steps(train, tmp_path)
+    validation, _ = pre_rl_trajectory_record(
+        tmp_path, record_id="validation-row", split="val", latent_token_count=8
+    )
+    train["system_prompt"] = _production_style_system_prompt()
+    validation["system_prompt"] = _production_style_system_prompt()
+    for record in (train, validation):
+        for path in record["image_paths"]:
+            Image.new("RGB", (2, 2), color=(1, 2, 3)).save(path)
+    rows, _ = index_early4_rows(
+        _small_config(tmp_path, train, validation),
+        enforce_approved_counts=False,
+    )
+    train_rows = [row for row in rows if row.split == "train"]
+    assert [row.step_index for row in train_rows] == [0, 1, 2, 3]
+
+    processor = _Processor()
+    assert audit_rendered_token_upper_bound(
+        train_rows,
+        processor=processor,
+        max_sequence_length=8192,
+        max_pixels=100352,
+    ) < 8192
+    token_map = special_token_ids(processor.tokenizer, latent_token_count=16)
+    action_start_id = token_map[LatentActionTokens().action_start]
+    for row in train_rows:
+        rendered = render_early4_row(row, processor=processor, max_length=8192)
+        expected_pairs = 2 + row.step_index + 1
+        blocks = find_all_latent_state_blocks(
+            rendered.input_ids,
+            token_map,
+            latent_token_count=16,
+        )
+        boundaries = torch.nonzero(
+            rendered.input_ids == action_start_id, as_tuple=False
+        ).flatten().tolist()
+
+        assert len(blocks) == len(boundaries) == expected_pairs
+        assert all(block[-1] + 1 == boundary for block, boundary in zip(blocks, boundaries))
+        assert rendered.action_boundary_index == boundaries[-1]
+        assert rendered.rendered_text.count(latent_state_block(16)) == expected_pairs
+        assert (
+            latent_state_block(8) + LatentActionTokens().action_start
+            not in rendered.rendered_text
+        )
+        for prior in range(row.step_index):
+            assert train["assistant_responses"][prior].replace(
+                latent_state_block(8), latent_state_block(16)
+            ) in rendered.rendered_text
+        current_response = train["assistant_responses"][row.step_index]
+        current_prefix = current_response[
+            : current_response.index(LatentActionTokens().action_start)
+            + len(LatentActionTokens().action_start)
+        ]
+        assert current_prefix.replace(
+            latent_state_block(8), latent_state_block(16)
+        ) in rendered.rendered_text

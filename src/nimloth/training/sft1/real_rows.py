@@ -15,14 +15,10 @@ from nimloth.agent.template import bind_image_placeholders
 from nimloth.backbone.qwen25vl.batch import collect_message_images, render_messages
 from nimloth.backbone.qwen25vl.state_training import (
     exact_instruction_token_span,
+    find_current_state_extraction_positions,
     require_archived_assistant_response,
 )
-from nimloth.latent import (
-    LatentActionTokens,
-    find_extraction_positions,
-    latent_state_block,
-    special_token_ids,
-)
+from nimloth.latent import LatentActionTokens, latent_state_block, special_token_ids
 from nimloth.rollout.record_format import (
     TRAJECTORY_RECORD_FORMAT,
     require_trajectory_record,
@@ -156,6 +152,20 @@ class _SFT1V2PreRLRecord:
         return bind_image_placeholders(messages, self.image_paths[: step_index + 1])
 
 
+def _system_structural_example_count(system_prompt: str) -> int:
+    tokens = LatentActionTokens()
+    k8 = latent_state_block(8)
+    latent_count = system_prompt.count(k8)
+    action_count = system_prompt.count(tokens.action_start)
+    adjacent_count = system_prompt.count(k8 + tokens.action_start)
+    if latent_count != action_count or latent_count != adjacent_count:
+        raise ValueError(
+            "pre-RL system prompt has malformed structural format examples: "
+            f"latent={latent_count}, action={action_count}, adjacent={adjacent_count}"
+        )
+    return adjacent_count
+
+
 def _required_list(raw: Mapping[str, Any], field: str) -> list[Any]:
     value = raw[field]
     if not isinstance(value, list):
@@ -184,6 +194,7 @@ def _parse_pre_rl_record(raw: Mapping[str, Any]) -> _SFT1V2PreRLRecord:
         raise ValueError("pre-RL split must be non-empty")
     if not isinstance(system_prompt, str) or not system_prompt:
         raise ValueError("pre-RL system prompt must be non-empty")
+    _system_structural_example_count(system_prompt)
     if raw["action_space_id"] != "navigation" or raw["action_space_version"] != 1:
         raise ValueError("pre-RL action-space identity mismatch")
     if raw["validation_issues"] != [] or raw["warnings"] != []:
@@ -482,18 +493,6 @@ def index_early4_rows(
     return tuple(all_rows), audit
 
 
-def _single_action_boundary(input_ids: torch.Tensor, tokenizer: Any) -> int:
-    token = LatentActionTokens().action_start
-    token_id = tokenizer.convert_tokens_to_ids(token)
-    if token_id is None or token_id == getattr(tokenizer, "unk_token_id", None):
-        raise ValueError("action boundary token is unavailable")
-    positions = torch.nonzero(input_ids == int(token_id), as_tuple=False).flatten()
-    if positions.numel() < 1:
-        raise ValueError("rendered row has no action boundary")
-    # State replay may contain prior action boundaries; the current boundary is last.
-    return int(positions[-1].item())
-
-
 def audit_rendered_token_upper_bound(
     rows: Sequence[SFT1V2Early4Row],
     *,
@@ -517,6 +516,7 @@ def audit_rendered_token_upper_bound(
         + 2 * ((math.isqrt(max_pixels) + patch_size - 1) // patch_size)
         + 4
     )
+    token_map = special_token_ids(processor.tokenizer, latent_token_count=16)
     maximum = 0
     for row in rows:
         trajectory = _parse_pre_rl_record(row.record)
@@ -529,6 +529,16 @@ def audit_rendered_token_upper_bound(
         )
         encoded = processor.tokenizer(rendered, add_special_tokens=False)
         ids = encoded["input_ids"]
+        find_current_state_extraction_positions(
+            ids,
+            token_map,
+            expected_pair_count=(
+                _system_structural_example_count(trajectory.system_prompt)
+                + row.step_index
+                + 1
+            ),
+            latent_token_count=16,
+        )
         image_count = sum(
             1
             for message in messages
@@ -599,19 +609,23 @@ def render_early4_row(
         raise ValueError("early-4 row would truncate; truncation is forbidden")
     one_row = input_ids[0].detach().cpu()
     span = exact_instruction_token_span(one_row, tokenizer=processor.tokenizer, instruction=row.instruction)
-    boundary = _single_action_boundary(one_row, processor.tokenizer)
-    token_map = special_token_ids(processor.tokenizer, latent_token_count=16)
-    positions = find_extraction_positions(
+    positions = find_current_state_extraction_positions(
         one_row,
-        token_map,
-        LatentActionTokens(),
+        special_token_ids(processor.tokenizer, latent_token_count=16),
+        expected_pair_count=(
+            _system_structural_example_count(trajectory.system_prompt)
+            + row.step_index
+            + 1
+        ),
         latent_token_count=16,
     )
+    latent_indices = positions.latent_state_indices
+    boundary = positions.action_start_index
     if (
-        positions.latent_state_indices is None
-        or len(positions.latent_state_indices) != 16
-        or positions.action_start_index != boundary
-        or positions.latent_state_indices[-1] + 1 != boundary
+        latent_indices is None
+        or boundary is None
+        or len(latent_indices) != 16
+        or latent_indices[-1] + 1 != boundary
     ):
         raise ValueError("rendered row lacks one exact current K16/action boundary")
     if not 0 <= span[0] < span[1] <= boundary:
