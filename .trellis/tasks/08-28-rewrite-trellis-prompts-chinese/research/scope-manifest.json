@@ -1,0 +1,40 @@
+{
+  "approvedPromptFiles": [
+    ".trellis/workflow.md",
+    ".agents/skills/README.md",
+    ".agents/skills/_template/SKILL.md",
+    ".agents/skills/git-worktree/SKILL.md",
+    ".agents/skills/memory/SKILL.md",
+    ".agents/skills/on-experiment-start/SKILL.md",
+    ".agents/skills/on-experiment-end/SKILL.md",
+    ".agents/skills/on-progress/SKILL.md",
+    ".agents/skills/slurm/SKILL.md"
+  ],
+  "approvedEvidenceRoot": ".trellis/tasks/08-28-rewrite-trellis-prompts-chinese/",
+  "auditOnly": [
+    "AGENTS.md",
+    ".trellis/spec/",
+    ".trellis/config.yaml",
+    ".pi/extensions/trellis/index.ts"
+  ],
+  "forbidden": [
+    "AGENTS.md",
+    ".trellis/spec/",
+    ".agents/skills/trellis-*/",
+    ".pi/prompts/",
+    ".pi/agents/",
+    ".claude/commands/",
+    ".claude/agents/",
+    ".codex/agents/",
+    ".trellis/agents/",
+    ".trellis/scripts/",
+    ".pi/extensions/",
+    ".claude/hooks/",
+    ".codex/hooks/",
+    ".trellis/config.yaml",
+    ".trellis/.template-hashes.json",
+    ".trellis/.runtime/",
+    ".trellis/tasks/08-28-refactor-local-worktree-layout/"
+  ],
+  "worktreeDependency": "git-worktree/SKILL.md仅翻译当前旧sibling-path合同；canonical root与nimloth/.worktree/行为变更留给08-28-refactor-local-worktree-layout。"
+}

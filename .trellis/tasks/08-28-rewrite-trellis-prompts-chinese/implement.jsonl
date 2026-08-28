@@ -1,0 +1,9 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": "AGENTS.md", "reason": "最高层安全、Trellis审批与受保护文件合同。"}
+{"file": ".trellis/spec/governance/authority-and-safety.md", "reason": "中文重写不得弱化授权、停止和诚实边界。"}
+{"file": ".trellis/spec/governance/platform-integration.md", "reason": "保持Pi/Claude/Codex上下文与agent合同一致。"}
+{"file": ".trellis/tasks/08-28-rewrite-trellis-prompts-chinese/research/prompt-surface-audit-2026-08-28.md", "reason": "实现范围、模板ownership、machine token与维护边界。"}
+{"file": "ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md", "reason": "多平台批量修改必须始终绑定当前目标worktree。"}
+{"file": ".trellis/tasks/08-28-rewrite-trellis-prompts-chinese/research/scope-manifest.json", "reason": "实施期间强制限制9个prompt文件与task-local证据范围。"}
+{"file": ".trellis/tasks/08-28-rewrite-trellis-prompts-chinese/research/machine-token-allowlist.md", "reason": "固定parser headings、status、命令、路径和允许保留的技术token。"}
+{"file": ".trellis/tasks/08-28-rewrite-trellis-prompts-chinese/research/hard-rule-semantic-matrix.md", "reason": "逐域保持task、launch、commit、human-only、remote和worktree硬规则强度。"}
