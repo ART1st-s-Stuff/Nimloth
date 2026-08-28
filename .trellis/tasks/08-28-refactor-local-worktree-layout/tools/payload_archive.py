@@ -26,8 +26,9 @@ from typing import Any, Iterable
 
 SCHEMA = "nimloth-worktree-payload-archive/v1"
 MANDATORY_ROOT_EXCLUDES = (".local",)
+OPTIONAL_DISPOSABLE_ROOT_EXCLUDES = (".venv",)
 HEX_SHA256 = re.compile(r"^[0-9a-f]{64}$")
-HEX_OBJECT = re.compile(r"^[0-9a-f]{40,64}$")
+HEX_OBJECT = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 FORBIDDEN_GIT_COMMANDS = {"clean", "reset", "stash"}
 
 
@@ -332,13 +333,17 @@ def normalized_root_excludes(values: Iterable[str]) -> tuple[str, ...]:
     requested = {
         safe_relative(value.rstrip("/"), "root excluded prefix") for value in values
     }
-    unsupported = requested - set(MANDATORY_ROOT_EXCLUDES)
+    supported = set(MANDATORY_ROOT_EXCLUDES) | set(OPTIONAL_DISPOSABLE_ROOT_EXCLUDES)
+    unsupported = requested - supported
     if unsupported:
         raise ArchiveError(
-            "exact archive forbids additional root exclusions: "
+            "exact archive forbids unsupported root exclusions: "
             + ", ".join(sorted(unsupported))
         )
-    return tuple(MANDATORY_ROOT_EXCLUDES)
+    return tuple(
+        [*MANDATORY_ROOT_EXCLUDES]
+        + [prefix for prefix in OPTIONAL_DISPOSABLE_ROOT_EXCLUDES if prefix in requested]
+    )
 
 
 def path_is_excluded(relative: str, prefixes: Iterable[str]) -> bool:
@@ -749,20 +754,24 @@ def capture(
                 "include_ignored": include_ignored,
                 "root_excluded_prefixes": list(root_excludes),
                 "mandatory_local_exclusion": True,
+                "disposable_venv_exclusion": ".venv" in root_excludes,
+                "archive_post_capture_recursive_chmod_forbidden": True,
                 "archive_outside_registered_worktrees": True,
                 "force_fallback": False,
                 "manual_git_worktrees_edit": False,
                 "clean_requires_exact_approval": True,
                 "restore_requires_exact_approval": True,
                 "restore_refuses_overwrite": True,
+                "cross_worktree_restore_requires_absent_disposable_excludes": True,
                 "clean_preserves_listed_directories": True,
                 "restore_recreates_directory_modes": True,
                 "recursive_unlisted_payload_delete": False,
             },
             "scopes": [],
             "recovery": {
-                "clean": "validate exact live fingerprint, restore only listed tracked paths, unlink only listed leaves, and preserve listed directories",
-                "restore": "require same common Git dir and exact HEADs, then apply verified patches, recreate listed directories/modes, and restore listed leaves without overwrite",
+                "clean": "validate exact live fingerprint, restore only listed tracked paths, unlink only listed leaves, and preserve listed directories plus excluded root prefixes",
+                "restore": "require same common Git dir and exact HEADs, then apply verified patches, recreate listed directories/modes, and restore listed leaves without overwrite or excluded root prefixes",
+                "orchestration": "never run recursive chmod on a captured archive: leaf modes are integrity metadata; repair only an exact reviewed path before CLI validation",
             },
         }
         for index, (name, scope) in enumerate(scopes):
@@ -893,10 +902,12 @@ def validate_archive(archive: Path, *, manifest: dict[str, Any] | None = None) -
     required_true = {
         "include_ignored",
         "mandatory_local_exclusion",
+        "archive_post_capture_recursive_chmod_forbidden",
         "archive_outside_registered_worktrees",
         "clean_requires_exact_approval",
         "restore_requires_exact_approval",
         "restore_refuses_overwrite",
+        "cross_worktree_restore_requires_absent_disposable_excludes",
         "clean_preserves_listed_directories",
         "restore_recreates_directory_modes",
     }
@@ -911,6 +922,8 @@ def validate_archive(archive: Path, *, manifest: dict[str, Any] | None = None) -
         excludes = normalized_root_excludes(policy.get("root_excluded_prefixes", []))
         if list(excludes) != policy.get("root_excluded_prefixes"):
             errors.append("root exclusions are not normalized or omit .local")
+        if policy.get("disposable_venv_exclusion") is not (".venv" in excludes):
+            errors.append("disposable .venv policy differs from root exclusions")
     except ArchiveError as exc:
         errors.append(str(exc))
         excludes = MANDATORY_ROOT_EXCLUDES
@@ -1407,6 +1420,28 @@ def parsed_patch_paths(scope: Path, name: str, patch: Path) -> set[str]:
     return paths
 
 
+def assert_cross_worktree_disposable_excludes_absent(
+    root: Path,
+    manifest: dict[str, Any],
+) -> None:
+    if str(root) == manifest["source"]["root"]:
+        return
+    configured = set(manifest["policy"]["root_excluded_prefixes"])
+    for prefix in OPTIONAL_DISPOSABLE_ROOT_EXCLUDES:
+        if prefix not in configured:
+            continue
+        target = safe_target(
+            root,
+            prefix,
+            create_parents=False,
+            allow_missing_parents=True,
+        )
+        if os.path.lexists(target):
+            raise ArchiveError(
+                f"cross-worktree restore requires absent disposable excluded prefix: {target}"
+            )
+
+
 def restore(
     root: Path,
     archive: Path,
@@ -1420,6 +1455,7 @@ def restore(
     assert_archive_outside_root(root, archive)
     destination_identity = path_identity(root)
     manifest = validated_manifest(archive)
+    assert_cross_worktree_disposable_excludes_absent(root, manifest)
     if (
         git_text(root, "rev-parse", "--path-format=absolute", "--git-common-dir")
         != manifest["source"]["common_dir"]

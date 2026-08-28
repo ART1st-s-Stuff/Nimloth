@@ -69,3 +69,78 @@ Manifest在临时移走旧generated output后写到`/tmp`，再安装到task evi
 4. Canonical root仍是dirty `main`，linked dev仍占有`dev`；branch cutover、detach与payload archive均未在live执行。
 5. 9个linked `.local`仍间接指向`nimloth-dev/.local`，1个缺失；本批只清单化，没有越权改写。
 6. 独立`trellis-check`已完成并修复sandbox payload/index/rollback、submodule actual-work-tree扫描和skill mutation/cleanup三类缺口；批准范围内无剩余blocker。主会话随后再次复跑sandbox byte-reproducibility、manifest live validator、task validate、diff/staged与39-registration/HEAD基线检查，全部通过。
+
+## Cutover blocker task-local follow-up与独立check
+
+### 独立check发现并修复的问题
+
+1. 初版只以`cat-file -e <oid>^{commit}`证明commit object存在，没有证明tree/blob/ancestor closure完整；destination commit存在但tree缺失会被错误当成noop。
+2. 初版没有在mutation前核对source/destination object format；sha1 pack写入sha256 destination可能先产生object-only partial mutation再失败。
+3. 初版直接`pack-objects --stdout --revs`→`unpack-objects -r`，没有验证pack checksum/object set，且`-r`允许corrupt pack尽量继续，不符合exact fail-closed语义。
+4. 初版fingerprint未覆盖HEAD file、index与全部non-object Git control tree；partial-clone/promisor、object-dir symlink escape、外部config include及全部继承`GIT_*`routing也未完整拒绝。
+5. 初版live planner把本批commit前`b07a78d2`硬编码为永久future baseline，commit后将无法fresh recapture；offline update argv也未清空全部继承Git routing。
+6. Payload schema的`^[0-9a-f]{40,64}$`会错误接受41–63位object ID；原`.venv` hardlink sentinel只间接证明未hash/copy，没有直接监测Python payload路径的lstat/scandir边界。
+
+上述缺口均已在严格08-28 task-local范围修复，没有修改AGENTS/spec、submodule、外部archive或live Git metadata。
+
+### Local module object bootstrap
+
+| Command / control | Result |
+|---|---|
+| `sandbox_local_object_bootstrap_proof.py`写task evidence，再独立写`/tmp`并`cmp` | PASS：连续两次byte-identical；90条显式disposable cwd命令；真实superproject main+linked dev、worktree-specific outer+nested module Git dirs与两层offline update |
+| Exact pack validation | PASS：source exact commit type/sha1或sha256 format/完整closure先验证；`pack-objects --stdout --revs`输出由`index-pack --no-rev-index`验checksum、`show-index`验object set与source closure完全相等；随后使用无`-r`的`unpack-objects` |
+| No reachable extras | PASS：source额外branch指向B的descendant commit，该commit/object不进入B closure pack；outer pack为7/7、nested为6/6 exact closure objects |
+| Destination closure repair | PASS：disposable destination保留commit object但精确删除tree后，tool检测closure incomplete并重新transfer补齐；不把commit-only存在冒充完成 |
+| Object format | PASS：sha1→sha256 mismatch在pack前拒绝；独立64位sha256 source→sha256 destination完整closure transfer通过；RCDM-shaped init显式要求`--object-format sha1` |
+| No transport/control mutation | PASS：清除全部继承`GIT_*`，`GIT_NO_LAZY_FETCH=1`且allow protocol为空；alternates、partial-clone/promisor、external config include、object-dir symlink escape均拒绝；destination HEAD file/index/refs/config/remotes/FETCH_HEAD/non-object control fingerprint前后完全相同，worktree tree fingerprint不变 |
+| Identity/race/path controls | PASS：source/destination same/overlap、root symlink、object symlink escape、linked common-dir mismatch及preflight后path替换均拒绝；writer-pause仍是live TOCTOU的外部必需gate |
+| CLI controls | PASS：`transfer`与`init-empty`无exact approval均return 2且不mutation；批准路径、explicit object format与JSON output通过 |
+| Absent RCDM-shaped destination | PASS：existing destination/nonempty或symlink worktree均拒绝；exact empty gitlink worktree+absent Git dir经no-transport minimal init、object transfer后，真实`submodule update --init --recursive --no-fetch --checkout`达到exact commit |
+| Existing worktree proof | PASS：`sandbox_worktree_proof.py`重新运行并与tracked 99-command evidence byte-identical |
+
+Read-only live exact scope evidence：
+
+| Scope | Expected commit | Source closure | Current destination disposition |
+|---|---|---:|---|
+| `external/RCDM` | `71daaf10a73bb2012864f0827c68d209fc92b0a5` | sha1, 78 objects | Git dir absent；future exact empty canonical worktree检查后，另行批准explicit-sha1 minimal init→probe→transfer |
+| `external/VAGEN` | `9f1e89eb8c9839a406b6e62aa75703494a79e5b5` | sha1, 2648 objects | exact closure缺失；future approved transfer |
+| `external/VAGEN/verl` | `494f264494b2525f2c13595f63ac4912963e6d2f` | sha1, 21548 objects | exact closure缺失；future approved transfer |
+| `external/le-wm` | `8edfeb336732b5f3ce7b8b210d0ba370a09e2cac` | sha1, 106 objects | exact closure已完整；future read-only noop probe |
+
+`live_module_bootstrap_plan.py`在全部scope probe后反向重验canonical/old-dev HEAD、branch与39-entry porcelain；final evidence以显式`main@a9d5f63b`、`dev@b07a78d2`参数连续两次byte-identical。Planner不再把该dev HEAD编译成永久常量，commit/source drift后必须用fresh approved exact HEAD重跑。完整argv、fingerprint和distinct init/update delta边界见[`../evidence/live-module-bootstrap-plan.json`](../evidence/live-module-bootstrap-plan.json)。
+
+Read-only审查发现canonical VAGEN/verl module Git dir已有non-object symlink`t74I0y6 -> testing`。Tool不follow也不修改它，而是将其作为non-object control tree的一部分fingerprint；来源和最终disposition尚未决定。它不位于object DB，不阻止本task-local batch审查，但future transfer前仍必须在writer pause后保持exact identity。
+
+### Final no-venv payload archive contract
+
+| Command / control | Result |
+|---|---|
+| `sandbox_payload_archive_proof.py`写task evidence，再独立写`/tmp`并`cmp` | PASS：连续两次byte-identical；54条disposable cwd命令；root 7 leaves/9 dirs与cross-worktree+recursive submodule 15 leaves/19 dirs的其余payload完整roundtrip |
+| `.venv` pre-read exclusion | PASS：explicit root`.venv`raw/expanded record在safe_target前过滤；Python级guard证明未进入lstat/scandir/hash/copy；unsupported hardlink sentinel在不exclude时正确失败，在exclude时完全不进入manifest/archive |
+| CLI no-venv path | PASS：disposable`capture --include-ignored --exclude-root-prefix .venv`与`validate --live-source`均通过，policy严格为`.local,.venv` |
+| Clean/restore disposition | PASS：clean不删除或改写old-source `.venv` hardlink identity；same-worktree restore保留；cross-worktree restore在任何mutation前拒绝existing destination `.venv`且成功路径不创建它 |
+| Schema/SHA | PASS：41位伪HEAD即使重算manifest fingerprint仍被validator拒绝；SHA-256字段、path/layout/symlink/identity/unlisted/patch controls继续通过 |
+| `.local` and remaining payload | PASS：`.local`仍mandatory exclusion；unsupported third prefix拒绝；tracked staged/unstaged、untracked、ignored、symlink、embedded repo、empty directory/mode及recursive submodule合同未弱化 |
+
+人类已决定`.venv`不迁移：旧完整external archive保留，`nimloth-dev`在future detach后继续作为old detached rollback path，canonical后续重建；main clean后允许保留Git checkout产生的empty directory skeleton。Final clean前必须在writer pause后重新capture no-venv dev archive并CLI validate。
+
+### Archive chmod事故与当前live-match边界
+
+- 已发生的外部orchestration事故是capture后对archive执行recursive `chmod`，导致regular leaf mode偏离manifest并被CLI正确拒绝。
+- 人类只批准exact reviewed leaf mode repair；修复完成后，main/dev两个committed archive在该提交点的CLI`validate --live-source`均PASS。禁止用recursive chmod再次“统一权限”。
+- 本check未读取或修改external archive。当前task-local source继续变化，因此历史dev live-validation成功不等于现在仍live-match；不能误报。新工具新增的policy门禁会主动拒绝旧policy archive；旧完整archive只绑定同批commit `b07a78d2`中的工具作为历史恢复副本。主会话从该Git object提取pinned工具后，重新验证main archive live match与dev archive integrity均PASS；临时工具随即删除。最终cutover必须用当前提交后的工具重新capture/validate main与no-venv dev archive。Canonical main source未被本批修改。
+
+### Regression and live protection
+
+| Command | Result |
+|---|---|
+| Python source`compile(...)` | PASS：7/7 task tools；不写bytecode |
+| JSON/JSONL parse与`task.py validate` | PASS：5份evidence JSON、implement/check JSONL可解析；各8 entries validation通过 |
+| Generated cache | 初次统一检查发现本review早期import遗留的exact task-local`tools/__pycache__/local_object_bootstrap.cpython-314.pyc`；核对目录只有该文件后精确unlink+rmdir。再次运行module proof未再生成cache，最终无pyc/cache |
+| `git diff --check`、staged gate | PASS：无whitespace error；`git diff --cached --name-only`为空 |
+| Live read-only plan | PASS：连续两次byte-identical；`main@a9d5f63b`、`dev@b07a78d2`、39 registrations与四scope closure保持；未执行live init/transfer/fetch/update |
+| Fresh metadata manifest | PASS：capture到`/tmp`并live validate；39 registrations、11 dirty/28 clean、blocked/incomplete=0、exact main/dev HEAD/branch通过 |
+| Check-start/end protection snapshot | PASS：worktree porcelain、canonical完整status/diff、08-26/08-27、Pi TaskTree、`AI_branch_progress.md`、`external/le-wm`及dev branch/HEAD/staged/status entry set byte/hash一致；只有批准的08-28 task tracked diff内容变化 |
+| Scope boundary | PASS：changed set严格为10个08-28 task-local files；AGENTS/spec、external archive与其他dirty scope未由本批修改 |
+
+本batch仍不表示cutover ready。Fresh writer-pause、final no-venv recapture/CLI live validation、main/dev payload clean approval、RCDM exact empty path、object transfer、offline update、detach/checkout/restore以及任何cleanup都仍需后续exact approval。禁止live object/init/update/clean/restore/switch/remove/prune的当前边界没有解除。

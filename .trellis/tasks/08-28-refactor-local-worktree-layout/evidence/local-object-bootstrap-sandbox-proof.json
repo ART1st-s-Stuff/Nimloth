@@ -1,0 +1,790 @@
+{
+  "schema": "nimloth-local-module-object-bootstrap-sandbox-proof/v1",
+  "sandbox_scope": "/tmp disposable superproject/module repositories; removed after proof",
+  "construction": {
+    "superproject_main_and_linked_dev": true,
+    "worktree_specific_module_gitdirs": true,
+    "main_outer_missing_B_before": true,
+    "linked_outer_HEAD_and_object_B": true,
+    "main_nested_missing_B_before": true,
+    "linked_nested_HEAD_and_object_B": true,
+    "recursive_depth": 2,
+    "outer_A": "b7de00e9666b76cdc82dfc0f06a59ace06c186e4",
+    "outer_B": "8a67ed134ed521a24c8f8e1de045a397c37fa463",
+    "nested_A": "50ba3f2f2f930745473b2d78b4a36f68224c3e8b",
+    "nested_B": "4850fcdee27e4a6c0573894cf983fdfd3c5ebad5",
+    "super_dev": "b28a265f5ab0414a77e5f648df2aecfeb59885b8"
+  },
+  "transfers": [
+    {
+      "scope": "external/outer",
+      "source_git_dir": "$SANDBOX/nimloth/.git/worktrees/nimloth-dev/modules/external/outer",
+      "destination_git_dir": "$SANDBOX/nimloth/.git/modules/external/outer",
+      "expected_commit": "8a67ed134ed521a24c8f8e1de045a397c37fa463",
+      "object_format": "sha1",
+      "source_closure_object_count": 7,
+      "destination_exact_commit_existed_before": false,
+      "destination_closure_complete_before": false,
+      "destination_exact_commit_exists_after": true,
+      "destination_closure_complete_after": true,
+      "action": "local-pack-unpack",
+      "pack_size_bytes": 626,
+      "pack_object_count": 7,
+      "pack_object_set_equals_source_closure": true,
+      "head_index_refs_config_remotes_fetch_head_unchanged": true,
+      "destination_head_unchanged": true,
+      "destination_index_unchanged": true,
+      "worktree_accessed_or_modified": false,
+      "network_transport_available": false,
+      "lazy_fetch_disabled": true,
+      "remote_or_ref_created": false,
+      "fetch_head_written": false
+    },
+    {
+      "scope": "external/outer/nested",
+      "source_git_dir": "$SANDBOX/nimloth/.git/worktrees/nimloth-dev/modules/external/outer/modules/nested",
+      "destination_git_dir": "$SANDBOX/nimloth/.git/modules/external/outer/modules/nested",
+      "expected_commit": "4850fcdee27e4a6c0573894cf983fdfd3c5ebad5",
+      "object_format": "sha1",
+      "source_closure_object_count": 6,
+      "destination_exact_commit_existed_before": false,
+      "destination_closure_complete_before": false,
+      "destination_exact_commit_exists_after": true,
+      "destination_closure_complete_after": true,
+      "action": "local-pack-unpack",
+      "pack_size_bytes": 418,
+      "pack_object_count": 6,
+      "pack_object_set_equals_source_closure": true,
+      "head_index_refs_config_remotes_fetch_head_unchanged": true,
+      "destination_head_unchanged": true,
+      "destination_index_unchanged": true,
+      "worktree_accessed_or_modified": false,
+      "network_transport_available": false,
+      "lazy_fetch_disabled": true,
+      "remote_or_ref_created": false,
+      "fetch_head_written": false
+    }
+  ],
+  "object_format_proof": {
+    "sha1_live_shape_transfers_complete": true,
+    "sha1_to_sha256_mismatch_rejected_before_pack": true,
+    "sha256_commit": "a2827e6d8cd742186d06e2421391a7b090bc66ed8cf9a29730d7e3bbe6dda49f",
+    "sha256_same_format_closure_transfer_complete": true
+  },
+  "absent_destination_bootstrap": {
+    "explicit_init_approval_required": true,
+    "exact_empty_real_worktree_required": true,
+    "explicit_object_format_required": true,
+    "minimal_init_created_remote_or_ref": false,
+    "minimal_init_wrote_FETCH_HEAD": false,
+    "minimal_init_network_transport_available": false,
+    "object_transfer_preserved_init_fingerprints": true,
+    "exact_offline_checkout_after_init": "4850fcdee27e4a6c0573894cf983fdfd3c5ebad5",
+    "integrated_gitlink_module_init_object_format": "sha1",
+    "integrated_object_transfer_preserved_init_fingerprints": true,
+    "integrated_offline_submodule_update_exact_commit": "4850fcdee27e4a6c0573894cf983fdfd3c5ebad5"
+  },
+  "offline_canonical_update": {
+    "GIT_ALLOW_PROTOCOL_empty": true,
+    "no_fetch": true,
+    "recursive": true,
+    "outer_exact_commit_checked_out": "8a67ed134ed521a24c8f8e1de045a397c37fa463",
+    "nested_exact_commit_checked_out": "4850fcdee27e4a6c0573894cf983fdfd3c5ebad5",
+    "superproject_clean": true
+  },
+  "negative_controls": {
+    "explicit_transfer_approval_required": true,
+    "transfer_CLI_approval_and_success_paths_verified": true,
+    "explicit_empty_module_init_approval_required": true,
+    "init_empty_CLI_object_format_approval_and_success_paths_verified": true,
+    "nonempty_module_worktree_rejected": true,
+    "module_worktree_symlink_rejected": true,
+    "short_commit_rejected": true,
+    "source_HEAD_mismatch_rejected": true,
+    "source_symlink_rejected": true,
+    "destination_symlink_rejected": true,
+    "same_or_overlapping_repository_identity_rejected": true,
+    "object_format_mismatch_rejected_before_pack": true,
+    "sha256_same_format_transfer_supported": true,
+    "object_alternates_rejected": true,
+    "partial_clone_promisor_routing_rejected": true,
+    "external_config_include_routing_rejected": true,
+    "object_directory_symlink_escape_rejected": true,
+    "preflight_path_symlink_replacement_rejected": true,
+    "all_inherited_GIT_routing_stripped": true,
+    "destination_common_dir_mismatch_rejected": true,
+    "extra_source_ref_objects_excluded_from_pack": true,
+    "pack_object_set_equals_exact_source_closure": true,
+    "incomplete_destination_closure_detected_and_repaired": true,
+    "destination_worktree_and_index_unchanged": true
+  },
+  "commands_recorded": 90,
+  "commands": [
+    [
+      "cwd=$SANDBOX/nested-source",
+      "git",
+      "init",
+      "-b",
+      "main"
+    ],
+    [
+      "cwd=$SANDBOX/nested-source",
+      "git",
+      "config",
+      "user.name",
+      "Object Bootstrap Proof"
+    ],
+    [
+      "cwd=$SANDBOX/nested-source",
+      "git",
+      "config",
+      "user.email",
+      "object-bootstrap@example.invalid"
+    ],
+    [
+      "cwd=$SANDBOX/nested-source",
+      "git",
+      "add",
+      "nested.txt"
+    ],
+    [
+      "cwd=$SANDBOX/nested-source",
+      "git",
+      "commit",
+      "-m",
+      "nested A"
+    ],
+    [
+      "cwd=$SANDBOX/nested-source",
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "cwd=$SANDBOX/outer-source",
+      "git",
+      "init",
+      "-b",
+      "main"
+    ],
+    [
+      "cwd=$SANDBOX/outer-source",
+      "git",
+      "config",
+      "user.name",
+      "Object Bootstrap Proof"
+    ],
+    [
+      "cwd=$SANDBOX/outer-source",
+      "git",
+      "config",
+      "user.email",
+      "object-bootstrap@example.invalid"
+    ],
+    [
+      "cwd=$SANDBOX/outer-source",
+      "git",
+      "-c",
+      "protocol.file.allow=always",
+      "submodule",
+      "add",
+      "../nested-source",
+      "nested"
+    ],
+    [
+      "cwd=$SANDBOX/outer-source",
+      "git",
+      "add",
+      "outer.txt",
+      ".gitmodules",
+      "nested"
+    ],
+    [
+      "cwd=$SANDBOX/outer-source",
+      "git",
+      "commit",
+      "-m",
+      "outer A"
+    ],
+    [
+      "cwd=$SANDBOX/outer-source",
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth",
+      "git",
+      "init",
+      "-b",
+      "main"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth",
+      "git",
+      "config",
+      "user.name",
+      "Object Bootstrap Proof"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth",
+      "git",
+      "config",
+      "user.email",
+      "object-bootstrap@example.invalid"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth",
+      "git",
+      "add",
+      "README.md"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth",
+      "git",
+      "commit",
+      "-m",
+      "super base"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth",
+      "git",
+      "-c",
+      "protocol.file.allow=always",
+      "submodule",
+      "add",
+      "../outer-source",
+      "external/outer"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth",
+      "git",
+      "-c",
+      "protocol.file.allow=always",
+      "submodule",
+      "update",
+      "--init",
+      "--recursive"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth",
+      "git",
+      "commit",
+      "-am",
+      "super main module A"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth",
+      "git",
+      "branch",
+      "dev"
+    ],
+    [
+      "cwd=$SANDBOX/nested-source",
+      "git",
+      "add",
+      "nested.txt"
+    ],
+    [
+      "cwd=$SANDBOX/nested-source",
+      "git",
+      "commit",
+      "-m",
+      "nested B"
+    ],
+    [
+      "cwd=$SANDBOX/nested-source",
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "cwd=$SANDBOX/outer-source/nested",
+      "git",
+      "-c",
+      "protocol.file.allow=always",
+      "fetch",
+      "$SANDBOX/nested-source",
+      "4850fcdee27e4a6c0573894cf983fdfd3c5ebad5"
+    ],
+    [
+      "cwd=$SANDBOX/outer-source/nested",
+      "git",
+      "checkout",
+      "--detach",
+      "4850fcdee27e4a6c0573894cf983fdfd3c5ebad5"
+    ],
+    [
+      "cwd=$SANDBOX/outer-source",
+      "git",
+      "add",
+      "outer.txt",
+      "nested"
+    ],
+    [
+      "cwd=$SANDBOX/outer-source",
+      "git",
+      "commit",
+      "-m",
+      "outer B with nested B"
+    ],
+    [
+      "cwd=$SANDBOX/outer-source",
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth",
+      "git",
+      "worktree",
+      "add",
+      "$SANDBOX/nimloth-dev",
+      "dev"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev",
+      "git",
+      "-c",
+      "protocol.file.allow=always",
+      "submodule",
+      "update",
+      "--init",
+      "--recursive"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev/external/outer",
+      "git",
+      "-c",
+      "protocol.file.allow=always",
+      "fetch",
+      "$SANDBOX/outer-source",
+      "8a67ed134ed521a24c8f8e1de045a397c37fa463"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev/external/outer",
+      "git",
+      "checkout",
+      "--detach",
+      "8a67ed134ed521a24c8f8e1de045a397c37fa463"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev/external/outer",
+      "git",
+      "-c",
+      "protocol.file.allow=always",
+      "submodule",
+      "update",
+      "--init",
+      "--recursive"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev",
+      "git",
+      "add",
+      "external/outer"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev",
+      "git",
+      "commit",
+      "-m",
+      "super dev module B"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev",
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev/external/outer",
+      "git",
+      "rev-parse",
+      "--absolute-git-dir"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev/external/outer/nested",
+      "git",
+      "rev-parse",
+      "--absolute-git-dir"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth/external/outer",
+      "git",
+      "rev-parse",
+      "--absolute-git-dir"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth/external/outer/nested",
+      "git",
+      "rev-parse",
+      "--absolute-git-dir"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev/external/outer",
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev/external/outer/nested",
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "cwd=$SANDBOX",
+      "git",
+      "init",
+      "--bare",
+      "$SANDBOX/cli-destination.git"
+    ],
+    [
+      "cwd=$SANDBOX",
+      "/run/current-system/sw/bin/python3",
+      "/workspace/remote2/nimloth-dev/.trellis/tasks/08-28-refactor-local-worktree-layout/tools/local_object_bootstrap.py",
+      "transfer",
+      "--source",
+      "$SANDBOX/nimloth/.git/worktrees/nimloth-dev/modules/external/outer",
+      "--destination",
+      "$SANDBOX/cli-destination.git",
+      "--commit",
+      "8a67ed134ed521a24c8f8e1de045a397c37fa463"
+    ],
+    [
+      "cwd=$SANDBOX",
+      "/run/current-system/sw/bin/python3",
+      "/workspace/remote2/nimloth-dev/.trellis/tasks/08-28-refactor-local-worktree-layout/tools/local_object_bootstrap.py",
+      "transfer",
+      "--source",
+      "$SANDBOX/nimloth/.git/worktrees/nimloth-dev/modules/external/outer",
+      "--destination",
+      "$SANDBOX/cli-destination.git",
+      "--commit",
+      "8a67ed134ed521a24c8f8e1de045a397c37fa463",
+      "--approved-exact-object-transfer",
+      "--output",
+      "$SANDBOX/cli-transfer-result.json"
+    ],
+    [
+      "cwd=$SANDBOX",
+      "git",
+      "init",
+      "--bare",
+      "$SANDBOX/alternate-destination.git"
+    ],
+    [
+      "cwd=$SANDBOX",
+      "git",
+      "init",
+      "--bare",
+      "$SANDBOX/promisor-destination.git"
+    ],
+    [
+      "cwd=$SANDBOX/promisor-destination.git",
+      "git",
+      "config",
+      "remote.origin.promisor",
+      "true"
+    ],
+    [
+      "cwd=$SANDBOX",
+      "git",
+      "init",
+      "--bare",
+      "$SANDBOX/include-destination.git"
+    ],
+    [
+      "cwd=$SANDBOX/include-destination.git",
+      "git",
+      "config",
+      "include.path",
+      "$SANDBOX/external-include.config"
+    ],
+    [
+      "cwd=$SANDBOX",
+      "git",
+      "init",
+      "--bare",
+      "--object-format=sha256",
+      "$SANDBOX/sha256-destination.git"
+    ],
+    [
+      "cwd=$SANDBOX/sha256-source",
+      "git",
+      "init",
+      "-b",
+      "main",
+      "--object-format=sha256"
+    ],
+    [
+      "cwd=$SANDBOX/sha256-source",
+      "git",
+      "config",
+      "user.name",
+      "Object Bootstrap Proof"
+    ],
+    [
+      "cwd=$SANDBOX/sha256-source",
+      "git",
+      "config",
+      "user.email",
+      "object-bootstrap@example.invalid"
+    ],
+    [
+      "cwd=$SANDBOX/sha256-source",
+      "git",
+      "add",
+      "sha256.txt"
+    ],
+    [
+      "cwd=$SANDBOX/sha256-source",
+      "git",
+      "commit",
+      "-m",
+      "sha256 source"
+    ],
+    [
+      "cwd=$SANDBOX/sha256-source",
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "cwd=$SANDBOX",
+      "git",
+      "init",
+      "--bare",
+      "$SANDBOX/symlink-objects-destination.git"
+    ],
+    [
+      "cwd=$SANDBOX",
+      "git",
+      "init",
+      "--bare",
+      "$SANDBOX/replacement-destination.git"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev/external/outer",
+      "git",
+      "config",
+      "user.name",
+      "Object Bootstrap Proof"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev/external/outer",
+      "git",
+      "config",
+      "user.email",
+      "object-bootstrap@example.invalid"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev/external/outer",
+      "git",
+      "switch",
+      "-c",
+      "proof/extra-ref"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev/external/outer",
+      "git",
+      "add",
+      "extra-only.txt"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev/external/outer",
+      "git",
+      "commit",
+      "-m",
+      "extra ref only"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev/external/outer",
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev/external/outer",
+      "git",
+      "checkout",
+      "--detach",
+      "8a67ed134ed521a24c8f8e1de045a397c37fa463"
+    ],
+    [
+      "cwd=$SANDBOX",
+      "git",
+      "init",
+      "--bare",
+      "$SANDBOX/incomplete-closure-destination.git"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev/external/outer",
+      "git",
+      "rev-parse",
+      "8a67ed134ed521a24c8f8e1de045a397c37fa463^{tree}"
+    ],
+    [
+      "cwd=$SANDBOX",
+      "/run/current-system/sw/bin/python3",
+      "/workspace/remote2/nimloth-dev/.trellis/tasks/08-28-refactor-local-worktree-layout/tools/local_object_bootstrap.py",
+      "init-empty",
+      "--destination",
+      "$SANDBOX/cli-init.git",
+      "--worktree",
+      "$SANDBOX/cli-init-worktree",
+      "--object-format",
+      "sha1"
+    ],
+    [
+      "cwd=$SANDBOX",
+      "/run/current-system/sw/bin/python3",
+      "/workspace/remote2/nimloth-dev/.trellis/tasks/08-28-refactor-local-worktree-layout/tools/local_object_bootstrap.py",
+      "init-empty",
+      "--destination",
+      "$SANDBOX/cli-init.git",
+      "--worktree",
+      "$SANDBOX/cli-init-worktree",
+      "--object-format",
+      "sha1",
+      "--approved-exact-module-init"
+    ],
+    [
+      "cwd=$SANDBOX",
+      "git",
+      "--git-dir=$SANDBOX/missing-module.git",
+      "--work-tree=$SANDBOX/missing-module-worktree",
+      "checkout",
+      "--detach",
+      "4850fcdee27e4a6c0573894cf983fdfd3c5ebad5"
+    ],
+    [
+      "cwd=$SANDBOX/missing-superproject",
+      "git",
+      "init",
+      "-b",
+      "main"
+    ],
+    [
+      "cwd=$SANDBOX/missing-superproject",
+      "git",
+      "config",
+      "user.name",
+      "Object Bootstrap Proof"
+    ],
+    [
+      "cwd=$SANDBOX/missing-superproject",
+      "git",
+      "config",
+      "user.email",
+      "object-bootstrap@example.invalid"
+    ],
+    [
+      "cwd=$SANDBOX/missing-superproject",
+      "git",
+      "-c",
+      "protocol.file.allow=always",
+      "submodule",
+      "add",
+      "$SANDBOX/nested-source",
+      "external/missing"
+    ],
+    [
+      "cwd=$SANDBOX/missing-superproject",
+      "git",
+      "commit",
+      "-am",
+      "add missing module"
+    ],
+    [
+      "cwd=$SANDBOX/missing-superproject",
+      "git",
+      "submodule",
+      "deinit",
+      "--all"
+    ],
+    [
+      "cwd=$SANDBOX/missing-superproject",
+      "git",
+      "submodule",
+      "update",
+      "--init",
+      "--recursive",
+      "--no-fetch",
+      "--checkout"
+    ],
+    [
+      "cwd=$SANDBOX/missing-superproject/external/missing",
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth/.git/modules/external/outer",
+      "git",
+      "worktree",
+      "add",
+      "--detach",
+      "$SANDBOX/linked-module-common-mismatch",
+      "b7de00e9666b76cdc82dfc0f06a59ace06c186e4"
+    ],
+    [
+      "cwd=$SANDBOX/linked-module-common-mismatch",
+      "git",
+      "rev-parse",
+      "--absolute-git-dir"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth/.git/modules/external/outer",
+      "git",
+      "worktree",
+      "remove",
+      "$SANDBOX/linked-module-common-mismatch"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth-dev",
+      "git",
+      "checkout",
+      "--detach",
+      "HEAD"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth",
+      "git",
+      "checkout",
+      "dev"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth",
+      "git",
+      "submodule",
+      "update",
+      "--init",
+      "--recursive",
+      "--no-fetch",
+      "--checkout"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth/external/outer",
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth/external/outer/nested",
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    [
+      "cwd=$SANDBOX/nimloth",
+      "git",
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all"
+    ]
+  ],
+  "live_nimloth_paths_used": false,
+  "live_source_or_git_metadata_mutated": false
+}

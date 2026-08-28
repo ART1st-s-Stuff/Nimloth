@@ -78,7 +78,7 @@ def init_repo(path: Path) -> None:
     git(path, "init", "-b", "main")
     identity(path)
     (path / ".gitignore").write_text(
-        ".cache/\n.local/\nignored-repo/\n.special/\n", encoding="utf-8"
+        ".cache/\n.local/\n.venv/\nignored-repo/\n.special/\n", encoding="utf-8"
     )
     (path / "tracked.txt").write_text("base\n", encoding="utf-8")
     (path / "rename-me.txt").write_text("rename-base\n", encoding="utf-8")
@@ -118,6 +118,14 @@ def dirty(repo: Path, *, prefix: str = "") -> None:
     outside.mkdir()
     (outside / "MUST_NOT_ARCHIVE").write_text("outside\n", encoding="utf-8")
     os.symlink(outside, embedded / "outside-dir-link")
+
+
+def add_disposable_venv_sentinel(repo: Path) -> Path:
+    sentinel = repo / ".venv/UNSUPPORTED-HARDLINK-MUST-NOT-BE-READ"
+    sentinel.parent.mkdir()
+    sentinel.write_text("excluded disposable environment\n", encoding="utf-8")
+    os.link(sentinel, sentinel.parent / "UNSUPPORTED-HARDLINK-ALIAS")
+    return sentinel
 
 
 def normalized_symlink_target(path: Path) -> str:
@@ -192,11 +200,73 @@ def rewrite_manifest(tool: Any, archive: Path, mutate: Any) -> None:
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
+def capture_with_venv_pre_read_guard(
+    tool: Any,
+    repo: Path,
+    archive: Path,
+) -> dict[str, Any]:
+    """Fail if Python payload code touches root .venv before exclusion."""
+
+    venv = repo / ".venv"
+
+    def is_venv_path(value: Any) -> bool:
+        if isinstance(value, int):
+            return False
+        try:
+            candidate = Path(os.path.abspath(os.fspath(value)))
+            return candidate == venv or venv in candidate.parents
+        except TypeError:
+            return False
+
+    original_lstat = os.lstat
+    original_scandir = os.scandir
+    original_sha256_file = tool.sha256_file
+    original_copy_extra = tool.copy_extra
+
+    def guarded_lstat(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if is_venv_path(path):
+            raise ProofError(f".venv reached lstat before exclusion: {path}")
+        return original_lstat(path, *args, **kwargs)
+
+    def guarded_scandir(path: Any = ".") -> Any:
+        if is_venv_path(path):
+            raise ProofError(f".venv reached scandir before exclusion: {path}")
+        return original_scandir(path)
+
+    def guarded_sha256_file(path: Path) -> str:
+        if is_venv_path(path):
+            raise ProofError(f".venv reached hash before exclusion: {path}")
+        return original_sha256_file(path)
+
+    def guarded_copy_extra(source: Path, *args: Any, **kwargs: Any) -> None:
+        if is_venv_path(source):
+            raise ProofError(f".venv reached copy before exclusion: {source}")
+        original_copy_extra(source, *args, **kwargs)
+
+    os.lstat = guarded_lstat
+    os.scandir = guarded_scandir
+    tool.sha256_file = guarded_sha256_file
+    tool.copy_extra = guarded_copy_extra
+    try:
+        return tool.capture(
+            repo,
+            archive,
+            include_ignored=True,
+            root_excludes=(".venv",),
+        )
+    finally:
+        os.lstat = original_lstat
+        os.scandir = original_scandir
+        tool.sha256_file = original_sha256_file
+        tool.copy_extra = original_copy_extra
+
+
 def prove_root_case(tool: Any, sandbox: Path) -> dict[str, Any]:
     repo = sandbox / "root-case-repo"
     archive = sandbox / "root-case-archive"
     init_repo(repo)
     dirty(repo)
+    venv_sentinel = add_disposable_venv_sentinel(repo)
     before = payload_fingerprint(repo)
 
     expect_error(
@@ -210,7 +280,16 @@ def prove_root_case(tool: Any, sandbox: Path) -> dict[str, Any]:
             include_ignored=True,
             root_excludes=("payload dir",),
         ),
-        "forbids additional root exclusions",
+        "forbids unsupported root exclusions",
+    )
+    expect_error(
+        lambda: tool.capture(
+            repo,
+            sandbox / "venv-not-excluded",
+            include_ignored=True,
+            root_excludes=(),
+        ),
+        "hardlinked payload",
     )
     inside_parent = repo / ".trellis/task-artifact"
     inside_parent.mkdir(parents=True)
@@ -246,7 +325,7 @@ def prove_root_case(tool: Any, sandbox: Path) -> dict[str, Any]:
             repo,
             sandbox / "unsupported-special",
             include_ignored=True,
-            root_excludes=(),
+            root_excludes=(".venv",),
         ),
         "socket/device/FIFO",
     )
@@ -257,7 +336,7 @@ def prove_root_case(tool: Any, sandbox: Path) -> dict[str, Any]:
             repo,
             sandbox / "unsupported-hardlink",
             include_ignored=True,
-            root_excludes=(),
+            root_excludes=(".venv",),
         ),
         "hardlinked payload",
     )
@@ -266,20 +345,49 @@ def prove_root_case(tool: Any, sandbox: Path) -> dict[str, Any]:
     local_mode = stat.S_IMODE((repo / ".local").stat().st_mode)
     os.chmod(repo / ".local", 0)
     try:
-        manifest = tool.capture(
-            repo,
-            archive,
-            include_ignored=True,
-            root_excludes=(),
-        )
+        manifest = capture_with_venv_pre_read_guard(tool, repo, archive)
     finally:
         os.chmod(repo / ".local", local_mode)
     if tool.validate_archive(archive):
         raise ProofError("fresh root archive did not validate")
-    if any(extra["path"].startswith(".local") for scope in manifest["scopes"] for extra in scope["extras"]):
-        raise ProofError(".local entered archive manifest")
-    if (archive / "files/0/.local").exists():
-        raise ProofError(".local entered archive payload")
+    cli_archive = sandbox / "root-case-cli-archive"
+    run(
+        repo,
+        sys.executable,
+        str(PAYLOAD_TOOL),
+        "capture",
+        "--source",
+        str(repo),
+        "--archive",
+        str(cli_archive),
+        "--include-ignored",
+        "--exclude-root-prefix",
+        ".venv",
+    )
+    run(
+        repo,
+        sys.executable,
+        str(PAYLOAD_TOOL),
+        "validate",
+        "--archive",
+        str(cli_archive),
+        "--live-source",
+        str(repo),
+    )
+    cli_manifest = json.loads((cli_archive / "manifest.json").read_text(encoding="utf-8"))
+    if cli_manifest["policy"]["root_excluded_prefixes"] != [".local", ".venv"]:
+        raise ProofError("capture CLI did not persist exact no-venv policy")
+    excluded_prefixes = tuple(manifest["policy"]["root_excluded_prefixes"])
+    if excluded_prefixes != (".local", ".venv"):
+        raise ProofError("explicit .venv exclusion was not normalized after mandatory .local")
+    if not manifest["policy"].get("disposable_venv_exclusion"):
+        raise ProofError("archive policy omitted explicit disposable .venv exclusion")
+    for scope in manifest["scopes"]:
+        for record in [*scope["extras"], *scope["directories"]]:
+            if record["path"].startswith((".local", ".venv")):
+                raise ProofError("excluded root payload entered archive manifest")
+    if (archive / "files/0/.local").exists() or (archive / "files/0/.venv").exists():
+        raise ProofError("excluded root payload entered archive")
     root_scope = manifest["scopes"][0]
     archived_leaves = {entry["path"] for entry in root_scope["extras"]}
     archived_directories = {entry["path"]: entry for entry in root_scope["directories"]}
@@ -341,6 +449,20 @@ def prove_root_case(tool: Any, sandbox: Path) -> dict[str, Any]:
     expect_error(lambda: tool.run_git(repo, "checkout", "--force"), "force")
     expect_error(lambda: tool.run_git(repo, "status", ".git/worktrees/x"), ".git/worktrees")
 
+    malformed_head = sandbox / "tampered-malformed-head"
+    shutil.copytree(archive, malformed_head, symlinks=True)
+    rewrite_manifest(
+        tool,
+        malformed_head,
+        lambda value: value["source"].update({"head": "a" * 41}),
+    )
+    malformed_head_errors = tool.validate_archive(malformed_head)
+    if not malformed_head_errors or not any(
+        "source Git/filesystem identity is malformed" in error
+        for error in malformed_head_errors
+    ):
+        raise ProofError(f"41-hex malformed source HEAD was not rejected: {malformed_head_errors}")
+
     traversal = sandbox / "tampered-traversal"
     shutil.copytree(archive, traversal, symlinks=True)
     rewrite_manifest(
@@ -399,6 +521,8 @@ def prove_root_case(tool: Any, sandbox: Path) -> dict[str, Any]:
     tool.clean(repo, archive, approved_exact_clean=True)
     if not (repo / ".local/SECRET").is_file():
         raise ProofError("clean removed .local")
+    if not venv_sentinel.is_file() or venv_sentinel.stat().st_nlink != 2:
+        raise ProofError("clean removed or read/replaced excluded source .venv sentinel")
     if (repo / "payload dir/extra.txt").exists() or (repo / ".cache/state.bin").exists():
         raise ProofError("clean retained listed payload")
     # Parent directories are deliberately retained; clean never recursively
@@ -467,6 +591,8 @@ def prove_root_case(tool: Any, sandbox: Path) -> dict[str, Any]:
     after = payload_fingerprint(repo)
     if before != after or not (repo / ".local/SECRET").is_file():
         raise ProofError("root roundtrip fingerprint/.local changed")
+    if not venv_sentinel.is_file() or venv_sentinel.stat().st_nlink != 2:
+        raise ProofError("same-worktree restore changed excluded source .venv")
     if stat.S_IMODE((repo / "ignored-repo").stat().st_mode) != 0o750 or stat.S_IMODE(
         (repo / "ignored-repo/empty-dir").stat().st_mode
     ) != 0o711:
@@ -480,6 +606,12 @@ def prove_root_case(tool: Any, sandbox: Path) -> dict[str, Any]:
         "directory_count": sum(
             len(scope["directories"]) for scope in manifest["scopes"]
         ),
+        "root_excluded_prefixes": list(excluded_prefixes),
+        "venv_excluded_before_python_lstat_scandir_hash_copy": True,
+        "venv_unsupported_hardlink_sentinel_not_read": True,
+        "clean_preserved_source_venv": True,
+        "local_contract_unchanged": True,
+        "remaining_payload_roundtrip_complete": True,
     }
 
 
@@ -513,6 +645,7 @@ def prove_cross_worktree_case(tool: Any, sandbox: Path) -> dict[str, Any]:
     )
     git(linked, "commit", "-am", "add submodule")
     dirty(linked, prefix="root-")
+    source_venv_sentinel = add_disposable_venv_sentinel(linked)
     nested = linked / "external/demo"
     dirty(nested, prefix="sub-")
     before_root = payload_fingerprint(linked)
@@ -522,10 +655,12 @@ def prove_cross_worktree_case(tool: Any, sandbox: Path) -> dict[str, Any]:
         linked,
         archive,
         include_ignored=True,
-        root_excludes=(),
+        root_excludes=(".venv",),
     )
     tool.live_snapshot_from_manifest(linked, manifest, require_original_identity=True)
     tool.clean(linked, archive, approved_exact_clean=True)
+    if not source_venv_sentinel.is_file() or source_venv_sentinel.stat().st_nlink != 2:
+        raise ProofError("cross-worktree clean removed excluded old-source .venv")
     git(linked, "submodule", "deinit", "--all")
     git(linked, "checkout", "--detach", "HEAD")
     git(root, "checkout", "dev")
@@ -538,6 +673,17 @@ def prove_cross_worktree_case(tool: Any, sandbox: Path) -> dict[str, Any]:
         "--init",
         "--recursive",
     )
+    destination_venv = root / ".venv"
+    destination_venv.mkdir()
+    (destination_venv / "collision").write_text("must block restore\n", encoding="utf-8")
+    expect_error(
+        lambda: tool.restore(root, archive, approved_exact_restore=True),
+        "requires absent disposable excluded prefix",
+    )
+    if (root / "tracked.txt").read_text(encoding="utf-8") != "base\n":
+        raise ProofError("blocked cross-worktree restore mutated tracked destination")
+    (destination_venv / "collision").unlink()
+    destination_venv.rmdir()
     tool.restore(root, archive, approved_exact_restore=True)
     after_root = payload_fingerprint(root)
     after_submodule = payload_fingerprint(root / "external/demo")
@@ -545,6 +691,8 @@ def prove_cross_worktree_case(tool: Any, sandbox: Path) -> dict[str, Any]:
         raise ProofError("cross-worktree/submodule roundtrip fingerprint changed")
     if not (root / ".local/SECRET").is_file():
         raise ProofError("cross-worktree restore changed canonical .local")
+    if os.path.lexists(root / ".venv"):
+        raise ProofError("cross-worktree restore created excluded destination .venv")
 
     foreign = sandbox / "foreign-clone"
     git(sandbox, "clone", "--no-local", str(root), str(foreign))
@@ -573,6 +721,11 @@ def prove_cross_worktree_case(tool: Any, sandbox: Path) -> dict[str, Any]:
         "directory_count": sum(
             len(scope["directories"]) for scope in manifest["scopes"]
         ),
+        "root_excluded_prefixes": manifest["policy"]["root_excluded_prefixes"],
+        "clean_preserved_old_source_venv": True,
+        "restore_omitted_destination_venv": True,
+        "local_contract_unchanged": True,
+        "remaining_root_and_recursive_submodule_payload_roundtrip_complete": True,
     }
 
 
@@ -603,7 +756,15 @@ def prove() -> dict[str, Any]:
                 "clean_requires_explicit_approval": True,
                 "restore_requires_explicit_approval": True,
                 "capture_requires_ignored": True,
-                "additional_payload_exclusions_rejected": True,
+                "unsupported_payload_exclusions_rejected": True,
+                "explicit_disposable_venv_exclusion_supported": True,
+                "capture_and_live_validate_CLI_no_venv_paths_verified": True,
+                "venv_excluded_before_python_lstat_scandir_hash_copy": True,
+                "venv_unsupported_hardlink_sentinel_skipped_before_read": True,
+                "malformed_41_hex_object_id_rejected": True,
+                "clean_preserves_old_source_venv": True,
+                "cross_worktree_existing_destination_venv_blocks_restore": True,
+                "cross_worktree_restore_omits_destination_venv": True,
                 "archive_inside_worktree_rejected": True,
                 "archive_symlink_parent_rejected": True,
                 "unsupported_socket_device_fifo_rejected": True,
@@ -613,7 +774,8 @@ def prove() -> dict[str, Any]:
                 "unlisted_existing_empty_directory_blocks_restore": True,
                 "embedded_git_files_archived_without_git_commands": True,
                 "directory_symlink_not_followed": True,
-                "local_excluded_and_preserved": True,
+                "local_excluded_and_preserved_contract_unchanged": True,
+                "post_capture_recursive_chmod_forbidden_by_policy": True,
                 "path_traversal_rejected": True,
                 "archive_symlink_patch_rejected": True,
                 "unlisted_archive_leaf_rejected": True,

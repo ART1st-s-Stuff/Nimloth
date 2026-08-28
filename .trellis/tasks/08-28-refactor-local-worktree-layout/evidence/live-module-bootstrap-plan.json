@@ -1,0 +1,353 @@
+{
+  "schema": "nimloth-live-module-object-bootstrap-plan/v1",
+  "capture_mode": "read-only; no live object transfer/init/update/ref/config/FETCH_HEAD mutation",
+  "live_baseline": {
+    "canonical_root": "/workspace/remote2/nimloth",
+    "canonical_branch": "main",
+    "canonical_head": "a9d5f63beed29b6d12789df9c933917f3392080f",
+    "old_dev_root": "/workspace/remote2/nimloth-dev",
+    "old_dev_branch": "dev",
+    "old_dev_head": "b07a78d266f3f54c07d97d40790fd503acb76178",
+    "registered_worktrees": 39,
+    "worktree_porcelain_sha256": "13dadcd24450d7ee0c6d1e8dfac4cac324f6cbc4f8cf5385b928c46eece28b9c",
+    "explicit_expected_canonical_head": "a9d5f63beed29b6d12789df9c933917f3392080f",
+    "explicit_expected_old_dev_head": "b07a78d266f3f54c07d97d40790fd503acb76178",
+    "baseline_rechecked_after_all_scope_probes": true
+  },
+  "scopes": [
+    {
+      "name": "external/RCDM",
+      "source_git_dir": "/workspace/remote2/nimloth/.git/worktrees/dev/modules/external/RCDM",
+      "destination_module_git_dir": "/workspace/remote2/nimloth/.git/modules/external/RCDM",
+      "destination_worktree": "/workspace/remote2/nimloth/external/RCDM",
+      "expected_commit": "71daaf10a73bb2012864f0827c68d209fc92b0a5",
+      "source_head_matches": true,
+      "source_exact_commit_exists": true,
+      "source_closure_complete": true,
+      "source_closure_object_count": 78,
+      "source_closure_sha256": "165e1833fa5552499ca74b3f6bbaa09833c5072406053fc8e8829af74d8f6615",
+      "object_format": "sha1",
+      "source_is_real_non_symlink_git_dir": true,
+      "destination_path_is_symlink": false,
+      "destination_state": "absent-requires-minimal-local-module-init",
+      "destination_common_dir": "/workspace/remote2/nimloth/.git/modules/external/RCDM",
+      "destination_head_before": null,
+      "destination_exact_commit_exists_before": false,
+      "destination_closure_complete_before": false,
+      "destination_fingerprints_before": null,
+      "future_action": "approved-minimal-init-then-exact-object-transfer",
+      "minimal_init_command": [
+        "python3",
+        "/workspace/remote2/nimloth/.trellis/tasks/08-28-refactor-local-worktree-layout/tools/local_object_bootstrap.py",
+        "init-empty",
+        "--destination",
+        "/workspace/remote2/nimloth/.git/modules/external/RCDM",
+        "--worktree",
+        "/workspace/remote2/nimloth/external/RCDM",
+        "--object-format",
+        "sha1",
+        "--approved-exact-module-init"
+      ],
+      "post_init_probe_command": [
+        "python3",
+        "/workspace/remote2/nimloth/.trellis/tasks/08-28-refactor-local-worktree-layout/tools/local_object_bootstrap.py",
+        "probe",
+        "--source",
+        "/workspace/remote2/nimloth/.git/worktrees/dev/modules/external/RCDM",
+        "--destination",
+        "/workspace/remote2/nimloth/.git/modules/external/RCDM",
+        "--commit",
+        "71daaf10a73bb2012864f0827c68d209fc92b0a5"
+      ],
+      "future_command": [
+        "python3",
+        "/workspace/remote2/nimloth/.trellis/tasks/08-28-refactor-local-worktree-layout/tools/local_object_bootstrap.py",
+        "transfer",
+        "--source",
+        "/workspace/remote2/nimloth/.git/worktrees/dev/modules/external/RCDM",
+        "--destination",
+        "/workspace/remote2/nimloth/.git/modules/external/RCDM",
+        "--commit",
+        "71daaf10a73bb2012864f0827c68d209fc92b0a5",
+        "--approved-exact-object-transfer"
+      ],
+      "ready_after_writer_pause_and_identity_recheck": false,
+      "minimal_init_invariants": {
+        "destination_git_dir_must_be_absent": true,
+        "destination_worktree_must_be_exact_real_empty_directory": true,
+        "object_format_is_explicit_and_matches_source": true,
+        "network_transport_available": false,
+        "remote_ref_or_FETCH_HEAD_created": false,
+        "minimal_repository_config_becomes_transfer_baseline": true,
+        "existing_directory_or_nonempty_worktree_is_never_overwritten": true
+      },
+      "blocker": "destination module repo does not exist before canonical dev checkout; initialize only in the separately approved cutover after the exact worktree path exists and is empty",
+      "transfer_invariants": {
+        "source_HEAD_type_object_format_and_closure_rechecked": true,
+        "destination_module_common_object_format_and_identity_rechecked": true,
+        "pack_checksum_and_exact_closure_object_set_verified": true,
+        "HEAD_index_refs_config_remotes_FETCH_HEAD_fingerprinted_before_after": true,
+        "destination_exact_closure_complete_after": true,
+        "path_overlap_symlink_object_escape_or_commit_mismatch_rejected": true,
+        "inherited_GIT_routing_stripped": true,
+        "lazy_fetch_and_network_transport_disabled": true,
+        "worktree_not_accessed_by_object_transfer": true
+      }
+    },
+    {
+      "name": "external/VAGEN",
+      "source_git_dir": "/workspace/remote2/nimloth/.git/worktrees/dev/modules/external/VAGEN",
+      "destination_module_git_dir": "/workspace/remote2/nimloth/.git/modules/external/VAGEN",
+      "destination_worktree": "/workspace/remote2/nimloth/external/VAGEN",
+      "expected_commit": "9f1e89eb8c9839a406b6e62aa75703494a79e5b5",
+      "source_head_matches": true,
+      "source_exact_commit_exists": true,
+      "source_closure_complete": true,
+      "source_closure_object_count": 2648,
+      "source_closure_sha256": "2daea98de84ad0c0f8d1dbae03d519502949e34e0f8bd28659dfb85d56cc51f0",
+      "object_format": "sha1",
+      "source_is_real_non_symlink_git_dir": true,
+      "destination_path_is_symlink": false,
+      "destination_state": "existing-exact-module-git-dir",
+      "destination_common_dir": "/workspace/remote2/nimloth/.git/modules/external/VAGEN",
+      "destination_head_before": "93c1124aeaa7850098f46f2b708ee224ba894861",
+      "destination_exact_commit_exists_before": false,
+      "destination_closure_complete_before": false,
+      "destination_fingerprints_before": {
+        "refs_sha256": "10db4a1b5d00699a55b4309de2a995959bd945a64a937f238976660c94f3261e",
+        "refs_size_bytes": 2552,
+        "config_sha256": "c2d8130ac0bb4d224a7bf2b3d371417b6ebffa652bf0cd00f067469474f87459",
+        "config_size_bytes": 1835,
+        "remotes_sha256": "f349d7788c32228dc113cda1fcc8602991fa5457bfd73abffb70b9dbc5480e05",
+        "remotes_size_bytes": 137,
+        "head_file": {
+          "kind": "file",
+          "size_bytes": 41,
+          "sha256": "a3c4fb6d71877b2a9a94de76eb33918b3721d36c022b43731ec44f4a4db0b19d"
+        },
+        "index": {
+          "kind": "file",
+          "size_bytes": 29911,
+          "sha256": "966f94fef130805266300175007fb23594efc13b4db79df67a054f5174dc9dca"
+        },
+        "fetch_head": {
+          "kind": "file",
+          "size_bytes": 129,
+          "sha256": "8bdff0fe4b93dea46c7a65afb04943526f7045d0fc11cb8fd70c6c0f67d4806f"
+        },
+        "non_object_control_tree": {
+          "entries": 454,
+          "sha256": "b1bd2e5ea19841dc82ed4273205905216fec3917f41f62b174b4925eb2b6fdff"
+        }
+      },
+      "future_action": "approved-exact-object-transfer",
+      "future_command": [
+        "python3",
+        "/workspace/remote2/nimloth/.trellis/tasks/08-28-refactor-local-worktree-layout/tools/local_object_bootstrap.py",
+        "transfer",
+        "--source",
+        "/workspace/remote2/nimloth/.git/worktrees/dev/modules/external/VAGEN",
+        "--destination",
+        "/workspace/remote2/nimloth/.git/modules/external/VAGEN",
+        "--commit",
+        "9f1e89eb8c9839a406b6e62aa75703494a79e5b5",
+        "--approved-exact-object-transfer"
+      ],
+      "ready_after_writer_pause_and_identity_recheck": true,
+      "transfer_invariants": {
+        "source_HEAD_type_object_format_and_closure_rechecked": true,
+        "destination_module_common_object_format_and_identity_rechecked": true,
+        "pack_checksum_and_exact_closure_object_set_verified": true,
+        "HEAD_index_refs_config_remotes_FETCH_HEAD_fingerprinted_before_after": true,
+        "destination_exact_closure_complete_after": true,
+        "path_overlap_symlink_object_escape_or_commit_mismatch_rejected": true,
+        "inherited_GIT_routing_stripped": true,
+        "lazy_fetch_and_network_transport_disabled": true,
+        "worktree_not_accessed_by_object_transfer": true
+      }
+    },
+    {
+      "name": "external/VAGEN/verl",
+      "source_git_dir": "/workspace/remote2/nimloth/.git/worktrees/dev/modules/external/VAGEN/modules/verl",
+      "destination_module_git_dir": "/workspace/remote2/nimloth/.git/modules/external/VAGEN/modules/verl",
+      "destination_worktree": "/workspace/remote2/nimloth/external/VAGEN/verl",
+      "expected_commit": "494f264494b2525f2c13595f63ac4912963e6d2f",
+      "source_head_matches": true,
+      "source_exact_commit_exists": true,
+      "source_closure_complete": true,
+      "source_closure_object_count": 21548,
+      "source_closure_sha256": "017452a4a9a846428164a3622890b02d23853c134ad027f630891b43e9974a6d",
+      "object_format": "sha1",
+      "source_is_real_non_symlink_git_dir": true,
+      "destination_path_is_symlink": false,
+      "destination_state": "existing-exact-module-git-dir",
+      "destination_common_dir": "/workspace/remote2/nimloth/.git/modules/external/VAGEN/modules/verl",
+      "destination_head_before": "138a1d17b239416c59f46dfb4ed4d3ec55d80af2",
+      "destination_exact_commit_exists_before": false,
+      "destination_closure_complete_before": false,
+      "destination_fingerprints_before": {
+        "refs_sha256": "d2f181bdb50876a8c8ff83ac372a84f8033399a1588dfaa45afcfdb2e140e159",
+        "refs_size_bytes": 1405,
+        "config_sha256": "124a37b1cdea19ee1f6d0f0c0e4229395b42414e6708b844dd4dc84519a49c68",
+        "config_size_bytes": 870,
+        "remotes_sha256": "6574add6d6908949c1577b53e957a1024436fcef19667d666ac700c4a8299173",
+        "remotes_size_bytes": 135,
+        "head_file": {
+          "kind": "file",
+          "size_bytes": 41,
+          "sha256": "9f3848f6ff5eb828e7301fd843cc707ab9dc83caea2bd37f12a418bf6e00399e"
+        },
+        "index": {
+          "kind": "file",
+          "size_bytes": 44635,
+          "sha256": "e92fb6b2edcddcbb882294e686dc7b8f42d18ed72dd3b26c6e4203c5eaffbaf0"
+        },
+        "fetch_head": {
+          "kind": "file",
+          "size_bytes": 1054,
+          "sha256": "11d1ab1bec4f8d6362967e37bb3bd63fedaf814b51f861dec03c4926fe04ba07"
+        },
+        "non_object_control_tree": {
+          "entries": 67,
+          "sha256": "17cb1290b46fd882151422732e49fd72f46ace1522f67b3fca757def19c0c982"
+        }
+      },
+      "future_action": "approved-exact-object-transfer",
+      "future_command": [
+        "python3",
+        "/workspace/remote2/nimloth/.trellis/tasks/08-28-refactor-local-worktree-layout/tools/local_object_bootstrap.py",
+        "transfer",
+        "--source",
+        "/workspace/remote2/nimloth/.git/worktrees/dev/modules/external/VAGEN/modules/verl",
+        "--destination",
+        "/workspace/remote2/nimloth/.git/modules/external/VAGEN/modules/verl",
+        "--commit",
+        "494f264494b2525f2c13595f63ac4912963e6d2f",
+        "--approved-exact-object-transfer"
+      ],
+      "ready_after_writer_pause_and_identity_recheck": true,
+      "transfer_invariants": {
+        "source_HEAD_type_object_format_and_closure_rechecked": true,
+        "destination_module_common_object_format_and_identity_rechecked": true,
+        "pack_checksum_and_exact_closure_object_set_verified": true,
+        "HEAD_index_refs_config_remotes_FETCH_HEAD_fingerprinted_before_after": true,
+        "destination_exact_closure_complete_after": true,
+        "path_overlap_symlink_object_escape_or_commit_mismatch_rejected": true,
+        "inherited_GIT_routing_stripped": true,
+        "lazy_fetch_and_network_transport_disabled": true,
+        "worktree_not_accessed_by_object_transfer": true
+      }
+    },
+    {
+      "name": "external/le-wm",
+      "source_git_dir": "/workspace/remote2/nimloth/.git/worktrees/dev/modules/external/le-wm",
+      "destination_module_git_dir": "/workspace/remote2/nimloth/.git/modules/external/le-wm",
+      "destination_worktree": "/workspace/remote2/nimloth/external/le-wm",
+      "expected_commit": "8edfeb336732b5f3ce7b8b210d0ba370a09e2cac",
+      "source_head_matches": true,
+      "source_exact_commit_exists": true,
+      "source_closure_complete": true,
+      "source_closure_object_count": 106,
+      "source_closure_sha256": "5fb431a50ff40280e5ed29627d0cfe2e423b6a22f44de810065f3674dcb39de4",
+      "object_format": "sha1",
+      "source_is_real_non_symlink_git_dir": true,
+      "destination_path_is_symlink": false,
+      "destination_state": "existing-exact-module-git-dir",
+      "destination_common_dir": "/workspace/remote2/nimloth/.git/modules/external/le-wm",
+      "destination_head_before": "8edfeb336732b5f3ce7b8b210d0ba370a09e2cac",
+      "destination_exact_commit_exists_before": true,
+      "destination_closure_complete_before": true,
+      "destination_fingerprints_before": {
+        "refs_sha256": "73f27cab8d8d969e3da643f2bde14419e265adb8df5cd6cf2b3592a90717f5b0",
+        "refs_size_bytes": 210,
+        "config_sha256": "1776c90ca71b458b375e7e8839dfa5e0f7a1fc7f4c7c0322fa3c5453c8da92c7",
+        "config_size_bytes": 350,
+        "remotes_sha256": "e76af84602d97321d20e1eb2820555ed389756c7827843b4b99a376cf61641ee",
+        "remotes_size_bytes": 109,
+        "head_file": {
+          "kind": "file",
+          "size_bytes": 41,
+          "sha256": "0c9835917353609aa3897cc3b27821db94b503ac277f49bbb4411c0ad713a0b5"
+        },
+        "index": {
+          "kind": "file",
+          "size_bytes": 2232,
+          "sha256": "cba34d48587197e15400b2054ea54df8176bec4caeba19e5d0d354026c28eae1"
+        },
+        "fetch_head": {
+          "kind": "absent",
+          "size_bytes": null,
+          "sha256": null
+        },
+        "non_object_control_tree": {
+          "entries": 37,
+          "sha256": "34c4c8789aa7b56e734cbb6d87c4699c63e7ef743f90b812603db41284118e8e"
+        }
+      },
+      "future_action": "read-only-noop-verification",
+      "future_command": [
+        "python3",
+        "/workspace/remote2/nimloth/.trellis/tasks/08-28-refactor-local-worktree-layout/tools/local_object_bootstrap.py",
+        "probe",
+        "--source",
+        "/workspace/remote2/nimloth/.git/worktrees/dev/modules/external/le-wm",
+        "--destination",
+        "/workspace/remote2/nimloth/.git/modules/external/le-wm",
+        "--commit",
+        "8edfeb336732b5f3ce7b8b210d0ba370a09e2cac"
+      ],
+      "ready_after_writer_pause_and_identity_recheck": true,
+      "transfer_invariants": {
+        "source_HEAD_type_object_format_and_closure_rechecked": true,
+        "destination_module_common_object_format_and_identity_rechecked": true,
+        "pack_checksum_and_exact_closure_object_set_verified": true,
+        "HEAD_index_refs_config_remotes_FETCH_HEAD_fingerprinted_before_after": true,
+        "destination_exact_closure_complete_after": true,
+        "path_overlap_symlink_object_escape_or_commit_mismatch_rejected": true,
+        "inherited_GIT_routing_stripped": true,
+        "lazy_fetch_and_network_transport_disabled": true,
+        "worktree_not_accessed_by_object_transfer": true
+      }
+    }
+  ],
+  "execution_order": [
+    "pause all Git writers and re-run this read-only plan",
+    "complete separately approved payload clean/detach/canonical checkout to exact dev HEAD",
+    "verify external/RCDM is an exact real worktree directory and initialize only its absent module Git dir with the listed no-transport minimal init",
+    "run each scope probe/transfer command in order; already-complete le-wm remains a read-only noop",
+    "run the separately authorized offline recursive update and verify all four exact commits; this update, unlike object transfer, writes module worktrees/indexes and may register the previously uninitialized RCDM in superproject local config",
+    "compare every transfer-scoped module HEAD/index/refs/config/remotes/FETCH_HEAD fingerprint exactly; separately review the expected RCDM init/update config and worktree/index deltas plus topology/HEAD/status protection baselines"
+  ],
+  "offline_recursive_update_command": [
+    "env",
+    "-i",
+    "PATH=/run/current-system/sw/bin:/usr/bin:/bin",
+    "HOME=/nonexistent",
+    "LC_ALL=C",
+    "LANG=C",
+    "GIT_CONFIG_NOSYSTEM=1",
+    "GIT_CONFIG_GLOBAL=/dev/null",
+    "GIT_TERMINAL_PROMPT=0",
+    "GIT_NO_LAZY_FETCH=1",
+    "GIT_NO_REPLACE_OBJECTS=1",
+    "GIT_ALLOW_PROTOCOL=",
+    "git",
+    "-C",
+    "/workspace/remote2/nimloth",
+    "submodule",
+    "update",
+    "--init",
+    "--recursive",
+    "--no-fetch",
+    "--checkout"
+  ],
+  "policy": {
+    "live_transfer_or_update_executed_this_batch": false,
+    "local_pack_verified_unpack_only": true,
+    "network_transport_and_lazy_fetch_disabled": true,
+    "transfer_does_not_modify_HEAD_index_ref_config_remote_FETCH_HEAD_or_worktree": true,
+    "RCDM_minimal_init_is_a_distinct_future_cutover_mutation_with_explicit_sha1_format": true,
+    "offline_update_worktree_index_and_RCDM_registration_deltas_are_distinct_from_transfer": true,
+    "fail_closed_if_git_dir_object_format_closure_path_symlink_identity_or_fingerprint_differs": true
+  }
+}

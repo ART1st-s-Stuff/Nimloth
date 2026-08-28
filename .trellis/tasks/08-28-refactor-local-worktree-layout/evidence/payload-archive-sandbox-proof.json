@@ -7,7 +7,16 @@
     "archive_integrity_validated": true,
     "scope_count": 1,
     "extra_count": 7,
-    "directory_count": 9
+    "directory_count": 9,
+    "root_excluded_prefixes": [
+      ".local",
+      ".venv"
+    ],
+    "venv_excluded_before_python_lstat_scandir_hash_copy": true,
+    "venv_unsupported_hardlink_sentinel_not_read": true,
+    "clean_preserved_source_venv": true,
+    "local_contract_unchanged": true,
+    "remaining_payload_roundtrip_complete": true
   },
   "cross_worktree_submodule_roundtrip": {
     "root_fingerprint_before": "b41bd7fb91573b6152391618f7796f10efa2fa308232fe5a18571321b182ddc1",
@@ -17,13 +26,29 @@
     "archive_integrity_validated": true,
     "scope_count": 2,
     "extra_count": 15,
-    "directory_count": 19
+    "directory_count": 19,
+    "root_excluded_prefixes": [
+      ".local",
+      ".venv"
+    ],
+    "clean_preserved_old_source_venv": true,
+    "restore_omitted_destination_venv": true,
+    "local_contract_unchanged": true,
+    "remaining_root_and_recursive_submodule_payload_roundtrip_complete": true
   },
   "negative_controls": {
     "clean_requires_explicit_approval": true,
     "restore_requires_explicit_approval": true,
     "capture_requires_ignored": true,
-    "additional_payload_exclusions_rejected": true,
+    "unsupported_payload_exclusions_rejected": true,
+    "explicit_disposable_venv_exclusion_supported": true,
+    "capture_and_live_validate_CLI_no_venv_paths_verified": true,
+    "venv_excluded_before_python_lstat_scandir_hash_copy": true,
+    "venv_unsupported_hardlink_sentinel_skipped_before_read": true,
+    "malformed_41_hex_object_id_rejected": true,
+    "clean_preserves_old_source_venv": true,
+    "cross_worktree_existing_destination_venv_blocks_restore": true,
+    "cross_worktree_restore_omits_destination_venv": true,
     "archive_inside_worktree_rejected": true,
     "archive_symlink_parent_rejected": true,
     "unsupported_socket_device_fifo_rejected": true,
@@ -33,7 +58,8 @@
     "unlisted_existing_empty_directory_blocks_restore": true,
     "embedded_git_files_archived_without_git_commands": true,
     "directory_symlink_not_followed": true,
-    "local_excluded_and_preserved": true,
+    "local_excluded_and_preserved_contract_unchanged": true,
+    "post_capture_recursive_chmod_forbidden_by_policy": true,
     "path_traversal_rejected": true,
     "archive_symlink_patch_rejected": true,
     "unlisted_archive_leaf_rejected": true,
@@ -44,7 +70,7 @@
     "foreign_common_git_dir_rejected": true,
     "force_reset_clean_stash_and_manual_metadata_forbidden": true
   },
-  "commands_recorded": 52,
+  "commands_recorded": 54,
   "commands": [
     [
       "cwd=$SANDBOX/root-case-repo",
@@ -116,6 +142,29 @@
       "git",
       "diff",
       "--binary"
+    ],
+    [
+      "cwd=$SANDBOX/root-case-repo",
+      "/run/current-system/sw/bin/python3",
+      "/workspace/remote2/nimloth-dev/.trellis/tasks/08-28-refactor-local-worktree-layout/tools/payload_archive.py",
+      "capture",
+      "--source",
+      "$SANDBOX/root-case-repo",
+      "--archive",
+      "$SANDBOX/root-case-cli-archive",
+      "--include-ignored",
+      "--exclude-root-prefix",
+      ".venv"
+    ],
+    [
+      "cwd=$SANDBOX/root-case-repo",
+      "/run/current-system/sw/bin/python3",
+      "/workspace/remote2/nimloth-dev/.trellis/tasks/08-28-refactor-local-worktree-layout/tools/payload_archive.py",
+      "validate",
+      "--archive",
+      "$SANDBOX/root-case-cli-archive",
+      "--live-source",
+      "$SANDBOX/root-case-repo"
     ],
     [
       "cwd=$SANDBOX/root-case-repo",
