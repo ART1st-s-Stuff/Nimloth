@@ -1,0 +1,8 @@
+{"file":"AGENTS.md","reason":"最高层Git/worktree、main保护、人类文件与提交授权合同；本任务获批后需同步canonical root规则。"}
+{"file":".trellis/spec/governance/authority-and-safety.md","reason":"约束不确定性、protected/destructive操作与精确人类授权。"}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"当前sibling-path合同、mutation cwd绑定、protected dirty与commit规则；本任务的规则修改目标。"}
+{"file":".trellis/spec/governance/tasks-progress-and-memory.md","reason":"迁移期间task状态、progress、memory与finish-work所有权。"}
+{"file":".trellis/spec/governance/platform-integration.md","reason":"canonical root cutover后的Pi ctx.cwd、cache与task解析验证合同。"}
+{"file":".trellis/spec/guides/investigation-and-uncertainty.md","reason":"dirty payload、branch/ref和destructive disposition不明确时的停止/研究规则。"}
+{"file":".trellis/tasks/08-28-refactor-local-worktree-layout/research/local-worktree-audit-2026-08-28.md","reason":"39个worktree拓扑、11个dirty worktree、active task路径与main/dev冲突基线。"}
+{"file":"ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md","reason":"每条仓库mutation必须在同一调用绑定精确目标cwd，防止再次写错worktree。"}

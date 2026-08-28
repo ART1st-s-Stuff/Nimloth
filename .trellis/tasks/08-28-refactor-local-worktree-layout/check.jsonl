@@ -1,0 +1,8 @@
+{"file":"AGENTS.md","reason":"审查canonical root、main安全、人类文件修改与commit/destructive审批一致性。"}
+{"file":".trellis/spec/governance/authority-and-safety.md","reason":"检查未越权、未丢弃dirty/protected内容且报告区分验证状态。"}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"检查新规则、cwd绑定、nested path、cleanup与禁止force合同。"}
+{"file":".trellis/spec/governance/tasks-progress-and-memory.md","reason":"检查task迁移、progress/memory与finish-work记录完整。"}
+{"file":".trellis/spec/governance/platform-integration.md","reason":"检查从canonical root解析Pi/Trellis任务且不发生跨root cache泄漏。"}
+{"file":".trellis/spec/guides/investigation-and-uncertainty.md","reason":"检查所有dirty/ignored/submodule差异均有证据或明确阻塞。"}
+{"file":".trellis/tasks/08-28-refactor-local-worktree-layout/research/local-worktree-audit-2026-08-28.md","reason":"对照迁移前worktree/ref/submodule/task/path基线执行完整差分。"}
+{"file":"ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md","reason":"最终概念搜索并验证所有mutation命令显式绑定目标worktree。"}
