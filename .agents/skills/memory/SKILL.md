@@ -1,36 +1,36 @@
 ---
 name: memory
-description: Lightweight human-approved project memory management. Use when creating, searching, inspecting, correcting, or upvoting durable project memory.
+description: 轻量、需人类批准的项目memory管理。创建、搜索、检查、纠正或upvote持久项目memory时使用。
 ---
 
 # memory skill
 
-Use this skill when you need to create, search, inspect, correct, or upvote durable project memory.
+需要创建、搜索、检查、纠正或upvote持久项目memory时，必须使用本skill。
 
-## Purpose
+## 用途
 
-The memory system is a lightweight, human-approved, searchable store of short project lessons extracted from real work.
+Memory系统是一个轻量、需人类批准且可搜索的存储，用于保存从真实工作中提炼出的简短项目经验。
 
-It has two stores:
+它包含两个存储区：
 
-- repo memory: `.memory/memories.jsonl` for environment-independent lessons that should be committed with the repo;
-- local memory: `.local/memory/memories.jsonl` for environment/server/workspace-specific lessons.
+- 仓库memory：`.memory/memories.jsonl`，存放与环境无关、应随仓库提交的经验；
+- 本地memory：`.local/memory/memories.jsonl`，存放特定于环境/服务器/工作空间的经验。
 
-Memory should be:
+Memory必须满足：
 
-- short;
-- useful for future AI agents;
-- an effective project lesson, constraint, decision, or lookup hint extracted from actual work;
-- backed by file-segment evidence;
-- not a duplicate of rules, progress files, experiment docs, or source documentation;
-- not a task log;
-- not a long explanation.
+- 简短；
+- 对未来AI agent有用；
+- 是从实际工作中提炼的有效项目经验、约束、决策或查找提示；
+- 有文件片段证据支持；
+- 不重复规则、进度文件、实验文档或源码文档；
+- 不是任务日志；
+- 不是长篇说明。
 
-Memory should usually answer: "What compact experience would save a future agent from repeating this discovery or mistake?" If the information already lives clearly in `AGENTS.md`, `.trellis/spec/`, an experiment/module README, or code comments, prefer linking/reading that source instead of creating redundant memory.
+Memory通常应回答：“哪条紧凑经验能避免未来agent重复这次发现或错误？”如果信息已清楚存在于`AGENTS.md`、`.trellis/spec/`、实验/模块README或代码注释中，应优先链接并阅读原始来源，而不是创建重复memory。
 
-## Commands
+## 命令
 
-Use the repository skill wrapper commands:
+使用仓库skill封装命令：
 
 ```bash
 ./skill memory add <title> <content>
@@ -43,41 +43,41 @@ Use the repository skill wrapper commands:
 ./skill memory human-verify --store repo|local <id>
 ```
 
-Human-only approval command:
+仅限人类的审批命令：
 
 ```bash
 ./skill human memory-approve
 ./skill human memory-approve --store local
 ```
 
-AI agents must never run `./skill human ...` commands.
+AI agent绝对禁止运行任何`./skill human ...`命令。
 
-## Data model
+## 数据模型
 
-Each memory has `id`, `title`, `content`, `evidence`, `tags`, `level`, timestamps, and optional `human_suggestions`.
+每条memory包含`id`、`title`、`content`、`evidence`、`tags`、`level`、时间戳和可选`human_suggestions`。
 
-- `evidence`: JSON list of file segment references: `[{"filename":"...","line_start":1,"total_lines":10}]`
-- `tags`: JSON list of strings
-- `level`: `pending-human-verification`, `verified`, or `archived`
+- `evidence`：文件片段引用的JSON列表：`[{"filename":"...","line_start":1,"total_lines":10}]`
+- `tags`：字符串JSON列表
+- `level`：`pending-human-verification`、`verified`或`archived`
 
-## Rules for AI agents
+## AI agent 规则
 
-1. Do not manually edit `.memory/memories.jsonl` or `.local/memory/memories.jsonl`.
-2. Do not create long memories. Prefer one compact, searchable lesson per memory.
-3. Do not store transient progress, TODOs, task logs, or experiment summaries in memory.
-4. Do not create memory that merely repeats rules, file lists, command help, or documentation already easy to find.
-5. Evidence must be a file-segment reference, not free text.
-6. AI-created memories start as `pending-human-verification`.
-7. AI must not claim a memory is human-approved unless its level is `verified`.
-8. If a pending memory contains `human_suggestions`, the AI must follow those suggestions by editing the memory with `./skill memory set ...` before asking for approval again.
-9. Before relying on a memory, run `./skill memory get <id>`, inspect the evidence file segment, and verify that the memory still matches the referenced file.
-10. Only after verification and confirming it helped the current task, run `./skill memory upvote <id>`.
-11. If a memory is wrong, correct it with `./skill memory set ...`; if obsolete, let stale archive rules handle it or ask the human.
-12. Human approval is done with `./skill human memory-approve` (or `--store local` for local memories), not by AI.
+1. 禁止手工编辑`.memory/memories.jsonl`或`.local/memory/memories.jsonl`。
+2. 禁止创建过长memory。每条memory应只保存一条紧凑、可搜索的经验。
+3. 禁止把临时进度、TODO、任务日志或实验摘要存入memory。
+4. 如果内容只是重复规则、文件清单、命令帮助或容易找到的现有文档，禁止创建memory。
+5. 证据必须是文件片段引用，禁止使用自由文本。
+6. AI创建的memory初始level必须为`pending-human-verification`。
+7. 除非memory的level为`verified`，否则AI禁止声称它已经人类批准。
+8. 如果待核验memory包含`human_suggestions`，AI必须先按建议使用`./skill memory set ...`修订memory，才能再次请求审批。
+9. 依赖memory之前，必须运行`./skill memory get <id>`、检查证据文件片段，并核验memory仍与引用文件一致。
+10. 只有完成上述核验并确认该memory对当前任务确有帮助后，才能运行`./skill memory upvote <id>`。
+11. Memory错误时，必须使用`./skill memory set ...`纠正；若已过时，则交由过期归档规则处理，或询问人类。
+12. 人类审批必须通过`./skill human memory-approve`完成；本地memory使用带`--store local`的命令。AI禁止代为执行。
 
-## Human approval flow
+## 人类审批流程
 
-AI may submit a pending memory when it captures a compact project lesson that is not just a duplicate of existing docs:
+如果一条待核验memory保存了紧凑项目经验，且不重复现有文档，AI可以提交它：
 
 ```bash
 ./skill memory add "Dataset split must be verified from loader metadata" "For Nimloth experiments, split names alone are not evidence; verify split semantics from the actual dataset/config/code path before launch."
@@ -85,19 +85,19 @@ AI may submit a pending memory when it captures a compact project lesson that is
 ./skill memory human-verify M0001
 ```
 
-Human reviews pending memories:
+人类通过以下命令审查待核验memory：
 
 ```bash
 ./skill human memory-approve
 ```
 
-Approved memories become `verified`; rejected memories are deleted. If the human types anything other than `a/r/s/q`, that text is stored as `human_suggestions`, the memory remains pending, and the AI must revise the memory according to the suggestion. Suggestions are removed automatically when the memory is approved.
+批准后memory变为`verified`；拒绝后memory会被删除。如果人类输入的内容不是`a/r/s/q`之一，该文本会存入`human_suggestions`，memory保持待核验状态，AI必须按建议修订。Memory获批时，建议会自动移除。
 
-## Stale/archive policy
+## 过期/归档策略
 
-The CLI performs lazy stale cleanup. Verified memories are archived when either condition is true:
+CLI采用延迟的过期清理。已核验memory满足以下任一条件时会归档：
 
-- not trigger-verified for 7 days;
-- not upvoted/used for 14 days.
+- 连续7天未通过触发核验；
+- 连续14天未被upvote/使用。
 
-`upvote` means: the agent first verified the evidence, then found the memory useful for the current task.
+`upvote`表示：agent先核验了证据，随后确认该memory对当前任务有用。

@@ -1,24 +1,24 @@
-# Nimloth Development Workflow
+# Nimloth 开发工作流
 
-Trellis is Nimloth's primary and only live development task system. This workflow keeps Trellis's native `planning` → `in_progress` → `completed/archive` status contract while applying the project safety, experiment, progress, and review gates in [`AGENTS.md`](../AGENTS.md) and [`.trellis/spec/`](spec/).
+Trellis是Nimloth唯一的当前开发任务系统。本工作流保留Trellis原生的`planning` → `in_progress` → `completed/archive`状态合同，同时执行[`AGENTS.md`](../AGENTS.md)与[`.trellis/spec/`](spec/)中的项目安全、实验、进度和审查门禁。
 
-## Core Principles
+## 核心原则
 
-1. **Stop on uncertainty or missing authorization.** Research first when read-only evidence can resolve it; otherwise ask the human.
-2. **Plan before implementation.** Task creation approves planning only. Reviewed task activation approves implementation. Experiment launch has a separate approval.
-3. **Inject selected evidence.** Curate relevant specs, research, and individual known errors; never inject the full known-error library.
-4. **Persist by ownership.** Tasks hold current work, workspace journals hold sessions, curated memory holds reviewed reusable lessons, and legacy task/issue files remain history.
-5. **Review before commits.** Present the complete scope and validation before work commits; archive/journal bookkeeping comes only after finish review.
+1. **授权缺失或存在不确定性时必须停止。** 若只读证据可以解决问题，先研究；否则询问人类。
+2. **实施前必须规划。** 创建任务只批准规划。经审查后启动任务才批准实施。实验启动还需要单独审批。
+3. **只注入经选择的证据。** 整理相关spec、研究和单条known error；禁止注入整个known-error库。
+4. **按所有权持久化。** 任务保存当前工作，工作空间日志保存会话，curated memory保存经审查的可复用经验，旧任务/问题文件只保留历史。
+5. **提交前必须审查。** 工作提交前展示完整范围和验证；只有结束审查完成后才能执行归档/会话日志记账。
 
-## Trellis System
+## Trellis 系统
 
-- Tasks: `.trellis/tasks/<task>/` with `task.json`, `prd.md`, optional `design.md`/`implement.md`, research, and JSONL context manifests.
-- Specs: `.trellis/spec/{governance,experiments,python,domains,guides}/`.
-- Workspace: `.trellis/workspace/` session journals.
-- Curated memory: `.memory/`, `.local/memory/`, and `.agents/skills/memory/`; never edit memory JSONL directly.
-- Raw recall: `trellis mem` is unverified dialogue search.
+- 任务：`.trellis/tasks/<task>/`，包含`task.json`、`prd.md`、可选的`design.md`/`implement.md`、研究和JSONL上下文清单。
+- 规范：`.trellis/spec/{governance,experiments,python,domains,guides}/`。
+- 工作空间：`.trellis/workspace/`中的会话日志。
+- Curated memory：`.memory/`、`.local/memory/`和`.agents/skills/memory/`；禁止直接编辑memory JSONL。
+- 原始召回：`trellis mem`是未经核验的对话搜索。
 
-Useful commands:
+常用命令：
 
 ```bash
 python3 ./.trellis/scripts/task.py current --source
@@ -39,202 +39,202 @@ Phase 3: Finish  → full-scope check, memory/spec review, complete-diff review,
 
 ### Task threshold
 
-A Trellis task is mandatory for multi-file or ambiguous implementation; project-rule/workflow changes; any experiment, GPU, Slurm, remote long job, collection, evaluation, or rollout-train; and work needing durable design, handoff, or multiple sessions.
+多文件或歧义实施、项目规则/工作流变更、任何实验、GPU、Slurm、远程长job、收集、评估或rollout-train，以及需要持久设计、交接或跨session的工作，都必须使用Trellis任务。
 
-Ask for task-creation consent before creating a task. If consent is declined, broad work stops. A one-reply explanation, read-only lookup with no durable decision, or clearly bounded low-risk small edit may remain inline after the user declines a task.
+创建任务前必须先征得创建同意。如果人类拒绝，广泛工作必须停止；仅可继续一轮解释、不产生持久决策的只读查询，或边界明确、低风险的小修改。
 
-Trellis is the sole task authority. Pi TaskTree stays empty and receives no mirrored status, priority, hierarchy, focus, acceptance criteria, or backlog.
+Trellis是唯一的任务权威。Pi TaskTree必须保持空，不得复制状态、优先级、层级、focus、验收标准或backlog。
 
 [workflow-state:no_task]
-No active task. Classify the request and ask for Trellis task-creation consent before creating one.
-A task is mandatory for multi-file/ambiguous work, rule/workflow changes, experiments/remote jobs, and durable or multi-session work. If consent is declined, do not perform broad work; only an explanation, read-only lookup, or clearly bounded low-risk small edit may remain inline.
-Keep Pi TaskTree empty; Trellis is the sole development task authority.
+当前没有活动任务。先对请求分类，并在创建Trellis任务前征得任务创建同意。
+多文件/歧义工作、规则/工作流变更、实验/远程job和持久或跨session工作都必须使用任务。若人类拒绝，禁止继续广泛工作；只允许解释、不产生持久决策的只读查询，或边界明确、低风险的小修改。
+Pi TaskTree必须保持空；Trellis是唯一的开发任务权威。
 [/workflow-state:no_task]
 
 ### Phase 1: Plan
 
-- 1.0 Create task `[required · once]`
-- 1.1 Requirements and risk exploration `[required · repeatable]`
-- 1.2 Evidence research `[optional · repeatable]`
-- 1.3 Configure selected context `[required · once for sub-agent platforms]`
-- 1.4 Final planning review and activate `[required · once]`
-- 1.5 Completion criteria
+- 1.0 创建任务 `[required · once]`
+- 1.1 探索要求与风险 `[required · repeatable]`
+- 1.2 证据研究 `[optional · repeatable]`
+- 1.3 配置已选上下文 `[required · once for sub-agent platforms]`
+- 1.4 最终规划审查并启动任务 `[required · once]`
+- 1.5 完成标准
 
 [workflow-state:planning]
-Stay in planning. Task creation is not implementation approval.
-For complex work, complete and review `prd.md`, `design.md`, and `implement.md`; select relevant specs, source evidence, individual known errors, and verified memory. Curate both JSONL manifests for sub-agent platforms.
-For experiments, set `meta.kind=experiment`, complete the experiment contract, and preserve a separate explicit launch-approval gate.
-Ask the human to approve the final artifacts before `task.py start`.
+必须停留在规划阶段。创建任务不等于实施审批。
+复杂工作必须完成并审查`prd.md`、`design.md`和`implement.md`；选择相关spec、源码证据、单条known error和经核验的memory。为子代理平台整理两份JSONL清单。
+实验任务必须设置`meta.kind=experiment`、完成实验合同，并保留单独且明确的启动审批门禁。
+运行`task.py start`前，必须请人类批准最终产物。
 [/workflow-state:planning]
 
 [workflow-state:planning-inline]
-Stay in planning. Task creation is not implementation approval.
-Complete the required task artifacts, selected specs/source/known-error/memory evidence, and experiment contract when applicable. Inline platforms may skip JSONL curation but must load the same evidence before editing.
-Ask the human to approve the final artifacts before `task.py start`.
+必须停留在规划阶段。创建任务不等于实施审批。
+必须完成所需任务产物、已选spec/源码/known-error/memory证据，以及适用的实验合同。内联平台可以跳过JSONL整理，但编辑前必须加载同一批证据。
+运行`task.py start`前，必须请人类批准最终产物。
 [/workflow-state:planning-inline]
 
 ### Phase 2: Execute
 
-- 2.1 Implement `[required · repeatable]`
-- 2.2 Quality check `[required · repeatable]`
-- 2.3 Roll back or re-plan `[on demand]`
+- 2.1 实施 `[required · repeatable]`
+- 2.2 质量检查 `[required · repeatable]`
+- 2.3 回滚或重新规划 `[on demand]`
 
 [workflow-state:in_progress]
-Execute only the reviewed task scope. Read curated JSONL entries, then `prd.md`, `design.md`, and `implement.md`; inspect adjacent source/tests before editing.
-Main session flow: `trellis-implement` -> `trellis-check` -> memory/spec review -> complete-diff and validation review -> approved work commits -> `/trellis:finish-work`.
-Sub-agent recursion guard: an active `trellis-implement` or `trellis-check` agent performs its role directly and must not spawn either role again.
-After substantive milestones apply `on-progress`. Experiments require a complete contract and separate explicit launch approval; completion/failure/cancellation/pause triggers `on-experiment-end`.
-Final checking is full-scope across every affected spec layer and includes relevant known errors, links/config/hooks, and semantic evidence.
+只能实施经审查的任务范围。先读取curated JSONL条目，再读取`prd.md`、`design.md`和`implement.md`；编辑前检查相邻源码/测试。
+主会话流程：`trellis-implement` -> `trellis-check` -> memory/spec审查 -> 完整diff与验证审查 -> 获批的工作提交 -> `/trellis:finish-work`。
+子代理递归保护：当前`trellis-implement`或`trellis-check` agent必须直接完成自身职责，禁止再次启动这两种角色。
+出现实质里程碑后必须执行`on-progress`。实验必须具备完整合同和单独、明确的启动审批；完成/失败/取消/暂停时必须触发`on-experiment-end`。
+最终检查必须覆盖所有受影响的spec层，并包含相关known errors、链接/config/hooks和语义证据。
 [/workflow-state:in_progress]
 
 [workflow-state:in_progress-inline]
-Execute only the reviewed task scope. Load task artifacts and relevant governance/domain/experiment/Python specs, source evidence, individual known errors, and verified memory before editing.
-Flow: before-development review -> edit -> full-scope check -> memory/spec review -> complete-diff and validation review -> approved work commits -> `/trellis:finish-work`.
-After substantive milestones apply `on-progress`; experiments keep separate launch and mandatory end gates.
+只能实施经审查的任务范围。编辑前必须加载任务产物，以及相关governance/domain/experiment/Python specs、源码证据、单条known error和经核验的memory。
+流程：开发前审查 -> 编辑 -> 全范围检查 -> memory/spec审查 -> 完整diff与验证审查 -> 获批的工作提交 -> `/trellis:finish-work`。
+出现实质里程碑后必须执行`on-progress`；实验仍需单独启动审批，并强制执行结束门禁。
 [/workflow-state:in_progress-inline]
 
 ### Phase 3: Finish
 
-- 3.2 Debug retrospective `[on demand]`
-- 3.3 Progress, memory, and spec review `[required · once]`
-- 3.4 Complete-diff review and work commits `[required · once]`
-- 3.5 Finish-work review and bookkeeping `[required · once]`
+- 3.2 调试复盘 `[on demand]`
+- 3.3 进度、memory与spec审查 `[required · once]`
+- 3.4 完整diff审查与工作提交 `[required · once]`
+- 3.5 Finish-work审查与记账 `[required · once]`
 
 [workflow-state:completed]
-Work commits are complete. Present finish-work/archive/journal effects and obtain human acceptance before `/trellis:finish-work` performs automatic bookkeeping commits.
+工作提交已经完成。必须展示finish-work的归档/会话日志影响并取得人类验收，之后`/trellis:finish-work`才能执行自动记账提交。
 [/workflow-state:completed]
 
 ### Phase rules
 
-1. Follow steps in order; required gates cannot be skipped.
-2. Return to planning when requirements, scope, semantics, or authorization change.
-3. Artifact presence skips repeated creation, not review of current content.
-4. Task artifacts cannot override the human prompt, `AGENTS.md`, or hard specs without explicit human approval.
-5. Do not launch experiments, mutate protected files, edit memory JSONL, or commit outside the matching gate.
+1. 必须按顺序执行各步骤；禁止跳过标记为required的门禁。
+2. 要求、范围、语义或授权发生变化时，必须返回规划阶段。
+3. 任务产物已存在只表示无需重复创建，不代表可以跳过对当前内容的审查。
+4. 未经人类明确批准，任务产物不得覆盖人类prompt、`AGENTS.md`或硬性spec。
+5. 禁止在不匹配的门禁阶段启动实验、修改受保护文件、编辑memory JSONL或commit。
 
 ## Phase 1: Plan
 
-Goal: establish authorized, source-backed, verifiable work before implementation.
+目标：在实施前建立已授权、有来源证据支持且可验证的工作。
 
 #### 1.0 Create task `[required · once]`
 
-After task-creation consent:
+取得任务创建同意后运行：
 
 ```bash
 python3 ./.trellis/scripts/task.py create "<title>" --slug <name>
 ```
 
-Do not run `start` yet. Use parent/child tasks only for independently verifiable deliverables; write dependency order in child artifacts. Skip creation when `task.py current --source` already points to the approved task.
+此时禁止运行`start`。只有可独立验证的交付物才能使用父/子任务，并且必须在子任务产物中写明依赖顺序。如果`task.py current --source`已指向获批任务，则跳过创建。
 
 #### 1.1 Requirements and risk exploration `[required · repeatable]`
 
-Write requirements, exclusions, authorization, acceptance criteria, and unresolved decisions to `prd.md`. Complex or risky work also requires:
+在`prd.md`中记录要求、排除项、授权、验收标准和未决决定。复杂或高风险工作还必须包含：
 
-- `design.md`: ownership, contracts, alternatives, compatibility, rollback;
-- `implement.md`: ordered edits, verification commands, review/approval gates.
+- `design.md`：所有权、合同、备选方案、兼容性、回滚；
+- `implement.md`：有序修改、验证命令、审查/审批门禁。
 
-During planning:
+规划期间：
 
-- apply [governance](spec/governance/index.md) and [investigation/uncertainty](spec/guides/investigation-and-uncertainty.md);
-- identify protected files, main/worktree risk, CoT/state semantics, experiment/remote operations, and unrecognized dirty files;
-- ask one clear question when evidence cannot resolve a required decision;
-- never use a temporary stand-in or approximate mechanism without explicit approval.
+- 必须应用[governance](spec/governance/index.md)和[调查/不确定性](spec/guides/investigation-and-uncertainty.md)；
+- 必须识别受保护文件、main/worktree风险、CoT/state语义、实验/远程操作和无法识别的dirty文件；
+- 证据无法解决必要决定时，只提出一个清晰问题；
+- 未经明确批准，禁止使用临时替代或近似机制。
 
-For an experiment, set `task.json.meta.kind = "experiment"` and add every field in [the experiment task contract](spec/experiments/task-contract.md). Implementation approval still does not approve launch.
+实验任务必须设置`task.json.meta.kind = "experiment"`，并加入[实验任务合同](spec/experiments/task-contract.md)中的每个字段。实施审批仍不授权实验启动。
 
 #### 1.2 Evidence research `[optional · repeatable]`
 
-Research current source, tests, configs, data/metadata, module READMEs, external references, or runtime behavior. Persist durable findings under the task's `research/` directory. Distinguish verified facts, assumptions, and open decisions.
+研究当前源码、测试、配置、数据/元数据、模块READMEs、外部参考或runtime行为。把持久发现写入任务的`research/`目录。必须区分已核验事实、假设和未决决定。
 
-Use the [known-error index](../ai_rules/known_errors/README.md) to select individual relevant entries by touched path/concept. Search curated memory only when it may save investigation; before reliance, `get` the record and re-read its evidence. Raw `trellis mem` output is only a lead.
+使用[known-error索引](../ai_rules/known_errors/README.md)，按修改路径/概念选择单条相关记录。只有可能节省调查时才搜索curated memory；依赖前必须执行`get`并重新阅读证据。原始`trellis mem`输出只能作为线索。
 
 #### 1.3 Configure selected context `[required · once for sub-agent platforms]`
 
-Curate `implement.jsonl` and `check.jsonl` with repo-relative `{"file":"...","reason":"..."}` rows for relevant specs, task research, and selected known errors. Skip seed rows without `file`. Do not list source files merely because they will be edited, and do not inject all known errors.
+在`implement.jsonl`和`check.jsonl`中整理仓库相对路径的`{"file":"...","reason":"..."}`行，内容限于相关spec、任务研究和已选known errors。跳过没有`file`的seed行。禁止仅因即将修改就列入源码文件，也禁止注入全部known errors。
 
-- implement context: contracts/evidence needed to make the change;
-- check context: quality/semantic contracts and evidence needed to review it.
+- 实施上下文：完成修改所需的合同/证据；
+- 检查上下文：审查质量/语义所需的合同/证据。
 
-Inline platforms load the same evidence directly before editing and may skip JSONL curation.
+内联平台必须在编辑前直接加载同一批证据，可以跳过JSONL整理。
 
 #### 1.4 Final planning review and activate `[required · once]`
 
-Present final scope, artifacts, assumptions/open decisions, selected evidence, verification plan, and protected/experiment gates. Ask the human for implementation approval. Only after approval run:
+展示最终范围、任务产物、假设/未决决定、已选证据、验证计划，以及受保护文件/实验门禁。必须请求人类实施审批。只有获批后才能运行：
 
 ```bash
 python3 ./.trellis/scripts/task.py start <task>
 ```
 
-For experiments, activation approves implementation/preparation only. The exact launch contract receives a later separate approval immediately before execution.
+对实验而言，启动任务只批准实施/准备。精确启动合同必须在执行前再次取得单独审批。
 
 #### 1.5 Completion criteria
 
-- `prd.md` exists and matches current human requirements;
-- complex work has reviewed `design.md` and `implement.md`;
-- relevant specs/source/known errors and any relied-on memory evidence are selected;
-- sub-agent platforms have curated implement/check JSONL rows;
-- the human approved implementation and task status is `in_progress`;
-- experiment tasks have `meta.kind=experiment`, a complete contract, and no launch yet.
+- `prd.md`存在且符合当前人类要求；
+- 复杂工作已有经审查的`design.md`和`implement.md`；
+- 已选择相关spec/源码/known errors以及实际依赖的memory证据；
+- 子代理平台已有curated implement/check JSONL行；
+- 人类已批准实施，且任务状态为`in_progress`；
+- 实验任务已有`meta.kind=experiment`和完整合同，但尚未启动。
 
 ## Phase 2: Execute
 
-Goal: implement only the reviewed scope and build current verification evidence.
+目标：只实施经审查的范围，并建立最新验证证据。
 
 #### 2.1 Implement `[required · repeatable]`
 
-The main session normally dispatches `trellis-implement` with a prompt whose first line is `Active task: <path>`. The implement agent loads JSONL entries, then task artifacts, reads adjacent source/tests, edits directly, and runs focused checks. It does not spawn another implement/check agent.
+主会话通常启动`trellis-implement`，其prompt首行为`Active task: <path>`。实施agent加载JSONL条目和任务产物，阅读相邻源码/测试，直接编辑并运行针对性检查。它禁止启动另一个实施或检查agent。
 
-Before each edit:
+每次编辑前：
 
-- verify branch/worktree and complete dirty state;
-- read every affected layer's index Pre-Development Checklist and owning module docs;
-- preserve unrelated changes and protected content;
-- if source contradicts planning or scope expands, stop and return to Phase 1.
+- 核验branch/worktree和完整dirty状态；
+- 阅读每个受影响层索引中的开发前检查清单及所属模块文档；
+- 保留无关修改与受保护内容；
+- 如果源码与规划冲突或范围扩大，必须停止并返回Phase 1。
 
-After a verifiable subtask, critical fix, important design decision, experiment stage, rule change, or invalidated conclusion, apply `.agents/skills/on-progress/` immediately. Current details remain in the Trellis task; add only a concise branch milestone when warranted. Do not create new `ai_tasks/ai_progress/` files.
+完成可验证子任务、关键修复、重要设计决定、实验阶段、规则变更或推翻既有结论后，必须立即执行`.agents/skills/on-progress/`。当前细节留在Trellis任务中；只有确有必要时才添加简短branch里程碑。禁止创建新的`ai_tasks/ai_progress/`文件。
 
-For experiment launch, apply `on-experiment-start`, present the exact final contract/resources/command, and obtain explicit human approval. Monitor through healthy start. Any end state applies `on-experiment-end` in the current conversation.
+启动实验前必须执行`on-experiment-start`，展示精确最终合同/资源/命令并取得明确的人类批准。启动后持续监控到健康运行。任何终止状态都必须在当前对话中执行`on-experiment-end`。
 
 #### 2.2 Quality check `[required · repeatable]`
 
-The main session normally dispatches `trellis-check`; an implement sub-agent reports that need instead of spawning it. Review and fix:
+主会话通常启动`trellis-check`；实施子代理禁止自行启动它，只能报告需要该检查。必须审查并修复：
 
-- task PRD/design/plan compliance and scope;
-- each affected spec index Quality Check;
-- selected known errors and final-diff concept search;
-- focused tests plus affected cross-module/full-scope checks;
-- config/JSON/TOML/YAML parsing, Python/TypeScript/shell syntax as applicable;
-- Markdown links, generated-adapter contracts, task/context validation, and `git diff --check` for workflow changes;
-- protected files, memory hashes, product/experiment/output boundaries, and unrecognized dirty paths.
+- 任务PRD/设计/计划合规性与范围；
+- 每个受影响spec索引中的质量检查；
+- 已选known errors和最终diff概念搜索；
+- 针对性测试以及受影响的跨模块/全范围检查；
+- 适用的config/JSON/TOML/YAML解析和Python/TypeScript/shell语法；
+- 工作流变更涉及的Markdown链接、generated-adapter合同、任务/上下文验证和`git diff --check`；
+- 受保护文件、memory hashes、产品/实验/输出边界和无法识别的dirty路径。
 
-Report exact commands and results. Missing dependencies, unavailable hardware, or an unrun platform reload/probe remain explicit unverified items.
+必须报告精确命令与结果。缺失依赖、不可用硬件或未运行的平台reload/probe都必须明确标记为未验证项。
 
 #### 2.3 Roll back or re-plan `[on demand]`
 
-- requirement/design defect or new authorization need → update artifacts, ask for review, then reactivate execution;
-- implementation defect → revert only this task's changes, preserving unrelated work, then reimplement;
-- missing evidence → research read-only and persist findings;
-- unsafe/ambiguous condition → stop and ask.
+- 要求/设计缺陷或需要新授权 → 更新任务产物、请求审查，再重新启动实施；
+- 实施缺陷 → 只回滚本任务修改，保留无关工作，然后重新实施；
+- 证据缺失 → 执行只读研究并持久化发现；
+- 存在不安全/歧义条件 → 停止并询问。
 
 ## Phase 3: Finish
 
-Goal: make the full result reviewable, preserve useful knowledge without duplication, and separate work commits from bookkeeping.
+目标：使完整结果可审查，在不重复的前提下保留有用知识，并分离工作提交与记账。
 
 #### 3.2 Debug retrospective `[on demand]`
 
-If the same issue required repeated fixes, classify the root cause and why earlier attempts failed. Add a known error only for a confirmed occurred failure. Promote a stable mandatory prevention rule into the owning spec; do not use memory or known errors as task logs.
+同一问题需要反复修复时，必须归类根因以及此前尝试失败的原因。只有已经发生且确认的失败才能新增known error。稳定且强制的预防规则应提升到所属spec；禁止把memory或known error当作任务日志。
 
 #### 3.3 Progress, memory, and spec review `[required · once]`
 
-- Complete `implement.md`/task checklist and record verification evidence/open risks.
-- Add or update one concise `AI_branch_progress.md` milestone when this task changes branch-level state.
-- Evaluate every memory used: `get`, re-read evidence, then upvote only if correct and genuinely helpful. Correct wrong entries via the skill. Never run human-only approval.
-- Add new memory only for a compact reusable lesson not already clear in specs/docs.
-- Update specs for stable cross-task rules or newly established contracts. Module-local behavior stays in module README.
+- 完成`implement.md`/任务检查清单，并记录验证证据/未决风险。
+- 只有本任务改变branch级状态时，才新增或更新一条简短`AI_branch_progress.md`里程碑。
+- 评估每条使用过的memory：执行`get`、重新阅读证据；只有内容正确且确实有帮助时才upvote。必须通过skill纠正错误记录。禁止运行human-only审批。
+- 只有紧凑、可复用且spec/文档尚未清晰表达的经验才能新增memory。
+- 稳定的跨任务规则或新建立的合同必须更新spec。模块局部行为留在模块README。
 
 #### 3.4 Complete-diff review and work commits `[required · once]`
 
-Run the final full-scope checks and inspect:
+运行最终全范围检查并查看：
 
 ```bash
 git status --porcelain
@@ -243,25 +243,25 @@ git diff --check
 git log --oneline -5
 ```
 
-Present once:
+一次性展示：
 
-- every changed file grouped by purpose;
-- semantic mapping to task acceptance criteria;
-- exact validation evidence and unverified items;
-- intentional generated/Trellis update conflicts;
-- unrecognized dirty files excluded from work commits;
-- proposed logical work commit groups/messages.
+- 按用途分组的全部修改文件；
+- 与任务验收标准的语义对应关系；
+- 精确验证证据和未验证项；
+- 有意的生成内容/Trellis update冲突；
+- 排除在工作提交之外的未知dirty文件；
+- 建议的逻辑工作commit分组/消息。
 
-Ask for one-shot human commit approval. If approved, commit only the listed work groups; do not amend, push, merge, or mix archive/journal bookkeeping into them. If rejected or the human chooses manual commits, stop committing and follow that decision. Platform/task role restrictions may forbid commit entirely; the higher-priority restriction wins.
+必须请求一次性的人类commit审批。获批后只能提交列出的工作组；禁止amend、push、merge，也禁止混入归档/会话日志记账。如果人类拒绝或选择手工提交，则停止commit并遵循其决定。平台/任务角色的禁止提交限制具有更高优先级。
 
 #### 3.5 Finish-work review and bookkeeping `[required · once]`
 
-After work commits are complete and the worktree is otherwise in the reviewed state, present what `/trellis:finish-work` will archive and journal, including its automatic bookkeeping commits (`session_auto_commit: true`). Obtain human acceptance before invoking finish-work. Archive and journal commits occur after work commits, never before the complete-diff review.
+工作提交完成且worktree处于已审查状态后，展示`/trellis:finish-work`将归档和记录的内容，包括自动记账提交（`session_auto_commit: true`）。必须在调用finish-work前取得人类验收。归档和会话日志提交只能发生在工作提交之后，禁止早于完整diff审查。
 
 ## Platform consistency and upgrade boundary
 
-- Pi: `.pi/extensions/trellis`, prompts, and agents. The extension uses callback/session `ctx.cwd` as active root and includes root in context caches; `process.cwd()` is bootstrap fallback only. Run `/reload` after adapter changes before a live sub-agent probe.
-- Claude Code: `.claude/hooks`, commands, agents, and `.claude/skills -> ../.agents/skills`.
-- Codex: `.codex/hooks`, agents, config, and shared `.agents/skills`; global native-hook enablement/approval is a user machine action.
-- Repository-owned Nimloth rules live in `.trellis/spec/` and non-`trellis-*` project skills. Do not put private rules into bundled upstream `trellis-*` skills.
-- `.trellis/workflow.md` and the Pi root adapter intentionally diverge from generated defaults. Review every `trellis update --dry-run` conflict; never hand-edit `.trellis/.template-hashes.json` or runtime session state.
+- Pi：`.pi/extensions/trellis`、prompts和agents。该extension使用callback/session `ctx.cwd`作为活动根目录，并将根目录纳入context cache key；`process.cwd()`只能作为启动回退。Adapter变更后，必须先运行`/reload`再执行实时子代理probe。
+- Claude Code：`.claude/hooks`、commands、agents和`.claude/skills -> ../.agents/skills`。
+- Codex：`.codex/hooks`、agents、config和共享`.agents/skills`；启用/批准全局原生hook是用户机器操作。
+- 仓库自有Nimloth规则位于`.trellis/spec/`和非`trellis-*`项目skills中。禁止把私有规则放入上游随附的`trellis-*` skills。
+- `.trellis/workflow.md`和Pi根目录adapter有意偏离生成的默认模板。每次`trellis update --dry-run`都必须审查冲突；禁止手工编辑`.trellis/.template-hashes.json`或runtime session state。

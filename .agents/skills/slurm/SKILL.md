@@ -1,60 +1,58 @@
 ---
 name: slurm
 description: >-
-  Guides Nimloth Slurm and remote GPU operations using the machine-specific
-  .local server contract. Use for resource queries, hold allocations, srun,
-  remote worktrees, or any Slurm experiment.
+  按机器专用的.local服务器合同指导Nimloth Slurm与远程GPU操作。资源查询、hold allocation、srun、远程worktree或任何Slurm实验均须使用。
 ---
 
 # Slurm
 
-## Trigger
+## 触发条件
 
-Use for SSH/server access, Slurm resource queries/submission, hold allocations, `srun`, remote GPU/long jobs, or remote worktree synchronization.
+SSH/服务器访问、Slurm资源查询/提交、hold allocation、`srun`、远程GPU/长job或远程worktree同步均须使用本skill。
 
-## Authority and machine boundary
+## 权威合同与机器边界
 
-Read before any remote action:
+执行任何远程操作前，必须阅读：
 
-- [experiment index](../../../.trellis/spec/experiments/index.md);
-- [launch/lifecycle contract](../../../.trellis/spec/experiments/launch-and-lifecycle.md);
-- [experiment task contract](../../../.trellis/spec/experiments/task-contract.md);
-- `.local/SERVER.md` for current host aliases, remote paths, credentials, partitions, and machine-specific commands.
+- [实验索引](../../../.trellis/spec/experiments/index.md)；
+- [启动/生命周期合同](../../../.trellis/spec/experiments/launch-and-lifecycle.md)；
+- [实验任务合同](../../../.trellis/spec/experiments/task-contract.md)；
+- `.local/SERVER.md`，获取当前主机别名、远程路径、凭据、partitions和机器专用命令。
 
-This repository skill contains only portable behavior. Do not copy host names, absolute server paths, credentials, current node inventory, or transient cluster facts into it; keep them under `.local/`.
+本仓库skill只包含可移植行为。禁止把主机名、绝对服务器路径、凭据、当前节点清单或临时集群事实复制到本文件；这些信息必须留在`.local/`下。
 
-## Refusal gates
+## 拒绝门禁
 
-- Remote/GPU/Slurm work requires a Trellis experiment task with `task.json.meta.kind = "experiment"`.
-- Apply `on-experiment-start`; missing parameters or data/checkpoint/output semantics stop the operation.
-- Ask the human to confirm partition and total GPU resources.
-- Present the exact command, train/freeze/objectives, checkpoint, output, resume, monitoring, and resource/time estimate; obtain separate launch approval.
-- Local changes must be committed and the remote worktree must point to that exact commit. Never edit code directly on the server.
+- 远程/GPU/Slurm工作必须使用含有`task.json.meta.kind = "experiment"`的Trellis实验任务。
+- 必须执行`on-experiment-start`；参数或数据/checkpoint/output语义缺失时必须停止操作。
+- 必须请人类确认partition和GPU资源总量。
+- 必须展示精确命令、train/freeze/objectives、checkpoint、output、恢复方式、监控方式以及资源/时间估算，并取得单独的启动审批。
+- 本地修改必须已经commit，远程worktree必须指向该精确commit。禁止直接在服务器上修改生产代码。
 
-## Connection and resources
+## 连接与资源
 
-Use the current commands/aliases documented in `.local/SERVER.md`. If connection times out and local documentation identifies VPN as the likely cause, stop and ask the human to restore connectivity; do not loop retries.
+使用`.local/SERVER.md`当前记录的命令/别名。如果连接超时，且本地文档指出VPN可能是原因，必须停止并请人类恢复连接；禁止循环重试。
 
-Query cluster state before submission and again immediately before replacing or launching a pending job. Prefer the repository's local wrapper when available:
+提交前以及替换或启动等待中job的紧邻时刻，必须查询集群状态。存在仓库本地封装脚本时优先使用：
 
 ```bash
 .local/scripts/query-resources.sh
 .local/scripts/query-resources.sh --only-free-gpu
 ```
 
-Do not infer availability from stale notes or a previous command.
+禁止根据过期记录或先前命令推断当前可用性。
 
-## Hold allocation and execution
+## Hold allocation 与执行
 
-Unless the approved task requires another topology, prefer one bash/hold allocation and launch work inside it with `srun`. One hold reduces requeue waste after script failures; several simultaneous holds can trigger QoS contention.
+除非获批任务要求其他拓扑，否则优先申请一个bash/hold allocation，并通过`srun`在其中启动工作。单个hold可减少脚本失败后的requeue浪费；多个并发hold可能触发QoS争用。
 
 ```bash
 srun --jobid <approved-job-id> --pty <command>
 srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w <allocated-node> bash -lc '<approved-command>'
 ```
 
-Do not hard-code a node or fixed topology merely for convenience. Use the human-approved total resources and current availability while preserving the training/runtime topology contract.
+禁止仅为方便而硬编码节点或固定拓扑。必须使用人类批准的资源总量和当前可用资源，同时保持训练/runtime拓扑合同。
 
-## Monitor and close
+## 监控与结束
 
-Monitor scheduler state, logs, resources, metrics, output creation, and experiment identity until the job is healthy or terminal. Completion, failure, cancellation, or pause immediately triggers `on-experiment-end`; record scheduler/runtime evidence, outputs, metrics/limits, checkpoint/resume, task progress, and experiment-group progress in the current conversation.
+必须监控调度器状态、日志、资源、指标、输出创建和实验标识，直到job健康运行或进入终止状态。完成、失败、取消或暂停必须立即触发`on-experiment-end`；在当前对话中记录调度器/runtime证据、输出、指标/限制、checkpoint/恢复方式、任务进度和实验组进度。

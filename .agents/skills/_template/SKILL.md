@@ -1,20 +1,20 @@
 ---
 name: your-skill-name
 description: >-
-  一句话说明 skill 做什么、何时触发。第三人称；包含关键词以便 agent 发现。
+  一句话说明skill做什么、何时触发。使用第三人称；包含关键词以便agent发现。
 ---
 
-# Your Skill Name
+# Skill 名称
 
 ## 触发条件
 
-<!-- 列出 agent 应在什么情况下启用本 skill -->
+<!-- 列出agent应在什么情况下启用本skill -->
 
 - TODO
 
 ## 执行步骤
 
-<!-- 分步指令；复杂内容可放到同目录下的 reference.md -->
+<!-- 分步指令；复杂内容可放到同目录下的reference.md -->
 
 1. TODO
 

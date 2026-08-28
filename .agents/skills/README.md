@@ -1,28 +1,28 @@
-# Nimloth Project Skills
+# Nimloth 项目 Skills
 
-This is the repository-owned skill layer shared by Pi, Claude Code, and Codex. `.claude/skills` points here; other platforms discover `.agents/skills/` directly.
+这是仓库自有的skill层，由Pi、Claude Code与Codex共享。`.claude/skills`指向这里；其他平台直接发现`.agents/skills/`。
 
-## Authority boundary
+## 权限边界
 
-- Nimloth rules live in [`AGENTS.md`](../../AGENTS.md), [`.trellis/workflow.md`](../../.trellis/workflow.md), and [`.trellis/spec/`](../../.trellis/spec/).
-- Non-`trellis-*` directories below are project-owned operational capabilities.
-- `trellis-*` skills are upstream-managed Trellis assets. Do not add Nimloth-private rules to them; `trellis update` may replace or flag them.
-- Machine/server-specific facts remain under ignored `.local/`, especially `.local/SERVER.md` and local memory. Portable skills are committed entity directories, not absolute symlinks to another worktree.
+- Nimloth规则位于[`AGENTS.md`](../../AGENTS.md)、[`.trellis/workflow.md`](../../.trellis/workflow.md)和[`.trellis/spec/`](../../.trellis/spec/)。
+- 下列非`trellis-*`目录是项目自有的操作能力。
+- `trellis-*` skills是由上游管理的Trellis资产。禁止向其中加入Nimloth私有规则；`trellis update`可能替换或标记这些内容。
+- 机器/服务器专用事实必须留在被忽略的`.local/`下，尤其是`.local/SERVER.md`和本地memory。可移植skill必须是已提交的实体目录，禁止使用指向其他worktree的绝对符号链接。
 
-## Project-owned skills
+## 项目自有 skills
 
-| Skill | Purpose | Live authority |
+| Skill | 用途 | 当前权威合同 |
 |---|---|---|
-| `memory/` | evidence-backed, human-reviewed durable lessons | [`governance/tasks-progress-and-memory.md`](../../.trellis/spec/governance/tasks-progress-and-memory.md) |
-| `on-progress/` | milestone/task/progress/memory routing | same governance spec + active task |
-| `on-experiment-start/` | separate experiment launch gate | [`experiments/`](../../.trellis/spec/experiments/index.md) |
-| `on-experiment-end/` | mandatory terminal run recording | [`experiments/launch-and-lifecycle.md`](../../.trellis/spec/experiments/launch-and-lifecycle.md) |
-| `git-worktree/` | branch worktree creation/validation | [`governance/git-worktrees-and-protected-files.md`](../../.trellis/spec/governance/git-worktrees-and-protected-files.md) |
-| `slurm/` | portable Slurm lifecycle; machine details from `.local/` | [`experiments/launch-and-lifecycle.md`](../../.trellis/spec/experiments/launch-and-lifecycle.md) |
-| `_template/` | project skill template | this README |
+| `memory/` | 有证据且经人类审查的持久经验 | [`governance/tasks-progress-and-memory.md`](../../.trellis/spec/governance/tasks-progress-and-memory.md) |
+| `on-progress/` | 里程碑、任务、进度与memory路由 | 同一governance spec与当前任务 |
+| `on-experiment-start/` | 单独的实验启动门禁 | [`experiments/`](../../.trellis/spec/experiments/index.md) |
+| `on-experiment-end/` | 强制记录实验终止状态 | [`experiments/launch-and-lifecycle.md`](../../.trellis/spec/experiments/launch-and-lifecycle.md) |
+| `git-worktree/` | 创建并验证branch worktree | [`governance/git-worktrees-and-protected-files.md`](../../.trellis/spec/governance/git-worktrees-and-protected-files.md) |
+| `slurm/` | 可移植的Slurm生命周期；机器细节来自`.local/` | [`experiments/launch-and-lifecycle.md`](../../.trellis/spec/experiments/launch-and-lifecycle.md) |
+| `_template/` | 项目skill模板 | 本README |
 
-## New project capability
+## 新建项目能力
 
-Create a repository-owned `.agents/skills/<name>/SKILL.md` with valid frontmatter and link it to live Trellis authority. Do not add it to `.gitignore` unless the entire capability is intentionally machine-specific; machine-specific configuration should normally be placed under `.local/` while the portable workflow remains versioned.
+新建仓库自有的`.agents/skills/<name>/SKILL.md`，提供有效frontmatter，并链接到当前Trellis权威合同。除非整个能力确定只适用于单台机器，否则禁止把它加入`.gitignore`；通常应把机器专用配置放在`.local/`下，同时将可移植工作流纳入版本控制。
 
-Skill names use lowercase letters, digits, and hyphens, up to 64 characters.
+Skill名称只能使用小写字母、数字和连字符，最长64个字符。

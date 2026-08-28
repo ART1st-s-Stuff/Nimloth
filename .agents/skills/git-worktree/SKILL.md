@@ -1,37 +1,35 @@
 ---
 name: git-worktree
 description: >-
-  Creates and validates Nimloth git worktrees, enforces branch-to-path naming,
-  and shares machine-specific .local state. Use before local repository changes,
-  when creating a branch worktree, or when a worktree lacks .local.
+  创建并验证Nimloth git worktree，强制branch与路径的命名关系，并共享机器专用的.local状态。在本地修改仓库、创建branch worktree或worktree缺少.local时使用。
 ---
 
 # Git Worktree
 
-## Trigger
+## 触发条件
 
-Use before local repository mutation, worktree creation, or repair of missing shared `.local/` state.
+在本地修改仓库、创建worktree或修复缺失的共享`.local/`状态之前使用。
 
-## Authority
+## 权威合同
 
-Read:
+必须阅读：
 
-- [`AGENTS.md`](../../../AGENTS.md) for the direct safety kernel;
-- [Git/worktree/protected-file spec](../../../.trellis/spec/governance/git-worktrees-and-protected-files.md);
-- [authority and safety](../../../.trellis/spec/governance/authority-and-safety.md).
+- [`AGENTS.md`](../../../AGENTS.md)，获取直接安全内核；
+- [Git/worktree/受保护文件spec](../../../.trellis/spec/governance/git-worktrees-and-protected-files.md)；
+- [权限与安全](../../../.trellis/spec/governance/authority-and-safety.md)。
 
-Rules:
+规则：
 
-- local path is `../nimloth-<branch-name>` with `/` replaced by `-`;
-- never edit the worktree holding `main` unless the human prompt explicitly permits it;
-- verify actual path and branch; do not infer branch from the directory name;
-- every repository-mutating command uses explicit tool cwd or `cd "$WT_DIR" && ...` in that same invocation;
-- portable project skills under `.agents/skills/` are versioned entities, not symlinks to another clone/worktree;
-- only machine-specific state remains under ignored `.local/`.
+- 本地路径为`../nimloth-<branch-name>`，并将`/`替换为`-`；
+- 除非人类prompt明确允许，否则禁止修改持有`main`的worktree；
+- 必须核验实际路径和branch；禁止根据目录名推断branch；
+- 每条会修改仓库的命令，都必须在同一次调用中使用明确的工具cwd，或先执行`cd "$WT_DIR" && ...`；
+- `.agents/skills/`下的可移植项目skills必须是纳入版本控制的实体，禁止使用指向其他克隆/worktree的符号链接；
+- 只有机器专用状态可以留在被忽略的`.local/`下。
 
-## Create
+## 创建
 
-Run from the repository/worktree that owns shared local state:
+从持有共享本地状态的仓库/worktree运行：
 
 ```bash
 BRANCH="feat/my-feature"
@@ -42,9 +40,9 @@ git status --short --branch
 git worktree add -b "$BRANCH" "$WT_DIR" <approved-start-point>
 ```
 
-If the branch already exists, omit `-b` and pass the existing branch. Do not guess the start point or switch important branches when strategy is unclear.
+如果branch已经存在，省略`-b`并传入现有branch。策略不明确时，禁止猜测起点或切换重要branch。
 
-## Set up shared local state
+## 配置共享本地状态
 
 ```bash
 MAIN="../nimloth"  # replace with the actual shared-local-state worktree
@@ -52,9 +50,9 @@ cd "$WT_DIR" && \
   ln -sfn "$MAIN/.local" .local
 ```
 
-Do not symlink `git-worktree`, `slurm`, or other portable repository skills: they arrive through Git. If a future skill is intentionally machine-specific, place it under `.local/` rather than adding an absolute `.agents/skills/` symlink.
+禁止为`git-worktree`、`slurm`或其他可移植仓库skills创建符号链接：它们必须通过Git获得。若未来某项skill确定只适用于单台机器，应把它放在`.local/`下，而不是添加指向`.agents/skills/`的绝对符号链接。
 
-Verify in the same target-bound command:
+在同一条绑定目标的命令中验证：
 
 ```bash
 cd "$WT_DIR" && \
@@ -66,17 +64,17 @@ cd "$WT_DIR" && \
   test -f .agents/skills/slurm/SKILL.md
 ```
 
-## Remote worktrees
+## 远程 worktree
 
-Read `.local/SERVER.md` and the [`slurm` skill](../slurm/SKILL.md). Keep remote code at the approved commit and never edit production code directly on the server.
+阅读`.local/SERVER.md`和[`slurm` skill](../slurm/SKILL.md)。远程代码必须保持在已批准commit，禁止直接在服务器上修改生产代码。
 
-## Cleanup
+## 清理
 
-Before removal, verify the target has no uncommitted or unpushed important work. Then run from the controlling worktree:
+移除前，必须确认目标中没有未提交或未push的重要工作。然后从控制该目标的worktree运行：
 
 ```bash
 git worktree remove "$WT_DIR"
 git worktree prune
 ```
 
-Never use `--force` without explicit approval for the exact verified paths.
+未经针对已核验精确路径的明确批准，禁止使用`--force`。
