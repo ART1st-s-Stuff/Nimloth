@@ -12,12 +12,16 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+
+sys.dont_write_bytecode = True
 
 HERE = Path(__file__).resolve().parent
 PAYLOAD_TOOL = HERE / "payload_archive.py"
@@ -73,7 +77,9 @@ def init_repo(path: Path) -> None:
     path.mkdir()
     git(path, "init", "-b", "main")
     identity(path)
-    (path / ".gitignore").write_text(".cache/\n.local/\n", encoding="utf-8")
+    (path / ".gitignore").write_text(
+        ".cache/\n.local/\nignored-repo/\n.special/\n", encoding="utf-8"
+    )
     (path / "tracked.txt").write_text("base\n", encoding="utf-8")
     (path / "rename-me.txt").write_text("rename-base\n", encoding="utf-8")
     git(path, "add", ".gitignore", "tracked.txt", "rename-me.txt")
@@ -97,6 +103,61 @@ def dirty(repo: Path, *, prefix: str = "") -> None:
     ignored.parent.mkdir()
     ignored.write_bytes((prefix + "ignored").encode() + b"\0")
 
+    embedded = repo / "ignored-repo"
+    (embedded / ".git/objects/pack").mkdir(parents=True)
+    (embedded / ".git/refs/heads").mkdir(parents=True)
+    (embedded / ".git/HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+    (embedded / ".git/config").write_text(
+        "[core]\n\trepositoryformatversion = 0\n\tbare = false\n", encoding="utf-8"
+    )
+    (embedded / "empty-dir").mkdir()
+    (embedded / "payload.bin").write_bytes((prefix + "embedded").encode() + b"\0")
+    os.chmod(embedded, 0o750)
+    os.chmod(embedded / "empty-dir", 0o711)
+    outside = repo.parent / (repo.name + "-outside-target")
+    outside.mkdir()
+    (outside / "MUST_NOT_ARCHIVE").write_text("outside\n", encoding="utf-8")
+    os.symlink(outside, embedded / "outside-dir-link")
+
+
+def normalized_symlink_target(path: Path) -> str:
+    return re.sub(
+        r"/tmp/nimloth-payload-archive-proof-[^/]+",
+        "$SANDBOX",
+        os.readlink(path),
+    )
+
+
+def tree_fingerprint(root: Path) -> bytes:
+    rows: list[tuple[str, str, int, str]] = []
+    for directory, names, files in os.walk(root, topdown=True, followlinks=False):
+        base = Path(directory)
+        kept: list[str] = []
+        for name in sorted(names):
+            path = base / name
+            relative = path.relative_to(root).as_posix()
+            if path.is_symlink():
+                rows.append((relative, "symlink", 0, normalized_symlink_target(path)))
+            else:
+                rows.append((relative, "directory", path.stat().st_mode & 0o7777, ""))
+                kept.append(name)
+        names[:] = kept
+        for name in sorted(files):
+            path = base / name
+            relative = path.relative_to(root).as_posix()
+            if path.is_symlink():
+                rows.append((relative, "symlink", 0, normalized_symlink_target(path)))
+            else:
+                rows.append(
+                    (
+                        relative,
+                        "file",
+                        path.stat().st_mode & 0o7777,
+                        hashlib.sha256(path.read_bytes()).hexdigest(),
+                    )
+                )
+    return json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()
+
 
 def payload_fingerprint(repo: Path) -> str:
     digest = hashlib.sha256()
@@ -109,6 +170,7 @@ def payload_fingerprint(repo: Path) -> str:
     for relative in ("payload dir/extra.txt", ".cache/state.bin"):
         digest.update((repo / relative).read_bytes())
     digest.update(os.fsencode(os.readlink(repo / "payload dir/extra-link")))
+    digest.update(tree_fingerprint(repo / "ignored-repo"))
     return digest.hexdigest()
 
 
@@ -177,18 +239,73 @@ def prove_root_case(tool: Any, sandbox: Path) -> dict[str, Any]:
         "symlink path component",
     )
 
-    manifest = tool.capture(
-        repo,
-        archive,
-        include_ignored=True,
-        root_excludes=(),
+    special = repo / "ignored-repo"
+    os.mkfifo(special / "fifo")
+    expect_error(
+        lambda: tool.capture(
+            repo,
+            sandbox / "unsupported-special",
+            include_ignored=True,
+            root_excludes=(),
+        ),
+        "socket/device/FIFO",
     )
+    (special / "fifo").unlink()
+    os.link(repo / "ignored-repo/payload.bin", special / "hardlink")
+    expect_error(
+        lambda: tool.capture(
+            repo,
+            sandbox / "unsupported-hardlink",
+            include_ignored=True,
+            root_excludes=(),
+        ),
+        "hardlinked payload",
+    )
+    (special / "hardlink").unlink()
+
+    local_mode = stat.S_IMODE((repo / ".local").stat().st_mode)
+    os.chmod(repo / ".local", 0)
+    try:
+        manifest = tool.capture(
+            repo,
+            archive,
+            include_ignored=True,
+            root_excludes=(),
+        )
+    finally:
+        os.chmod(repo / ".local", local_mode)
     if tool.validate_archive(archive):
         raise ProofError("fresh root archive did not validate")
     if any(extra["path"].startswith(".local") for scope in manifest["scopes"] for extra in scope["extras"]):
         raise ProofError(".local entered archive manifest")
     if (archive / "files/0/.local").exists():
         raise ProofError(".local entered archive payload")
+    root_scope = manifest["scopes"][0]
+    archived_leaves = {entry["path"] for entry in root_scope["extras"]}
+    archived_directories = {entry["path"]: entry for entry in root_scope["directories"]}
+    required_leaves = {
+        "ignored-repo/.git/HEAD",
+        "ignored-repo/.git/config",
+        "ignored-repo/payload.bin",
+        "ignored-repo/outside-dir-link",
+    }
+    required_directories = {
+        "ignored-repo",
+        "ignored-repo/.git",
+        "ignored-repo/.git/objects/pack",
+        "ignored-repo/.git/refs/heads",
+        "ignored-repo/empty-dir",
+    }
+    if not required_leaves.issubset(archived_leaves):
+        raise ProofError("embedded ignored Git repo leaves were not expanded")
+    if not required_directories.issubset(archived_directories):
+        raise ProofError("ignored/empty directory records were not captured")
+    if archived_directories["ignored-repo"]["mode"] != 0o750:
+        raise ProofError("ignored root directory mode was not captured")
+    if archived_directories["ignored-repo/empty-dir"]["mode"] != 0o711:
+        raise ProofError("empty directory mode was not captured")
+    if any(path.name == "MUST_NOT_ARCHIVE" for path in archive.rglob("*")):
+        raise ProofError("archive followed a directory symlink outside the source")
 
     expect_error(lambda: tool.clean(repo, archive), "approved_exact_clean")
     expect_error(lambda: tool.restore(repo, archive), "approved_exact_restore")
@@ -288,6 +405,25 @@ def prove_root_case(tool: Any, sandbox: Path) -> dict[str, Any]:
     # removes or rmdirs unlisted filesystem entries.
     if not (repo / "payload dir").is_dir() or not (repo / ".cache").is_dir():
         raise ProofError("clean removed an unlisted parent directory")
+    for relative in required_directories:
+        if not (repo / relative).is_dir():
+            raise ProofError(f"clean did not preserve listed directory: {relative}")
+    if (repo / "ignored-repo/.git/HEAD").exists() or (
+        repo / "ignored-repo/outside-dir-link"
+    ).exists():
+        raise ProofError("clean retained listed ignored-directory leaves")
+    if stat.S_IMODE((repo / "ignored-repo").stat().st_mode) != 0o750:
+        raise ProofError("clean changed ignored directory mode")
+    if stat.S_IMODE((repo / "ignored-repo/empty-dir").stat().st_mode) != 0o711:
+        raise ProofError("clean changed empty directory mode")
+    (repo / "ignored-repo/unlisted-empty").mkdir()
+    expect_error(
+        lambda: tool.restore(repo, archive, approved_exact_restore=True),
+        "unlisted existing directory",
+    )
+    if (repo / "ignored-repo/.git/HEAD").exists():
+        raise ProofError("restore mutated before rejecting unlisted empty directory")
+    (repo / "ignored-repo/unlisted-empty").rmdir()
 
     outside = sandbox / "symlink-parent-outside"
     outside.mkdir()
@@ -331,12 +467,19 @@ def prove_root_case(tool: Any, sandbox: Path) -> dict[str, Any]:
     after = payload_fingerprint(repo)
     if before != after or not (repo / ".local/SECRET").is_file():
         raise ProofError("root roundtrip fingerprint/.local changed")
+    if stat.S_IMODE((repo / "ignored-repo").stat().st_mode) != 0o750 or stat.S_IMODE(
+        (repo / "ignored-repo/empty-dir").stat().st_mode
+    ) != 0o711:
+        raise ProofError("restore did not reconstruct ignored directory modes")
     return {
         "fingerprint_before": before,
         "fingerprint_after": after,
         "archive_integrity_validated": True,
         "scope_count": len(manifest["scopes"]),
         "extra_count": sum(len(scope["extras"]) for scope in manifest["scopes"]),
+        "directory_count": sum(
+            len(scope["directories"]) for scope in manifest["scopes"]
+        ),
     }
 
 
@@ -345,7 +488,9 @@ def prove_cross_worktree_case(tool: Any, sandbox: Path) -> dict[str, Any]:
     subsource.mkdir()
     git(subsource, "init", "-b", "main")
     identity(subsource)
-    (subsource / ".gitignore").write_text(".cache/\n", encoding="utf-8")
+    (subsource / ".gitignore").write_text(
+        ".cache/\nignored-repo/\n.special/\n", encoding="utf-8"
+    )
     (subsource / "tracked.txt").write_text("sub-base\n", encoding="utf-8")
     (subsource / "rename-me.txt").write_text("sub-rename-base\n", encoding="utf-8")
     git(subsource, "add", ".")
@@ -425,6 +570,9 @@ def prove_cross_worktree_case(tool: Any, sandbox: Path) -> dict[str, Any]:
         "archive_integrity_validated": True,
         "scope_count": len(manifest["scopes"]),
         "extra_count": sum(len(scope["extras"]) for scope in manifest["scopes"]),
+        "directory_count": sum(
+            len(scope["directories"]) for scope in manifest["scopes"]
+        ),
     }
 
 
@@ -458,6 +606,13 @@ def prove() -> dict[str, Any]:
                 "additional_payload_exclusions_rejected": True,
                 "archive_inside_worktree_rejected": True,
                 "archive_symlink_parent_rejected": True,
+                "unsupported_socket_device_fifo_rejected": True,
+                "hardlinked_payload_rejected": True,
+                "ignored_directory_tree_expanded": True,
+                "empty_directory_and_modes_roundtrip": True,
+                "unlisted_existing_empty_directory_blocks_restore": True,
+                "embedded_git_files_archived_without_git_commands": True,
+                "directory_symlink_not_followed": True,
                 "local_excluded_and_preserved": True,
                 "path_traversal_rejected": True,
                 "archive_symlink_patch_rejected": True,

@@ -178,30 +178,84 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def path_metadata(path: Path) -> dict[str, Any]:
-    metadata = path.lstat()
-    mode = stat.S_IMODE(metadata.st_mode)
-    if stat.S_ISLNK(metadata.st_mode):
+def stat_signature(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def path_metadata(path: Path, *, reject_hardlinks: bool = False) -> dict[str, Any]:
+    before = path.lstat()
+    mode = stat.S_IMODE(before.st_mode)
+    if stat.S_ISLNK(before.st_mode):
         target = os.readlink(path)
-        return {
+        result = {
             "kind": "symlink",
-            "size_bytes": metadata.st_size,
+            "size_bytes": before.st_size,
             "sha256": sha256_bytes(os.fsencode(target)),
             "mode": mode,
         }
-    if stat.S_ISREG(metadata.st_mode):
-        return {
+    elif stat.S_ISREG(before.st_mode):
+        if reject_hardlinks and before.st_nlink != 1:
+            raise ArchiveError(f"hardlinked payload is unsupported: {path}")
+        result = {
             "kind": "file",
-            "size_bytes": metadata.st_size,
+            "size_bytes": before.st_size,
             "sha256": sha256_file(path),
             "mode": mode,
         }
-    raise ArchiveError(f"payload must be a regular file or symlink: {path}")
+    else:
+        raise ArchiveError(
+            f"payload must be a regular file or symlink; socket/device/FIFO are forbidden: {path}"
+        )
+    after = path.lstat()
+    if stat_signature(before) != stat_signature(after):
+        raise ArchiveError(f"payload changed identity/content metadata while reading: {path}")
+    return result
+
+
+def source_leaf_metadata(path: Path) -> dict[str, Any]:
+    return {**path_metadata(path, reject_hardlinks=True), "filesystem": path_identity(path)}
+
+
+def directory_metadata(path: Path) -> dict[str, Any]:
+    before = path.lstat()
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+        raise ArchiveError(f"payload directory must be a real non-symlink directory: {path}")
+    after = path.lstat()
+    if stat_signature(before) != stat_signature(after):
+        raise ArchiveError(f"payload directory changed while reading: {path}")
+    return {
+        "mode": stat.S_IMODE(before.st_mode),
+        "filesystem": path_identity(path),
+    }
+
+
+def git_payload_records(payload: bytes) -> list[tuple[str, bool]]:
+    records: list[tuple[str, bool]] = []
+    for item in payload.split(b"\0"):
+        if not item:
+            continue
+        rendered = os.fsdecode(item)
+        is_directory = rendered.endswith("/")
+        normalized = rendered[:-1] if is_directory else rendered
+        if not normalized or normalized.endswith("/"):
+            raise ArchiveError(f"Git payload directory record is not normalized: {rendered!r}")
+        records.append((safe_relative(normalized, "Git payload path"), is_directory))
+    return records
 
 
 def nul_paths(payload: bytes) -> list[str]:
-    values = [os.fsdecode(item) for item in payload.split(b"\0") if item]
-    return [safe_relative(value, "Git payload path") for value in values]
+    records = git_payload_records(payload)
+    if any(is_directory for _path, is_directory in records):
+        raise ArchiveError("directory record is not valid in this Git output")
+    return [path for path, _is_directory in records]
 
 
 def submodule_scopes(root: Path) -> list[tuple[str, Path]]:
@@ -291,6 +345,191 @@ def path_is_excluded(relative: str, prefixes: Iterable[str]) -> bool:
     return any(relative == prefix or relative.startswith(prefix + "/") for prefix in prefixes)
 
 
+def merge_leaf(
+    leaves: dict[str, dict[str, Any]],
+    relative: str,
+    record: dict[str, Any],
+) -> None:
+    previous = leaves.get(relative)
+    if previous is not None and previous != record:
+        raise ArchiveError(f"payload leaf changed between overlapping records: {relative}")
+    leaves[relative] = record
+
+
+def merge_directory(
+    directories: dict[str, dict[str, Any]],
+    relative: str,
+    record: dict[str, Any],
+) -> None:
+    previous = directories.get(relative)
+    if previous is not None and previous != record:
+        raise ArchiveError(f"payload directory changed between overlapping records: {relative}")
+    directories[relative] = record
+
+
+def scan_payload_directory(
+    scope: Path,
+    relative: str,
+    *,
+    status_name: str,
+    excluded_prefixes: tuple[str, ...],
+    leaves: dict[str, dict[str, Any]],
+    directories: dict[str, dict[str, Any]],
+) -> None:
+    if path_is_excluded(relative, excluded_prefixes):
+        return
+    directory = safe_target(scope, relative, create_parents=False)
+    before = directory.lstat()
+    metadata = directory_metadata(directory)
+    merge_directory(
+        directories,
+        relative,
+        {"path": relative, "status": status_name, **metadata},
+    )
+    try:
+        with os.scandir(directory) as iterator:
+            entries = sorted(iterator, key=lambda entry: os.fsencode(entry.name))
+    except OSError as exc:
+        raise ArchiveError(f"cannot enumerate payload directory {directory}: {exc}") from exc
+    for entry in entries:
+        child_relative = relative + "/" + entry.name
+        child_relative = safe_relative(child_relative, "expanded payload path")
+        # Mandatory exclusions are applied before lstat/read, and every
+        # generated descendant is checked again after expansion.
+        if path_is_excluded(child_relative, excluded_prefixes):
+            continue
+        child = safe_target(scope, child_relative, create_parents=False)
+        child_lstat = entry.stat(follow_symlinks=False)
+        if stat.S_ISDIR(child_lstat.st_mode):
+            scan_payload_directory(
+                scope,
+                child_relative,
+                status_name=status_name,
+                excluded_prefixes=excluded_prefixes,
+                leaves=leaves,
+                directories=directories,
+            )
+        elif stat.S_ISREG(child_lstat.st_mode) or stat.S_ISLNK(child_lstat.st_mode):
+            merge_leaf(
+                leaves,
+                child_relative,
+                {
+                    "path": child_relative,
+                    "status": status_name,
+                    **source_leaf_metadata(child),
+                },
+            )
+        else:
+            raise ArchiveError(
+                "unsupported socket/device/FIFO in payload directory: " + str(child)
+            )
+    after = directory.lstat()
+    if stat_signature(before) != stat_signature(after):
+        raise ArchiveError(f"payload directory changed during expansion: {directory}")
+
+
+def collect_payload_entries(
+    scope: Path,
+    name: str,
+    *,
+    include_ignored: bool,
+    root_excludes: tuple[str, ...],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    untracked_records = git_payload_records(
+        run_scope_git(
+            scope, name, "ls-files", "--others", "--exclude-standard", "-z"
+        ).stdout
+    )
+    ignored_records: list[tuple[str, bool]] = []
+    if include_ignored:
+        ignored_records = git_payload_records(
+            run_scope_git(
+                scope,
+                name,
+                "ls-files",
+                "--others",
+                "--ignored",
+                "--exclude-standard",
+                "-z",
+            ).stdout
+        )
+    untracked = {path: is_directory for path, is_directory in untracked_records}
+    ignored = {path: is_directory for path, is_directory in ignored_records}
+    prefixes = root_excludes if name == "root" else ()
+    leaves: dict[str, dict[str, Any]] = {}
+    directories: dict[str, dict[str, Any]] = {}
+    for relative in sorted(set(untracked) | set(ignored)):
+        # `.local` is rejected before any safe_target/lstat/scandir call.
+        if path_is_excluded(relative, prefixes):
+            continue
+        directory_flags = {
+            mapping[relative]
+            for mapping in (untracked, ignored)
+            if relative in mapping
+        }
+        if len(directory_flags) != 1:
+            raise ArchiveError(f"Git disagrees on payload record kind: {relative}")
+        is_directory = directory_flags.pop()
+        status_name = "ignored" if relative in ignored else "untracked"
+        if is_directory:
+            scan_payload_directory(
+                scope,
+                relative,
+                status_name=status_name,
+                excluded_prefixes=prefixes,
+                leaves=leaves,
+                directories=directories,
+            )
+        else:
+            path = safe_target(scope, relative, create_parents=False)
+            merge_leaf(
+                leaves,
+                relative,
+                {"path": relative, "status": status_name, **source_leaf_metadata(path)},
+            )
+
+    tracked_files = set(
+        nul_paths(run_scope_git(scope, name, "ls-files", "-z").stdout)
+    )
+    # Record payload-owned parent directory modes required to reconstruct leaf
+    # paths. Stop before any directory containing tracked descendants.
+    for leaf in list(leaves.values()):
+        parent = PurePosixPath(leaf["path"]).parent
+        while parent.as_posix() != ".":
+            relative = parent.as_posix()
+            if path_is_excluded(relative, prefixes):
+                break
+            if any(
+                tracked == relative or tracked.startswith(relative + "/")
+                for tracked in tracked_files
+            ):
+                break
+            directory = safe_target(scope, relative, create_parents=False)
+            merge_directory(
+                directories,
+                relative,
+                {
+                    "path": relative,
+                    "status": leaf["status"],
+                    **directory_metadata(directory),
+                },
+            )
+            parent = parent.parent
+
+    for relative in [*leaves, *directories]:
+        if path_is_excluded(relative, prefixes):
+            raise ArchiveError(f"mandatory excluded path entered expanded payload: {relative}")
+    for leaf in leaves:
+        if leaf in directories or any(
+            child.startswith(leaf + "/") for child in [*leaves, *directories] if child != leaf
+        ):
+            raise ArchiveError(f"payload leaf has a child collision: {leaf}")
+    return (
+        [leaves[path] for path in sorted(leaves)],
+        [directories[path] for path in sorted(directories)],
+    )
+
+
 def scope_snapshot(
     name: str,
     scope: Path,
@@ -305,43 +544,12 @@ def scope_snapshot(
         path_is_excluded(relative, root_excludes) for relative in tracked_paths
     ):
         raise ArchiveError("tracked payload intersects mandatory root exclusions")
-    untracked = set(
-        nul_paths(
-            run_scope_git(
-                scope, name, "ls-files", "--others", "--exclude-standard", "-z"
-            ).stdout
-        )
+    extras, directories = collect_payload_entries(
+        scope,
+        name,
+        include_ignored=include_ignored,
+        root_excludes=root_excludes,
     )
-    ignored: set[str] = set()
-    if include_ignored:
-        ignored = set(
-            nul_paths(
-                run_scope_git(
-                    scope,
-                    name,
-                    "ls-files",
-                    "--others",
-                    "--ignored",
-                    "--exclude-standard",
-                    "-z",
-                ).stdout
-            )
-        )
-    prefixes = root_excludes if name == "root" else ()
-    extras: list[dict[str, Any]] = []
-    for relative in sorted(untracked | ignored):
-        if path_is_excluded(relative, prefixes):
-            continue
-        path = safe_target(scope, relative, create_parents=False)
-        if not os.path.lexists(path):
-            raise ArchiveError(f"payload disappeared during snapshot: {path}")
-        extras.append(
-            {
-                "path": relative,
-                "status": "ignored" if relative in ignored else "untracked",
-                **path_metadata(path),
-            }
-        )
     return (
         {
             "name": name,
@@ -359,6 +567,7 @@ def scope_snapshot(
                 for kind, payload in patches.items()
             },
             "extras": extras,
+            "directories": directories,
         },
         patches,
     )
@@ -414,10 +623,17 @@ def copy_extra(
     expected: dict[str, Any],
     *,
     destination_root: Path,
+    require_source_identity: bool,
 ) -> None:
-    if path_metadata(source) != {
+    actual_source = (
+        source_leaf_metadata(source) if require_source_identity else path_metadata(source)
+    )
+    wanted_source = {
         key: expected[key] for key in ("kind", "size_bytes", "sha256", "mode")
-    }:
+    }
+    if require_source_identity:
+        wanted_source["filesystem"] = expected["filesystem"]
+    if actual_source != wanted_source:
         raise ArchiveError(f"source payload changed before copy: {source}")
     relative = destination.relative_to(destination_root).as_posix()
     destination = safe_target(destination_root, relative, create_parents=True)
@@ -450,6 +666,45 @@ def copy_extra(
     finally:
         if os.path.lexists(temporary):
             temporary.unlink()
+
+
+def ensure_payload_directory(
+    root: Path,
+    relative: str,
+    *,
+    allow_existing: bool,
+) -> Path:
+    target = safe_target(
+        root,
+        relative,
+        create_parents=True,
+        allow_missing_parents=True,
+    )
+    if os.path.lexists(target):
+        if target.is_symlink() or not target.is_dir():
+            raise ArchiveError(f"payload directory collides with non-directory: {target}")
+        if not allow_existing:
+            raise ArchiveError(f"payload directory unexpectedly exists: {target}")
+    else:
+        target.mkdir(mode=0o700)
+    return target
+
+
+def apply_directory_modes(
+    root: Path,
+    directories: list[dict[str, Any]],
+) -> None:
+    for record in sorted(
+        directories,
+        key=lambda item: len(PurePosixPath(item["path"]).parts),
+        reverse=True,
+    ):
+        target = safe_target(root, record["path"], create_parents=False)
+        if target.is_symlink() or not target.is_dir():
+            raise ArchiveError(f"payload directory disappeared before chmod: {target}")
+        os.chmod(target, record["mode"])
+        if stat.S_IMODE(target.lstat().st_mode) != record["mode"]:
+            raise ArchiveError(f"payload directory mode restore failed: {target}")
 
 
 def cleanup_owned_temporary(path: Path, parent: Path, identity: dict[str, Any]) -> None:
@@ -500,12 +755,14 @@ def capture(
                 "clean_requires_exact_approval": True,
                 "restore_requires_exact_approval": True,
                 "restore_refuses_overwrite": True,
+                "clean_preserves_listed_directories": True,
+                "restore_recreates_directory_modes": True,
                 "recursive_unlisted_payload_delete": False,
             },
             "scopes": [],
             "recovery": {
-                "clean": "validate exact live fingerprint, restore only listed tracked paths, and unlink only listed extras",
-                "restore": "require same common Git dir and exact HEADs, then apply verified patches and listed extras without overwrite",
+                "clean": "validate exact live fingerprint, restore only listed tracked paths, unlink only listed leaves, and preserve listed directories",
+                "restore": "require same common Git dir and exact HEADs, then apply verified patches, recreate listed directories/modes, and restore listed leaves without overwrite",
             },
         }
         for index, (name, scope) in enumerate(scopes):
@@ -531,8 +788,16 @@ def capture(
                     destination,
                     extra,
                     destination_root=temporary,
+                    require_source_identity=True,
                 )
                 extra["archive_path"] = relative
+            for directory in snapshot["directories"]:
+                relative = f"files/{index}/{directory['path']}"
+                # Archive container directories stay owner-accessible; the
+                # source mode is fingerprinted in the manifest and restored on
+                # the destination only after all leaves are installed.
+                ensure_payload_directory(temporary, relative, allow_existing=True)
+                directory["archive_path"] = relative
             manifest["scopes"].append(snapshot)
         manifest["fingerprint_sha256"] = archive_fingerprint(manifest)
         manifest_path = safe_target(temporary, "manifest.json", create_parents=True)
@@ -569,12 +834,12 @@ def load_manifest(archive: Path) -> dict[str, Any]:
     return value
 
 
-def valid_identity(value: Any) -> bool:
+def valid_identity(value: Any, expected_type: int) -> bool:
     return (
         isinstance(value, dict)
         and set(value) == {"device", "inode", "mode"}
         and all(isinstance(value[key], int) and value[key] >= 0 for key in value)
-        and value["mode"] == stat.S_IFDIR
+        and value["mode"] == expected_type
     )
 
 
@@ -632,6 +897,8 @@ def validate_archive(archive: Path, *, manifest: dict[str, Any] | None = None) -
         "clean_requires_exact_approval",
         "restore_requires_exact_approval",
         "restore_refuses_overwrite",
+        "clean_preserves_listed_directories",
+        "restore_recreates_directory_modes",
     }
     for key in sorted(required_true):
         if policy.get(key) is not True:
@@ -661,7 +928,7 @@ def validate_archive(archive: Path, *, manifest: dict[str, Any] | None = None) -
         or set(source) != required_source_keys
         or not isinstance(source.get("root"), str)
         or not HEX_OBJECT.fullmatch(str(source.get("head", "")))
-        or not valid_identity(source.get("filesystem"))
+        or not valid_identity(source.get("filesystem"), stat.S_IFDIR)
     ):
         errors.append("source Git/filesystem identity is malformed")
     else:
@@ -682,6 +949,7 @@ def validate_archive(archive: Path, *, manifest: dict[str, Any] | None = None) -
         errors.append("scopes must be a non-empty list")
         return errors
     expected_leaves = {"manifest.json"}
+    listed_archive_directories: set[str] = set()
     scope_names: set[str] = set()
     for scope_index, scope in enumerate(scopes):
         if not isinstance(scope, dict):
@@ -703,7 +971,7 @@ def validate_archive(archive: Path, *, manifest: dict[str, Any] | None = None) -
             errors.append(str(exc))
         if not HEX_OBJECT.fullmatch(str(scope.get("head", ""))):
             errors.append(f"scope {scope_index} has invalid HEAD")
-        if not valid_identity(scope.get("filesystem")):
+        if not valid_identity(scope.get("filesystem"), stat.S_IFDIR):
             errors.append(f"scope {scope_index} filesystem identity is malformed")
         if not isinstance(scope.get("top_level"), str) or not os.path.isabs(
             scope.get("top_level", "")
@@ -778,8 +1046,12 @@ def validate_archive(archive: Path, *, manifest: dict[str, Any] | None = None) -
                     not isinstance(extra.get("size_bytes"), int)
                     or extra.get("size_bytes", -1) < 0
                     or not isinstance(extra.get("mode"), int)
+                    or not valid_identity(
+                        extra.get("filesystem"),
+                        stat.S_IFREG if extra.get("kind") == "file" else stat.S_IFLNK,
+                    )
                 ):
-                    raise ArchiveError(f"extra metadata is malformed: {payload_path}")
+                    raise ArchiveError(f"extra metadata/identity is malformed: {payload_path}")
                 expected_relative = f"files/{scope_index}/{payload_path}"
                 if extra.get("archive_path") != expected_relative:
                     raise ArchiveError(
@@ -805,6 +1077,43 @@ def validate_archive(archive: Path, *, manifest: dict[str, Any] | None = None) -
         for left in extra_paths:
             if any(right.startswith(left + "/") for right in extra_paths if right != left):
                 errors.append(f"scope {scope_index} extras contain parent/child collision: {left}")
+
+        directory_records = scope.get("directories")
+        if not isinstance(directory_records, list):
+            errors.append(f"scope {scope_index} directories must be a list")
+            directory_records = []
+        directory_paths: list[str] = []
+        for directory_index, directory in enumerate(directory_records):
+            if not isinstance(directory, dict):
+                errors.append(f"directory {scope_index}:{directory_index} must be an object")
+                continue
+            try:
+                payload_path = safe_relative(directory.get("path"), "payload directory path")
+                if directory.get("status") not in {"untracked", "ignored"}:
+                    raise ArchiveError(f"directory status is invalid: {payload_path}")
+                if not isinstance(directory.get("mode"), int) or not valid_identity(
+                    directory.get("filesystem"), stat.S_IFDIR
+                ):
+                    raise ArchiveError(f"directory metadata is malformed: {payload_path}")
+                expected_relative = f"files/{scope_index}/{payload_path}"
+                if directory.get("archive_path") != expected_relative:
+                    raise ArchiveError(
+                        f"directory archive path mismatch {scope_index}:{directory_index}"
+                    )
+                if scope_index == 0 and path_is_excluded(payload_path, excludes):
+                    raise ArchiveError(f"excluded root directory entered archive: {payload_path}")
+                path = safe_target(archive, expected_relative, create_parents=False)
+                if path.is_symlink() or not path.is_dir():
+                    raise ArchiveError(f"archived payload directory is missing/unsafe: {path}")
+                listed_archive_directories.add(expected_relative)
+                directory_paths.append(payload_path)
+            except (ArchiveError, OSError) as exc:
+                errors.append(str(exc))
+        if len(directory_paths) != len(set(directory_paths)):
+            errors.append(f"scope {scope_index} directories contain duplicate paths")
+        for leaf in extra_paths:
+            if leaf in directory_paths or any(path.startswith(leaf + "/") for path in directory_paths):
+                errors.append(f"scope {scope_index} leaf/directory collision: {leaf}")
     try:
         actual_leaves, actual_directories = archive_tree(archive)
         if actual_leaves != expected_leaves:
@@ -814,6 +1123,11 @@ def validate_archive(archive: Path, *, manifest: dict[str, Any] | None = None) -
                 f"unlisted={sorted(actual_leaves - expected_leaves)}"
             )
         expected_directories = expected_archive_directories(expected_leaves)
+        for listed_directory in listed_archive_directories:
+            current = PurePosixPath(listed_directory)
+            while current.as_posix() != ".":
+                expected_directories.add(current.as_posix())
+                current = current.parent
         if actual_directories != expected_directories:
             errors.append(
                 "archive contains missing/unlisted directories: "
@@ -848,6 +1162,12 @@ def normalized_scopes(scopes: list[dict[str, Any]], *, portable: bool) -> list[d
         }
         for extra in scope["extras"]:
             extra.pop("archive_path", None)
+            if portable:
+                extra.pop("filesystem", None)
+        for directory in scope["directories"]:
+            directory.pop("archive_path", None)
+            if portable:
+                directory.pop("filesystem", None)
     return normalized
 
 
@@ -900,8 +1220,11 @@ def remove_exact_file(scope: Path, relative: str, expected: dict[str, Any]) -> N
         if target.exists():
             raise ArchiveError(f"refusing directory/recursive payload deletion: {target}")
         raise ArchiveError(f"listed payload disappeared before cleanup: {target}")
-    actual = path_metadata(target)
-    wanted = {key: expected[key] for key in ("kind", "size_bytes", "sha256", "mode")}
+    actual = source_leaf_metadata(target)
+    wanted = {
+        key: expected[key]
+        for key in ("kind", "size_bytes", "sha256", "mode", "filesystem")
+    }
     if actual != wanted:
         raise ArchiveError(f"listed payload changed before cleanup: {target}")
     target.unlink()
@@ -928,6 +1251,59 @@ def assert_scope_clean(
         or snapshot["patches"]["worktree"]["size_bytes"]
     ):
         raise ArchiveError(f"scope is not exact-clean outside exclusions: {name}")
+
+
+def preflight_restore_directories(
+    scope: Path,
+    directories: list[dict[str, Any]],
+) -> None:
+    expected = {record["path"] for record in directories}
+    roots = [
+        relative
+        for relative in expected
+        if PurePosixPath(relative).parent.as_posix() not in expected
+    ]
+    for root_relative in roots:
+        root = safe_target(
+            scope,
+            root_relative,
+            create_parents=False,
+            allow_missing_parents=True,
+        )
+        if not os.path.lexists(root):
+            continue
+        if root.is_symlink() or not root.is_dir():
+            raise ArchiveError(f"restore directory root collides with non-directory: {root}")
+        for directory, names, files in os.walk(root, topdown=True, followlinks=False):
+            base = Path(directory)
+            relative_base = base.relative_to(scope).as_posix()
+            if relative_base not in expected:
+                raise ArchiveError(
+                    f"restore found unlisted existing directory: {relative_base}"
+                )
+            for name in [*names, *files]:
+                path = base / name
+                relative = path.relative_to(scope).as_posix()
+                if path.is_symlink() or not path.is_dir():
+                    raise ArchiveError(f"restore found unlisted existing leaf: {relative}")
+                if relative not in expected:
+                    raise ArchiveError(f"restore found unlisted existing directory: {relative}")
+
+
+def verify_preserved_directories(
+    scope: Path,
+    directories: list[dict[str, Any]],
+    *,
+    require_source_identity: bool,
+) -> None:
+    for record in directories:
+        target = safe_target(scope, record["path"], create_parents=False)
+        if target.is_symlink() or not target.is_dir():
+            raise ArchiveError(f"listed payload directory was not preserved: {target}")
+        if stat.S_IMODE(target.lstat().st_mode) != record["mode"]:
+            raise ArchiveError(f"listed payload directory mode changed: {target}")
+        if require_source_identity:
+            assert_identity(target, record["filesystem"], "listed payload directory")
 
 
 def clean(
@@ -976,6 +1352,11 @@ def clean(
         for extra in expected["extras"]:
             remove_exact_file(scope, extra["path"], extra)
         assert_scope_clean(name, scope, root_excludes=root_excludes)
+        verify_preserved_directories(
+            scope,
+            expected["directories"],
+            require_source_identity=True,
+        )
     assert_identity(root, manifest["source"]["filesystem"], "clean source")
 
 
@@ -1071,6 +1452,16 @@ def restore(
             )
             if os.path.lexists(target):
                 raise ArchiveError(f"restore refuses to overwrite: {target}")
+        for directory in expected["directories"]:
+            target = safe_target(
+                scope,
+                directory["path"],
+                create_parents=False,
+                allow_missing_parents=True,
+            )
+            if os.path.lexists(target) and (target.is_symlink() or not target.is_dir()):
+                raise ArchiveError(f"restore directory collides with non-directory: {target}")
+        preflight_restore_directories(scope, expected["directories"])
         patch_plan: dict[str, Path] = {}
         patch_paths: set[str] = set()
         for kind in ("index", "worktree"):
@@ -1110,10 +1501,27 @@ def restore(
                     arguments.append("--index")
                 run_scope_git(scope, name, *arguments, "--check", str(patch))
                 run_scope_git(scope, name, *arguments, str(patch))
+        for directory in sorted(
+            expected["directories"],
+            key=lambda item: len(PurePosixPath(item["path"]).parts),
+        ):
+            ensure_payload_directory(scope, directory["path"], allow_existing=True)
         for extra in expected["extras"]:
             source = safe_target(archive, extra["archive_path"], create_parents=False)
             target = scope.joinpath(*PurePosixPath(extra["path"]).parts)
-            copy_extra(source, target, extra, destination_root=scope)
+            copy_extra(
+                source,
+                target,
+                extra,
+                destination_root=scope,
+                require_source_identity=False,
+            )
+        apply_directory_modes(scope, expected["directories"])
+        verify_preserved_directories(
+            scope,
+            expected["directories"],
+            require_source_identity=False,
+        )
     assert_identity(root, destination_identity, "restore destination")
     live_snapshot_from_manifest(root, manifest, require_original_identity=False)
 

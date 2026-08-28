@@ -40,6 +40,21 @@
 
 结论：payload archive工具已通过进入**exact cutover approval gate**所需的sandbox与negative safety review。下一步仍必须先暂停writers并向人类展示精确source/archive/destination及clean/detach/checkout/restore/rollback命令；本证据不授权live执行。
 
+## Ignored directory record follow-up
+
+| Command / control | Result |
+|---|---|
+| Read-only exact live reproduction: `git -C <root> ls-files --others --ignored --exclude-standard -z` | PASS：`/workspace/remote2/nimloth`返回`external/VAGEN.qwen-bug-repro/`，lstat为real directory mode `0755`；`nimloth-dev`无该record。未递归读取live tree，未运行live capture |
+| Directory expansion sandbox | PASS：ignored embedded-repo directory record完整展开为regular/symlink leaves与directory records；embedded `.git/HEAD`、config和empty object/ref dirs均归档，不对embedded repo执行命令 |
+| Empty directory/mode roundtrip | PASS：`0711` empty dir及`0750` ignored root在archive validation、clean-preserve与same/cross-worktree restore后mode一致；clean只unlink leaves并保留listed dirs，不将保留empty dirs误报为payload |
+| Symlink/special/hardlink controls | PASS：symlink-to-outside-directory只归档link target且不读取outside marker；FIFO触发unsupported special拒绝；hardlinked regular payload触发nlink拒绝；directory/leaf identity或stat signature变化fail closed |
+| `.local` double exclusion | PASS：raw record与每个expanded descendant在任何lstat/scandir/copy前均检查mandatory `.local`；tracked/intersecting `.local`仍hard error，额外root exclusion禁止 |
+| Archive layout validation | PASS：manifest新增directory path/status/mode/source identity及fixed archive path；validator核对directory uniqueness、leaf/directory collision、real non-symlink kind、mode和archive directory closure，包括empty dirs |
+| Extended payload sandbox repeated twice and `cmp` | PASS：连续byte-identical；52 commands、23 negative controls；root 7 leaves/9 dirs，cross-worktree+submodule 15 leaves/19 dirs，staged/unstaged及leaf/directory fingerprints一致 |
+| Live non-mutation baseline | PASS：本轮未执行live capture/clean/restore/switch/remove/prune；39 topology、canonical main/linked dev branch/HEAD/status、08-26/08-27/AI progress/Pi TaskTree/le-wm hashes保持check前基线，staged=0 |
+
+精确重试仍受审批门约束：writers暂停；外部BACKUP只能作为real non-symlink `0700` parent并使用不存在的新archive target；source exact main identity/status重验；仅获批`capture --include-ignored`与`validate --live-source`，在展示directory/leaf/hash证据前不得clean或cutover。
+
 ## Scope/status结论
 
 本批修改范围为3个明确批准的live规则文件，加当前08-28 task的PRD/design/plan/progress/research/tools/evidence。`.gitignore`未改，`AI_branch_progress.md`保留并发dirty内容且未由本批修改；08-26、08-27、`.pi/task-tree/`、`external/le-wm`与memory/runtime protected files均未修改。

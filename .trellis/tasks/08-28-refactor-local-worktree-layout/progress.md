@@ -64,3 +64,15 @@
 - Live只做状态/hash读取：39-registration topology、canonical `main`与linked `dev` branch/HEAD、08-26/08-27、`AI_branch_progress.md`、Pi TaskTree和`external/le-wm`均保持复核前基线；未对live执行clean/restore/switch/remove/prune。
 - 结论：工具/方法可进入**exact cutover approval gate**，即下一步可向人类展示并请求批准精确source/archive/destination、writer-pause、clean/detach/checkout/restore与rollback命令；本结论本身不授权任何live mutation。
 - 主会话复跑payload sandbox两次并与evidence逐字比较、compile、task validate、diff/staged和39-topology/exact HEAD断言，全部通过；人类据此明确批准仅提交5个task-local payload工具/证据文件，不授权其他dirty内容或live cutover。
+
+## 2026-08-28 — Live capture directory-record安全失败复核与修复
+
+- 首次live `capture`在任何source cleanup/cutover前安全停止：canonical main的只读`git ls-files --others --ignored --exclude-standard -z`复现唯一目标record `external/VAGEN.qwen-bug-repro/`（real directory、mode `0755`）；linked dev没有该record。外部BACKUP按人类报告仍只是空`0700`目录。
+- Root cause是Git对embedded ignored repository返回尾随`/`的directory record，而旧`safe_relative`只接受leaf path。修复没有strip后把directory当file，也没有降级ignored coverage：新collector显式区分directory record，先应用`.local` exclusion，再以`os.scandir(..., follow_symlinks=False)`语义递归展开为regular file/symlink leaves和real directory records；embedded `.git`仅按普通filesystem内容读取，绝不在其中执行Git命令。
+- 每个expanded leaf记录path/status/kind/size/SHA-256/mode/source dev+inode；regular hardlink、socket/device/FIFO及任何special kind fail closed。每个payload-owned directory记录path/status/mode/source identity，包括empty dirs。扫描前后重验directory stat signature，leaf读取/copy/clean前重验identity，directory symlink不follow，parent/child/traversal与symlink-swap继续拒绝。
+- `.local`在raw Git record和每个expanded descendant两层均过滤，filter发生在`safe_target`/lstat/scandir之前；root tracked或expanded payload若触及`.local`仍为hard error。额外root exclusion继续禁止。
+- Clean语义锁定为：仅restore listed tracked paths并unlink listed leaves；所有listed directories（包括clean后empty dirs）原路径/mode/identity保留，不rmdir。Clean verification容许这些已核验empty dirs但直接验证其仍存在且mode/identity不变。Cross-worktree restore先重建listed dirs，复制leaves后按deepest-first恢复mode，再执行portable full snapshot comparison。
+- 扩展payload sandbox加入ignored directory tree、empty `0711` dir、embedded `.git/HEAD`/config/empty object/ref dirs、symlink-to-outside-directory、FIFO及hardlink negative controls；同worktree和linked→main+submodule两用例连续两次byte-identical，52条recorded commands、23项negative controls，root为7 leaves/9 dirs，cross共15 leaves/19 dirs。
+- 本轮没有对live source执行capture/clean/restore/switch/remove/prune；只读复现后39 topology、canonical main/linked dev HEAD/status及其他task/dirty hashes保持基线。
+- 精确重试条件：暂停writers；确认外部BACKUP是real non-symlink `0700` parent，并选用其中**不存在**的新archive target（若BACKUP本身是目标且已存在，工具仍拒绝覆盖，需人类另选child或单独处理）；再次核验source=`/workspace/remote2/nimloth` exact main HEAD/status；只运行`capture --include-ignored`后`validate --live-source`，展示expanded leaf/directory counts和hash，再单独请求任何clean/cutover approval。
+- 人类确认此前问卷是意外取消而非拒绝，并明确批准提交5个task-local ignored-directory修复文件，然后重新执行仅capture/validate的外部备份；本批准不包含clean、detach、branch switch、restore或worktree删除。

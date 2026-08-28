@@ -2,20 +2,22 @@
   "schema": "nimloth-payload-archive-sandbox-proof/v1",
   "sandbox_scope": "/tmp disposable repositories and archives; removed after proof",
   "root_roundtrip": {
-    "fingerprint_before": "12325dc948a2c9b4148b73b6fa487e101145bc90403e8d6697cb4f2135d18abc",
-    "fingerprint_after": "12325dc948a2c9b4148b73b6fa487e101145bc90403e8d6697cb4f2135d18abc",
+    "fingerprint_before": "88d3a670fd6ab0f9006fe638258ebe65cddc30c3618b77f7e9c78b6c23f160ea",
+    "fingerprint_after": "88d3a670fd6ab0f9006fe638258ebe65cddc30c3618b77f7e9c78b6c23f160ea",
     "archive_integrity_validated": true,
     "scope_count": 1,
-    "extra_count": 3
+    "extra_count": 7,
+    "directory_count": 9
   },
   "cross_worktree_submodule_roundtrip": {
-    "root_fingerprint_before": "837af84962ab7dee24f1e1aef1d269f80413169bcc8f6e63c6adc35c6dc8d7bb",
-    "root_fingerprint_after": "837af84962ab7dee24f1e1aef1d269f80413169bcc8f6e63c6adc35c6dc8d7bb",
-    "submodule_fingerprint_before": "1897cf320045be2144e5b828124b98a3e3c48a991522852449ab6e35a27172a7",
-    "submodule_fingerprint_after": "1897cf320045be2144e5b828124b98a3e3c48a991522852449ab6e35a27172a7",
+    "root_fingerprint_before": "b41bd7fb91573b6152391618f7796f10efa2fa308232fe5a18571321b182ddc1",
+    "root_fingerprint_after": "b41bd7fb91573b6152391618f7796f10efa2fa308232fe5a18571321b182ddc1",
+    "submodule_fingerprint_before": "d0de8c1ad4b4d6270c0fdffd64bd77f218c9439bdad542ff66480dc9c39f600a",
+    "submodule_fingerprint_after": "d0de8c1ad4b4d6270c0fdffd64bd77f218c9439bdad542ff66480dc9c39f600a",
     "archive_integrity_validated": true,
     "scope_count": 2,
-    "extra_count": 6
+    "extra_count": 15,
+    "directory_count": 19
   },
   "negative_controls": {
     "clean_requires_explicit_approval": true,
@@ -24,6 +26,13 @@
     "additional_payload_exclusions_rejected": true,
     "archive_inside_worktree_rejected": true,
     "archive_symlink_parent_rejected": true,
+    "unsupported_socket_device_fifo_rejected": true,
+    "hardlinked_payload_rejected": true,
+    "ignored_directory_tree_expanded": true,
+    "empty_directory_and_modes_roundtrip": true,
+    "unlisted_existing_empty_directory_blocks_restore": true,
+    "embedded_git_files_archived_without_git_commands": true,
+    "directory_symlink_not_followed": true,
     "local_excluded_and_preserved": true,
     "path_traversal_rejected": true,
     "archive_symlink_patch_rejected": true,
