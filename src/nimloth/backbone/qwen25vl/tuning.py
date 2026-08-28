@@ -21,8 +21,31 @@ def is_vision_param(name: str) -> bool:
     return _is_vision_param(name)
 
 
+def _is_lm_head_param(name: str) -> bool:
+    return (
+        name == "lm_head"
+        or name.startswith("lm_head.")
+        or ".lm_head." in name
+    )
+
+
 def _is_llm_param(name: str) -> bool:
-    return ".language_model." in name or name.startswith("language_model.")
+    return (
+        ".language_model." in name
+        or name.startswith("language_model.")
+        or _is_lm_head_param(name)
+    )
+
+
+def is_llm_param(name: str) -> bool:
+    """Return whether a Qwen parameter belongs to the full language path.
+
+    Qwen2.5-VL keeps its untied vocabulary head at top level rather than below
+    ``language_model``.  Full language tuning must include that head so real
+    assistant/action CE can update the corresponding vocabulary rows.
+    """
+
+    return _is_llm_param(name)
 
 
 def resolve_tune_modes(args: argparse.Namespace) -> tuple[TuneMode, TuneMode]:

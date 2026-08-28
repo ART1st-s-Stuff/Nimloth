@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 import torch
+import torch.nn.functional as F
 
 from nimloth.backbone.base import BackboneBatch
 from nimloth.backbone.qwen25vl.latent import _final_norm_module
@@ -13,6 +14,7 @@ from nimloth.latent import (
     ExtractionPositions,
     LatentActionTokens,
     find_all_latent_state_blocks,
+    latent_state_tokens,
 )
 
 
@@ -31,6 +33,8 @@ class QwenStateTrainingOutput:
 
     query_hidden: torch.Tensor
     action_logits: torch.Tensor
+    lm_loss_sum: torch.Tensor | None = None
+    lm_valid_token_count: int = 0
 
 
 def require_archived_assistant_response(
@@ -207,23 +211,49 @@ def forward_qwen_state_training(
     if int(latent_token_count) != 16:
         raise ValueError("state-interface-v2 requires exactly 16 latent queries")
     enc = dict(batch.backbone_batch.tensors)
-    if "labels" in enc:
-        raise ValueError("state training forward does not accept LM labels")
+    labels = enc.pop("labels", None)
     input_ids = enc.get("input_ids")
     if input_ids is None or input_ids.ndim != 2:
         raise ValueError("state training input_ids must have shape (B,S)")
+    if labels is not None:
+        if (
+            not isinstance(labels, torch.Tensor)
+            or labels.dtype != torch.long
+            or labels.shape != input_ids.shape
+        ):
+            raise ValueError("state training labels must be int64 with shape (B,S)")
+        if torch.any(labels[:, 0] != -100):
+            raise ValueError("LM labels cannot supervise the first sequence position")
+        label_valid = labels != -100
+        if torch.any(label_valid & labels.ne(input_ids.to(device=labels.device))):
+            raise ValueError("LM labels must copy exact rendered input token ids")
     batch_size = int(input_ids.shape[0])
     if len(batch.archived_assistant_responses) != batch_size:
         raise ValueError("state training requires one archived response per tensor row")
     if len(batch.response_sources) != batch_size:
         raise ValueError("state training requires one response source per tensor row")
+    tokens = LatentActionTokens()
+    archived_action_indices: list[int | None] = []
     for response, source in zip(
         batch.archived_assistant_responses,
         batch.response_sources,
         strict=True,
     ):
         require_archived_assistant_response(response, source=source)
-    tokens = LatentActionTokens()
+        if labels is None:
+            archived_action_indices.append(None)
+            continue
+        action_blocks = [
+            tokens.action_start + action + tokens.action_end
+            for action in tokens.action_tokens
+        ]
+        matches = [
+            index for index, block in enumerate(action_blocks)
+            if response.count(block) == 1
+        ]
+        if len(matches) != 1 or sum(response.count(block) for block in action_blocks) != 1:
+            raise ValueError("supervised state training requires one real archived action")
+        archived_action_indices.append(matches[0])
     action_ids: list[int] = []
     for token in tokens.action_tokens:
         if token not in token_id_map:
@@ -231,10 +261,21 @@ def forward_qwen_state_training(
         action_ids.append(int(token_id_map[token]))
     if len(set(action_ids)) != 8:
         raise ValueError("eight action tokens must map to distinct token ids")
+    if labels is not None and tokens.action_end not in token_id_map:
+        raise ValueError("supervised state training action-end token is unavailable")
 
     query_positions: list[tuple[int, ...]] = []
     boundary_positions: list[int] = []
-    for row in input_ids.detach().cpu():
+    lm_predecessor_positions: list[tuple[int, ...]] = []
+    label_rows = labels.detach().cpu() if labels is not None else None
+    query_token_ids = [
+        int(token_id_map[token])
+        for token in latent_state_tokens(latent_token_count, tokens)
+        if token in token_id_map
+    ]
+    if len(query_token_ids) != latent_token_count or len(set(query_token_ids)) != latent_token_count:
+        raise ValueError("state training K16 query token identity is incomplete")
+    for row_index, row in enumerate(input_ids.detach().cpu()):
         positions = find_current_state_extraction_positions(
             row,
             token_id_map,
@@ -246,12 +287,59 @@ def forward_qwen_state_training(
             raise ValueError("state training row has no exact action boundary")
         if positions.action_start_index != positions.latent_state_indices[-1] + 1:
             raise ValueError("K16 query block must immediately precede action_start")
+        archived_action = archived_action_indices[row_index]
+        if archived_action is not None:
+            boundary = int(positions.action_start_index)
+            if boundary + 2 >= int(row.numel()):
+                raise ValueError("supervised state training action envelope is incomplete")
+            expected_envelope = torch.tensor(
+                [
+                    token_id_map[tokens.action_start],
+                    token_id_map[tokens.action_tokens[archived_action]],
+                    token_id_map[tokens.action_end],
+                ],
+                dtype=torch.long,
+            )
+            if not torch.equal(row[boundary : boundary + 3], expected_envelope):
+                raise ValueError(
+                    "supervised input action disagrees with archived assistant response"
+                )
         query_positions.append(tuple(positions.latent_state_indices))
         boundary_positions.append(int(positions.action_start_index))
+        if label_rows is None:
+            lm_predecessor_positions.append(())
+            continue
+        row_labels = label_rows[row_index]
+        all_query_indices = tuple(
+            index
+            for block in find_all_latent_state_blocks(
+                row,
+                token_id_map,
+                tokens,
+                latent_token_count=latent_token_count,
+            )
+            for index in block
+        )
+        query_index = torch.tensor(all_query_indices, dtype=torch.long)
+        if torch.any(row_labels.index_select(0, query_index) != -100):
+            raise ValueError("ordinary K16 query token CE labels must be masked")
+        target_positions = torch.nonzero(
+            row_labels != -100,
+            as_tuple=False,
+        ).flatten().tolist()
+        lm_predecessor_positions.append(
+            tuple(int(position) - 1 for position in target_positions)
+        )
 
     # Qwen accepts selected sequence positions before the LM head. A Python list
     # remains valid with Accelerate device maps (unlike a CPU index tensor).
-    kept_positions = sorted(set(boundary_positions))
+    kept_positions = sorted(
+        set(boundary_positions).union(
+            position
+            for row_positions in lm_predecessor_positions
+            for position in row_positions
+        )
+    )
     model_inputs = {
         key: value.to(device, non_blocking=True) for key, value in enc.items()
     }
@@ -279,16 +367,36 @@ def forward_qwen_state_training(
 
     hidden_rows: list[torch.Tensor] = []
     action_rows: list[torch.Tensor] = []
+    lm_logit_rows: list[torch.Tensor] = []
+    lm_target_rows: list[torch.Tensor] = []
     kept_index = {position: index for index, position in enumerate(kept_positions)}
     action_index = torch.tensor(action_ids, device=logits.device, dtype=torch.long)
-    for row, (queries, boundary) in enumerate(
-        zip(query_positions, boundary_positions, strict=True)
+    for row, (queries, boundary, lm_predecessors) in enumerate(
+        zip(
+            query_positions,
+            boundary_positions,
+            lm_predecessor_positions,
+            strict=True,
+        )
     ):
         query_index = torch.tensor(queries, device=hidden.device, dtype=torch.long)
         hidden_rows.append(hidden[row].index_select(0, query_index))
         action_rows.append(
             logits[row, kept_index[boundary]].index_select(0, action_index)
         )
+        if labels is not None and lm_predecessors:
+            selected_indices = torch.tensor(
+                [kept_index[position] for position in lm_predecessors],
+                device=logits.device,
+                dtype=torch.long,
+            )
+            target_indices = torch.tensor(
+                [position + 1 for position in lm_predecessors],
+                device=labels.device,
+                dtype=torch.long,
+            )
+            lm_logit_rows.append(logits[row].index_select(0, selected_indices))
+            lm_target_rows.append(labels[row].index_select(0, target_indices))
     query_hidden = torch.stack(hidden_rows, dim=0)
     action_logits = torch.stack(action_rows, dim=0).float()
     if query_hidden.shape[:2] != (input_ids.shape[0], 16):
@@ -297,9 +405,29 @@ def forward_qwen_state_training(
         raise RuntimeError("Qwen state-training action logits have an invalid shape")
     if not torch.isfinite(query_hidden).all() or not torch.isfinite(action_logits).all():
         raise RuntimeError("Qwen state-training output contains non-finite values")
+    lm_valid_token_count = sum(int(target.numel()) for target in lm_target_rows)
+    lm_loss_sum: torch.Tensor | None = None
+    if labels is not None:
+        if lm_logit_rows:
+            lm_loss_sum = F.cross_entropy(
+                torch.cat(lm_logit_rows, dim=0).float(),
+                torch.cat(lm_target_rows, dim=0).to(
+                    device=logits.device,
+                    dtype=torch.long,
+                ),
+                reduction="sum",
+            )
+        else:
+            # Keep the official LM-head graph present on a collective-padding
+            # rank while contributing zero valid tokens to global normalization.
+            lm_loss_sum = logits.float().sum() * 0.0
+        if not torch.isfinite(lm_loss_sum):
+            raise RuntimeError("Qwen state-training LM loss is non-finite")
     return QwenStateTrainingOutput(
         query_hidden=query_hidden,
         action_logits=action_logits,
+        lm_loss_sum=lm_loss_sum,
+        lm_valid_token_count=lm_valid_token_count,
     )
 
 

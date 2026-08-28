@@ -19,6 +19,47 @@ def _unwrap(module: nn.Module) -> nn.Module:
     return module.module if hasattr(module, "module") else module
 
 
+DIRECT_SLOT_PROJECTOR_ARTIFACT_SCHEMA = "nimloth_direct_k16_state_v1"
+
+
+class DirectSlotProjector(nn.Module):
+    """The unique low-capacity K16 deployment-state owner.
+
+    The dimensions and no-bias form are intentionally fixed.  A caller needing
+    another shape must define another reviewed artifact contract rather than
+    silently turning this canonical path into a configurable MLP/readout.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.input_dim = 2048
+        self.qwen_hidden_dim = self.input_dim
+        self.output_dim = 1024
+        self.grid_tokens = 16
+        self.latent_token_count = self.grid_tokens
+        self.linear = nn.Linear(self.input_dim, self.output_dim, bias=False)
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        expected = (self.grid_tokens, self.input_dim)
+        if hidden.ndim != 3 or tuple(hidden.shape[1:]) != expected:
+            raise ValueError(
+                "DirectSlotProjector expected hidden shape "
+                f"(B, {self.grid_tokens}, {self.input_dim}), "
+                f"got {tuple(hidden.shape)}"
+            )
+        return self.linear(hidden.to(dtype=self.linear.weight.dtype))
+
+    def artifact_metadata(self) -> dict[str, int | str | bool]:
+        return {
+            "schema": DIRECT_SLOT_PROJECTOR_ARTIFACT_SCHEMA,
+            "grid_tokens": self.grid_tokens,
+            "qwen_hidden_dim": self.input_dim,
+            "state_dim": self.output_dim,
+            "ordering": "row_major",
+            "bias": False,
+        }
+
+
 class SharedSlotProjector(nn.Module):
     """对每个 query slot 使用同一个 SFT1 projector，保留空间轴。"""
 
@@ -639,6 +680,8 @@ class GridWorldModel(WorldModel):
 
 
 __all__ = [
+    "DIRECT_SLOT_PROJECTOR_ARTIFACT_SCHEMA",
+    "DirectSlotProjector",
     "GridPredictorConfig",
     "GridWorldModel",
     "SharedSlotProjector",

@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 from nimloth.backbone.base import BackboneBatch
@@ -67,6 +68,7 @@ def _token_contract() -> tuple[LatentActionTokens, dict[str, int]]:
 def _state_training_batch(
     input_ids: torch.Tensor,
     *,
+    labels: torch.Tensor | None = None,
     source: str = "archived",
     response: str | None = None,
 ) -> QwenStateTrainingBatch:
@@ -74,8 +76,11 @@ def _state_training_batch(
         "<think>The doorway is open, so move forward.</think>"
         "<|latent_state|><|action_start|><|action_(0)|><|action_end|>"
     )
+    tensors = {"input_ids": input_ids}
+    if labels is not None:
+        tensors["labels"] = labels
     return QwenStateTrainingBatch(
-        backbone_batch=BackboneBatch({"input_ids": input_ids}),
+        backbone_batch=BackboneBatch(tensors),
         archived_assistant_responses=(actual_response,) * input_ids.shape[0],
         response_sources=(source,) * input_ids.shape[0],
     )
@@ -112,6 +117,93 @@ def test_same_forward_returns_row_major_k16_hidden_and_exact_boundary_actions() 
     ).reshape(4, model.vocab_size)
     action_ids = [token_id_map[token] for token in tokens.action_tokens]
     torch.testing.assert_close(output.action_logits, full_logits[:, 17, action_ids])
+    assert output.lm_loss_sum is None
+    assert output.lm_valid_token_count == 0
+
+
+def test_same_forward_computes_exact_selected_shifted_lm_ce_and_masks_queries() -> None:
+    tokens, token_id_map = _token_contract()
+    query_ids = [token_id_map[token] for token in latent_state_tokens(16, tokens)]
+    row = torch.tensor([[
+        1,
+        5,
+        *query_ids,
+        token_id_map[tokens.action_start],
+        token_id_map[tokens.action_tokens[0]],
+        token_id_map[tokens.action_end],
+    ]])
+    labels = torch.full_like(row, -100)
+    target_positions = torch.tensor([1, 18, 19, 20])
+    labels[0, target_positions] = row[0, target_positions]
+    model = _SameForwardQwen()
+
+    output = forward_qwen_state_training(
+        model,
+        _state_training_batch(row, labels=labels),
+        token_id_map,
+        torch.device("cpu"),
+    )
+
+    assert model.calls == 1
+    assert model.logits_to_keep_seen == [0, 17, 18, 19]
+    assert output.lm_loss_sum is not None
+    assert output.lm_valid_token_count == 4
+    full_hidden = model.model.language_model.norm(
+        torch.arange(row.numel() * 4, dtype=torch.float32).reshape(1, row.shape[1], 4)
+    )
+    full_logits = full_hidden @ torch.arange(
+        4 * model.vocab_size, dtype=torch.float32
+    ).reshape(4, model.vocab_size)
+    expected = F.cross_entropy(
+        full_logits[0, torch.tensor([0, 17, 18, 19])].float(),
+        row[0, target_positions],
+        reduction="sum",
+    )
+    torch.testing.assert_close(output.lm_loss_sum, expected)
+    output.lm_loss_sum.backward()
+    assert model.model.language_model.norm.weight.grad is not None
+
+    bad_query_labels = labels.clone()
+    bad_query_labels[0, 2] = row[0, 2]
+    rejected = _SameForwardQwen()
+    with pytest.raises(ValueError, match="query.*masked"):
+        forward_qwen_state_training(
+            rejected,
+            _state_training_batch(row, labels=bad_query_labels),
+            token_id_map,
+            torch.device("cpu"),
+        )
+    assert rejected.calls == 0
+
+    bad_first_label = labels.clone()
+    bad_first_label[0, 0] = row[0, 0]
+    rejected_first = _SameForwardQwen()
+    with pytest.raises(ValueError, match="first sequence position"):
+        forward_qwen_state_training(
+            rejected_first,
+            _state_training_batch(row, labels=bad_first_label),
+            token_id_map,
+            torch.device("cpu"),
+        )
+    assert rejected_first.calls == 0
+
+    mismatched_response = (
+        "<think>The doorway is open, so move right.</think>"
+        "<|latent_state|><|action_start|><|action_(2)|><|action_end|>"
+    )
+    rejected_action = _SameForwardQwen()
+    with pytest.raises(ValueError, match="disagrees with archived"):
+        forward_qwen_state_training(
+            rejected_action,
+            _state_training_batch(
+                row,
+                labels=labels,
+                response=mismatched_response,
+            ),
+            token_id_map,
+            torch.device("cpu"),
+        )
+    assert rejected_action.calls == 0
 
 
 def test_multiturn_same_forward_selects_final_current_k16_and_rejects_drift() -> None:

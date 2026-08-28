@@ -12,8 +12,8 @@
 | `vllm_logits.py` | 把 turn 状态机接入 vLLM V1 per-request logits processor |
 | `checkpoint.py` | PEFT 与 full vision artifact |
 | `latent.py` | final hidden 捕获与 latent query 提取 |
-| `state_training.py` | SFT1-v2：验证真实 archived response/CoT，并在同一 Qwen forward 返回 K16 hidden 与 action-boundary 八动作 logits |
-| `tuning.py` | LLM/vision `freeze | lora | full` 配置 |
+| `state_training.py` | 可微state训练：验证真实archived response/CoT，并在同一次Qwen forward返回K16 hidden、action-boundary八动作logits及可选final-assistant selected-position shifted CE sum/count |
+| `tuning.py` | LLM/vision `freeze | lora | full` 配置；`llm_tune=full`显式包含top-level untied LM head |
 | `vision_ema.py` | 可训练视觉参数 EMA |
 | `monkey_patch.py` | 只供诊断脚本启用的局部实验 patch |
 
@@ -30,7 +30,7 @@ action 使用八 token 词表；注入或强制补全的 token 不进入 PPO。
 SFT1-v2 state-training 是独立的可微能力：输入必须携带每行真实 archived assistant
 response/CoT provenance。多轮prefix也可能在system prompt或observation context中包含格式示例；所有结构pair必须
 完整相邻，只选择消息序列最后一个current pair，并让其K16 hidden和八动作logits来自同一次
-模型forward。普通 `Backbone.forward()`、Agent policy与PPO replay的既有输出不因此改变。
+模型forward。新Query-State调用还可携带由公共batch renderer生成的final-assistant labels；Query labels必须为`-100`，forward只请求有效target predecessor与action boundary的vocabulary logits并返回CE numerator/count，不执行第二次student call。无labels的legacy v2调用仍返回相同K16/action结果。普通`Backbone.forward()`、Agent policy与PPO replay的既有输出不因此改变。
 `Qwen25VLBackbone.save_pretrained()`可接收官方FSDP聚合后的完整state dict；query delta
 只在该完整副本中materialize到embedding行，训练中的sharded参数保持不变，adapter私有key
 不会进入HF artifact。

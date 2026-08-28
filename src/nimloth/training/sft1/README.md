@@ -1,6 +1,53 @@
 # SFT1 training
 
-`objective.py` owns the state-interface-v2 canary's complete differentiable
+`query_state.py` owns the new `nimloth_sft1_query_state_v1` objective/root. It
+consumes one same-forward raw K16 hidden/action/LM-CE result, maps hidden through
+the unique no-bias `DirectSlotProjector`, and activates exactly two globally
+normalized terms: `2 * direct original-observation DINO MSE + 1 * real final-assistant CE`.
+It returns raw Query hidden and canonical state separately. Its inventory helper
+requires full language parameters including the top-level LM head, frozen visual
+parameters, an absent query additive adapter, and one disjoint direct-state group.
+
+The Query-State production-preparation path is separate from legacy v2:
+
+- `query_state_data.py` renders the complete current archived response (real CoT,
+  K8→K16 structural replacement, actual action and action-end), labels only the
+  final current assistant span, masks every validated structural Query position,
+  re-hashes the original image, and accepts only detached `[16,1024]` DINO targets
+  produced from that image. It never accepts fixed/synthetic CoT or student state.
+- `query_state_adapter.py` owns `nimloth_sft1_query_state_dataproto_v1`; it transports
+  raw encoded rows including labels plus detached DINO targets and rejects hidden,
+  Query-hidden, projected-state, or state cache keys before supervised collation.
+- `query_state_runtime.py` constructs only full-language/frozen-vision K16 Qwen plus
+  `DirectSlotProjector`, rejects LoRA/query adapters, captures exhaustive/disjoint
+  language and direct-state parameter identities before complete-root FSDP, and
+  reconstructs exactly those two AdamW groups after `use_orig_params=True` wrapping.
+- `query_state_distributed.py` computes update-global valid state-element and
+  final-assistant LM-token denominators before microbatching. It equalizes
+  complete-root forward/backward order with explicit invalid padding, performs
+  exactly one optimizer step, and delegates synchronization/global clipping to
+  official FSDP rather than reducing parameter gradients manually.
+- `query_state_config.py` is an explicit-field, non-launching code-canary schema.
+  It has no command/output/resource/update-budget defaults and rejects any
+  `launch_authorized=true` value. `query_state_driver.py` owns deterministic raw-
+  row partition/padding/resume, fresh render+DINO→DataProto assembly, and the
+  barriered immutable rank-checkpoint transaction; it is not an experiment loop.
+- `query_state_validation.py` accumulates detached raw Query hidden, unique
+  canonical state, LM CE, and same-forward action-logit diagnostics only. Its
+  report has no model-quality pass or checkpoint-selection bit.
+- `query_state_checkpoint.py` keeps the direct-state/local-resume identities and
+  adds immutable rank-owned model/optimizer/scheduler/RNG shards. Rank zero
+  publishes data+metric cursors and exact source/config/run/world identity only
+  after hashing every shard, then writes an atomic completion marker. A separate
+  deployable bundle has distinct full-Qwen, processor, and no-bias direct-state
+  owners and rejects legacy/`SharedSlotProjector` or training-only payloads.
+
+These modules are non-launching production preparation: there is still no GPU/
+Slurm entry point, formal raw-row run budget, approved optimizer value, output or
+resource identity, distributed validation publication/gate, real Qwen 4.55.4/
+CUDA/FSDP smoke, or model-quality evidence.
+
+`objective.py` owns the legacy state-interface-v2 canary's complete differentiable
 objective. It preserves one deployed row-major `[B,16,1024]` state and adds only
 training-time linear visual, fixed-mean instruction, observed-movement, and
 state-policy readouts. DINO supervision is cosine plus slot relations through a
@@ -78,9 +125,9 @@ config, objective, shard hash, or marker mismatch. Deployable export accepts onl
 the fresh projector state, and strict K16 metadata; training heads, optimizer,
 WM, and ValueHead are excluded.
 
-Qwen rendering and the one-forward K16/action-boundary capability remain in
+Qwen rendering and the one-forward K16/action-boundary/optional selected-CE capability remain in
 `nimloth.backbone.qwen25vl.state_training`. State rows require persisted real
-assistant response/CoT provenance and exact contextual instruction BPE spans.
+assistant response/CoT provenance and exact contextual instruction BPE spans. Query-State roots require a complete archived action and final-assistant labels; the new Query-State adapter now carries those labels, while legacy v2 transport intentionally continues omitting them and retains its old assertions.
 
 `validation.py` emits report-first epoch 0/1/2/3 component metrics with fixed-
 seed intervals and natural archived groups as the bootstrap unit.

@@ -8,7 +8,7 @@
 | `model.py` | `WorldModel`：组合 StateProjector、WMPredictor、ValueHead |
 | `state_proj.py` | backbone hidden → WM state |
 | `predictor.py` | latent 下一状态预测与自回归 sequence 模拟 |
-| `grid.py` | 可在 SFT2 继续训练的 k16 SFT1 projector 与 H-context temporal-spatial predictor |
+| `grid.py` | 唯一fixed no-bias `DirectSlotProjector(2048→1024)` artifact、legacy `SharedSlotProjector`与H-context temporal-spatial predictor |
 | `sigreg.py` | SFT2/RL 共用的 ``(B,T,D)`` sequence SIGReg |
 | `value_head.py` | 每个离散动作的 value |
 | `lewm.py`、`_vendor_lewm.py` | LeWM 配置和最小核心算子 |
@@ -21,7 +21,9 @@
 ValueHead严格表示从输入state出发的outgoing `Q(s,a)`；执行`a_t`后得到的
 successor `s_{t+1}`不能继续与`a_t`配对。
 
-`GridWorldModel` 保留同一个公共 state/predict/value 接口。它直接把 SFT1
+新`nimloth_direct_k16_state_v1`接口只由`DirectSlotProjector`拥有：输入固定`[B,16,2048]`，输出row-major`[B,16,1024]`，没有bias、MLP或第二套encoder。当前`GridWorldModel`的historical runtime仍加载`SharedSlotProjector`；它不因此静默兼容新artifact，后续SFT2 loader必须使用独立stage contract。
+
+`GridWorldModel` 保留同一个公共 state/predict/value 接口。历史路径直接把 SFT1
 `SharedSlotProjector` 的输出作为 grid state，并在 SFT2 继续训练该 projector；
 DINO teacher target 属于 backbone，SFT2/RL 共用的 predicted-state loss属于
 `training/common`；SFT2 可把它应用到完整`(B,T,...)`预测序列。WM 本身不维护 EMA 参数。
