@@ -53,3 +53,14 @@
 - 当前可提交范围严格为`AGENTS.md`、worktree governance spec、`git-worktree` skill及本task artifacts；`AI_branch_progress.md`和其他active task/TaskTree/submodule dirty均为pre-existing并继续排除。
 - 无新增memory：稳定规则已直接写入AGENTS/spec/skill，重复写curated memory会造成多重权威。
 - 人类在完整范围与验证展示后明确批准两个第一批本地commit：3份canonical规则，以及当前task的sandbox/manifest工具与证据；该批准仍不包含cutover、worktree删除、force或push/merge。
+
+## 2026-08-28 — Payload archive破坏性工具独立安全复核
+
+- Reviewer发现初版`payload_archive.py`仍缺少archive/member路径穿越与symlink-parent结构验证、mandatory `.local` exclusion、archive必须位于全部registered worktree之外、cross-worktree common Git identity、API层approval flag、只清理listed tracked/extras以及submodule actual-work-tree绑定等关键门禁；已在task-local工具内fail-closed修复。
+- Archive validator现要求规范化且唯一的tracked/extra/member路径、固定archive布局、无unlisted leaves/directories、regular non-symlink patches、extra hash/size/mode/kind/status、source/scope filesystem identity与完整policy fingerprint；tampered traversal、patch symlink及unlisted archive leaf均被negative controls拒绝。
+- `capture`强制`--include-ignored`和`.local` exclusion，并拒绝把archive写入任一registered worktree，因此真实payload archive不能进入tracked task artifact；task evidence只保存不含payload的structured sandbox proof。
+- `clean`/`restore`在CLI和Python API两层均要求显式approval；clean只restore manifest列出的tracked paths并逐个核验后unlink listed file/symlink，不递归删除或rmdir parent；restore要求同一common Git dir、exact root/submodule HEAD、exact-clean destination、无overwrite/symlink-parent，并在使用前重验patch/extra完整性。
+- 新payload sandbox连续运行并byte-compare通过：同worktree与linked→main cross-worktree+submodule两类staged/unstaged/untracked/ignored/symlink roundtrip fingerprint一致，`.local`始终保留；16类approval/path/symlink/identity/unlisted/forbidden-command negative controls通过。原worktree migration sandbox也再次与既有evidence byte一致。
+- Live只做状态/hash读取：39-registration topology、canonical `main`与linked `dev` branch/HEAD、08-26/08-27、`AI_branch_progress.md`、Pi TaskTree和`external/le-wm`均保持复核前基线；未对live执行clean/restore/switch/remove/prune。
+- 结论：工具/方法可进入**exact cutover approval gate**，即下一步可向人类展示并请求批准精确source/archive/destination、writer-pause、clean/detach/checkout/restore与rollback命令；本结论本身不授权任何live mutation。
+- 主会话复跑payload sandbox两次并与evidence逐字比较、compile、task validate、diff/staged和39-topology/exact HEAD断言，全部通过；人类据此明确批准仅提交5个task-local payload工具/证据文件，不授权其他dirty内容或live cutover。

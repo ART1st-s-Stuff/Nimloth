@@ -22,6 +22,24 @@
 | `git branch --show-current; git rev-parse HEAD; git worktree list --porcelain` | PASS：仍为`dev` at `4c5ffb384bea2959b22863eb8cd99b31c7ee5c15`，仍有39 registrations；没有live cutover/topology mutation |
 | `git diff --cached --name-only` | PASS：无输出，staged files=0 |
 
+## Payload archive破坏性工具follow-up
+
+| Command / control | Result |
+|---|---|
+| `python3 tools/sandbox_payload_archive_proof.py --output /tmp/payload-proof-{a,b}.json && cmp ...` | PASS：连续两次byte-identical；同worktree与linked→main cross-worktree+submodule两用例均恢复staged/unstaged、untracked、ignored、symlink bytes/status，before/after fingerprints一致，`.local`保留 |
+| `python3 tools/sandbox_worktree_proof.py --output /tmp/... && cmp evidence/sandbox-proof.json /tmp/...` | PASS：原99-command migration/rollback/nested lifecycle证据仍byte-identical |
+| Payload archive approval controls | PASS：CLI/API clean与restore缺少显式exact approval均在任何mutation前拒绝；capture缺少ignored coverage也拒绝 |
+| Archive path/layout negative controls | PASS：archive位于registered worktree内、symlink parent、manifest `../` traversal、symlink patch、unlisted archive leaf均被拒绝；archive只允许位于real non-symlink external directory；restore preflight解析patch numstat并拒绝任何未被`tracked_paths`覆盖或触及`.local`的payload path |
+| Source/live race and deletion controls | PASS：capture前后重验source fingerprint/identity；新增unlisted live payload使clean在mutation前停止且payload保留；clean仅restore listed tracked paths和unlink hash/mode匹配的listed file/symlink，不递归删除/rmdir parent |
+| Restore identity/overwrite controls | PASS：要求exact destination top-level/HEAD、相同common Git dir与initialized submodule set；foreign clone、dirty/colliding destination及symlink parent均fail closed |
+| Forbidden command controls | PASS：`-f`/`--force`、reset、Git clean、stash与`.git/worktrees` argument均不可由工具执行；源码无worktree remove/prune/switch实现 |
+| `.local`/artifact boundary | PASS：`.local`是唯一允许的mandatory root exclusion，额外payload exclusion被拒绝，clean/restore后`.local`内容保持；capture拒绝全部registered worktree内的archive path；tracked task evidence仅为metadata proof，`archive_payload_embedded_in_evidence=false` |
+| Python `compile(...)` | PASS：`payload_archive.py`、`sandbox_payload_archive_proof.py`及原sandbox/manifest工具均通过且不生成cache |
+| Fresh metadata manifest到`/tmp`并live validate | PASS：当前执行时仍为39 registered、28 clean/11 dirty、blocked scans=0，现行HEAD/branch/refs/remotes/config fingerprints通过；已commit的`evidence/pre-migration-manifest.json`是第一批commit前point-in-time evidence，因随后两个获批commit而预期不再通过current-live comparison，cutover approval前必须以writer-pause后的fresh external manifest替代 |
+| Live topology/dirty baseline comparison | PASS：39 worktrees及porcelain hash不变，canonical main与linked dev branch/HEAD不变；08-26、08-27、`AI_branch_progress.md`、Pi TaskTree、`external/le-wm`内容/status hashes不变，staged=0 |
+
+结论：payload archive工具已通过进入**exact cutover approval gate**所需的sandbox与negative safety review。下一步仍必须先暂停writers并向人类展示精确source/archive/destination及clean/detach/checkout/restore/rollback命令；本证据不授权live执行。
+
 ## Scope/status结论
 
 本批修改范围为3个明确批准的live规则文件，加当前08-28 task的PRD/design/plan/progress/research/tools/evidence。`.gitignore`未改，`AI_branch_progress.md`保留并发dirty内容且未由本批修改；08-26、08-27、`.pi/task-tree/`、`external/le-wm`与memory/runtime protected files均未修改。
