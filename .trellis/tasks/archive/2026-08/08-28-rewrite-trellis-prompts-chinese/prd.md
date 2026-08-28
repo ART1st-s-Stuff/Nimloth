@@ -95,15 +95,15 @@
 
 ## Acceptance Criteria
 
-- [ ] 9个scope文件的自然语言指令已使用一致中文；英文残留均有allowlist理由。
-- [ ] `AGENTS.md`与相关spec审查完成；没有为风格改写人类文件。
-- [ ] workflow phases、审批门禁、experiment launch boundary、memory/progress/worktree/slurm safety无弱化或扩张。
-- [ ] parser-coupled tags/status/headings逐字保留并通过自动检查。
-- [ ] Markdown/frontmatter/workflow extraction验证通过。
-- [ ] changed-file清单不包含任何上游prompt/agent/command/bundled skill、hook、script、extension或其他active task文件。
-- [ ] `trellis update --dry-run`仅作为证据运行，没有实际覆盖。
-- [ ] 完整diff、英文allowlist、验证结果和残余维护风险已展示。
-- [ ] 本任务完成后返回`08-28-refactor-local-worktree-layout`规划上下文，不自动开始删除worktree。
+- [x] 9个scope文件的自然语言指令已使用一致中文；英文残留均有allowlist理由。
+- [x] `AGENTS.md`与相关spec审查完成；没有为风格改写人类文件。
+- [x] workflow phases、审批门禁、experiment launch boundary、memory/progress/worktree/slurm safety无弱化或扩张。
+- [x] parser-coupled tags/status/headings逐字保留并通过自动检查。
+- [x] Markdown/frontmatter/workflow extraction验证通过。
+- [x] changed-file清单不包含任何上游prompt/agent/command/bundled skill、hook、script、extension或其他active task文件。
+- [x] `trellis update --dry-run`仅作为证据运行，没有实际覆盖。
+- [x] 完整diff、英文allowlist、验证结果和残余维护风险已展示。
+- [x] 本任务完成后返回`08-28-refactor-local-worktree-layout`规划上下文，不自动开始删除worktree。
 
 ## Open questions
 

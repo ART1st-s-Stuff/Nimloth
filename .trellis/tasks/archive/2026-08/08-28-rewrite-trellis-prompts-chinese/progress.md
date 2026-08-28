@@ -40,3 +40,4 @@
 - 没有修改`AGENTS.md`、spec、上游Trellis资产、hook/script/extension/config/template state、其他task或worktree；没有commit/push/merge。
 - 无新增memory：可复用合同已记录在task research与现有spec中，不需要重复curated memory。翻译不改变branch级产品/实验状态，因此不新增`AI_branch_progress.md`里程碑。
 - 人类在完整范围与验证展示后，明确批准两个本地commit：prompt改写与task证据；仍禁止push/merge及混入其他dirty内容。
+- 两个批准commit已完成：`7989667e`与`da51915d`。人类随后明确验收finish-work影响，批准仅归档本任务并记录session journal，再切换到worktree重构任务；其他active task与dirty内容继续保留。
