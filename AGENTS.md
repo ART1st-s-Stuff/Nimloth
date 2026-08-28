@@ -47,8 +47,10 @@ Task artifact 不能自行放宽人类 prompt、本文件或 spec 的硬规则�
 
 ## 文件、Git 与主分支安全
 
-- 修改前执行 `git status --short --branch`，确认实际 worktree/branch，并保留不相关或并发的 dirty changes。
-- 本地修改使用 `../nimloth-<branch-name>`（分支名 `/` 替换为 `-`）。除非人类 prompt 显式允许，禁止在 `main` 所在 worktree 修改。
+- 唯一本地日常开发根为 `/workspace/remote2/nimloth`，批准的日常 branch 为 `dev`；默认直接在该根开发，不为每个任务自动创建 worktree。迁移完成前若该根实际尚未 checkout `dev`，必须停止，不能据目录名推断已完成 cutover。
+- 修改前在同一次调用中核验实际 `cwd`、`git rev-parse --show-toplevel`、`git branch --show-current` 与 `git status --short --branch`，并保留不相关或并发的 dirty changes。除非人类 prompt 显式允许，禁止在实际持有 `main` 的 worktree 修改。
+- 只有并行修改、实验 exact-source、危险集成/回归隔离或人类明确要求等必要理由存在时，才在 `/workspace/remote2/nimloth/.worktree/<branch-name-with-slashes-replaced-by-hyphens>` 创建 child worktree。其 `.local` 必须指向 canonical root 的 `.local`；创建后必须核验实际 path、branch、common Git dir、`.local` target 与命令 cwd。
+- Cleanup 前必须核对精确 child path 的 tracked、untracked、递归枚举的 ignored payload，以及所有 populated recursive submodule 内的 tracked/untracked/ignored 状态；parent Git status clean 不代表 ignored 或 nested payload 为空。只移除已核验的 `.local` symlink，再执行不带 `--force` 的普通 `git worktree remove` 并验证 registration/path 已消失。Git 因 submodule 或 payload 拒绝时立即停止；未经该精确路径的明确批准禁止 `--force`，也禁止自动 fallback、手改 `.git/worktrees` 或用全局 prune 代替精确 cleanup。
 - 禁止未经批准修改 `ai_notes/archive/`、`qc_*.md`、人类标记为只读的文件、大型数据、模型权重、checkpoint、实验输出；禁止手工编辑 `.memory/memories.jsonl`、`.local/memory/memories.jsonl`、`.trellis/.template-hashes.json` 或 Trellis runtime session pointer。
 - 提交前必须展示完整修改范围和验证证据并取得批准。未经相应授权不得 commit、push、merge；禁止覆盖他人改动。
 
