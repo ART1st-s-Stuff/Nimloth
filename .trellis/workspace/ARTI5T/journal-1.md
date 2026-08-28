@@ -97,3 +97,25 @@ Implemented and locally validated the strict DeepSight-style K16 SFT1-v2 code ca
 ### Next Steps
 
 - Create a dedicated experiment task and source-verify the real-data teacher/cache, checkpoint, metrics, resources, outputs, and exact launch command before requesting launch approval.
+
+
+## Session 4: 完成项目 Trellis prompts 中文重写
+
+**Date**: 2026-08-28
+**Task**: 完成项目 Trellis prompts 中文重写
+**Branch**: `dev`
+
+### Summary
+
+将9个项目维护的Trellis workflow/operational skill prompts重写为中文，保持machine contracts与审批门禁；focused validator、独立trellis-check和主会话全范围复核全部通过。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7989667e` | (see git log) |
+| `da51915d` | (see git log) |
+
+### Status
+
+[OK] **Completed**
