@@ -450,6 +450,35 @@ def test_original_observation_dino_and_distinct_dataproto_round_trip(
         build_query_state_dataproto((bad,))
 
 
+def test_query_state_update_inputs_accepts_production_tensordict(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from verl import DataProto
+
+    rendered = render_query_state_row(
+        _early_row(tmp_path), processor=_Processor(), max_length=8192
+    )
+    prepared = prepare_query_state_row(
+        rendered,
+        dino_regions=torch.zeros(16, 1024),
+        source_manifest_identity="c" * 64,
+    )
+    monkeypatch.setattr(
+        query_state_adapter,
+        "_load_pinned_dataproto_type",
+        lambda: DataProto,
+    )
+
+    data = build_query_state_dataproto((prepared,))
+    assert type(data.batch).__name__ == "TensorDict"
+    inputs = query_state_update_inputs(data, input_builder=_InputBuilder())
+
+    assert inputs.record_ids == (prepared.record_id,)
+    assert inputs.targets.dino_regions.shape == (1, 16, 1024)
+    assert inputs.student_batch.response_sources == ("archived",)
+
+
 def test_production_constructor_aligns_direct_head_to_loaded_qwen_dtype() -> None:
     constructed = construct_query_state_production_root(
         _loaded_backbone(dtype=torch.bfloat16)

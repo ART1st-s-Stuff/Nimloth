@@ -217,10 +217,11 @@ def query_state_update_inputs(
         "row_valid",
         "executed_action_indices",
     }
-    missing = sorted(required_tensors - set(data.batch))
+    tensor_keys = tuple(data.batch.keys())
+    missing = sorted(required_tensors - set(tensor_keys))
     if missing:
         raise ValueError("Query-State DataProto is missing tensor: " + missing[0])
-    forbidden = _forbidden_student_keys(tuple(data.batch))
+    forbidden = _forbidden_student_keys(tensor_keys)
     if forbidden:
         raise ValueError("Query-State DataProto contains cached student tensor: " + forbidden[0])
     required_non_tensors = {
