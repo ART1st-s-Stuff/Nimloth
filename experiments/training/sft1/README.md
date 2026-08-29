@@ -12,6 +12,7 @@ Canonical location for SFT1 per `ai_tasks/sft1_exp.md`.
 | `state_interface_v2_cache.py` | Launch-locked distributed fresh ID176/DINO target generation or CPU cache inspection |
 | `state_interface_v2_train.py` | Launch-locked production FSDP smoke, exact resume-smoke, or formal three-epoch runtime |
 | `state_interface_v2_canary.slurm` | Resource-unspecified sequential wrapper; executes only the separately approved resolved phase command |
+| `query_state_smoke.py` | Non-submitting `torchrun` child for one separately approved Query-State fresh/resume phase |
 | `train_8gpu.slurm` | 8-GPU DDP train (`SFT1_TUNE_MODE=lora\|embedlr`) |
 | `build_preprocess_cache.slurm` | CPU-only BF16 preprocess-cache build |
 | `submit_cache_then_train_8gpu.sh` | Submit cache, then dependency-gated training |
@@ -52,8 +53,23 @@ python experiments/training/sft1/state_interface_v2_canary.py \
   --manifest /path/from/a/later/approved/experiment/manifest.json
 ```
 
+The Query-State path has a separate unresolved preparation file at
+`configs/training/sft1/query_state_smoke_prep.yaml`. It cannot execute CPU
+preflight or CUDA and is not a launch contract. A future externally immutable
+`preflight_locked=true, launch_locked=false` artifact must bind exactly
+`2 * world_size` real train rows (one per rank for fresh and resume), source and
+ID176/DINO identities, two optimizer groups, FULL_SHARD topology, unique output
+and resources; it enables only the read-only `preflight` phase. A subsequent
+approval-bound artifact additionally binds the two-line canonical child-command
+manifest and may run CUDA. Both stay outside the clean exact-commit worktree
+rather than claiming to contain their own Git commit. The child performs no
+`sbatch`; fresh and resume remain separate `torchrun` processes and W&B is disabled.
+Every invocation also fails before project imports unless bytecode is disabled,
+pycache is outside the worktree, `HF_HOME` is absolute/unambiguous, and the
+launch `PYTHONHASHSEED` equals the resolved config seed.
+
 A passing local test or preflight proves schema/source compatibility only. The
-Slurm file intentionally omits partition/GPU/CPU/memory/time directives and
+legacy Slurm file intentionally omits partition/GPU/CPU/memory/time directives and
 cannot execute while the config is unresolved/unlocked. With a separately
 approved resolved config it runs exactly one controller phase; formal remains
 blocked until cache, smoke, and resume-smoke markers all pass. Cache creation,

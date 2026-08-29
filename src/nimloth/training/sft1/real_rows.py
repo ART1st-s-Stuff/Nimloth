@@ -7,7 +7,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, Protocol, Sequence
 
 import torch
 
@@ -23,10 +23,10 @@ from nimloth.rollout.record_format import (
     TRAJECTORY_RECORD_FORMAT,
     require_trajectory_record,
 )
-from nimloth.training.sft1.experiment_config import EARLY4_STEPS, SFT1V2Config
 from nimloth.training.sft1.data import sha256_file
 
 
+_EARLY4_STEPS = (0, 1, 2, 3)
 EARLY4_ROW_SCHEMA = "nimloth_sft1_state_v2_early4_row_v2"
 PRE_RL_ARCHIVE_SCHEMA = "nimloth_sft1_state_v2_pre_rl_archive_v1"
 _INSTRUCTION_PREFIX = "Human Instruction: "
@@ -100,6 +100,37 @@ class SFT1V2RowAudit:
     source_record_schema: str = PRE_RL_ARCHIVE_SCHEMA
     instruction_source: str = "observation_texts[0]:Human Instruction bounded span"
     overlap_key: str = "record_initial_and_current_next_original_image_sha256"
+
+
+class Early4DataContract(Protocol):
+    """Narrow immutable source view shared by legacy and Query-State configs."""
+
+    train_jsonl: str
+    train_sha256: str
+    validation_jsonl: str
+    validation_sha256: str
+    train_split: str
+    validation_split: str
+
+
+class Early4SelectionContract(Protocol):
+    """Only the audited count fields consumed by the row indexer."""
+
+    train_records: int
+    train_rows: int
+    excluded_train_empty_cot_rows: int
+    validation_records: int
+    raw_validation_rows: int
+    excluded_validation_empty_cot_rows: int
+    external_validation_rows: int
+    cross_split_image_hashes: int
+    same_image_multi_instruction_groups: int
+    same_instruction_multi_image_groups: int
+
+
+class Early4IndexContract(Protocol):
+    data: Early4DataContract
+    selection: Early4SelectionContract
 
 
 @dataclass(frozen=True)
@@ -351,7 +382,7 @@ def _selected_rows(
     for trajectory in records:
         selected_steps = tuple(
             step_index
-            for step_index in EARLY4_STEPS
+            for step_index in _EARLY4_STEPS
             if step_index < trajectory.num_steps
         )
         required_state_indices = sorted(
@@ -437,7 +468,7 @@ def _group_count(rows: Sequence[SFT1V2Early4Row], group: str, varying: str) -> i
 
 
 def index_early4_rows(
-    config: SFT1V2Config,
+    config: Early4IndexContract,
     *,
     enforce_approved_counts: bool = True,
 ) -> tuple[tuple[SFT1V2Early4Row, ...], SFT1V2RowAudit]:
@@ -667,7 +698,8 @@ def render_early4_row(
 
 
 __all__ = [
-    "EARLY4_ROW_SCHEMA", "PRE_RL_ARCHIVE_SCHEMA", "SFT1V2Early4Row", "SFT1V2RenderedRow",
+    "EARLY4_ROW_SCHEMA", "PRE_RL_ARCHIVE_SCHEMA", "Early4DataContract",
+    "Early4IndexContract", "Early4SelectionContract", "SFT1V2Early4Row", "SFT1V2RenderedRow",
     "SFT1V2RowAudit", "audit_rendered_token_upper_bound",
     "index_early4_rows", "render_early4_row",
 ]

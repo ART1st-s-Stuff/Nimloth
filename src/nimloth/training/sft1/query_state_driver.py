@@ -6,7 +6,7 @@ resource choice, epoch budget, or launch command.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 import hashlib
 import json
 from pathlib import Path
@@ -213,6 +213,53 @@ def save_query_state_distributed_checkpoint(
         or torch.distributed.get_rank() != rank
     ):
         raise ValueError("Query-State checkpoint process-group rank/world-size mismatch")
+    if distributed:
+        control_digest: str | None = None
+        control_error: Exception | None = None
+        try:
+            control_digest = hashlib.sha256(
+                json.dumps(
+                    {
+                        "identity": asdict(control.identity),
+                        "global_step": control.global_step,
+                        "data_cursor": dict(control.data_cursor),
+                        "metric_cursor": dict(control.metric_cursor),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode()
+            ).hexdigest()
+        except Exception as error:
+            control_error = error
+        control_status: list[tuple[str | None, str | None]] = [
+            (None, None)
+        ] * world_size
+        torch.distributed.all_gather_object(
+            control_status,
+            (
+                control_digest,
+                None
+                if control_error is None
+                else f"rank {rank}: {type(control_error).__name__}: {control_error}",
+            ),
+        )
+        control_failures = [
+            error for _digest, error in control_status if error is not None
+        ]
+        control_digests = {
+            digest for digest, _error in control_status if digest is not None
+        }
+        if control_failures:
+            raise RuntimeError(
+                "Query-State rank checkpoint control serialization failed: "
+                + "; ".join(control_failures)
+            )
+        if len(control_digests) != 1:
+            raise RuntimeError(
+                "Query-State rank checkpoint controls differ across ranks"
+            )
+
     save_error: Exception | None = None
     try:
         state = capture_query_state_rank_state(

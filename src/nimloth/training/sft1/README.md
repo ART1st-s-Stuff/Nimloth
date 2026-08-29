@@ -42,10 +42,34 @@ The Query-State production-preparation path is separate from legacy v2:
   deployable bundle has distinct full-Qwen, processor, and no-bias direct-state
   owners and rejects legacy/`SharedSlotProjector` or training-only payloads.
 
-These modules are non-launching production preparation: there is still no GPU/
-Slurm entry point, formal raw-row run budget, approved optimizer value, output or
-resource identity, distributed validation publication/gate, real Qwen 4.55.4/
-CUDA/FSDP smoke, or model-quality evidence.
+The production-path smoke preparation is schema-distinct from both paths above:
+
+- `query_state_smoke_config.py` owns `nimloth_sft1_query_state_smoke_v1`. The
+  committed template is unresolved/unlocked; an external `preflight_locked=true`
+  artifact resolves every operational field and exact row while remaining
+  `launch_locked=false`; only a subsequent approval-bound launch artifact may
+  enter CUDA. Resolved artifacts are hash-recorded and immutable outside the
+  clean exact-commit source worktree, avoiding an impossible self-referential
+  Git commit field.
+- `query_state_smoke_runtime.py` binds the complete ordered source manifest,
+  exact processor-rendered row descriptors, pre-wrap parameter inventory,
+  detached per-optimizer-group gradient norms, model/optimizer/scheduler/RNG
+  fingerprints, and immutable fresh/resume output ownership. It never selects
+  rows dynamically or synchronizes parameter gradients manually.
+- `query_state_smoke_train.py` is the real constructor owner: Qwen is loaded as
+  full-language/frozen-vision K16, the complete root is moved and FULL_SHARD
+  wrapped before frozen online DINO loads, then exactly one real row per rank is
+  rebuilt for one update. Fresh and resume each run in a distinct process;
+  resume must restore exact checkpoint fingerprints before its single update.
+
+`configs/training/sft1/query_state_smoke_prep.yaml` remains explicitly unresolved
+and cannot pass the CUDA gate. The thin `experiments/training/sft1/query_state_smoke.py`
+entry point runs a read-only CPU `preflight` without CUDA, or one already
+approved `torchrun` phase. Its two-line command manifest must match both canonical
+fresh/resume child argv identities. It never submits Slurm, enables W&B, infers
+resources, or mutates a config. There is still no
+approved resolved config/command/output/resource identity, real Qwen/DINO/CUDA/
+FSDP evidence, distributed model-quality validation, or SFT2 authorization.
 
 `objective.py` owns the legacy state-interface-v2 canary's complete differentiable
 objective. It preserves one deployed row-major `[B,16,1024]` state and adds only

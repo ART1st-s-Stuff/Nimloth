@@ -1,0 +1,143 @@
+# Non-launching preparation identity. Every unresolved field must be replaced in
+# a separately hash-recorded immutable resolved artifact after the exact source
+# commit is approved. It must not be edited in the clean server worktree.
+schema: nimloth_sft1_query_state_smoke_v1
+state_contract:
+  training_schema: nimloth_sft1_query_state_v1
+  objective_version: direct_query_state_dino_lm_v1
+  direct_state_artifact_schema: nimloth_direct_k16_state_v1
+  latent_query_mode: inject
+  grid_tokens: 16
+  qwen_hidden_dim: 2048
+  state_dim: 1024
+  direct_state_bias: false
+  state_weight: 2.0
+  lm_weight: 1.0
+  llm_tune: full
+  vision_tune: freeze
+  query_tune: freeze
+  lora: false
+  dino_frozen: true
+source:
+  repo: _UNRESOLVED_BEFORE_LAUNCH_
+  expected_commit: _UNRESOLVED_BEFORE_LAUNCH_
+  vagen_commit: 9f1e89eb8c9839a406b6e62aa75703494a79e5b5
+  verl_commit: 494f264494b2525f2c13595f63ac4912963e6d2f
+  interpreter: _UNRESOLVED_BEFORE_LAUNCH_
+  python_version: 3.12.13
+  torch_version: 2.8.0+cu128
+  transformers_version: 4.55.4
+selection:
+  steps: [0, 1, 2, 3]
+  train_records: 3211
+  train_rows: 12836
+  excluded_train_empty_cot_rows: 5
+  validation_records: 355
+  raw_validation_rows: 1420
+  excluded_validation_empty_cot_rows: 0
+  external_validation_rows: 1413
+  cross_split_image_hashes: 5
+  same_image_multi_instruction_groups: 42
+  same_instruction_multi_image_groups: 101
+data:
+  train_jsonl: _UNRESOLVED_BEFORE_LAUNCH_
+  train_sha256: _UNRESOLVED_BEFORE_LAUNCH_
+  validation_jsonl: _UNRESOLVED_BEFORE_LAUNCH_
+  validation_sha256: _UNRESOLVED_BEFORE_LAUNCH_
+  record_format: nimloth_trajectory_v1
+  train_split: train
+  validation_split: val
+  overlap_key: record_initial_and_current_next_original_image_sha256
+  source_manifest_identity: _UNRESOLVED_BEFORE_LAUNCH_
+  smoke_rows: []
+initialization:
+  actor_checkpoint: _UNRESOLVED_BEFORE_LAUNCH_
+  actor_completion_sha256: _UNRESOLVED_BEFORE_LAUNCH_
+  actor_config_sha256: _UNRESOLVED_BEFORE_LAUNCH_
+  actor_model_index_sha256: _UNRESOLVED_BEFORE_LAUNCH_
+  actor_model_shards_sha256: []
+  actor_action_head_sha256: _UNRESOLVED_BEFORE_LAUNCH_
+  processor_sha256: _UNRESOLVED_BEFORE_LAUNCH_
+  tokenizer_sha256: _UNRESOLVED_BEFORE_LAUNCH_
+  prompt_template_sha256: _UNRESOLVED_BEFORE_LAUNCH_
+  token_table_sha256: _UNRESOLVED_BEFORE_LAUNCH_
+  action_token_ids: [151683, 151684, 151685, 151686, 151687, 151688, 151689, 151690]
+  dino_source: facebook/dinov2-large
+  dino_revision: 47b73eefe95e8d44ec3623f8890bd894b6ea2d6c
+  dino_processor_fingerprint: 7d65a7de8788e87d
+  dino_hidden_size: 1024
+  dino_grid_size: 4
+  fresh_original_observation_targets: true
+optimizer:
+  # Structural-smoke proposal only; not a formal SFT1 training recipe.
+  name: adamw
+  language_learning_rate: 0.000001
+  direct_state_learning_rate: 0.0001
+  weight_decay: 0.0
+  betas: [0.9, 0.95]
+  epsilon: 0.00000001
+  scheduler: constant_lambda_1
+  max_grad_norm: 1.0
+runtime:
+  world_size: _UNRESOLVED_BEFORE_LAUNCH_
+  nodes: _UNRESOLVED_BEFORE_LAUNCH_
+  ranks_per_node: _UNRESOLVED_BEFORE_LAUNCH_
+  backend: nccl
+  model_dtype: bfloat16
+  mixed_precision_param_dtype: bfloat16
+  mixed_precision_reduce_dtype: float32
+  mixed_precision_buffer_dtype: float32
+  attention_implementation: _UNRESOLVED_BEFORE_LAUNCH_
+  gradient_checkpointing: true
+  train_mode: true
+  fsdp_sharding: full_shard
+  fsdp_use_orig_params: true
+  fsdp_wrap_policy: {}
+  model_parallel_size: 1
+  max_sequence_length: _UNRESOLVED_BEFORE_LAUNCH_
+  max_pixels: _UNRESOLVED_BEFORE_LAUNCH_
+  max_padded_tokens: _UNRESOLVED_BEFORE_LAUNCH_
+  max_rows_per_micro_batch: 1
+  rows_per_rank_update: 1
+  fresh_updates: 1
+  resume_updates: 1
+  seed: _UNRESOLVED_BEFORE_LAUNCH_
+  rng_schedule_version: nimloth_query_state_smoke_rng_v1
+checkpoint:
+  immutable_rank_shards: true
+  same_world_size_resume: true
+  same_rank_resume: true
+  save_optimizer: true
+  save_scheduler: true
+  save_rng: true
+  save_data_cursor: true
+  save_metric_cursor: true
+  fresh_checkpoint_name: checkpoint_step_00000001
+  resume_checkpoint_name: checkpoint_step_00000002
+  completion_marker: COMPLETED
+  forbid_cross_stage_resume: true
+  forbid_legacy_resume: true
+output:
+  experiment_group: outputs/experiments/training/sft1_query_state_smoke
+  run_root: _UNRESOLVED_BEFORE_LAUNCH_
+  controller_log_dir: _UNRESOLVED_BEFORE_LAUNCH_
+  fresh_child: fresh
+  resume_child: resume
+  minimum_free_bytes: _UNRESOLVED_BEFORE_LAUNCH_
+  overwrite: false
+  tracking_mode: disabled
+resources:
+  account: peilab
+  partition: _UNRESOLVED_BEFORE_LAUNCH_
+  node_count: _UNRESOLVED_BEFORE_LAUNCH_
+  gpus_per_node: _UNRESOLVED_BEFORE_LAUNCH_
+  total_gpus: _UNRESOLVED_BEFORE_LAUNCH_
+  gpu_model_allowlist: []
+  cpus_per_task: _UNRESOLVED_BEFORE_LAUNCH_
+  memory_gib: _UNRESOLVED_BEFORE_LAUNCH_
+  walltime: _UNRESOLVED_BEFORE_LAUNCH_
+authorization:
+  preflight_locked: false
+  launch_locked: false
+  approval_evidence: _UNRESOLVED_BEFORE_LAUNCH_
+  approved_command_sha256: _UNRESOLVED_BEFORE_LAUNCH_
