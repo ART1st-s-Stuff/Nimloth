@@ -30,6 +30,7 @@ from nimloth.training.sft1.query_state_checkpoint import (
     export_query_state_deployable_bundle,
     finalize_query_state_rank_checkpoint,
     load_query_state_rank_state,
+    restore_query_state_rank_state,
     save_query_state_rank_state,
 )
 from nimloth.training.sft1.query_state_config import (
@@ -506,6 +507,43 @@ def test_rank_sharded_checkpoint_transaction_binds_metric_and_data_cursor(
     )
     with pytest.raises(ValueError, match="manifest identity mismatch"):
         finalize_query_state_rank_checkpoint(mixed, control=control)
+
+
+def test_rank_checkpoint_restore_rejects_dtype_before_mutating_any_parameter() -> None:
+    root = nn.Module()
+    root.language = nn.Linear(1, 1, bias=False)
+    root.objective = nn.Module()
+    root.objective.projector = DirectSlotProjector()
+    optimizer = torch.optim.AdamW(root.parameters(), lr=1e-4)
+    with torch.no_grad():
+        for parameter in root.parameters():
+            parameter.zero_()
+    before = {
+        name: parameter.detach().clone()
+        for name, parameter in root.named_parameters()
+    }
+    direct = root.objective.projector.linear.weight
+    state = QueryStateRankState(
+        identity=_resume_identity(world_size=1),
+        model={
+            "language.weight": torch.ones_like(root.language.weight),
+            "objective.projector.linear.weight": direct.detach()
+            .clone()
+            .to(dtype=torch.bfloat16),
+        },
+        optimizer=optimizer.state_dict(),
+        scheduler={"last_epoch": 0},
+        rng={
+            "python": random.getstate(),
+            "numpy": np.random.get_state(),
+            "torch_cpu": torch.get_rng_state(),
+        },
+    )
+
+    with pytest.raises(ValueError, match="rank checkpoint tensor dtype mismatch"):
+        restore_query_state_rank_state(root, optimizer, state)
+    for name, parameter in root.named_parameters():
+        torch.testing.assert_close(parameter, before[name])
 
 
 def test_distributed_checkpoint_driver_restores_model_optimizer_rng_and_cursors(

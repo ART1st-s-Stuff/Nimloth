@@ -253,6 +253,25 @@ def save_query_state_resume_checkpoint(
     )
 
 
+def _validate_model_tensor_set_before_restore(
+    current: Mapping[str, torch.nn.Parameter],
+    state: Mapping[str, Any],
+    *,
+    owner: str,
+) -> None:
+    """Validate every model tensor before any live parameter is mutated."""
+
+    for name, parameter in current.items():
+        value = state[name]
+        if not isinstance(value, torch.Tensor) or value.shape != parameter.shape:
+            raise ValueError(f"Query-State {owner} tensor shape mismatch: {name}")
+        if value.dtype != parameter.dtype:
+            raise ValueError(
+                f"Query-State {owner} tensor dtype mismatch: "
+                f"{name}: {value.dtype} != {parameter.dtype}"
+            )
+
+
 def load_query_state_resume_checkpoint(
     path: Path,
     *,
@@ -293,12 +312,10 @@ def load_query_state_resume_checkpoint(
         or "objective.projector.linear.weight" not in state
     ):
         raise ValueError("Query-State checkpoint trainable parameter set mismatch")
+    _validate_model_tensor_set_before_restore(current, state, owner="checkpoint")
     with torch.no_grad():
         for name, parameter in current.items():
-            value = state[name]
-            if not isinstance(value, torch.Tensor) or value.shape != parameter.shape:
-                raise ValueError(f"Query-State checkpoint tensor shape mismatch: {name}")
-            parameter.copy_(value.to(device=parameter.device, dtype=parameter.dtype))
+            parameter.copy_(state[name].to(device=parameter.device))
     optimizer.load_state_dict(payload.get("optimizer"))
     scheduler = payload.get("scheduler")
     if not isinstance(scheduler, dict):
@@ -481,14 +498,14 @@ def restore_query_state_rank_state(
     }
     if set(current) != set(state.model):
         raise ValueError("Query-State rank checkpoint trainable key set mismatch")
+    _validate_model_tensor_set_before_restore(
+        current,
+        state.model,
+        owner="rank checkpoint",
+    )
     with torch.no_grad():
         for name, parameter in current.items():
-            value = state.model[name]
-            if not isinstance(value, torch.Tensor) or value.shape != parameter.shape:
-                raise ValueError(
-                    f"Query-State rank checkpoint tensor shape mismatch: {name}"
-                )
-            parameter.copy_(value.to(device=parameter.device, dtype=parameter.dtype))
+            parameter.copy_(state.model[name].to(device=parameter.device))
     optimizer.load_state_dict(dict(state.optimizer))
     required_rng = {"python", "numpy", "torch_cpu"}
     if not required_rng <= set(state.rng):

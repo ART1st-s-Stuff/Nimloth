@@ -313,9 +313,13 @@ def _early_row(tmp_path: Path, *, step_index: int = 0) -> SFT1V2Early4Row:
     )
 
 
-def _loaded_backbone(*, query_adapter=None) -> LoadedBackbone:
+def _loaded_backbone(
+    *,
+    query_adapter=None,
+    dtype: torch.dtype = torch.float32,
+) -> LoadedBackbone:
     model = configure_qwen_tuning(
-        _FakeQwen(),
+        _FakeQwen().to(dtype=dtype),
         argparse.Namespace(lora=False, llm_tune="full", vision_tune="freeze"),
     )
     backbone = Qwen25VLBackbone(
@@ -446,6 +450,25 @@ def test_original_observation_dino_and_distinct_dataproto_round_trip(
         build_query_state_dataproto((bad,))
 
 
+def test_production_constructor_aligns_direct_head_to_loaded_qwen_dtype() -> None:
+    constructed = construct_query_state_production_root(
+        _loaded_backbone(dtype=torch.bfloat16)
+    )
+
+    floating_dtypes = {
+        parameter.dtype
+        for parameter in constructed.root.backbone.parameters()
+        if parameter.is_floating_point()
+    }
+    assert floating_dtypes == {torch.bfloat16}
+    assert constructed.root.objective.projector.linear.weight.dtype == torch.bfloat16
+
+    mixed = _loaded_backbone(dtype=torch.bfloat16)
+    mixed.backbone.model.lm_head.to(dtype=torch.float32)
+    with pytest.raises(ValueError, match="loaded Qwen has mixed floating parameter dtypes"):
+        construct_query_state_production_root(mixed)
+
+
 def test_production_constructor_and_pre_wrap_optimizer_groups_fail_closed() -> None:
     constructed = construct_query_state_production_root(_loaded_backbone())
     assembly = assemble_query_state_training_root(
@@ -491,6 +514,36 @@ def test_production_constructor_and_pre_wrap_optimizer_groups_fail_closed() -> N
     }
     assert constructed.contract == QueryStateProductionContract()
     assert constructed.root.objective.projector.linear.bias is None
+
+    tampered = construct_query_state_production_root(_loaded_backbone())
+    tampered.root.objective.projector.to(dtype=torch.bfloat16)
+    wrapper_called = False
+
+    def forbidden_wrapper(module: nn.Module) -> nn.Module:
+        nonlocal wrapper_called
+        wrapper_called = True
+        return module
+
+    with pytest.raises(ValueError, match="mixed floating parameter dtypes"):
+        assemble_query_state_training_root(
+            constructed=tampered,
+            device=torch.device("cpu"),
+            repo_root=Path.cwd(),
+            wrap_policy={"disable": False},
+            mixed_precision=MixedPrecisionConfig(
+                param_dtype=torch.float32,
+                reduce_dtype=torch.float32,
+                buffer_dtype=torch.float32,
+            ),
+            language_learning_rate=1e-5,
+            direct_state_learning_rate=1e-4,
+            weight_decay=0.0,
+            adam_betas=(0.9, 0.95),
+            adam_epsilon=1e-8,
+            wrap=forbidden_wrapper,
+        )
+    assert wrapper_called is False
+    assert tampered.root.objective.projector.linear.weight.dtype == torch.bfloat16
 
     with pytest.raises(ValueError, match="input-forward device"):
         assemble_query_state_training_root(
@@ -591,6 +644,32 @@ def test_direct_artifact_and_same_identity_resume_round_trip_reject_legacy(
     for name, parameter in root.named_parameters():
         if parameter.requires_grad:
             torch.testing.assert_close(parameter, expected[name])
+
+    payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    payload["model"]["objective.projector.linear.weight"] = payload["model"][
+        "objective.projector.linear.weight"
+    ].to(dtype=torch.bfloat16)
+    dtype_mismatch = tmp_path / "resume-dtype-mismatch.pt"
+    torch.save(payload, dtype_mismatch)
+    with torch.no_grad():
+        for parameter in root.parameters():
+            if parameter.requires_grad:
+                parameter.zero_()
+    before_mismatched_restore = {
+        name: parameter.detach().clone()
+        for name, parameter in root.named_parameters()
+        if parameter.requires_grad
+    }
+    with pytest.raises(ValueError, match="checkpoint tensor dtype mismatch"):
+        load_query_state_resume_checkpoint(
+            dtype_mismatch,
+            root=root,
+            optimizer=optimizer,
+            expected_identity=identity,
+        )
+    for name, parameter in root.named_parameters():
+        if parameter.requires_grad:
+            torch.testing.assert_close(parameter, before_mismatched_restore[name])
 
     legacy = tmp_path / "legacy.pt"
     torch.save(

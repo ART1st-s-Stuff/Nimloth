@@ -76,6 +76,28 @@ class QueryStateWorkerAssembly:
     ownership: QueryStatePreWrapOwnership
 
 
+def _require_single_floating_parameter_dtype(
+    module: nn.Module,
+    *,
+    owner: str,
+) -> torch.dtype:
+    by_dtype: dict[torch.dtype, list[str]] = {}
+    for name, parameter in module.named_parameters():
+        if parameter.is_floating_point():
+            by_dtype.setdefault(parameter.dtype, []).append(name)
+    if not by_dtype:
+        raise ValueError(f"Query-State {owner} has no floating parameters")
+    if len(by_dtype) != 1:
+        summary = ", ".join(
+            f"{dtype}: {names[0]}"
+            for dtype, names in sorted(by_dtype.items(), key=lambda item: str(item[0]))
+        )
+        raise ValueError(
+            f"Query-State {owner} has mixed floating parameter dtypes: {summary}"
+        )
+    return next(iter(by_dtype))
+
+
 def construct_query_state_production_root(
     loaded: LoadedBackbone,
     *,
@@ -99,7 +121,13 @@ def construct_query_state_production_root(
         raise ValueError(
             "Query-State complete-root FSDP path rejects pre-sharded model-parallel Qwen"
         )
-    objective = SFT1QueryStateObjective(projector=DirectSlotProjector())
+    model_dtype = _require_single_floating_parameter_dtype(
+        backbone,
+        owner="loaded Qwen",
+    )
+    objective = SFT1QueryStateObjective(
+        projector=DirectSlotProjector().to(dtype=model_dtype)
+    )
     root = SFT1QueryStateTrainingRoot(backbone, objective)
     inventory = root.assert_trainable_contract()
     # The objective type and exhaustive inventory make SharedSlotProjector or a
@@ -240,6 +268,10 @@ def assemble_query_state_training_root(
     constructed.root.train()
     constructed.root.to(device)
     assert_complete_module_device(constructed.root, device)
+    _require_single_floating_parameter_dtype(
+        constructed.root,
+        owner="complete root",
+    )
     ownership = capture_query_state_pre_wrap_ownership(constructed.root)
     wrapper = wrap or (
         lambda module: wrap_complete_fsdp(

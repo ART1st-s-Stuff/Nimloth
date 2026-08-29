@@ -160,6 +160,42 @@ def test_query_state_root_uses_only_direct_dino_mse_and_same_forward_lm_ce() -> 
     assert dino.grad is None
 
 
+def test_bfloat16_direct_state_keeps_float32_loss_and_upstream_gradients() -> None:
+    torch.manual_seed(5)
+    backbone = _FakeSameForwardBackbone().to(dtype=torch.bfloat16)
+    objective = SFT1QueryStateObjective(
+        projector=DirectSlotProjector().to(dtype=torch.bfloat16)
+    )
+    root = SFT1QueryStateTrainingRoot(backbone, objective)
+    dino = torch.randn(2, 16, 1024, dtype=torch.float32)
+
+    output = root(
+        _batch(),
+        QueryStateTargets(
+            dino_regions=dino,
+            sample_valid=torch.tensor([True, True]),
+        ),
+        QueryStateNormalization(
+            global_state_valid_element_count=2 * 16 * 1024,
+            global_lm_valid_token_count=2,
+            gradient_average_world_size=1,
+        ),
+    )
+
+    assert output.raw_query_hidden.dtype == torch.bfloat16
+    assert output.state.dtype == torch.bfloat16
+    assert output.loss_sums["direct_state_mse"].dtype == torch.float32
+    assert output.losses["direct_state_mse"].dtype == torch.float32
+    assert output.total_loss.dtype == torch.float32
+    output.total_loss.backward()
+    query_seed_grad = backbone.language_model.model.language_model.query_seed.grad
+    direct_grad = objective.projector.linear.weight.grad
+    assert query_seed_grad is not None and torch.isfinite(query_seed_grad).all()
+    assert torch.count_nonzero(query_seed_grad) > 0
+    assert direct_grad is not None and torch.isfinite(direct_grad).all()
+    assert torch.count_nonzero(direct_grad) > 0
+
+
 def test_query_state_objective_rejects_nonzero_zero_token_lm_contribution() -> None:
     objective = SFT1QueryStateObjective(projector=DirectSlotProjector())
     with pytest.raises(ValueError, match="zero-token"):
