@@ -442,6 +442,20 @@ def test_source_manifest_and_exact_smoke_descriptors_are_fail_closed(
     raw = _raw(tmp_path, locked=True)
     raw["data"]["smoke_rows"] = descriptors
     raw["data"]["source_manifest_identity"] = identity
+    preflight_raw = json.loads(json.dumps(raw))
+    preflight_raw["authorization"].update(
+        {
+            "launch_locked": False,
+            "approval_evidence": _SENTINEL,
+            "approved_command_sha256": _SENTINEL,
+        }
+    )
+    preflight = parse_query_state_smoke_preflight_config(preflight_raw)
+    preflight_verified = verify_query_state_smoke_rows(
+        preflight, rows=(row0, row1), processor=processor
+    )
+    assert tuple(item.row.ordinal for item in preflight_verified) == (0, 1)
+
     config = parse_query_state_smoke_config(raw)
     verified = verify_query_state_smoke_rows(
         config, rows=(row0, row1), processor=processor

@@ -223,8 +223,10 @@ def verify_query_state_smoke_rows(
 ) -> tuple[QueryStateRenderedRow, ...]:
     """Re-render exactly the locked descriptors; never select rows dynamically."""
 
-    if not isinstance(config, QueryStateSmokeConfig) or not config.launch_locked:
-        raise PermissionError("exact Query-State smoke row verification requires launch-locked config")
+    if not isinstance(config, QueryStateSmokeConfig) or not config.preflight_locked:
+        raise PermissionError(
+            "exact Query-State smoke row verification requires preflight-locked config"
+        )
     descriptors = config.data.smoke_rows
     by_ordinal: dict[int, SFT1V2Early4Row] = {}
     for row in rows:
