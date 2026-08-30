@@ -14,6 +14,7 @@ from nimloth.training.sft1 import query_state_training_backend
 from nimloth.training.sft1.query_state_training_backend import (
     _FormalTrackingOwner,
     _actor_baseline_path,
+    _coordinate_early_stopping_decision,
     _global_teacher_memo_metric,
     _authoritative_entries_for_restart,
     _index_training_rows,
@@ -21,6 +22,7 @@ from nimloth.training.sft1.query_state_training_backend import (
     _publish_actor_baseline,
     _recover_first_boundary_crash,
     _run_generation_format_probe,
+    _validation_boundary_plan,
     build_query_state_training_updates,
     query_state_training_run_identity,
 )
@@ -28,6 +30,8 @@ from nimloth.training.sft1.query_state_training_config import (
     parse_query_state_training_config,
 )
 from nimloth.training.sft1.query_state_training_runtime import (
+    QueryStateEarlyStoppingCursor,
+    QueryStateEarlyStoppingDecision,
     QueryStateSegmentStore,
     QueryStateWandbMirror,
 )
@@ -130,6 +134,43 @@ def test_formal_tracking_queries_wandb_by_storage_name_not_public_id_column(
     assert owner.mirror is not None
 
 
+def test_early_stop_verdict_requires_exact_all_rank_consensus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cursor = QueryStateEarlyStoppingCursor(
+        best_composite=4.0,
+        last_composite=4.1,
+        best_epoch=1,
+        bad_epochs=1,
+        last_epoch=2,
+        last_update=3210,
+        terminal_epoch=None,
+        terminal_update=None,
+        stop_reason=None,
+    )
+    decision = QueryStateEarlyStoppingDecision(
+        cursor=cursor,
+        composite=4.1,
+        improved=False,
+        should_stop=False,
+        reason=None,
+    )
+    monkeypatch.setattr(
+        query_state_training_backend,
+        "_all_gather",
+        lambda value, world_size: (value,) * world_size,
+    )
+    _coordinate_early_stopping_decision(decision, world_size=8)
+
+    monkeypatch.setattr(
+        query_state_training_backend,
+        "_all_gather",
+        lambda value, world_size: (value,) * (world_size - 1) + ({**value, "composite": 3.0},),
+    )
+    with pytest.raises(RuntimeError, match="differs across ranks"):
+        _coordinate_early_stopping_decision(decision, world_size=8)
+
+
 def test_teacher_memo_metric_gathers_process_local_reports_in_rank_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -196,6 +237,34 @@ def test_backend_runtime_reindex_uses_data_only_contract_and_strict_audit(
     assert validated == [expected_audit]
 
 
+def test_formal_ws8_validation_plan_is_calibration_control_holdout_primary() -> None:
+    config = parse_query_state_training_config(_raw(mode="formal"))
+    epoch_one = _validation_boundary_plan(
+        config, update=1605, epoch=1, actual_terminal=False
+    )
+    assert epoch_one == {
+        "calibration": True,
+        "holdout": False,
+        "generation_format": False,
+        "actual_terminal": False,
+    }
+    epoch_two = _validation_boundary_plan(
+        config, update=3210, epoch=2, actual_terminal=False
+    )
+    assert epoch_two["calibration"] is True
+    assert epoch_two["holdout"] is True
+    assert epoch_two["generation_format"] is True
+    early_terminal = _validation_boundary_plan(
+        config, update=4815, epoch=3, actual_terminal=True
+    )
+    assert early_terminal == {
+        "calibration": True,
+        "holdout": True,
+        "generation_format": True,
+        "actual_terminal": True,
+    }
+
+
 def test_backend_uses_one_stable_run_identity_across_exact_restart_delta() -> None:
     fresh = parse_query_state_training_config(_raw(mode="formal", resume_mode="fresh"))
     restart = parse_query_state_training_config(
@@ -206,7 +275,12 @@ def test_backend_uses_one_stable_run_identity_across_exact_restart_delta() -> No
 
     changed = deepcopy(_raw(mode="formal", resume_mode="exact_restart"))
     changed["optimizer"]["language_learning_rate"] *= 2
-    changed_config = parse_query_state_training_config(changed)
+    with pytest.raises(ValueError, match="learning rate|LR|formal"):
+        parse_query_state_training_config(changed)
+
+    early_stop_changed = deepcopy(_raw(mode="formal", resume_mode="exact_restart"))
+    early_stop_changed["early_stopping"]["patience_epochs"] = 3
+    changed_config = parse_query_state_training_config(early_stop_changed)
     assert query_state_training_run_identity(changed_config) != query_state_training_run_identity(fresh)
 
 
@@ -374,6 +448,11 @@ def test_backend_validation_wires_global_diagnostics_and_fail_closed_safety() ->
     assert "normalization = query_state_global_normalization(" in source
     assert "device=validation_device" in source
     assert "QueryStateNormalization(1, 1, world_size)" not in source
+    assert 'split="calibration"' in source
+    assert 'split="holdout"' in source
+    assert '"holdout_controls_early_stop": False' in source
+    assert '"actual_terminal_reason": terminal_reason' in source
+    assert "terminal_primary=(config.mode == \"formal\" and actual_terminal is not None)" in source
 
 
 def test_backend_first_boundary_crash_replay_quarantines_checkpoint_path(
@@ -540,4 +619,6 @@ def test_thin_entrypoint_is_launchable_but_never_submits_slurm() -> None:
     assert "init_process_group" in source
     assert "sbatch" not in source
     assert "subprocess" not in source
+    assert '"terminal_epoch": result.terminal_epoch' in source
+    assert '"terminal_reason": result.terminal_reason' in source
     assert "automatic_export\": False" in source

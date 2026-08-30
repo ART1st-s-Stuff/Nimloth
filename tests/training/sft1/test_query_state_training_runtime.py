@@ -10,8 +10,10 @@ import pytest
 
 from nimloth.training.sft1.query_state_checkpoint import QueryStateResumeIdentity
 from nimloth.training.sft1.query_state_training_runtime import (
+    QueryStateEarlyStoppingCursor,
     QueryStateSegmentStore,
     QueryStateWandbMirror,
+    advance_query_state_early_stopping,
     build_training_event_plan,
     consume_pilot_restart_boundary,
     current_process_identity,
@@ -70,6 +72,97 @@ def test_event_plan_validates_update0_before_steps_and_commit_boundaries() -> No
         )
 
 
+def test_formal_early_stop_is_deterministic_calibration_only_and_resumable() -> None:
+    cursor = QueryStateEarlyStoppingCursor.initial()
+    first = advance_query_state_early_stopping(
+        cursor,
+        epoch=1,
+        update=1605,
+        calibration_dino_mse=2.0,
+        calibration_assistant_ce=1.0,
+        min_epochs=2,
+        max_epochs=10,
+        patience_epochs=2,
+        min_relative_improvement=0.01,
+    )
+    assert first.composite == pytest.approx(5.0)
+    assert first.cursor.best_composite == pytest.approx(5.0)
+    assert first.cursor.last_composite == pytest.approx(5.0)
+    assert first.cursor.bad_epochs == 0
+    assert first.should_stop is False
+
+    second = advance_query_state_early_stopping(
+        first.cursor,
+        epoch=2,
+        update=3210,
+        calibration_dino_mse=1.99,
+        calibration_assistant_ce=1.0,
+        min_epochs=2,
+        max_epochs=10,
+        patience_epochs=2,
+        min_relative_improvement=0.01,
+    )
+    assert second.cursor.bad_epochs == 1
+    assert second.should_stop is False
+    restored_before_terminal = QueryStateEarlyStoppingCursor.from_mapping(
+        second.cursor.to_mapping()
+    )
+    third = advance_query_state_early_stopping(
+        restored_before_terminal,
+        epoch=3,
+        update=4815,
+        calibration_dino_mse=1.98,
+        calibration_assistant_ce=1.0,
+        min_epochs=2,
+        max_epochs=10,
+        patience_epochs=2,
+        min_relative_improvement=0.01,
+    )
+    assert third.should_stop is True
+    assert third.reason == "converged_early_stop"
+    assert third.cursor.terminal_epoch == 3
+    assert third.cursor.terminal_update == 4815
+
+    restored = QueryStateEarlyStoppingCursor.from_mapping(third.cursor.to_mapping())
+    assert restored == third.cursor
+    with pytest.raises(TypeError, match="holdout_metric"):
+        advance_query_state_early_stopping(
+            second.cursor,
+            epoch=3,
+            update=4815,
+            calibration_dino_mse=1.98,
+            calibration_assistant_ce=1.0,
+            min_epochs=2,
+            max_epochs=10,
+            patience_epochs=2,
+            min_relative_improvement=0.01,
+            holdout_metric=0.0,
+        )
+
+
+def test_formal_early_stop_max_epoch_is_terminal_even_with_improvement() -> None:
+    cursor = QueryStateEarlyStoppingCursor.initial()
+    decision = None
+    for epoch in range(1, 11):
+        decision = advance_query_state_early_stopping(
+            cursor,
+            epoch=epoch,
+            update=epoch * 1605,
+            calibration_dino_mse=10.0 / epoch,
+            calibration_assistant_ce=1.0 / epoch,
+            min_epochs=2,
+            max_epochs=10,
+            patience_epochs=2,
+            min_relative_improvement=0.01,
+        )
+        cursor = decision.cursor
+    assert decision is not None
+    assert decision.should_stop is True
+    assert decision.reason == "max_epochs_reached"
+    assert cursor.terminal_epoch == 10
+    assert cursor.terminal_update == 16050
+
+
 def test_segment_records_are_pending_until_checkpoint_and_atomic_index(tmp_path: Path) -> None:
     store = QueryStateSegmentStore(tmp_path / "run", run_identity=_SHA, mode="pilot")
     segment = store.begin_segment(start_update=0, end_update=4, process_identity="process-a")
@@ -92,6 +185,53 @@ def test_segment_records_are_pending_until_checkpoint_and_atomic_index(tmp_path:
     indexed = json.loads((tmp_path / "run" / "authoritative_index.json").read_text())
     assert indexed["entries"][0]["checkpoint_control_hash"] == _SHA
     assert Path(indexed["entries"][0]["mirror_batch_path"]).is_file()
+
+
+def test_formal_authoritative_index_binds_early_stop_and_actual_terminal(tmp_path: Path) -> None:
+    store = QueryStateSegmentStore(
+        tmp_path / "run", run_identity=_SHA, mode="formal", wandb_run_id="formal-run"
+    )
+    segment = store.begin_segment(start_update=0, end_update=2, process_identity="process-a")
+    segment.append_update({"update": 1})
+    segment.append_update({"update": 2})
+    cursor = QueryStateEarlyStoppingCursor(
+        best_composite=4.0,
+        last_composite=4.1,
+        best_epoch=2,
+        bad_epochs=2,
+        last_epoch=4,
+        last_update=2,
+        terminal_epoch=4,
+        terminal_update=2,
+        stop_reason="converged_early_stop",
+    )
+    metric_cursor = {
+        "validation": 2,
+        "log": 2,
+        "wandb": 0,
+        "early_stopping": cursor.to_mapping(),
+        "actual_terminal": {
+            "epoch": 4,
+            "update": 2,
+            "reason": "converged_early_stop",
+            "terminal_primary": True,
+        },
+    }
+    entry = segment.commit(
+        checkpoint_path=_checkpoint(tmp_path / "checkpoint-2"),
+        checkpoint_control_hash=_SHA,
+        data_cursor={"update": 2},
+        metric_cursor=metric_cursor,
+        validation={"due": True},
+        safety={"passed": True},
+        mirror_records=({"update": 1}, {"update": 2, "early_stopping": cursor.to_mapping()}),
+    )
+    assert entry.early_stopping_cursor == cursor.to_mapping()
+    assert entry.actual_terminal == metric_cursor["actual_terminal"]
+    indexed = json.loads((tmp_path / "run" / "authoritative_index.json").read_text())
+    assert indexed["entries"][0]["actual_terminal"]["reason"] == "converged_early_stop"
+    mirror = json.loads(Path(entry.mirror_batch_path).read_text())
+    assert mirror["records"][-1]["early_stopping"]["bad_epochs"] == 2
 
 
 def test_index_before_crash_replays_mirror_but_index_before_publication_rolls_back(tmp_path: Path) -> None:

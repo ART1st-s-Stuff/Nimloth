@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -94,6 +95,176 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 @dataclass(frozen=True)
+class QueryStateEarlyStoppingCursor:
+    best_composite: float | None
+    last_composite: float | None
+    best_epoch: int
+    bad_epochs: int
+    last_epoch: int
+    last_update: int
+    terminal_epoch: int | None
+    terminal_update: int | None
+    stop_reason: str | None
+
+    @classmethod
+    def initial(cls) -> QueryStateEarlyStoppingCursor:
+        return cls(None, None, 0, 0, 0, 0, None, None, None)
+
+    def __post_init__(self) -> None:
+        if (
+            any(
+                value is not None
+                and (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                    or float(value) < 0.0
+                )
+                for value in (self.best_composite, self.last_composite)
+            )
+            or any(
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+                for value in (
+                    self.best_epoch,
+                    self.bad_epochs,
+                    self.last_epoch,
+                    self.last_update,
+                )
+            )
+            or self.best_epoch > self.last_epoch
+            or (self.best_composite is None) != (self.best_epoch == 0)
+            or (self.last_composite is None) != (self.last_epoch == 0)
+        ):
+            raise ValueError("Query-State early-stop cursor is invalid")
+        terminal_values = (
+            self.terminal_epoch,
+            self.terminal_update,
+            self.stop_reason,
+        )
+        if any(value is None for value in terminal_values) != all(
+            value is None for value in terminal_values
+        ):
+            raise ValueError("Query-State early-stop terminal cursor is partial")
+        if self.stop_reason is not None:
+            if (
+                self.stop_reason not in {"converged_early_stop", "max_epochs_reached"}
+                or isinstance(self.terminal_epoch, bool)
+                or not isinstance(self.terminal_epoch, int)
+                or self.terminal_epoch != self.last_epoch
+                or isinstance(self.terminal_update, bool)
+                or not isinstance(self.terminal_update, int)
+                or self.terminal_update != self.last_update
+            ):
+                raise ValueError("Query-State early-stop terminal identity is invalid")
+
+    def to_mapping(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_mapping(cls, value: Mapping[str, Any]) -> QueryStateEarlyStoppingCursor:
+        expected = {
+            "best_composite",
+            "last_composite",
+            "best_epoch",
+            "bad_epochs",
+            "last_epoch",
+            "last_update",
+            "terminal_epoch",
+            "terminal_update",
+            "stop_reason",
+        }
+        if not isinstance(value, Mapping) or set(value) != expected:
+            raise ValueError("Query-State early-stop cursor field set is invalid")
+        return cls(**dict(value))
+
+
+@dataclass(frozen=True)
+class QueryStateEarlyStoppingDecision:
+    cursor: QueryStateEarlyStoppingCursor
+    composite: float
+    improved: bool
+    should_stop: bool
+    reason: str | None
+
+
+def advance_query_state_early_stopping(
+    cursor: QueryStateEarlyStoppingCursor,
+    *,
+    epoch: int,
+    update: int,
+    calibration_dino_mse: float,
+    calibration_assistant_ce: float,
+    min_epochs: int,
+    max_epochs: int,
+    patience_epochs: int,
+    min_relative_improvement: float,
+) -> QueryStateEarlyStoppingDecision:
+    """Advance only from the globally aggregated calibration objective."""
+
+    if not isinstance(cursor, QueryStateEarlyStoppingCursor):
+        raise TypeError("early stopping requires its exact cursor")
+    if cursor.stop_reason is not None:
+        raise ValueError("completed Query-State early stopping cannot advance")
+    if (
+        isinstance(epoch, bool)
+        or not isinstance(epoch, int)
+        or epoch != cursor.last_epoch + 1
+        or isinstance(update, bool)
+        or not isinstance(update, int)
+        or update <= cursor.last_update
+        or min_epochs < 2
+        or max_epochs < min_epochs
+        or epoch > max_epochs
+        or patience_epochs < 1
+        or not math.isfinite(min_relative_improvement)
+        or not 0.0 < min_relative_improvement < 1.0
+    ):
+        raise ValueError("Query-State early-stop schedule is invalid")
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or float(value) < 0.0
+        for value in (calibration_dino_mse, calibration_assistant_ce)
+    ):
+        raise ValueError("Query-State calibration convergence metrics are invalid")
+    composite = 2.0 * float(calibration_dino_mse) + float(calibration_assistant_ce)
+    if cursor.best_composite is None:
+        improved = True
+    else:
+        improvement = (cursor.best_composite - composite) / max(
+            abs(cursor.best_composite), 1e-12
+        )
+        improved = improvement >= min_relative_improvement
+    best = composite if improved else cursor.best_composite
+    best_epoch = epoch if improved else cursor.best_epoch
+    bad_epochs = 0 if improved else cursor.bad_epochs + 1
+    reason: str | None = None
+    if epoch == max_epochs:
+        reason = "max_epochs_reached"
+    elif epoch >= min_epochs and bad_epochs >= patience_epochs:
+        reason = "converged_early_stop"
+    next_cursor = QueryStateEarlyStoppingCursor(
+        best_composite=best,
+        last_composite=composite,
+        best_epoch=best_epoch,
+        bad_epochs=bad_epochs,
+        last_epoch=epoch,
+        last_update=update,
+        terminal_epoch=epoch if reason is not None else None,
+        terminal_update=update if reason is not None else None,
+        stop_reason=reason,
+    )
+    return QueryStateEarlyStoppingDecision(
+        cursor=next_cursor,
+        composite=composite,
+        improved=improved,
+        should_stop=reason is not None,
+        reason=reason,
+    )
+
+
+@dataclass(frozen=True)
 class QueryStateTrainingEvent:
     mode: str
     update: int
@@ -157,6 +328,8 @@ class QueryStateAuthoritativeEntry:
     metric_cursor_hash: str
     mirror_batch_path: str
     mirror_batch_hash: str
+    early_stopping_cursor: Mapping[str, Any] | None = None
+    actual_terminal: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -258,6 +431,42 @@ class QueryStateSegment:
             "metric": dict(metric_cursor),
         }
         _atomic_json(self.path / "cursors.json", cursor_payload, overwrite=False)
+        early_cursor_raw = metric_cursor.get("early_stopping")
+        early_cursor: Mapping[str, Any] | None = None
+        if early_cursor_raw is not None:
+            early_cursor = QueryStateEarlyStoppingCursor.from_mapping(
+                early_cursor_raw
+            ).to_mapping()
+        actual_terminal_raw = metric_cursor.get("actual_terminal")
+        actual_terminal: Mapping[str, Any] | None = None
+        if actual_terminal_raw is not None:
+            expected_terminal_fields = {
+                "epoch",
+                "update",
+                "reason",
+                "terminal_primary",
+            }
+            if (
+                not isinstance(actual_terminal_raw, Mapping)
+                or set(actual_terminal_raw) != expected_terminal_fields
+                or actual_terminal_raw.get("terminal_primary") is not True
+                or isinstance(actual_terminal_raw.get("epoch"), bool)
+                or not isinstance(actual_terminal_raw.get("epoch"), int)
+                or actual_terminal_raw.get("epoch") < 1
+                or isinstance(actual_terminal_raw.get("update"), bool)
+                or actual_terminal_raw.get("update") != self.end_update
+                or actual_terminal_raw.get("reason")
+                not in {"converged_early_stop", "max_epochs_reached"}
+            ):
+                raise ValueError("actual terminal metric cursor is invalid")
+            actual_terminal = dict(actual_terminal_raw)
+            if (
+                early_cursor is None
+                or early_cursor["stop_reason"] != actual_terminal["reason"]
+                or early_cursor["terminal_epoch"] != actual_terminal["epoch"]
+                or early_cursor["terminal_update"] != actual_terminal["update"]
+            ):
+                raise ValueError("actual terminal and early-stop cursors disagree")
         segment_name = f"segment_{self.start_update:08d}_{self.end_update:08d}"
         committed_path = self.store.root / "segments" / segment_name
         if committed_path.exists():
@@ -279,6 +488,8 @@ class QueryStateSegment:
             metric_cursor_hash=_canonical_hash(dict(metric_cursor)),
             mirror_batch_path=str(mirror_path),
             mirror_batch_hash=_canonical_hash(mirror_payload),
+            early_stopping_cursor=early_cursor,
+            actual_terminal=actual_terminal,
         )
         _atomic_json(committed_path / "commit.json", asdict(entry), overwrite=False)
         if fail_before_index:
@@ -606,11 +817,14 @@ __all__ = [
     "QUERY_STATE_RESTART_SCHEMA",
     "QUERY_STATE_SEGMENT_SCHEMA",
     "QueryStateAuthoritativeEntry",
+    "QueryStateEarlyStoppingCursor",
+    "QueryStateEarlyStoppingDecision",
     "QueryStatePilotRestartReceipt",
     "QueryStateRecovery",
     "QueryStateSegmentStore",
     "QueryStateTrainingEvent",
     "QueryStateWandbMirror",
+    "advance_query_state_early_stopping",
     "build_training_event_plan",
     "consume_pilot_restart_boundary",
     "current_process_identity",

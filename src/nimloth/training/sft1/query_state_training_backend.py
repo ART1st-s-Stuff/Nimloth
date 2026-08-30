@@ -64,7 +64,6 @@ from nimloth.training.sft1.query_state_training_manifest import (
     build_generation_response_policy_prompt,
     deserialize_generation_format_manifest,
     deserialize_query_state_validation_split,
-    rows_for_validation_mode,
     validate_query_state_row_audit,
 )
 from nimloth.training.sft1.query_state_training_controller import (
@@ -72,9 +71,11 @@ from nimloth.training.sft1.query_state_training_controller import (
 )
 from nimloth.training.sft1.query_state_training_runtime import (
     QueryStateAuthoritativeEntry,
+    QueryStateEarlyStoppingCursor,
     QueryStateRecovery,
     QueryStateSegmentStore,
     QueryStateWandbMirror,
+    advance_query_state_early_stopping,
     current_process_identity,
 )
 from nimloth.training.sft1.query_state_training_validation import (
@@ -102,7 +103,8 @@ class QueryStateTrainingBackendAssembly:
     rows_by_ordinal: Mapping[int, SFT1V2Early4Row]
     padding_row: SFT1V2Early4Row
     training_ordinals: tuple[int, ...]
-    validation_ordinals: tuple[int, ...]
+    calibration_ordinals: tuple[int, ...]
+    holdout_ordinals: tuple[int, ...]
     generation_format_manifest: QueryStateGenerationFormatManifest
     generation_spec: TurnGenerationSpec
     dino_teacher: FreshQueryStateDINOTeacher
@@ -117,6 +119,8 @@ class QueryStateTrainingRunResult:
     log_cursor: int
     tracking_cursor: int
     tracking_incomplete: bool
+    terminal_epoch: int | None
+    terminal_reason: str | None
 
 
 @dataclass(frozen=True)
@@ -298,10 +302,16 @@ def construct_query_state_training_backend(
         rows=rows,
         expected_identity=str(config.data["validation_manifest_identity"]),
     )
-    validation_ordinals = tuple(
+    calibration_ordinals = tuple(
         by_identity[identity].ordinal
-        for identity in rows_for_validation_mode(validation_split, mode=config.mode)
+        for identity in validation_split.calibration_row_identities
     )
+    holdout_ordinals = tuple(
+        by_identity[identity].ordinal
+        for identity in validation_split.holdout_row_identities
+    )
+    if len(calibration_ordinals) != 80 or len(holdout_ordinals) != 1333:
+        raise ValueError("Query-State validation split must remain calibration80/holdout1333")
     generation_format = deserialize_generation_format_manifest(
         Path(str(config.validation["generation_format_manifest_path"])),
         rows=rows,
@@ -358,7 +368,8 @@ def construct_query_state_training_backend(
         rows_by_ordinal=by_ordinal,
         padding_row=train_rows[0],
         training_ordinals=training_ordinals,
-        validation_ordinals=validation_ordinals,
+        calibration_ordinals=calibration_ordinals,
+        holdout_ordinals=holdout_ordinals,
         generation_format_manifest=generation_format,
         generation_spec=generation_spec,
         dino_teacher=teacher,
@@ -409,6 +420,7 @@ def query_state_training_run_identity(config: QueryStateTrainingConfig) -> str:
         "optimizer": _plain(config.optimizer),
         "runtime": _plain(config.runtime),
         "schedule": _plain(config.schedule),
+        "early_stopping": _plain(config.early_stopping),
         "validation": _plain(config.validation),
         "run_root": config.output["run_root"],
         "controller_root": config.output["controller_root"],
@@ -421,6 +433,43 @@ def query_state_training_run_identity(config: QueryStateTrainingConfig) -> str:
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     ).hexdigest()
+
+
+def _validation_boundary_plan(
+    config: QueryStateTrainingConfig,
+    *,
+    update: int,
+    epoch: int,
+    actual_terminal: bool,
+) -> dict[str, bool]:
+    if config.mode != "formal":
+        raise ValueError("dynamic dual-split validation is formal-only")
+    cadence = int(config.validation["calibration_cadence_updates"])
+    if (
+        update != epoch * cadence
+        or epoch < 1
+        or update < 1
+        or not isinstance(actual_terminal, bool)
+    ):
+        raise ValueError("formal validation boundary is not an epoch commit")
+    holdout_due = (
+        update in {int(value) for value in config.validation["holdout_updates"]}
+        or actual_terminal
+    )
+    generation_due = holdout_due and (
+        update
+        in {
+            int(value)
+            for value in config.validation["generation_format_updates"]
+        }
+        or actual_terminal
+    )
+    return {
+        "calibration": True,
+        "holdout": holdout_due,
+        "generation_format": generation_due,
+        "actual_terminal": actual_terminal,
+    }
 
 
 def _resume_identity(config: QueryStateTrainingConfig) -> QueryStateResumeIdentity:
@@ -441,6 +490,19 @@ def _all_gather(value: Any, world_size: int) -> tuple[Any, ...]:
     gathered: list[Any] = [None] * world_size
     torch.distributed.all_gather_object(gathered, value)
     return tuple(gathered)
+
+
+def _coordinate_early_stopping_decision(
+    decision: Any,
+    *,
+    world_size: int,
+) -> None:
+    payload = asdict(decision)
+    gathered = _all_gather(payload, world_size)
+    if len(gathered) != world_size or any(
+        not isinstance(value, Mapping) or value != payload for value in gathered
+    ):
+        raise RuntimeError("formal early-stop verdict differs across ranks")
 
 
 def _global_teacher_memo_metric(
@@ -741,12 +803,25 @@ def _run_detached_validation(
     assembly: QueryStateTrainingBackendAssembly,
     *,
     update: int,
+    split: str,
+    generation_format_due: bool,
     rank: int,
     world_size: int,
     baseline_action_logits: Mapping[str, tuple[float, ...]] | None,
 ) -> QueryStateDetachedValidationResult:
+    if split not in {"calibration", "holdout"}:
+        raise ValueError("Query-State detached validation split is invalid")
+    if config.mode == "pilot" and split != "calibration":
+        raise ValueError("pilot must never open holdout validation rows")
+    if generation_format_due and assembly.generation_format_manifest.split != split:
+        raise ValueError("generation-format manifest and validation split disagree")
+    ordinals = (
+        assembly.calibration_ordinals
+        if split == "calibration"
+        else assembly.holdout_ordinals
+    )
     schedule, _identity = deterministic_query_state_schedule(
-        assembly.validation_ordinals,
+        ordinals,
         epoch=0,
         seed=int(config.schedule["seed"]),
         rank=rank,
@@ -881,9 +956,7 @@ def _run_detached_validation(
         report,
         tolerances=config.validation["actor_tolerances"],
     )
-    generation_due = update in {
-        int(value) for value in config.validation["generation_format_updates"]
-    }
+    generation_due = generation_format_due
     generation_format: Mapping[str, Any]
     if generation_due:
         generation_format = _run_generation_format_probe(
@@ -911,7 +984,7 @@ def _run_detached_validation(
     }
     publication = {
         "update": update,
-        "split": config.validation["split"],
+        "split": split,
         "diagnostics": asdict(report),
         "generation_format": generation_format,
         "safety": safety,
@@ -919,8 +992,10 @@ def _run_detached_validation(
         "diagnostic_only": True,
         "automatic_checkpoint_selection": False,
         "automatic_state_gate": False,
-        "human_terminal_state_gate": dict(
-            config.validation["terminal_state_gates"]
+        "human_terminal_state_gate": (
+            dict(config.validation["terminal_state_gates"])
+            if split == "holdout"
+            else None
         ),
     }
     return QueryStateDetachedValidationResult(publication, current_baseline)
@@ -1180,6 +1255,9 @@ def run_query_state_training(
     identity = _resume_identity(config)
     start_update = 0
     validation_cursor = -1
+    calibration_validation_cursor = -1
+    holdout_validation_cursor = -1
+    early_stopping_cursor = QueryStateEarlyStoppingCursor.initial()
     log_cursor = 0
     tracking_cursor = 0
     restart_mirror_entries: tuple[QueryStateAuthoritativeEntry, ...] = ()
@@ -1211,6 +1289,29 @@ def run_query_state_training(
         if data_cursor.get("next_update") != start_update + 1 or data_cursor.get("mode") != config.mode:
             raise ValueError("Query-State restored data cursor is not exact")
         validation_cursor = int(metric_cursor.get("validation", -1))
+        calibration_validation_cursor = int(
+            metric_cursor.get("calibration_validation", validation_cursor)
+        )
+        holdout_validation_cursor = int(
+            metric_cursor.get("holdout_validation", validation_cursor)
+        )
+        if config.mode == "formal":
+            early_raw = metric_cursor.get("early_stopping")
+            if not isinstance(early_raw, Mapping):
+                raise ValueError("formal exact restart lacks the early-stop cursor")
+            early_stopping_cursor = QueryStateEarlyStoppingCursor.from_mapping(
+                early_raw
+            )
+            if early_stopping_cursor.stop_reason is not None:
+                raise ValueError("completed formal terminal checkpoint cannot restart")
+            expected_epoch = start_update // int(
+                config.schedule["checkpoint_cadence_updates"]
+            )
+            if (
+                early_stopping_cursor.last_update != start_update
+                or early_stopping_cursor.last_epoch != expected_epoch
+            ):
+                raise ValueError("formal restored early-stop cursor is not exact")
         log_cursor = int(metric_cursor.get("log", -1))
         tracking_cursor = int(metric_cursor.get("wandb", -1))
         recovery_error: BaseException | None = None
@@ -1270,6 +1371,8 @@ def run_query_state_training(
                 + str(replay_payload[1])
             )
         validation_cursor = 0
+        calibration_validation_cursor = 0
+        holdout_validation_cursor = 0
         log_cursor = 0
         tracking_cursor = 0
     tracking = _FormalTrackingOwner(config, rank=rank, world_size=world_size)
@@ -1282,15 +1385,72 @@ def run_query_state_training(
     actor_baseline: Mapping[str, tuple[float, ...]] | None = None
     actor_baseline_identity: str | None = None
     if start_update == 0 and not crash_replay:
-        baseline_result = _run_detached_validation(
-            config,
-            assembly,
-            update=0,
-            rank=rank,
-            world_size=world_size,
-            baseline_action_logits=None,
-        )
-        actor_baseline = baseline_result.baseline_action_logits
+        if config.mode == "formal":
+            calibration_baseline = _run_detached_validation(
+                config,
+                assembly,
+                update=0,
+                split="calibration",
+                generation_format_due=False,
+                rank=rank,
+                world_size=world_size,
+                baseline_action_logits=None,
+            )
+            holdout_baseline = _run_detached_validation(
+                config,
+                assembly,
+                update=0,
+                split="holdout",
+                generation_format_due=True,
+                rank=rank,
+                world_size=world_size,
+                baseline_action_logits=None,
+            )
+            overlap = set(calibration_baseline.baseline_action_logits) & set(
+                holdout_baseline.baseline_action_logits
+            )
+            if overlap:
+                raise RuntimeError("formal calibration/holdout actor baselines overlap")
+            actor_baseline = {
+                **dict(calibration_baseline.baseline_action_logits),
+                **dict(holdout_baseline.baseline_action_logits),
+            }
+            if len(actor_baseline) != int(config.data["external_rows"]):
+                raise RuntimeError("formal actor baseline does not cover all external rows")
+            calibration_validation_cursor = 0
+            holdout_validation_cursor = 0
+            baseline_publication: Mapping[str, Any] = {
+                "update": 0,
+                "calibration": calibration_baseline.publication,
+                "holdout": holdout_baseline.publication,
+                "safety": {
+                    "passed": (
+                        calibration_baseline.publication["safety"]["passed"] is True
+                        and holdout_baseline.publication["safety"]["passed"] is True
+                    ),
+                    "calibration": calibration_baseline.publication["safety"],
+                    "holdout": holdout_baseline.publication["safety"],
+                },
+                "early_stopping_control": "calibration_only",
+                "holdout_controls_early_stop": False,
+            }
+        else:
+            pilot_baseline = _run_detached_validation(
+                config,
+                assembly,
+                update=0,
+                split="calibration",
+                generation_format_due=(0 in {
+                    int(value)
+                    for value in config.validation["generation_format_updates"]
+                }),
+                rank=rank,
+                world_size=world_size,
+                baseline_action_logits=None,
+            )
+            actor_baseline = pilot_baseline.baseline_action_logits
+            calibration_validation_cursor = 0
+            baseline_publication = pilot_baseline.publication
         validation_cursor = 0
         baseline_error: BaseException | None = None
         baseline_identity_payload: list[str | None] = [None]
@@ -1306,7 +1466,7 @@ def run_query_state_training(
                 path.write_text(
                     json.dumps(
                         {
-                            **dict(baseline_result.publication),
+                            **dict(baseline_publication),
                             "actor_baseline_identity": actor_baseline_identity,
                         },
                         sort_keys=True,
@@ -1326,7 +1486,7 @@ def run_query_state_training(
         if world_size > 1:
             torch.distributed.broadcast_object_list(baseline_identity_payload, src=0)
         actor_baseline_identity = baseline_identity_payload[0]
-        if baseline_result.publication["safety"]["passed"] is not True:
+        if baseline_publication["safety"]["passed"] is not True:
             terminal_error: BaseException | None = None
             if rank == 0:
                 try:
@@ -1334,7 +1494,7 @@ def run_query_state_training(
                         status="validator_failed",
                         details={
                             "update": 0,
-                            "validation": baseline_result.publication,
+                            "validation": baseline_publication,
                             "non_resumable_safety_failure": True,
                             "checkpoint_published": False,
                         },
@@ -1379,6 +1539,9 @@ def run_query_state_training(
         if resume_mode == "exact_restart"
         else Path()
     )
+    final_update = start_update
+    terminal_reason: str | None = None
+    terminal_epoch: int | None = None
     for segment_start in range(start_update, len(updates), cadence):
         segment_end = min(segment_start + cadence, len(updates))
         if segment_end - segment_start != cadence:
@@ -1441,11 +1604,116 @@ def run_query_state_training(
             "actor_baseline_identity": actor_baseline_identity,
             "automatic_model_quality_pass": None,
         }
-        if segment_end in validation_updates:
+        actual_terminal: Mapping[str, Any] | None = None
+        if config.mode == "formal":
+            epoch = segment_end // cadence
+            calibration_result = _run_detached_validation(
+                config,
+                assembly,
+                update=segment_end,
+                split="calibration",
+                generation_format_due=False,
+                rank=rank,
+                world_size=world_size,
+                baseline_action_logits=actor_baseline,
+            )
+            calibration_metrics = calibration_result.publication["diagnostics"][
+                "metrics"
+            ]
+            decision = advance_query_state_early_stopping(
+                early_stopping_cursor,
+                epoch=epoch,
+                update=segment_end,
+                calibration_dino_mse=float(
+                    calibration_metrics["direct_state/dino_mse"]
+                ),
+                calibration_assistant_ce=float(
+                    calibration_metrics["lm/archived_assistant_ce"]
+                ),
+                min_epochs=int(config.early_stopping["min_epochs"]),
+                max_epochs=int(config.early_stopping["max_epochs"]),
+                patience_epochs=int(config.early_stopping["patience_epochs"]),
+                min_relative_improvement=float(
+                    config.early_stopping["min_relative_improvement"]
+                ),
+            )
+            _coordinate_early_stopping_decision(
+                decision,
+                world_size=world_size,
+            )
+            early_stopping_cursor = decision.cursor
+            plan = _validation_boundary_plan(
+                config,
+                update=segment_end,
+                epoch=epoch,
+                actual_terminal=decision.should_stop,
+            )
+            holdout_publication: Mapping[str, Any] = {
+                "due": False,
+                "update": segment_end,
+                "reason": "not_in_registered_holdout_cadence",
+            }
+            holdout_safety: Mapping[str, Any] = {"passed": True}
+            if plan["holdout"]:
+                holdout_result = _run_detached_validation(
+                    config,
+                    assembly,
+                    update=segment_end,
+                    split="holdout",
+                    generation_format_due=plan["generation_format"],
+                    rank=rank,
+                    world_size=world_size,
+                    baseline_action_logits=actor_baseline,
+                )
+                holdout_publication = holdout_result.publication
+                holdout_safety = holdout_publication["safety"]
+                holdout_validation_cursor = segment_end
+            calibration_validation_cursor = segment_end
+            validation_cursor = segment_end
+            if decision.should_stop:
+                actual_terminal = {
+                    "epoch": epoch,
+                    "update": segment_end,
+                    "reason": decision.reason,
+                    "terminal_primary": True,
+                }
+            validation = {
+                "due": True,
+                "update": segment_end,
+                "calibration": calibration_result.publication,
+                "holdout": holdout_publication,
+                "early_stopping": asdict(decision),
+                "actual_terminal": actual_terminal,
+                "early_stopping_control": "calibration_only",
+                "holdout_controls_early_stop": False,
+            }
+            safety = {
+                "passed": (
+                    calibration_result.publication["safety"]["passed"] is True
+                    and holdout_safety.get("passed") is True
+                ),
+                "scope": "global_id176_actor_generation_safety",
+                "calibration": calibration_result.publication["safety"],
+                "holdout": holdout_safety,
+                "actor_baseline_identity": actor_baseline_identity,
+                "automatic_model_quality_pass": None,
+            }
+            mirror_records[-1] = {
+                **dict(mirror_records[-1]),
+                "calibration_composite": decision.composite,
+                "early_stopping": early_stopping_cursor.to_mapping(),
+                "actual_terminal": actual_terminal,
+            }
+        elif segment_end in validation_updates:
             validation_result = _run_detached_validation(
                 config,
                 assembly,
                 update=segment_end,
+                split="calibration",
+                generation_format_due=(segment_end in {
+                    int(value)
+                    for value in config.validation["generation_format_updates"]
+                }),
                 rank=rank,
                 world_size=world_size,
                 baseline_action_logits=actor_baseline,
@@ -1457,6 +1725,7 @@ def run_query_state_training(
                 "actor_baseline_identity": actor_baseline_identity,
                 "automatic_model_quality_pass": None,
             }
+            calibration_validation_cursor = segment_end
             validation_cursor = segment_end
         if safety.get("passed") is not True:
             failure_error: BaseException | None = None
@@ -1466,7 +1735,18 @@ def run_query_state_training(
                         checkpoint_path=run_root / "unsafe_checkpoint_not_published",
                         checkpoint_control_hash="0" * 64,
                         data_cursor={"mode": config.mode, "next_update": segment_end + 1},
-                        metric_cursor={"validation": validation_cursor, "log": log_cursor},
+                        metric_cursor={
+                            "validation": validation_cursor,
+                            "calibration_validation": calibration_validation_cursor,
+                            "holdout_validation": holdout_validation_cursor,
+                            "log": log_cursor,
+                            "early_stopping": (
+                                early_stopping_cursor.to_mapping()
+                                if config.mode == "formal"
+                                else None
+                            ),
+                            "actual_terminal": actual_terminal,
+                        },
                         validation=validation,
                         safety=safety,
                         mirror_records=tuple(mirror_records),
@@ -1501,15 +1781,23 @@ def run_query_state_training(
         )
         metric_cursor = {
             "validation": validation_cursor,
+            "calibration_validation": calibration_validation_cursor,
+            "holdout_validation": holdout_validation_cursor,
             "log": log_cursor,
             "wandb": tracking_cursor,
             "teacher_memo": teacher_memo_metric,
+            "early_stopping": (
+                early_stopping_cursor.to_mapping()
+                if config.mode == "formal"
+                else None
+            ),
+            "actual_terminal": actual_terminal,
         }
         checkpoint = run_root / "checkpoints" / f"update_{segment_end:08d}"
         control = QueryStateDistributedControl(
             identity=identity,
             global_step=segment_end,
-            terminal_primary=(config.mode == "formal" and segment_end == len(updates)),
+            terminal_primary=(config.mode == "formal" and actual_terminal is not None),
             data_cursor={
                 "mode": config.mode,
                 "next_update": segment_end + 1,
@@ -1563,6 +1851,11 @@ def run_query_state_training(
         if tracking.mirror is not None:
             tracking_cursor = tracking.mirror.cursor
         final_checkpoint = checkpoint
+        final_update = segment_end
+        if actual_terminal is not None:
+            terminal_reason = str(actual_terminal["reason"])
+            terminal_epoch = int(actual_terminal["epoch"])
+            break
         if (
             config.mode == "pilot"
             and resume_mode in {"fresh", "crash_replay"}
@@ -1599,30 +1892,51 @@ def run_query_state_training(
                 operation="forced-restart receipt publication",
             )
             return QueryStateTrainingRunResult(
-                config.mode, segment_end, str(checkpoint), validation_cursor,
-                log_cursor, tracking_cursor, False,
+                mode=config.mode,
+                final_update=segment_end,
+                final_checkpoint=str(checkpoint),
+                validation_cursor=validation_cursor,
+                log_cursor=log_cursor,
+                tracking_cursor=tracking_cursor,
+                tracking_incomplete=False,
+                terminal_epoch=None,
+                terminal_reason=None,
             )
 
+    if config.mode == "formal" and terminal_reason is None:
+        raise RuntimeError("formal training exhausted without an actual terminal verdict")
     if rank == 0:
         controller.record_terminal(
             status="completed",
             details={
-                "final_update": len(updates),
+                "final_update": final_update,
+                "actual_terminal_epoch": terminal_epoch,
+                "actual_terminal_reason": terminal_reason,
+                "terminal_primary": config.mode == "formal",
                 "checkpoint": str(final_checkpoint),
                 "checkpoint_control_hash": _checkpoint_control_hash(final_checkpoint),
                 "actor_baseline_identity": actor_baseline_identity,
                 "terminal_validation_update": validation_cursor,
+                "calibration_validation_update": calibration_validation_cursor,
+                "holdout_validation_update": holdout_validation_cursor,
+                "early_stopping": (
+                    early_stopping_cursor.to_mapping()
+                    if config.mode == "formal"
+                    else None
+                ),
                 "terminal_safety_passed": True,
             },
         )
     return QueryStateTrainingRunResult(
         mode=config.mode,
-        final_update=len(updates),
+        final_update=final_update,
         final_checkpoint=str(final_checkpoint),
         validation_cursor=validation_cursor,
         log_cursor=log_cursor,
         tracking_cursor=tracking_cursor,
         tracking_incomplete=bool(tracking.mirror and tracking.mirror.tracking_incomplete),
+        terminal_epoch=terminal_epoch,
+        terminal_reason=terminal_reason,
     )
 
 

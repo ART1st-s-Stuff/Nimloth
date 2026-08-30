@@ -150,6 +150,8 @@ def main(argv: list[str] | None = None) -> int:
                 "log_cursor": result.log_cursor,
                 "tracking_cursor": result.tracking_cursor,
                 "tracking_incomplete": result.tracking_incomplete,
+                "terminal_epoch": result.terminal_epoch,
+                "terminal_reason": result.terminal_reason,
                 "automatic_formal_extension": False,
                 "automatic_sft2_authorization": False,
                 "automatic_export": False,

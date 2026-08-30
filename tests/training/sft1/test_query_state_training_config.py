@@ -23,8 +23,9 @@ def _raw(*, mode: str = "pilot", resume_mode: str = "fresh") -> dict:
     pilot = mode == "pilot"
     restart_tracking = resume_mode != "fresh"
     checkpoint_restart = resume_mode == "exact_restart"
-    max_updates = 32 if pilot else 3209
-    checkpoint_cadence = 4 if pilot else 1
+    max_updates = 32 if pilot else 16050
+    checkpoint_cadence = 4 if pilot else 1605
+    validation_updates = [0, max_updates] if pilot else [0, 3210, 8025, 16050]
     return {
         "schema": QUERY_STATE_TRAINING_CONFIG_SCHEMA,
         "mode": mode,
@@ -83,8 +84,8 @@ def _raw(*, mode: str = "pilot", resume_mode: str = "fresh") -> dict:
             "weight_decay": 0.0,
             "betas": [0.9, 0.95],
             "epsilon": 1e-8,
-            "scheduler": "cosine",
-            "warmup_updates": 2,
+            "scheduler": "cosine" if pilot else "constant",
+            "warmup_updates": 2 if pilot else 0,
         },
         "runtime": {
             "max_sequence_length": 32768,
@@ -103,21 +104,36 @@ def _raw(*, mode: str = "pilot", resume_mode: str = "fresh") -> dict:
             "fsdp_wrap_policy": {"transformer_layer_cls": "Qwen2_5_VLDecoderLayer"},
         },
         "schedule": {
-            "seed": 7,
-            "epochs": 1,
+            "seed": 7 if pilot else 3335631237,
+            "epochs": 1 if pilot else 10,
             "max_updates": max_updates,
-            "rows_per_rank_update": 2,
+            "rows_per_rank_update": 2 if pilot else 1,
             "checkpoint_cadence_updates": checkpoint_cadence,
-            "validation_updates": [0, max_updates],
+            "validation_updates": validation_updates,
             "forced_restart_update": 16 if pilot else 0,
         },
+        "early_stopping": {
+            "enabled": not pilot,
+            "metric": "disabled" if pilot else "calibration_2x_dino_mse_plus_assistant_ce",
+            "min_epochs": 1 if pilot else 2,
+            "max_epochs": 1 if pilot else 10,
+            "patience_epochs": 0 if pilot else 2,
+            "min_relative_improvement": 0.0 if pilot else 0.01,
+            "calibration_split": "calibration",
+            "holdout_controls_early_stop": False,
+            "actual_terminal_primary": not pilot,
+        },
         "validation": {
-            "split": "calibration" if pilot else "holdout",
+            "split": "calibration" if pilot else "dual_calibration_control_holdout_primary",
             "baseline_update": 0,
             "terminal_update": max_updates,
+            "calibration_cadence_updates": checkpoint_cadence,
+            "holdout_updates": [0, max_updates] if pilot else [0, 3210, 8025, 16050],
+            "holdout_at_actual_terminal": not pilot,
             "generation_format_manifest_path": "/manifests/generation-format.json",
             "generation_format_manifest_identity": _SHA,
-            "generation_format_updates": [0, max_updates],
+            "generation_format_updates": [0, max_updates] if pilot else [0, 3210, 8025, 16050],
+            "generation_format_at_actual_terminal": not pilot,
             "actor_tolerances": {
                 "kl_max": 0.2,
                 "top1_min": 0.9,
@@ -150,13 +166,13 @@ def _raw(*, mode: str = "pilot", resume_mode: str = "fresh") -> dict:
             "minimum_free_bytes": 1,
         },
         "resources": {
-            "world_size": 2,
-            "nodes": 1,
-            "gpus_per_node": 2,
+            "world_size": 2 if pilot else 8,
+            "nodes": 1 if pilot else 2,
+            "gpus_per_node": 2 if pilot else 4,
             "cpus_per_task": 16,
             "memory_gib": 128,
             "walltime": "02:00:00",
-            "partition": "approved-partition",
+            "partition": "approved-partition" if pilot else "normal",
             "backend": "nccl",
             "gpu_model_allowlist": ["NVIDIA H800"],
         },
@@ -252,6 +268,7 @@ def test_training_schema_is_distinct_strict_and_has_no_missing_or_unknown_fields
     ] == real_path
 
     for bad_schema in (
+        "nimloth_sft1_query_state_training_v1",
         "nimloth_sft1_query_state_smoke_v1",
         "nimloth_sft1_query_state_code_canary_v1",
         "nimloth_sft1_state_v2_experiment_v1",
@@ -379,6 +396,7 @@ def test_generation_format_manifest_is_path_hash_owned_and_has_explicit_cadence(
         parse_query_state_training_config(relative)
     every_validation = _raw()
     every_validation["schedule"]["validation_updates"] = [0, 4, 32]
+    every_validation["validation"]["holdout_updates"] = [0, 4, 32]
     every_validation["validation"]["generation_format_updates"] = [0, 32]
     assert parse_query_state_training_config(every_validation).validation[
         "generation_format_updates"
@@ -398,7 +416,76 @@ def test_exact_schedule_cardinality_is_rejected_during_cpu_config_parse() -> Non
     bad["schedule"]["max_updates"] = 16
     bad["schedule"]["validation_updates"] = [0, 16]
     bad["validation"]["terminal_update"] = 16
-    with pytest.raises(ValueError, match="exact deterministic schedule cardinality.*16 != 3209"):
+    with pytest.raises(ValueError, match="exact deterministic schedule cardinality.*16 != 16050"):
+        parse_query_state_training_config(bad)
+
+
+def test_formal_ws8_max10_early_stop_contract_is_strict_and_identity_bound() -> None:
+    raw = _raw(mode="formal")
+    parsed = parse_query_state_training_config(raw)
+    assert parsed.resources["world_size"] == 8
+    assert parsed.resources["nodes"] == 2
+    assert parsed.resources["gpus_per_node"] == 4
+    assert parsed.schedule["epochs"] == 10
+    assert parsed.schedule["max_updates"] == 16050
+    assert parsed.schedule["checkpoint_cadence_updates"] == 1605
+    assert parsed.optimizer["language_learning_rate"] == 1e-6
+    assert parsed.optimizer["direct_state_learning_rate"] == 1e-4
+    assert parsed.optimizer["scheduler"] == "constant"
+    assert parsed.optimizer["warmup_updates"] == 0
+    assert parsed.early_stopping == {
+        "enabled": True,
+        "metric": "calibration_2x_dino_mse_plus_assistant_ce",
+        "min_epochs": 2,
+        "max_epochs": 10,
+        "patience_epochs": 2,
+        "min_relative_improvement": 0.01,
+        "calibration_split": "calibration",
+        "holdout_controls_early_stop": False,
+        "actual_terminal_primary": True,
+    }
+    assert parsed.validation["holdout_updates"] == (0, 3210, 8025, 16050)
+    assert parsed.validation["holdout_at_actual_terminal"] is True
+
+    for section, field, value in (
+        ("resources", "world_size", 2),
+        ("resources", "nodes", 1),
+        ("schedule", "epochs", 2),
+        ("schedule", "max_updates", 3210),
+        ("early_stopping", "patience_epochs", 3),
+        ("early_stopping", "min_relative_improvement", 0.02),
+        ("early_stopping", "metric", "dino_mse_only"),
+    ):
+        changed = deepcopy(raw)
+        changed[section][field] = value
+        if section in {"resources", "schedule"} or field == "metric":
+            with pytest.raises(ValueError):
+                parse_query_state_training_config(changed)
+        else:
+            assert parse_query_state_training_config(changed).identity != parsed.identity
+
+    missing = deepcopy(raw)
+    del missing["early_stopping"]
+    with pytest.raises(ValueError, match="early_stopping"):
+        parse_query_state_training_config(missing)
+    old_candidate = deepcopy(raw)
+    old_candidate["schedule"].update(epochs=2, max_updates=12836)
+    old_candidate["resources"].update(world_size=2, nodes=1, gpus_per_node=2)
+    with pytest.raises(ValueError, match="formal.*2.x4|WS8|early|schedule|validation"):
+        parse_query_state_training_config(old_candidate)
+
+
+def test_formal_dual_split_cadence_keeps_holdout_out_of_early_stop() -> None:
+    raw = _raw(mode="formal")
+    parsed = parse_query_state_training_config(raw)
+    assert parsed.validation["split"] == "dual_calibration_control_holdout_primary"
+    assert parsed.validation["calibration_cadence_updates"] == 1605
+    assert parsed.validation["holdout_updates"] == (0, 3210, 8025, 16050)
+    assert parsed.early_stopping["holdout_controls_early_stop"] is False
+
+    bad = deepcopy(raw)
+    bad["early_stopping"]["holdout_controls_early_stop"] = True
+    with pytest.raises(ValueError, match="holdout.*early"):
         parse_query_state_training_config(bad)
 
 

@@ -22,7 +22,7 @@ from nimloth.training.sft1.query_state import (
     QUERY_STATE_OBJECTIVE_VERSION,
 )
 
-QUERY_STATE_TRAINING_CONFIG_SCHEMA = "nimloth_sft1_query_state_training_v1"
+QUERY_STATE_TRAINING_CONFIG_SCHEMA = "nimloth_sft1_query_state_training_v2"
 _HEX = frozenset("0123456789abcdef")
 
 _SECTION_FIELDS: Mapping[str, frozenset[str]] = {
@@ -34,7 +34,8 @@ _SECTION_FIELDS: Mapping[str, frozenset[str]] = {
     "optimizer": frozenset({"name", "language_learning_rate", "direct_state_learning_rate", "weight_decay", "betas", "epsilon", "scheduler", "warmup_updates"}),
     "runtime": frozenset({"max_sequence_length", "min_pixels", "max_pixels", "attention_implementation", "model_dtype", "dino_dtype", "dino_batch_size", "max_padded_tokens", "max_rows_per_micro_batch", "max_grad_norm", "gradient_checkpointing", "fsdp_sharding", "fsdp_use_orig_params", "fsdp_wrap_policy"}),
     "schedule": frozenset({"seed", "epochs", "max_updates", "rows_per_rank_update", "checkpoint_cadence_updates", "validation_updates", "forced_restart_update"}),
-    "validation": frozenset({"split", "baseline_update", "terminal_update", "generation_format_manifest_path", "generation_format_manifest_identity", "generation_format_updates", "actor_tolerances", "effective_rank_formula", "effective_rank_collapse_threshold", "bootstrap_seed", "bootstrap_resamples", "ordinary_cluster_unit", "ordinary_bootstrap_formula", "natural_pair_unit", "natural_pair_formula", "terminal_state_gates"}),
+    "early_stopping": frozenset({"enabled", "metric", "min_epochs", "max_epochs", "patience_epochs", "min_relative_improvement", "calibration_split", "holdout_controls_early_stop", "actual_terminal_primary"}),
+    "validation": frozenset({"split", "baseline_update", "terminal_update", "calibration_cadence_updates", "holdout_updates", "holdout_at_actual_terminal", "generation_format_manifest_path", "generation_format_manifest_identity", "generation_format_updates", "generation_format_at_actual_terminal", "actor_tolerances", "effective_rank_formula", "effective_rank_collapse_threshold", "bootstrap_seed", "bootstrap_resamples", "ordinary_cluster_unit", "ordinary_bootstrap_formula", "natural_pair_unit", "natural_pair_formula", "terminal_state_gates"}),
     "output": frozenset({"run_root", "controller_root", "overwrite", "resolved_config_path", "command_manifest_path", "minimum_free_bytes"}),
     "resources": frozenset({"world_size", "nodes", "gpus_per_node", "cpus_per_task", "memory_gib", "walltime", "partition", "backend", "gpu_model_allowlist"}),
     "authorization": frozenset({"approval_id", "approval_sha256", "launch_authorized"}),
@@ -146,6 +147,7 @@ class QueryStateTrainingConfig:
     optimizer: Mapping[str, Any]
     runtime: Mapping[str, Any]
     schedule: Mapping[str, Any]
+    early_stopping: Mapping[str, Any]
     validation: Mapping[str, Any]
     output: Mapping[str, Any]
     resources: Mapping[str, Any]
@@ -273,6 +275,7 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
             optimizer=_frozen_mapping(sections["optimizer"]),
             runtime=_frozen_mapping(sections["runtime"]),
             schedule=_frozen_mapping(sections["schedule"]),
+            early_stopping=_frozen_mapping(sections["early_stopping"]),
             validation=_frozen_mapping(sections["validation"]),
             output=_frozen_mapping(sections["output"]),
             resources=_frozen_mapping(sections["resources"]),
@@ -359,7 +362,19 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         raise ValueError("optimizer.betas must contain two values in [0,1)")
     if optimizer["scheduler"] not in {"constant", "cosine", "linear"}:
         raise ValueError("optimizer.scheduler must be explicitly supported")
-    _int(optimizer["warmup_updates"], "optimizer.warmup_updates", minimum=0)
+    warmup_updates = _int(
+        optimizer["warmup_updates"], "optimizer.warmup_updates", minimum=0
+    )
+    if mode == "formal" and (
+        float(optimizer["language_learning_rate"]) != 1e-6
+        or float(optimizer["direct_state_learning_rate"]) != 1e-4
+        or float(optimizer["weight_decay"]) != 0.0
+        or tuple(float(value) for value in optimizer["betas"]) != (0.9, 0.95)
+        or float(optimizer["epsilon"]) != 1e-8
+        or optimizer["scheduler"] != "constant"
+        or warmup_updates != 0
+    ):
+        raise ValueError("formal Query-State optimizer/LR contract changed")
 
     runtime = sections["runtime"]
     max_length = _int(runtime["max_sequence_length"], "runtime.max_sequence_length")
@@ -373,7 +388,11 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         raise ValueError("runtime model/DINO dtype is unsupported")
     for field in ("dino_batch_size", "max_padded_tokens", "max_rows_per_micro_batch"):
         _int(runtime[field], f"runtime.{field}")
-    _number(runtime["max_grad_norm"], "runtime.max_grad_norm", positive=True)
+    max_grad_norm = _number(
+        runtime["max_grad_norm"], "runtime.max_grad_norm", positive=True
+    )
+    if mode == "formal" and max_grad_norm != 1.0:
+        raise ValueError("formal Query-State max_grad_norm must remain 1.0")
     if (
         runtime["gradient_checkpointing"] is not True
         or runtime["fsdp_sharding"] != "full_shard"
@@ -384,7 +403,7 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         raise ValueError("runtime requires gradient checkpointing and official FULL_SHARD use_orig_params")
 
     schedule = sections["schedule"]
-    _int(schedule["seed"], "schedule.seed", minimum=0)
+    schedule_seed = _int(schedule["seed"], "schedule.seed", minimum=0)
     epochs = _int(schedule["epochs"], "schedule.epochs")
     terminal = _int(schedule["max_updates"], "schedule.max_updates")
     rows_per_rank_update = _int(
@@ -415,15 +434,98 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         raise ValueError("terminal update must be a resumable commit boundary")
     if mode == "pilot" and (epochs != 1 or not 0 < forced < terminal or forced % cadence):
         raise ValueError("pilot requires one coverage pass and a forced restart commit boundary")
-    if mode == "formal" and forced != 0:
-        raise ValueError("formal training has no pilot forced-restart boundary")
+    if mode == "formal":
+        if forced != 0:
+            raise ValueError("formal training has no pilot forced-restart boundary")
+        if (
+            schedule_seed != 3335631237
+            or epochs != 10
+            or rows_per_rank_update != 1
+            or terminal != 16050
+            or cadence != 1605
+            or tuple(updates) != (0, 3210, 8025, 16050)
+        ):
+            raise ValueError("formal WS8 max10 schedule contract changed")
+
+    early_stopping = sections["early_stopping"]
+    early_enabled = _bool(early_stopping["enabled"], "early_stopping.enabled")
+    early_metric = _text(early_stopping["metric"], "early_stopping.metric")
+    min_epochs = _int(early_stopping["min_epochs"], "early_stopping.min_epochs")
+    early_max_epochs = _int(early_stopping["max_epochs"], "early_stopping.max_epochs")
+    patience = _int(
+        early_stopping["patience_epochs"],
+        "early_stopping.patience_epochs",
+        minimum=0,
+    )
+    relative_improvement = _number(
+        early_stopping["min_relative_improvement"],
+        "early_stopping.min_relative_improvement",
+        positive=False,
+    )
+    if _text(
+        early_stopping["calibration_split"],
+        "early_stopping.calibration_split",
+    ) != "calibration":
+        raise ValueError("early stopping must use the locked calibration split")
+    if _bool(
+        early_stopping["holdout_controls_early_stop"],
+        "early_stopping.holdout_controls_early_stop",
+    ):
+        raise ValueError("holdout must never control early stopping")
+    actual_terminal_primary = _bool(
+        early_stopping["actual_terminal_primary"],
+        "early_stopping.actual_terminal_primary",
+    )
+    if mode == "pilot":
+        if (
+            early_enabled
+            or early_metric != "disabled"
+            or (min_epochs, early_max_epochs, patience, relative_improvement)
+            != (1, 1, 0, 0.0)
+            or actual_terminal_primary
+        ):
+            raise ValueError("pilot must keep formal early stopping disabled")
+    elif (
+        not early_enabled
+        or early_metric != "calibration_2x_dino_mse_plus_assistant_ce"
+        or min_epochs < 2
+        or early_max_epochs != epochs
+        or min_epochs > early_max_epochs
+        or patience < 1
+        or relative_improvement <= 0.0
+        or relative_improvement >= 1.0
+        or not actual_terminal_primary
+    ):
+        raise ValueError("formal early-stopping contract is invalid")
 
     validation = sections["validation"]
     if validation["baseline_update"] != 0 or validation["terminal_update"] != terminal:
         raise ValueError("validation baseline/terminal identity disagrees with schedule")
-    expected_split = "calibration" if mode == "pilot" else "holdout"
+    expected_split = (
+        "calibration"
+        if mode == "pilot"
+        else "dual_calibration_control_holdout_primary"
+    )
     if validation["split"] != expected_split:
         raise ValueError(f"{mode} Query-State validation must use {expected_split}")
+    calibration_cadence = _int(
+        validation["calibration_cadence_updates"],
+        "validation.calibration_cadence_updates",
+    )
+    if calibration_cadence != cadence:
+        raise ValueError("calibration validation must run at every epoch commit boundary")
+    holdout_updates = validation["holdout_updates"]
+    if (
+        not isinstance(holdout_updates, (list, tuple))
+        or tuple(holdout_updates) != tuple(updates)
+    ):
+        raise ValueError("holdout validation updates must match the registered diagnostics cadence")
+    holdout_at_terminal = _bool(
+        validation["holdout_at_actual_terminal"],
+        "validation.holdout_at_actual_terminal",
+    )
+    if holdout_at_terminal != (mode == "formal"):
+        raise ValueError("only formal validation may add the dynamic actual terminal holdout")
     _absolute(
         validation["generation_format_manifest_path"],
         "validation.generation_format_manifest_path",
@@ -431,6 +533,12 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
     if not _is_sha256(validation["generation_format_manifest_identity"]):
         raise ValueError("validation.generation_format_manifest_identity must be SHA256")
     generation_updates = validation["generation_format_updates"]
+    generation_at_terminal = _bool(
+        validation["generation_format_at_actual_terminal"],
+        "validation.generation_format_at_actual_terminal",
+    )
+    if generation_at_terminal != (mode == "formal"):
+        raise ValueError("only formal validation may add dynamic terminal generation")
     if (
         not isinstance(generation_updates, (list, tuple))
         or any(
@@ -550,6 +658,13 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
     gpus = _int(resources["gpus_per_node"], "resources.gpus_per_node")
     if nodes * gpus != world:
         raise ValueError("resources topology nodes*gpus_per_node must equal world_size")
+    if mode == "formal" and (
+        world != 8
+        or nodes != 2
+        or gpus != 4
+        or resources["partition"] != "normal"
+    ):
+        raise ValueError("formal Query-State topology must be normal 2x4 WS8")
     _int(resources["cpus_per_task"], "resources.cpus_per_task")
     _int(resources["memory_gib"], "resources.memory_gib")
     _text(resources["walltime"], "resources.walltime")
@@ -670,6 +785,7 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         data=_frozen_mapping(data), model=_frozen_mapping(model),
         objective=_frozen_mapping(objective), optimizer=_frozen_mapping(optimizer),
         runtime=_frozen_mapping(runtime), schedule=_frozen_mapping(schedule),
+        early_stopping=_frozen_mapping(sections["early_stopping"]),
         validation=_frozen_mapping(validation),
         output=_frozen_mapping(output), resources=_frozen_mapping(resources),
         authorization=_frozen_mapping(authorization), initialization=_frozen_mapping(initialization),
