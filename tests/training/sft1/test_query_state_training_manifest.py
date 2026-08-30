@@ -259,12 +259,22 @@ def test_strict_training_deserialization_recomputes_selector_and_identity(tmp_pa
 
 
 def test_strict_validation_deserialization_recomputes_all_1413_connected_rows(tmp_path: Path) -> None:
-    rows = tuple(
+    validation_rows = tuple(
         _row(index, step=index % 4, action=index % 8, success=None)
         for index in range(1413)
     )
+    # Real train rows carry external_eligible=True because that field only
+    # applies decontamination to val. They must never enter the external split.
+    train_rows = tuple(
+        replace(
+            _row(1413 + index, step=index, action=0, success=True, external=False),
+            external_eligible=True,
+        )
+        for index in range(2)
+    )
+    rows = (*train_rows, *validation_rows)
     split = build_connected_validation_split(
-        rows, calibration_numerator=1, calibration_denominator=2, seed=19
+        validation_rows, calibration_numerator=1, calibration_denominator=2, seed=19
     )
     raw = json.loads(json.dumps(asdict(split)))
     path = tmp_path / "validation.json"

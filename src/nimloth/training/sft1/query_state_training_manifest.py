@@ -667,7 +667,11 @@ def deserialize_query_state_validation_split(
         raise ValueError("Query-State validation manifest schema is not canonical")
     if raw["schema"] != QUERY_STATE_VALIDATION_SPLIT_SCHEMA or raw["identity"] != expected_identity:
         raise ValueError("Query-State validation manifest identity/schema mismatch")
-    external = tuple(row for row in _validate_rows(rows) if row.external_eligible)
+    external = tuple(
+        row
+        for row in _validate_rows(rows)
+        if row.split == "val" and row.external_eligible
+    )
     if len(external) != 1413:
         raise ValueError("Query-State validation audit must contain exactly 1,413 external rows")
     rebuilt = build_connected_validation_split(
