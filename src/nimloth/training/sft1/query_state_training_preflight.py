@@ -97,7 +97,10 @@ def _verify_training_data_contract(config: QueryStateTrainingConfig) -> None:
         train_split="train",
         validation_split="val",
     ))
-    rows, audit = index_early4_rows(contract)
+    rows, audit = index_early4_rows(
+        contract,
+        enforce_approved_counts=False,
+    )
     validate_query_state_row_audit(audit)
     training = deserialize_query_state_training_manifest(
         Path(str(config.data["train_manifest_path"])),

@@ -15,6 +15,7 @@ from nimloth.training.sft1.query_state_training_config import (
     parse_query_state_training_config,
 )
 from nimloth.training.sft1.query_state_training_preflight import (
+    _verify_training_data_contract,
     assert_query_state_training_backend_ready,
     verify_query_state_training_preflight,
 )
@@ -260,6 +261,23 @@ def _resolved_contract(tmp_path: Path, *, launch_locked: bool) -> tuple[dict, di
         "TRANSFORMERS_OFFLINE": "1",
     }
     return raw, environment
+
+
+def test_data_preflight_uses_post_index_exact_audit_not_missing_selection_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = parse_query_state_training_config(_raw())
+
+    def fail_after_index(_contract: object, *, enforce_approved_counts: bool) -> object:
+        assert enforce_approved_counts is False
+        raise RuntimeError("index-call-proved")
+
+    monkeypatch.setattr(
+        "nimloth.training.sft1.query_state_training_preflight.index_early4_rows",
+        fail_after_index,
+    )
+    with pytest.raises(RuntimeError, match="index-call-proved"):
+        _verify_training_data_contract(config)
 
 
 def test_live_preflight_hashes_real_files_and_returns_launch_evidence(
