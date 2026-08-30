@@ -20,11 +20,13 @@ from nimloth.latent import (
 
 @dataclass(frozen=True)
 class QwenStateTrainingBatch:
-    """Tensor batch plus the archived responses that define its real CoT state."""
+    """Tensor batch plus real CoT and optional detached diagnostic positions."""
 
     backbone_batch: BackboneBatch
     archived_assistant_responses: tuple[str, ...]
     response_sources: tuple[str, ...]
+    diagnostic_image_token_indices: tuple[tuple[int, ...], ...] | None = None
+    diagnostic_instruction_token_spans: tuple[tuple[int, int], ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,10 @@ class QwenStateTrainingOutput:
     action_logits: torch.Tensor
     lm_loss_sum: torch.Tensor | None = None
     lm_valid_token_count: int = 0
+    action_lm_loss_sum: torch.Tensor | None = None
+    action_lm_valid_token_count: int = 0
+    fused_image_features: torch.Tensor | None = None
+    instruction_features: torch.Tensor | None = None
 
 
 def require_archived_assistant_response(
@@ -232,6 +238,25 @@ def forward_qwen_state_training(
         raise ValueError("state training requires one archived response per tensor row")
     if len(batch.response_sources) != batch_size:
         raise ValueError("state training requires one response source per tensor row")
+    image_indices = batch.diagnostic_image_token_indices
+    instruction_spans = batch.diagnostic_instruction_token_spans
+    if image_indices is not None and len(image_indices) != batch_size:
+        raise ValueError("diagnostic image positions must align with tensor rows")
+    if instruction_spans is not None and len(instruction_spans) != batch_size:
+        raise ValueError("diagnostic instruction spans must align with tensor rows")
+    sequence_length = int(input_ids.shape[1])
+    if image_indices is not None and any(
+        not indices
+        or len(set(indices)) != len(indices)
+        or any(index < 0 or index >= sequence_length for index in indices)
+        for indices in image_indices
+    ):
+        raise ValueError("diagnostic image positions are invalid")
+    if instruction_spans is not None and any(
+        start < 0 or stop <= start or stop > sequence_length
+        for start, stop in instruction_spans
+    ):
+        raise ValueError("diagnostic instruction spans are invalid")
     tokens = LatentActionTokens()
     archived_action_indices: list[int | None] = []
     for response, source in zip(
@@ -369,6 +394,8 @@ def forward_qwen_state_training(
     action_rows: list[torch.Tensor] = []
     lm_logit_rows: list[torch.Tensor] = []
     lm_target_rows: list[torch.Tensor] = []
+    action_lm_logit_rows: list[torch.Tensor] = []
+    action_lm_target_rows: list[torch.Tensor] = []
     kept_index = {position: index for index, position in enumerate(kept_positions)}
     action_index = torch.tensor(action_ids, device=logits.device, dtype=torch.long)
     for row, (queries, boundary, lm_predecessors) in enumerate(
@@ -384,6 +411,9 @@ def forward_qwen_state_training(
         action_rows.append(
             logits[row, kept_index[boundary]].index_select(0, action_index)
         )
+        if labels is not None and labels[row, boundary + 1] != -100:
+            action_lm_logit_rows.append(logits[row, kept_index[boundary]].unsqueeze(0))
+            action_lm_target_rows.append(labels[row, boundary + 1].reshape(1))
         if labels is not None and lm_predecessors:
             selected_indices = torch.tensor(
                 [kept_index[position] for position in lm_predecessors],
@@ -399,6 +429,29 @@ def forward_qwen_state_training(
             lm_target_rows.append(labels[row].index_select(0, target_indices))
     query_hidden = torch.stack(hidden_rows, dim=0)
     action_logits = torch.stack(action_rows, dim=0).float()
+    fused_image_features = None
+    if image_indices is not None:
+        fused_image_features = torch.stack(
+            tuple(
+                hidden[row_index]
+                .index_select(
+                    0,
+                    torch.tensor(indices, device=hidden.device, dtype=torch.long),
+                )
+                .mean(dim=0)
+                for row_index, indices in enumerate(image_indices)
+            ),
+            dim=0,
+        )
+    instruction_features = None
+    if instruction_spans is not None:
+        instruction_features = torch.stack(
+            tuple(
+                hidden[row_index, start:stop].mean(dim=0)
+                for row_index, (start, stop) in enumerate(instruction_spans)
+            ),
+            dim=0,
+        )
     if query_hidden.shape[:2] != (input_ids.shape[0], 16):
         raise RuntimeError("Qwen state-training query hidden has an invalid shape")
     if action_logits.shape != (input_ids.shape[0], 8):
@@ -407,6 +460,8 @@ def forward_qwen_state_training(
         raise RuntimeError("Qwen state-training output contains non-finite values")
     lm_valid_token_count = sum(int(target.numel()) for target in lm_target_rows)
     lm_loss_sum: torch.Tensor | None = None
+    action_lm_loss_sum: torch.Tensor | None = None
+    action_lm_valid_token_count = len(action_lm_target_rows)
     if labels is not None:
         if lm_logit_rows:
             lm_loss_sum = F.cross_entropy(
@@ -421,13 +476,28 @@ def forward_qwen_state_training(
             # Keep the official LM-head graph present on a collective-padding
             # rank while contributing zero valid tokens to global normalization.
             lm_loss_sum = logits.float().sum() * 0.0
-        if not torch.isfinite(lm_loss_sum):
+        if action_lm_logit_rows:
+            action_lm_loss_sum = F.cross_entropy(
+                torch.cat(action_lm_logit_rows, dim=0).float(),
+                torch.cat(action_lm_target_rows, dim=0).to(
+                    device=logits.device,
+                    dtype=torch.long,
+                ),
+                reduction="sum",
+            )
+        else:
+            action_lm_loss_sum = logits.float().sum() * 0.0
+        if not torch.isfinite(lm_loss_sum) or not torch.isfinite(action_lm_loss_sum):
             raise RuntimeError("Qwen state-training LM loss is non-finite")
     return QwenStateTrainingOutput(
         query_hidden=query_hidden,
         action_logits=action_logits,
         lm_loss_sum=lm_loss_sum,
         lm_valid_token_count=lm_valid_token_count,
+        action_lm_loss_sum=action_lm_loss_sum,
+        action_lm_valid_token_count=action_lm_valid_token_count,
+        fused_image_features=fused_image_features,
+        instruction_features=instruction_features,
     )
 
 

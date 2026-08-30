@@ -170,6 +170,12 @@ def build_query_state_dataproto(rows: Sequence[QueryStatePreparedRow]) -> Any:
             "original_image_sha256": _object_array(
                 [row.original_image_sha256 for row in rows]
             ),
+            "diagnostic_image_token_indices": _object_array(
+                [row.diagnostic_image_token_indices for row in rows]
+            ),
+            "diagnostic_instruction_token_spans": _object_array(
+                [row.diagnostic_instruction_token_span for row in rows]
+            ),
         },
         meta_info={
             "schema": QUERY_STATE_DATAPROTO_SCHEMA,
@@ -190,6 +196,7 @@ def query_state_update_inputs(
     data: Any,
     *,
     input_builder: BackboneInputBuilder,
+    include_diagnostics: bool = False,
 ) -> QueryStateUpdateInputs:
     """Validate and collate one worker-local Query-State DataProto chunk."""
 
@@ -232,6 +239,8 @@ def query_state_update_inputs(
         "splits",
         "original_image_paths",
         "original_image_sha256",
+        "diagnostic_image_token_indices",
+        "diagnostic_instruction_token_spans",
     }
     missing_non_tensor = sorted(required_non_tensors - set(data.non_tensor_batch))
     if missing_non_tensor:
@@ -335,6 +344,20 @@ def query_state_update_inputs(
             ),
             response_sources=tuple(
                 str(value) for value in data.non_tensor_batch["response_sources"]
+            ),
+            diagnostic_image_token_indices=(
+                tuple(
+                    tuple(int(index) for index in value)
+                    for value in data.non_tensor_batch["diagnostic_image_token_indices"]
+                )
+                if include_diagnostics else None
+            ),
+            diagnostic_instruction_token_spans=(
+                tuple(
+                    tuple(int(index) for index in value)
+                    for value in data.non_tensor_batch["diagnostic_instruction_token_spans"]
+                )
+                if include_diagnostics else None
             ),
         ),
         targets=targets,

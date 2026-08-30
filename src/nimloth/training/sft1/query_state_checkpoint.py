@@ -68,6 +68,7 @@ class QueryStateResumeIdentity:
     config_identity: str
     run_identity: str
     world_size: int
+    experiment_mode: str = "mechanics"
     stage: str = "sft1_query_state"
     gradient_mode: str = "full_language_direct_state"
     training_schema: str = QUERY_STATE_SCHEMA
@@ -94,6 +95,8 @@ class QueryStateResumeIdentity:
             self.objective_version,
             self.state_artifact_schema,
         )
+        if self.experiment_mode not in {"mechanics", "pilot", "formal"}:
+            raise ValueError("Query-State resume experiment mode is incompatible")
         if (
             actual != expected
             or isinstance(self.world_size, bool)
@@ -342,6 +345,7 @@ class QueryStateDistributedControl:
     global_step: int
     data_cursor: Mapping[str, Any]
     metric_cursor: Mapping[str, Any]
+    terminal_primary: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -350,6 +354,8 @@ class QueryStateDistributedControl:
             or self.global_step < 0
             or not isinstance(self.data_cursor, Mapping)
             or not isinstance(self.metric_cursor, Mapping)
+            or not isinstance(self.terminal_primary, bool)
+            or (self.terminal_primary and self.identity.experiment_mode != "formal")
         ):
             raise ValueError("Query-State distributed control is invalid")
 
@@ -605,20 +611,33 @@ def finalize_query_state_rank_checkpoint(
         for rank in range(world_size)
     }
     control_path = checkpoint / "control.json"
-    _atomic_json(
-        {
-            "schema": QUERY_STATE_RANK_CHECKPOINT_SCHEMA,
-            "training_schema": QUERY_STATE_SCHEMA,
-            "objective_version": QUERY_STATE_OBJECTIVE_VERSION,
-            "state_artifact_schema": DIRECT_STATE_ARTIFACT_SCHEMA,
-            "identity": asdict(control.identity),
-            "global_step": control.global_step,
-            "data_cursor": dict(control.data_cursor),
-            "metric_cursor": dict(control.metric_cursor),
-            "rank_shard_sha256": shard_hashes,
-        },
-        control_path,
-    )
+    base = {
+        "schema": QUERY_STATE_RANK_CHECKPOINT_SCHEMA,
+        "training_schema": QUERY_STATE_SCHEMA,
+        "objective_version": QUERY_STATE_OBJECTIVE_VERSION,
+        "state_artifact_schema": DIRECT_STATE_ARTIFACT_SCHEMA,
+        "identity": asdict(control.identity),
+        "config_identity": control.identity.config_identity,
+        "source_commit": control.identity.source_commit,
+        "global_step": control.global_step,
+        "terminal_primary": control.terminal_primary,
+        "data_cursor": dict(control.data_cursor),
+        "metric_cursor": dict(control.metric_cursor),
+        "rank_shard_sha256": shard_hashes,
+    }
+    checkpoint_identity = hashlib.sha256(
+        json.dumps(base, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    ).hexdigest()
+    with_checkpoint = {**base, "checkpoint_identity": checkpoint_identity}
+    control_identity = hashlib.sha256(
+        json.dumps(
+            with_checkpoint,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode()
+    ).hexdigest()
+    _atomic_json({**with_checkpoint, "control_hash": control_identity}, control_path)
     marker = checkpoint / _COMPLETE_MARKER
     descriptor = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     try:
@@ -660,6 +679,35 @@ def load_query_state_rank_state(
         raise ValueError("Query-State rank checkpoint control is invalid") from error
     if not isinstance(raw, dict):
         raise ValueError("Query-State rank checkpoint control must be a mapping")
+    checkpoint_identity = raw.get("checkpoint_identity")
+    control_hash = raw.get("control_hash")
+    if not _is_sha256(checkpoint_identity) or not _is_sha256(control_hash):
+        raise ValueError("Query-State rank checkpoint control identities are invalid")
+    canonical_with_checkpoint = {
+        key: value for key, value in raw.items() if key != "control_hash"
+    }
+    if hashlib.sha256(
+        json.dumps(
+            canonical_with_checkpoint,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode()
+    ).hexdigest() != control_hash:
+        raise ValueError("Query-State rank checkpoint control identity mismatch")
+    canonical_base = {
+        key: value for key, value in canonical_with_checkpoint.items()
+        if key != "checkpoint_identity"
+    }
+    if hashlib.sha256(
+        json.dumps(
+            canonical_base,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode()
+    ).hexdigest() != checkpoint_identity:
+        raise ValueError("Query-State rank checkpoint identity mismatch")
     expected_metadata = {
         "schema": QUERY_STATE_RANK_CHECKPOINT_SCHEMA,
         "training_schema": QUERY_STATE_SCHEMA,
@@ -669,10 +717,14 @@ def load_query_state_rank_state(
     for name, expected in expected_metadata.items():
         if raw.pop(name, None) != expected:
             raise ValueError("unsupported legacy/cross-stage Query-State rank checkpoint")
+    raw.pop("checkpoint_identity")
+    raw.pop("control_hash")
     identity_raw = raw.pop("identity", None)
     if not isinstance(identity_raw, dict):
         raise ValueError("Query-State rank checkpoint identity is absent")
     identity = QueryStateResumeIdentity(**identity_raw)
+    if raw.pop("config_identity", None) != identity.config_identity or raw.pop("source_commit", None) != identity.source_commit:
+        raise ValueError("Query-State rank checkpoint top-level source/config identity mismatch")
     if identity != expected_identity:
         raise ValueError("Query-State rank checkpoint identity mismatch")
     if not 0 <= rank < identity.world_size:
@@ -696,6 +748,7 @@ def load_query_state_rank_state(
         global_step=raw.pop("global_step", None),
         data_cursor=raw.pop("data_cursor", None),
         metric_cursor=raw.pop("metric_cursor", None),
+        terminal_primary=raw.pop("terminal_primary", None),
     )
     if raw:
         raise ValueError("Query-State rank checkpoint control has unknown fields")

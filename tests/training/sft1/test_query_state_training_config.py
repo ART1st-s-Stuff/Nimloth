@@ -1,0 +1,437 @@
+from __future__ import annotations
+
+from copy import deepcopy
+from pathlib import Path
+
+import pytest
+
+from nimloth.training.sft1.query_state_training_config import (
+    QUERY_STATE_TRAINING_CONFIG_SCHEMA,
+    QueryStateTrackingInitResult,
+    coordinate_tracking_init,
+    parse_query_state_training_config,
+    reapply_locked_wandb_environment,
+    resolve_wandb_start,
+)
+
+
+_SHA = "a" * 64
+_COMMIT = "b" * 40
+
+
+def _raw(*, mode: str = "pilot", resume_mode: str = "fresh") -> dict:
+    pilot = mode == "pilot"
+    restart_tracking = resume_mode != "fresh"
+    checkpoint_restart = resume_mode == "exact_restart"
+    max_updates = 32 if pilot else 3209
+    checkpoint_cadence = 4 if pilot else 1
+    return {
+        "schema": QUERY_STATE_TRAINING_CONFIG_SCHEMA,
+        "mode": mode,
+        "lifecycle": {
+            "preflight_locked": True,
+            "launch_locked": True,
+        },
+        "source": {
+            "repo_root": "/repo",
+            "branch": "exp/sft1-query-state-formal",
+            "commit": _COMMIT,
+            "submodule_commits": {"external/VAGEN": _COMMIT},
+            "source_manifest_path": "/manifests/source.json",
+            "source_manifest_identity": _SHA,
+        },
+        "data": {
+            "train_source_path": "/data/train.jsonl",
+            "validation_source_path": "/data/validation.jsonl",
+            "train_manifest_path": "/manifests/train.json",
+            "train_manifest_identity": _SHA,
+            "validation_manifest_path": "/manifests/validation.json",
+            "validation_manifest_identity": _SHA,
+            "train_rows": 128 if pilot else 12836,
+            "external_rows": 1413,
+        },
+        "model": {
+            "initialization_identity": "id176:" + _SHA,
+            "dino_identity": "facebook/dinov2-large@47b73eefe95e8d44ec3623f8890bd894b6ea2d6c:7d65a7de8788e87d:1024:grid4",
+            "dino_snapshot_path": "/models/dinov2-large",
+            "processor_path": "/checkpoints/id176",
+            "processor_identity": _SHA,
+            "tokenizer_identity": _SHA,
+            "template_identity": _SHA,
+            "token_table_identity": _SHA,
+            "action_token_ids": list(range(151683, 151691)),
+            "state_schema": "nimloth_direct_k16_state_v1",
+            "objective_version": "direct_query_state_dino_lm_v1",
+            "query_count": 16,
+            "hidden_size": 2048,
+            "state_dim": 1024,
+            "llm_tune": "full",
+            "vision_tune": "freeze",
+            "query_tune": "freeze",
+            "direct_head_bias": False,
+        },
+        "objective": {
+            "state_weight": 2.0,
+            "lm_weight": 1.0,
+            "state_target": "online_original_observation_dino",
+            "lm_target": "real_final_current_assistant",
+        },
+        "optimizer": {
+            "name": "adamw",
+            "language_learning_rate": 1e-6,
+            "direct_state_learning_rate": 1e-4,
+            "weight_decay": 0.0,
+            "betas": [0.9, 0.95],
+            "epsilon": 1e-8,
+            "scheduler": "cosine",
+            "warmup_updates": 2,
+        },
+        "runtime": {
+            "max_sequence_length": 32768,
+            "min_pixels": 3136,
+            "max_pixels": 100352,
+            "attention_implementation": "flash_attention_2",
+            "model_dtype": "bfloat16",
+            "dino_dtype": "bfloat16",
+            "dino_batch_size": 8,
+            "max_padded_tokens": 65536,
+            "max_rows_per_micro_batch": 2,
+            "max_grad_norm": 1.0,
+            "gradient_checkpointing": True,
+            "fsdp_sharding": "full_shard",
+            "fsdp_use_orig_params": True,
+            "fsdp_wrap_policy": {"transformer_layer_cls": "Qwen2_5_VLDecoderLayer"},
+        },
+        "schedule": {
+            "seed": 7,
+            "epochs": 1,
+            "max_updates": max_updates,
+            "rows_per_rank_update": 2,
+            "checkpoint_cadence_updates": checkpoint_cadence,
+            "validation_updates": [0, max_updates],
+            "forced_restart_update": 16 if pilot else 0,
+        },
+        "validation": {
+            "split": "calibration" if pilot else "holdout",
+            "baseline_update": 0,
+            "terminal_update": max_updates,
+            "generation_format_manifest_path": "/manifests/generation-format.json",
+            "generation_format_manifest_identity": _SHA,
+            "generation_format_updates": [0, max_updates],
+            "actor_tolerances": {
+                "kl_max": 0.2,
+                "top1_min": 0.9,
+                "logit_rms_ratio_min": 0.8,
+                "logit_rms_ratio_max": 1.2,
+            },
+            "effective_rank_formula": "entropy_rank_rows_slots_centered_float64_eps1e-12",
+            "effective_rank_collapse_threshold": 1.5,
+        },
+        "output": {
+            "run_root": f"/outputs/{mode}",
+            "controller_root": f"/controllers/{mode}",
+            "overwrite": False,
+            "resolved_config_path": f"/contracts/{mode}.json",
+            "command_manifest_path": f"/contracts/{mode}.commands",
+            "minimum_free_bytes": 1,
+        },
+        "resources": {
+            "world_size": 2,
+            "nodes": 1,
+            "gpus_per_node": 2,
+            "cpus_per_task": 16,
+            "memory_gib": 128,
+            "walltime": "02:00:00",
+            "partition": "approved-partition",
+            "backend": "nccl",
+            "gpu_model_allowlist": ["NVIDIA H800"],
+        },
+        "authorization": {
+            "approval_id": "approval-1",
+            "approval_sha256": _SHA,
+            "launch_authorized": True,
+        },
+        "initialization": {
+            "actor_checkpoint": "/checkpoints/id176",
+            "actor_checkpoint_identity": _SHA,
+            "direct_head_initialization": "fresh_seeded_no_bias",
+            "resume_checkpoint": "/outputs/checkpoint-8" if checkpoint_restart else "none",
+            "resume_mode": resume_mode,
+        },
+        "tracking": {
+            "enabled": not pilot,
+            "entity": "disabled" if pilot else "entity",
+            "project": "disabled" if pilot else "nimloth-sft1",
+            "group": "disabled" if pilot else "formal-group",
+            "run_name": "disabled" if pilot else "401_query_state",
+            "run_id": "disabled" if pilot else "formal-run-id",
+            "resume": "disabled" if pilot else ("must" if restart_tracking else "never"),
+        },
+        "environment": {
+            "python_executable": "/venv/bin/python",
+            "hf_home": "/cache/hf",
+            "hf_hub_cache": "/cache/hub",
+            "offline": True,
+            "dont_write_bytecode": True,
+            "pycache_prefix": "/tmp/pycache",
+            "python_hash_seed": "7",
+            "python_version": "3.12.13",
+            "torch_version": "2.8.0+cu128",
+            "transformers_version": "4.55.4",
+        },
+        "command": {
+            "argv": [
+                "/venv/bin/python",
+                "/repo/experiments/training/sft1/query_state_train.py",
+                "--config",
+                f"/contracts/{mode}.json",
+                "--phase",
+                "run",
+            ],
+            "identity": _SHA,
+        },
+        "artifacts": {
+            "file_sha256": {
+                "/manifests/source.json": _SHA,
+                "/data/train.jsonl": _SHA,
+                "/data/validation.jsonl": _SHA,
+                "/manifests/train.json": _SHA,
+                "/manifests/validation.json": _SHA,
+                "/manifests/generation-format.json": _SHA,
+                f"/contracts/{mode}.commands": _SHA,
+                "/checkpoints/complete.marker": _SHA,
+                "/checkpoints/id176/config.json": _SHA,
+                "/checkpoints/id176/model.safetensors.index.json": _SHA,
+                "/checkpoints/id176/model-00001-of-00001.safetensors": _SHA,
+                "/checkpoints/id176/action_head_repair.pt": _SHA,
+                "/models/dinov2-large/config.json": _SHA,
+                "/models/dinov2-large/preprocessor_config.json": _SHA,
+                "/models/dinov2-large/model.safetensors": _SHA,
+                "/checkpoints/id176/preprocessor_config.json": _SHA,
+                "/checkpoints/id176/video_preprocessor_config.json": _SHA,
+                "/checkpoints/id176/tokenizer.json": _SHA,
+                "/checkpoints/id176/tokenizer_config.json": _SHA,
+                "/checkpoints/id176/vocab.json": _SHA,
+                "/checkpoints/id176/merges.txt": _SHA,
+                "/checkpoints/id176/added_tokens.json": _SHA,
+                "/checkpoints/id176/special_tokens_map.json": _SHA,
+                "/checkpoints/id176/chat_template.jinja": _SHA,
+            }
+        },
+    }
+
+
+def test_training_schema_is_distinct_strict_and_has_no_missing_or_unknown_fields() -> None:
+    parsed = parse_query_state_training_config(_raw())
+    assert parsed.mode == "pilot"
+    assert parsed.lifecycle_state == "launch_locked"
+    assert len(parsed.identity) == 64
+
+    for bad_schema in (
+        "nimloth_sft1_query_state_smoke_v1",
+        "nimloth_sft1_query_state_code_canary_v1",
+        "nimloth_sft1_state_v2_experiment_v1",
+    ):
+        bad = _raw()
+        bad["schema"] = bad_schema
+        with pytest.raises(ValueError, match="legacy|schema"):
+            parse_query_state_training_config(bad)
+
+    missing = _raw()
+    del missing["optimizer"]["epsilon"]
+    with pytest.raises(ValueError, match="missing.*optimizer.epsilon"):
+        parse_query_state_training_config(missing)
+    unknown = _raw()
+    unknown["schedule"]["best_checkpoint"] = True
+    with pytest.raises(ValueError, match="unknown.*schedule.best_checkpoint"):
+        parse_query_state_training_config(unknown)
+
+
+def test_lifecycle_is_exactly_template_preflight_or_launch_locked() -> None:
+    launch = _raw()
+    assert parse_query_state_training_config(launch).lifecycle_state == "launch_locked"
+
+    preflight = _raw()
+    preflight["lifecycle"] = {"preflight_locked": True, "launch_locked": False}
+    preflight["authorization"]["launch_authorized"] = False
+    assert parse_query_state_training_config(preflight).lifecycle_state == "preflight_locked"
+
+    template = _raw()
+    template["lifecycle"] = {"preflight_locked": False, "launch_locked": False}
+    template["authorization"]["launch_authorized"] = False
+    assert parse_query_state_training_config(template).lifecycle_state == "template"
+
+    unresolved = _raw(mode="formal")
+    unresolved["lifecycle"] = {"preflight_locked": False, "launch_locked": False}
+    unresolved["authorization"]["launch_authorized"] = False
+    unresolved["source"]["commit"] = "_UNRESOLVED_BEFORE_PREFLIGHT_"
+    unresolved["source"]["repo_root"] = "_UNRESOLVED_BEFORE_PREFLIGHT_"
+    unresolved["resources"]["world_size"] = "_UNRESOLVED_BEFORE_PREFLIGHT_"
+    unresolved["output"]["run_root"] = "_UNRESOLVED_BEFORE_PREFLIGHT_"
+    unresolved["tracking"].update({
+        "enabled": False,
+        "entity": "_UNRESOLVED_BEFORE_PREFLIGHT_",
+        "project": "_UNRESOLVED_BEFORE_PREFLIGHT_",
+        "group": "_UNRESOLVED_BEFORE_PREFLIGHT_",
+        "run_name": "_UNRESOLVED_BEFORE_PREFLIGHT_",
+        "run_id": "_UNRESOLVED_BEFORE_PREFLIGHT_",
+        "resume": "_UNRESOLVED_BEFORE_PREFLIGHT_",
+    })
+    assert parse_query_state_training_config(unresolved).lifecycle_state == "template"
+
+    invalid = _raw()
+    invalid["lifecycle"] = {"preflight_locked": False, "launch_locked": True}
+    with pytest.raises(ValueError, match="lifecycle"):
+        parse_query_state_training_config(invalid)
+
+
+def test_pilot_and_formal_contracts_fail_closed_on_split_tracking_and_initialization() -> None:
+    pilot = parse_query_state_training_config(_raw(mode="pilot"))
+    formal = parse_query_state_training_config(_raw(mode="formal"))
+    assert pilot.identity != formal.identity
+
+    bad_pilot = _raw(mode="pilot")
+    bad_pilot["tracking"]["enabled"] = True
+    with pytest.raises(ValueError, match="pilot.*W&B"):
+        parse_query_state_training_config(bad_pilot)
+    bad_holdout = _raw(mode="pilot")
+    bad_holdout["validation"]["split"] = "holdout"
+    with pytest.raises(ValueError, match="pilot.*calibration"):
+        parse_query_state_training_config(bad_holdout)
+    bad_formal = _raw(mode="formal")
+    bad_formal["validation"]["split"] = "calibration"
+    with pytest.raises(ValueError, match="formal.*holdout"):
+        parse_query_state_training_config(bad_formal)
+    pilot_init = _raw(mode="pilot")
+    pilot_init["initialization"]["actor_checkpoint"] = "/outputs/pilot/checkpoint"
+    with pytest.raises(ValueError, match="ID176|pilot checkpoint"):
+        parse_query_state_training_config(pilot_init)
+
+
+def test_generation_format_manifest_is_path_hash_owned_and_has_explicit_cadence() -> None:
+    parsed = parse_query_state_training_config(_raw())
+    assert parsed.validation["generation_format_updates"] == (0, 32)
+    assert "probe_manifest_identity" not in parsed.validation
+
+    relative = _raw()
+    relative["validation"]["generation_format_manifest_path"] = "relative.json"
+    with pytest.raises(ValueError, match="absolute"):
+        parse_query_state_training_config(relative)
+    every_validation = _raw()
+    every_validation["schedule"]["validation_updates"] = [0, 4, 32]
+    every_validation["validation"]["generation_format_updates"] = [0, 32]
+    assert parse_query_state_training_config(every_validation).validation[
+        "generation_format_updates"
+    ] == (0, 32)
+    missing_terminal = _raw()
+    missing_terminal["validation"]["generation_format_updates"] = [0]
+    with pytest.raises(ValueError, match="update 0 and terminal"):
+        parse_query_state_training_config(missing_terminal)
+    retired = _raw()
+    retired["validation"]["probe_manifest_identity"] = _SHA
+    with pytest.raises(ValueError, match="unknown.*probe_manifest_identity"):
+        parse_query_state_training_config(retired)
+
+
+def test_exact_schedule_cardinality_is_rejected_during_cpu_config_parse() -> None:
+    bad = _raw(mode="formal")
+    bad["schedule"]["max_updates"] = 16
+    bad["schedule"]["validation_updates"] = [0, 16]
+    bad["validation"]["terminal_update"] = 16
+    with pytest.raises(ValueError, match="exact deterministic schedule cardinality.*16 != 3209"):
+        parse_query_state_training_config(bad)
+
+
+def test_runtime_has_no_hidden_model_fsdp_or_microbatch_defaults() -> None:
+    parsed = parse_query_state_training_config(_raw())
+    assert parsed.runtime["fsdp_sharding"] == "full_shard"
+    missing = _raw()
+    del missing["runtime"]["max_sequence_length"]
+    with pytest.raises(ValueError, match="missing.*runtime.max_sequence_length"):
+        parse_query_state_training_config(missing)
+    bad = _raw()
+    bad["runtime"]["fsdp_sharding"] = "ddp"
+    with pytest.raises(ValueError, match="FULL_SHARD|runtime"):
+        parse_query_state_training_config(bad)
+
+
+def test_paths_command_environment_topology_and_nonoverwrite_are_locked() -> None:
+    for mutate, message in (
+        (lambda raw: raw["output"].update(run_root="relative"), "absolute"),
+        (lambda raw: raw["output"].update(overwrite=True), "overwrite"),
+        (lambda raw: raw["environment"].update(offline=False), "offline"),
+        (lambda raw: raw["environment"].update(dont_write_bytecode=False), "bytecode"),
+        (lambda raw: raw["resources"].update(world_size=3), "topology"),
+        (lambda raw: raw["command"].update(argv=["different"]), "command"),
+    ):
+        bad = _raw()
+        mutate(bad)
+        with pytest.raises(ValueError, match=message):
+            parse_query_state_training_config(bad)
+
+
+def test_formal_wandb_fresh_restart_and_identity_state_machine() -> None:
+    fresh = parse_query_state_training_config(_raw(mode="formal", resume_mode="fresh"))
+    start = resolve_wandb_start(fresh, remote_exists=False, remote_identity=None)
+    assert start.operation == "fresh"
+    assert start.resume == "never"
+    with pytest.raises(ValueError, match="already exists"):
+        resolve_wandb_start(fresh, remote_exists=True, remote_identity=fresh.tracking.identity)
+
+    restart = parse_query_state_training_config(
+        _raw(mode="formal", resume_mode="exact_restart")
+    )
+    resumed = resolve_wandb_start(
+        restart,
+        remote_exists=True,
+        remote_identity=restart.tracking.identity,
+    )
+    assert resumed.operation == "exact_restart"
+    assert resumed.resume == "must"
+    replay = parse_query_state_training_config(
+        _raw(mode="formal", resume_mode="crash_replay")
+    )
+    replay_start = resolve_wandb_start(
+        replay,
+        remote_exists=True,
+        remote_identity=replay.tracking.identity,
+    )
+    assert replay_start.operation == "crash_replay"
+    assert replay_start.resume == "must"
+    with pytest.raises(ValueError, match="matching existing"):
+        resolve_wandb_start(restart, remote_exists=False, remote_identity=None)
+    with pytest.raises(ValueError, match="identity mismatch"):
+        resolve_wandb_start(restart, remote_exists=True, remote_identity="wrong")
+
+
+def test_shared_environment_is_reapplied_from_locked_wandb_values() -> None:
+    config = parse_query_state_training_config(_raw(mode="formal"))
+    sourced = {
+        "WANDB_PROJECT": "flower",
+        "WANDB_NAME": "wrong",
+        "WANDB_RUN_ID": "wrong",
+        "WANDB_RESUME": "allow",
+        "WANDB_API_KEY": "secret",
+    }
+    effective = reapply_locked_wandb_environment(config, sourced)
+    assert effective["WANDB_PROJECT"] == "nimloth-sft1"
+    assert effective["WANDB_NAME"] == "401_query_state"
+    assert effective["WANDB_RUN_ID"] == "formal-run-id"
+    assert effective["WANDB_RESUME"] == "never"
+    assert effective["WANDB_API_KEY"] == "secret"
+
+
+def test_tracking_init_is_all_rank_coordinated_and_fail_closed() -> None:
+    ok = QueryStateTrackingInitResult(
+        rank=0,
+        success=True,
+        identity="entity/nimloth-sft1/formal-run-id",
+        url="https://wandb/run",
+        error=None,
+    )
+    assert coordinate_tracking_init((ok, ok.__class__(rank=1, **{k: v for k, v in ok.__dict__.items() if k != "rank"}))).url
+
+    with pytest.raises(RuntimeError, match="all-rank.*failed"):
+        coordinate_tracking_init((ok, QueryStateTrackingInitResult(1, False, None, None, "network")))
+    with pytest.raises(RuntimeError, match="disagree"):
+        coordinate_tracking_init((ok, QueryStateTrackingInitResult(1, True, "other", "url", None)))

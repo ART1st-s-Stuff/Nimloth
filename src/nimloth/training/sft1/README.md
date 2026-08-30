@@ -42,7 +42,52 @@ The Query-State production-preparation path is separate from legacy v2:
   deployable bundle has distinct full-Qwen, processor, and no-bias direct-state
   owners and rejects legacy/`SharedSlotProjector` or training-only payloads.
 
-The production-path smoke preparation is schema-distinct from both paths above:
+The formal Query-State owner is also schema-distinct from both paths above:
+
+- `query_state_training_config.py` owns the explicit template/preflight/launch
+  lifecycle, pilot/formal incompatibility, complete optimizer/runtime/FSDP/
+  environment/command fields, and formal W&B fresh (`resume=never`) versus exact
+  restart (`resume=must`) state machine. Shared environment values are reapplied
+  from the locked run identity after credential sourcing; init/query disagreement
+  is an all-rank hard failure.
+- `query_state_training_manifest.py` validates the 12,836/5/1,420/1,413/42/101
+  audit, resolves coverage-first strata from the canonical navigation action
+  table without inventing movement feedback, and splits external rows by whole
+  exact-image/normalized-instruction connected components. Pilot access resolves
+  only calibration rows; formal access resolves only untouched holdout rows. A
+  separate immutable generation-format manifest registers exact rows, production
+  prompt/spec/parser identities, and reasoning/output budgets.
+- `query_state_training_runtime.py` makes checkpoint cadence a resumable segment
+  boundary. Update records remain pending until due validation and safety, exact
+  checkpoint control/cursor hashes, and a same-run immutable mirror batch exist;
+  the atomic authoritative index moves before idempotent W&B replay. Pre-index
+  crashes quarantine the segment and replay from the prior commit. Pilot restart
+  receipts require a different process plus exact model/optimizer/scheduler/RNG
+  fingerprints and data/validation/log/W&B cursors.
+- `query_state_training_backend.py` runs the shared production
+  `TurnGenerationSpec`/parser through current complete-root FSDP logits on the
+  registered real unacted response-policy prompts. Update 0 and terminal are
+  mandatory; additional format checks require explicit cadence. Parse failure is
+  non-resumable and never executes actions, persists rollout, or exports.
+- `query_state_training_controller.py` owns non-overwrite run claims and distinct
+  completed/failed/preempted/validator-failed terminals. It never submits Slurm,
+  extends pilot into formal, starts SFT2, or exports automatically.
+- `query_state_training_validation.py` owns detached same-forward metadata and
+  feature joins, globally attributable raw/direct/DINO/actor/upstream/natural-pair
+  metrics, the unique float64 centered entropy-effective-rank formula,
+  validation-mode restoration, and local-shard per-layer norm reductions. No
+  diagnostic readout enters the objective.
+- `query_state_export.py` is a separate human-gated exporter. It revalidates the
+  terminal-primary checkpoint/control and pass receipt before all ranks enter the
+  official FSDP full-state context, rejects local shards/training payloads and
+  existing outputs, and emits no optimizer/scheduler/RNG or SFT2 authorization.
+
+`FreshQueryStateDINOTeacher` now fronts online DINO with a strict process-local
+memo keyed by `original_image_sha256 + exact DINO identity`. Cached targets are
+immutable detached CPU clones, memory-accounted, and intentionally have no
+checkpoint serialization path; a fresh process starts empty.
+
+The production-path smoke preparation remains schema-distinct from all paths above:
 
 - `query_state_smoke_config.py` owns `nimloth_sft1_query_state_smoke_v1`. The
   committed template is unresolved/unlocked; an external `preflight_locked=true`

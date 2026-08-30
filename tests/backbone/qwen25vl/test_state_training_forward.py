@@ -86,6 +86,46 @@ def _state_training_batch(
     )
 
 
+def test_diagnostic_features_are_optional_and_come_from_the_same_forward() -> None:
+    tokens, token_id_map = _token_contract()
+    query_ids = [token_id_map[token] for token in latent_state_tokens(16, tokens)]
+    row = torch.tensor([[1, 2, 3, *query_ids, token_id_map[tokens.action_start], 63]])
+    model = _SameForwardQwen()
+    batch = _state_training_batch(row)
+    diagnostic_batch = QwenStateTrainingBatch(
+        backbone_batch=batch.backbone_batch,
+        archived_assistant_responses=batch.archived_assistant_responses,
+        response_sources=batch.response_sources,
+        diagnostic_image_token_indices=((1, 2),),
+        diagnostic_instruction_token_spans=((2, 4),),
+    )
+
+    output = forward_qwen_state_training(
+        model,
+        diagnostic_batch,
+        token_id_map,
+        torch.device("cpu"),
+    )
+
+    assert model.calls == 1
+    assert output.fused_image_features is not None
+    assert output.instruction_features is not None
+    full_hidden = model.model.language_model.norm(
+        torch.arange(row.numel() * 4, dtype=torch.float32).reshape(1, row.shape[1], 4)
+    )
+    torch.testing.assert_close(output.fused_image_features, full_hidden[:, [1, 2]].mean(dim=1))
+    torch.testing.assert_close(output.instruction_features, full_hidden[:, 2:4].mean(dim=1))
+
+    ordinary = forward_qwen_state_training(
+        _SameForwardQwen(),
+        batch,
+        token_id_map,
+        torch.device("cpu"),
+    )
+    assert ordinary.fused_image_features is None
+    assert ordinary.instruction_features is None
+
+
 def test_same_forward_returns_row_major_k16_hidden_and_exact_boundary_actions() -> None:
     tokens, token_id_map = _token_contract()
     query_ids = [token_id_map[token] for token in latent_state_tokens(16, tokens)]
@@ -148,6 +188,8 @@ def test_same_forward_computes_exact_selected_shifted_lm_ce_and_masks_queries() 
     assert model.logits_to_keep_seen == [0, 17, 18, 19]
     assert output.lm_loss_sum is not None
     assert output.lm_valid_token_count == 4
+    assert output.action_lm_loss_sum is not None
+    assert output.action_lm_valid_token_count == 1
     full_hidden = model.model.language_model.norm(
         torch.arange(row.numel() * 4, dtype=torch.float32).reshape(1, row.shape[1], 4)
     )
@@ -160,6 +202,14 @@ def test_same_forward_computes_exact_selected_shifted_lm_ce_and_masks_queries() 
         reduction="sum",
     )
     torch.testing.assert_close(output.lm_loss_sum, expected)
+    torch.testing.assert_close(
+        output.action_lm_loss_sum,
+        F.cross_entropy(
+            full_logits[0, 18].float().unsqueeze(0),
+            row[0, 19].unsqueeze(0),
+            reduction="sum",
+        ),
+    )
     output.lm_loss_sum.backward()
     assert model.model.language_model.norm.weight.grad is not None
 

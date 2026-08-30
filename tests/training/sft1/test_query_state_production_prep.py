@@ -78,6 +78,7 @@ class _Tokenizer:
             *tokens.action_tokens,
         )
         self.ids = {token: 10 + index for index, token in enumerate(all_tokens)}
+        self.ids["<|image_pad|>"] = 700
 
     def convert_tokens_to_ids(self, token: str) -> int:
         return self.ids.get(token, self.unk_token_id)
@@ -168,7 +169,7 @@ class _Processor:
             encoded["input_ids"], encoded["offset_mapping"], strict=True
         ):
             if start in image_starts:
-                expanded.extend((700, 701, 702))
+                expanded.extend((700, 700, 700))
             expanded.append(token_id)
         length = len(expanded)
         return {
@@ -347,6 +348,14 @@ def test_full_archived_response_renderer_masks_exact_queries_and_labels_final_sp
     processor = _Processor()
     rendered = render_query_state_row(row, processor=processor, max_length=8192)
     tokens = LatentActionTokens()
+    assert len(rendered.diagnostic_image_token_indices) == 3
+    assert all(
+        rendered.input_ids[index].item() == 700
+        for index in rendered.diagnostic_image_token_indices
+    )
+    start, stop = rendered.diagnostic_instruction_token_span
+    assert stop > start
+    assert rendered.input_ids[start:stop].numel() > 0
     normalized = row.archived_assistant_response.replace(
         latent_state_block(8), latent_state_block(16)
     )
@@ -413,7 +422,17 @@ def test_original_observation_dino_and_distinct_dataproto_round_trip(
     )
     data = build_query_state_dataproto((prepared,))
     inputs = query_state_update_inputs(data, input_builder=_InputBuilder())
+    diagnostic_inputs = query_state_update_inputs(
+        data, input_builder=_InputBuilder(), include_diagnostics=True
+    )
 
+    assert inputs.student_batch.diagnostic_image_token_indices is None
+    assert diagnostic_inputs.student_batch.diagnostic_image_token_indices == (
+        rendered.diagnostic_image_token_indices,
+    )
+    assert diagnostic_inputs.student_batch.diagnostic_instruction_token_spans == (
+        rendered.diagnostic_instruction_token_span,
+    )
     assert dino.paths == [rendered.row.original_image_path]
     assert prepared.schema == QUERY_STATE_PREPARED_ROW_SCHEMA
     assert data.meta_info["schema"] == QUERY_STATE_DATAPROTO_SCHEMA

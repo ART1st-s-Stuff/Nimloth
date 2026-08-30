@@ -224,6 +224,7 @@ def save_query_state_distributed_checkpoint(
                         "global_step": control.global_step,
                         "data_cursor": dict(control.data_cursor),
                         "metric_cursor": dict(control.metric_cursor),
+                        "terminal_primary": control.terminal_primary,
                     },
                     sort_keys=True,
                     separators=(",", ":"),

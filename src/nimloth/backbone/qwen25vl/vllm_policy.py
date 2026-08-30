@@ -16,12 +16,12 @@ from nimloth.agent import (
 from nimloth.backbone.qwen25vl.loading import qwen_processor_pixel_bounds
 from nimloth.backbone.qwen25vl.policy import (
     collect_policy_images,
-    reasoning_forbidden_token_ids,
     render_policy_messages,
 )
 from nimloth.backbone.qwen25vl.turn_generation import (
     TurnGenerationSpec,
-    find_token_subsequence,
+    build_turn_generation_spec,
+    parse_turn_continuation,
 )
 from nimloth.backbone.qwen25vl.vllm_hidden import (
     VLLMPolicyState,
@@ -498,39 +498,12 @@ class QwenVLLMAgentPolicy:
         )
 
     def _response_generation_spec(self) -> TurnGenerationSpec:
-        tokens = LatentActionTokens()
-        close_ids = tuple(
-            int(value)
-            for value in self.processor.tokenizer.encode(
-                "</think>",
-                add_special_tokens=False,
-            )
-        )
-        injected_tokens = (
-            *latent_state_tokens(self.latent_token_count, tokens),
-            tokens.action_start,
-        )
-        injected_ids = tuple(self.token_id_map[token] for token in injected_tokens)
-        forbidden_reasoning_ids = reasoning_forbidden_token_ids(
-            self.processor.tokenizer,
-            self.token_id_map,
-            close_token_ids=close_ids,
-        )
-        protocol_overhead = len(close_ids) + len(injected_ids) + 2
-        max_reasoning_tokens = self.max_response_tokens - protocol_overhead
-        if max_reasoning_tokens < 1:
-            raise ValueError(
-                "max_response_tokens is too small for the turn protocol: "
-                f"{self.max_response_tokens} <= {protocol_overhead}"
-            )
-        return TurnGenerationSpec(
-            close_text="</think>",
-            close_token_ids=close_ids,
-            injected_token_ids=injected_ids,
+        return build_turn_generation_spec(
+            tokenizer=self.processor.tokenizer,
+            token_id_map=self.token_id_map,
             action_token_ids=self.action_token_ids,
-            action_end_token_id=self.token_id_map[tokens.action_end],
-            forbidden_reasoning_token_ids=forbidden_reasoning_ids,
-            max_reasoning_tokens=max_reasoning_tokens,
+            latent_token_count=self.latent_token_count,
+            max_response_tokens=self.max_response_tokens,
         )
 
     def _response_sampling_params(self, spec: TurnGenerationSpec) -> Any:
@@ -602,7 +575,6 @@ class QwenVLLMAgentPolicy:
     ) -> PolicyDecision:
         if prompt.messages[-1].get("content") != "<think>":
             raise ValueError("turn-credit policy prompt must end with '<think>'")
-        tokens = LatentActionTokens()
         spec = spec or self._response_generation_spec()
         injected_ids = tuple(spec.injected_token_ids)
         if request_output is None:
@@ -614,39 +586,16 @@ class QwenVLLMAgentPolicy:
             )[0]
         output = request_output.outputs[0]
         continuation_ids = tuple(int(value) for value in output.token_ids)
-        close_end = find_token_subsequence(continuation_ids, injected_ids)
-        if close_end is None:
-            raise RuntimeError("vLLM turn response did not inject latent queries")
-        decoded_reasoning_close = self.processor.tokenizer.decode(
-            list(continuation_ids[:close_end]),
-            skip_special_tokens=False,
-            clean_up_tokenization_spaces=False,
-            spaces_between_special_tokens=False,
-        )
-        # A merged BPE token may decode to an interior ``</think>`` followed by
-        # ordinary text. The logits processor waits for a clean terminal close,
-        # so validate and split at that final close rather than the first literal
-        # occurrence. The strict continuation round-trip below still rejects any
-        # dropped or rewritten text.
-        close_start = decoded_reasoning_close.rfind(spec.close_text)
-        if close_start < 0:
-            raise RuntimeError("vLLM turn response did not contain decoded '</think>'")
-        if decoded_reasoning_close[close_start:] != spec.close_text:
-            raise RuntimeError("vLLM decoded '</think>' did not end at query injection")
-        forbidden_reasoning = set(spec.forbidden_reasoning_token_ids)
-        invalid_reasoning_ids = sorted(
-            set(continuation_ids[:close_end]) & forbidden_reasoning
-        )
-        if invalid_reasoning_ids:
-            raise RuntimeError(
-                "vLLM reasoning contained forbidden control token ids: "
-                f"{invalid_reasoning_ids}"
+        try:
+            parsed = parse_turn_continuation(
+                continuation_ids,
+                tokenizer=self.processor.tokenizer,
+                spec=spec,
             )
+        except (ValueError, RuntimeError) as error:
+            raise RuntimeError(f"vLLM turn response protocol mismatch: {error}") from error
+        close_end = parsed.close_end
         expected_prefix_end = close_end + len(injected_ids)
-        if continuation_ids[close_end:expected_prefix_end] != injected_ids:
-            raise RuntimeError("vLLM turn response has an invalid injected prefix")
-        if len(continuation_ids) != expected_prefix_end + 2:
-            raise RuntimeError("vLLM turn response has an invalid action suffix length")
         if request_output.prompt_token_ids is None:
             raise RuntimeError("vLLM did not return expanded prompt token ids")
         state_tokens = len(request_output.prompt_token_ids) + expected_prefix_end
@@ -659,16 +608,8 @@ class QwenVLLMAgentPolicy:
                 actual_tokens=state_tokens,
                 max_tokens=self.max_state_tokens,
             )
-        action_token_id = continuation_ids[expected_prefix_end]
-        action_end_id = continuation_ids[expected_prefix_end + 1]
-        if action_end_id != spec.action_end_token_id:
-            raise RuntimeError("vLLM turn response did not end at action_end")
-        try:
-            action_index = self.action_token_ids.index(action_token_id)
-        except ValueError as error:
-            raise RuntimeError(
-                f"vLLM generated non-action token id {action_token_id}"
-            ) from error
+        action_token_id = parsed.action_token_id
+        action_index = parsed.action_index
 
         action_token_logprobs = output.logprobs[expected_prefix_end]
         action_log_probs = tuple(
@@ -683,7 +624,7 @@ class QwenVLLMAgentPolicy:
                 for index in range(len(self.action_token_ids))
             )
 
-        reasoning_truncated = close_end > spec.max_reasoning_tokens
+        reasoning_truncated = parsed.reasoning_truncated
         token_roles: list[Literal["reasoning", "action", "injected"]] = []
         loss_mask: list[bool] = []
         old_log_probs: list[float | None] = []
@@ -710,13 +651,8 @@ class QwenVLLMAgentPolicy:
             else:
                 old_log_probs.append(self._sampled_log_prob(output, index, token_id))
 
-        thought = decoded_reasoning_close[:close_start]
-
-        latent_block = "".join(latent_state_tokens(self.latent_token_count, tokens))
-        response = (
-            f"<think>{thought}</think>{latent_block}{tokens.action_start}"
-            f"{tokens.action_tokens[action_index]}{tokens.action_end}"
-        )
+        response = parsed.response
+        thought = parsed.thought
         decoded_continuation = self.processor.tokenizer.decode(
             list(continuation_ids),
             skip_special_tokens=False,

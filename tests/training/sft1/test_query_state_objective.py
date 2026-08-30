@@ -90,6 +90,38 @@ def _batch(batch_size: int = 2) -> QwenStateTrainingBatch:
     )
 
 
+def test_complete_root_has_detached_generation_dispatch_without_objective_inputs() -> None:
+    class GenerationModel(nn.Module):
+        def forward(self, input_ids, **kwargs):
+            assert kwargs == {
+                "logits_to_keep": 1,
+                "output_hidden_states": False,
+                "return_dict": True,
+            }
+            return {"input_ids": input_ids}
+
+    class Backbone(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.model = GenerationModel()
+
+    root = SFT1QueryStateTrainingRoot(
+        Backbone(),
+        SFT1QueryStateObjective(projector=DirectSlotProjector()),
+    )
+    output = root(
+        generation_inputs={"input_ids": torch.tensor([[1, 2]])},
+        generation_logits_to_keep=1,
+    )
+    assert torch.equal(output["input_ids"], torch.tensor([[1, 2]]))
+    with pytest.raises(ValueError, match="active objective"):
+        root(
+            _batch(1),
+            generation_inputs={"input_ids": torch.tensor([[1, 2]])},
+            generation_logits_to_keep=1,
+        )
+
+
 def test_direct_projector_has_unique_fixed_k16_artifact_contract() -> None:
     projector = DirectSlotProjector()
 

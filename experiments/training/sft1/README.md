@@ -13,6 +13,8 @@ Canonical location for SFT1 per `ai_tasks/sft1_exp.md`.
 | `state_interface_v2_train.py` | Launch-locked production FSDP smoke, exact resume-smoke, or formal three-epoch runtime |
 | `state_interface_v2_canary.slurm` | Resource-unspecified sequential wrapper; executes only the separately approved resolved phase command |
 | `query_state_smoke.py` | Non-submitting `torchrun` child for one separately approved Query-State fresh/resume phase |
+| `query_state_train.py` | CPU-only strict pilot/formal resolved-contract preflight; it does not launch CUDA/Slurm |
+| `query_state_export.py` | CPU-only human-gate/terminal-primary export preflight; actual full-state materialization remains a separate all-rank library call |
 | `train_8gpu.slurm` | 8-GPU DDP train (`SFT1_TUNE_MODE=lora\|embedlr`) |
 | `build_preprocess_cache.slurm` | CPU-only BF16 preprocess-cache build |
 | `submit_cache_then_train_8gpu.sh` | Submit cache, then dependency-gated training |
@@ -67,6 +69,13 @@ rather than claiming to contain their own Git commit. The child performs no
 Every invocation also fails before project imports unless bytecode is disabled,
 pycache is outside the worktree, `HF_HOME` is absolute/unambiguous, and the
 launch `PYTHONHASHSEED` equals the resolved config seed.
+
+The pilot/formal and export entrypoints added here are intentionally thin,
+read-only preflights because this worktree contains no launch-locked config and
+has no GPU/export approval. The production libraries own segment transactions,
+validation, strict W&B state, official FSDP greedy probing and gated full-state
+materialization; a later approved exact torchrun command must compose those
+owners rather than turning these preflights into an implicit launcher.
 
 A passing local test or preflight proves schema/source compatibility only. The
 legacy Slurm file intentionally omits partition/GPU/CPU/memory/time directives and

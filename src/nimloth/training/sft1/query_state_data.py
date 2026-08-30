@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 import torch
 
@@ -20,6 +20,7 @@ from nimloth.backbone.dino_grid import (
 )
 from nimloth.backbone.qwen25vl.batch import collect_message_images, render_messages
 from nimloth.backbone.qwen25vl.state_training import (
+    exact_instruction_token_span,
     find_current_state_extraction_positions,
     require_archived_assistant_response,
 )
@@ -56,7 +57,88 @@ class QueryStateRenderedRow:
     rendered_text: str
     input_ids: torch.Tensor
     action_boundary_index: int
+    diagnostic_image_token_indices: tuple[int, ...]
+    diagnostic_instruction_token_span: tuple[int, int]
     encoded_tensors: Mapping[str, torch.Tensor]
+
+
+@dataclass(frozen=True)
+class QueryStateTeacherMemoReport:
+    process_identity: str
+    dino_identity: str | None
+    entries: int
+    current_bytes: int
+    peak_bytes: int
+
+
+class StrictQueryStateTeacherMemo:
+    """Process-local immutable CPU memo keyed by image digest and DINO identity.
+
+    The object intentionally has no serializable state.  Fresh construction in
+    a restarted process begins empty, so neither checkpoint nor run lineage can
+    carry teacher targets forward.  Only detached DINO-shaped targets enter the
+    cache; student hidden/state tensors have no API surface here.
+    """
+
+    def __init__(self, *, process_identity: str) -> None:
+        if not isinstance(process_identity, str) or not process_identity.strip():
+            raise ValueError("teacher memo process identity must be non-empty")
+        self._process_identity = process_identity
+        self._dino_identity: str | None = None
+        self._targets: dict[tuple[str, str], torch.Tensor] = {}
+        self._current_bytes = 0
+        self._peak_bytes = 0
+
+    def get_or_compute(
+        self,
+        *,
+        original_image_sha256: str,
+        dino_identity: str,
+        compute: Callable[[], torch.Tensor],
+    ) -> torch.Tensor:
+        if not _is_sha256(original_image_sha256):
+            raise ValueError("teacher memo original image identity must be SHA256")
+        if not isinstance(dino_identity, str) or not dino_identity.strip():
+            raise ValueError("teacher memo DINO identity must be non-empty")
+        if self._dino_identity is None:
+            self._dino_identity = dino_identity
+        elif self._dino_identity != dino_identity:
+            raise ValueError("teacher memo DINO identity cannot change in one process")
+        key = (original_image_sha256, dino_identity)
+        target = self._targets.get(key)
+        if target is None:
+            produced = compute()
+            if (
+                not isinstance(produced, torch.Tensor)
+                or produced.shape != (16, 1024)
+                or produced.device.type != "cpu"
+                or produced.requires_grad
+                or not produced.is_floating_point()
+                or not torch.isfinite(produced).all()
+            ):
+                raise ValueError(
+                    "teacher memo requires one detached finite CPU DINO target (16,1024)"
+                )
+            target = produced.detach().float().contiguous().clone()
+            self._targets[key] = target
+            self._current_bytes += target.numel() * target.element_size()
+            self._peak_bytes = max(self._peak_bytes, self._current_bytes)
+        # Never expose the immutable cached storage to a caller.
+        return target.clone()
+
+    def report(self) -> QueryStateTeacherMemoReport:
+        return QueryStateTeacherMemoReport(
+            process_identity=self._process_identity,
+            dino_identity=self._dino_identity,
+            entries=len(self._targets),
+            current_bytes=self._current_bytes,
+            peak_bytes=self._peak_bytes,
+        )
+
+    def state_dict(self) -> Mapping[str, Any]:
+        raise RuntimeError(
+            "strict teacher memo is process-local and must not enter a checkpoint"
+        )
 
 
 @dataclass(frozen=True)
@@ -70,6 +152,8 @@ class QueryStatePreparedRow:
     original_image_sha256: str
     archived_assistant_response: str
     executed_action_index: int
+    diagnostic_image_token_indices: tuple[int, ...]
+    diagnostic_instruction_token_span: tuple[int, int]
     encoded_tensors: Mapping[str, torch.Tensor]
     dino_regions: torch.Tensor
 
@@ -159,6 +243,24 @@ def render_query_state_row(
     if input_ids.shape[1] > max_length:
         raise ValueError("Query-State row would truncate; truncation is forbidden")
     one_row = input_ids[0].detach().cpu()
+    instruction_span = exact_instruction_token_span(
+        one_row,
+        tokenizer=processor.tokenizer,
+        instruction=row.instruction,
+    )
+    image_pad_id = processor.tokenizer.convert_tokens_to_ids("<|image_pad|>")
+    if isinstance(image_pad_id, bool) or not isinstance(image_pad_id, int):
+        raise ValueError("Query-State processor has no exact image-pad token identity")
+    all_image_indices = torch.nonzero(one_row == image_pad_id, as_tuple=False).flatten().tolist()
+    if not all_image_indices:
+        raise ValueError("Query-State rendered row has no real image token positions")
+    # Bound messages are chronological, so the final contiguous image-pad run
+    # is the current original observation rather than a historical image.
+    current_image_indices = [all_image_indices[-1]]
+    for index in reversed(all_image_indices[:-1]):
+        if index + 1 != current_image_indices[0]:
+            break
+        current_image_indices.insert(0, index)
     token_map = special_token_ids(processor.tokenizer, latent_token_count=16)
     positions = find_current_state_extraction_positions(
         one_row,
@@ -168,6 +270,8 @@ def render_query_state_row(
     )
     if positions.action_start_index is None or positions.latent_state_indices is None:
         raise ValueError("Query-State current K16/action boundary is absent")
+    if not 0 <= instruction_span[0] < instruction_span[1] <= positions.action_start_index:
+        raise ValueError("Query-State instruction span is not before the current action boundary")
     if positions.action_start_index + 2 >= one_row.numel():
         raise ValueError("Query-State current action/action_end response is incomplete")
     expected_action_ids = torch.tensor(
@@ -267,14 +371,21 @@ def render_query_state_row(
         rendered_text=rendered,
         input_ids=one_row,
         action_boundary_index=int(positions.action_start_index),
+        diagnostic_image_token_indices=tuple(current_image_indices),
+        diagnostic_instruction_token_span=instruction_span,
         encoded_tensors=tensors,
     )
 
 
 class FreshQueryStateDINOTeacher:
-    """Read only original archived observations through the frozen DINO path."""
+    """Read original observations through a strict process-local DINO memo."""
 
-    def __init__(self, dino: FrozenDINOGridTargets) -> None:
+    def __init__(
+        self,
+        dino: FrozenDINOGridTargets,
+        *,
+        process_identity: str | None = None,
+    ) -> None:
         if not isinstance(dino, FrozenDINOGridTargets):
             raise TypeError(
                 "Query-State fresh teacher rejects cached/protocol-only DINO targets"
@@ -290,19 +401,42 @@ class FreshQueryStateDINOTeacher:
             if model.training or any(parameter.requires_grad for parameter in model.parameters()):
                 raise ValueError("Query-State DINO model must be frozen and in eval mode")
         self.dino = dino
+        identity = dino.identity
+        self.dino_identity = (
+            f"{identity.source}@{identity.revision}:"
+            f"{identity.processor_fingerprint}:{identity.hidden_size}:grid{dino.grid_size}"
+        )
+        self.memo = StrictQueryStateTeacherMemo(
+            process_identity=process_identity or f"teacher-object-{id(self)}"
+        )
 
     @torch.no_grad()
     def build_many(
         self,
         rendered: tuple[QueryStateRenderedRow, ...],
     ) -> tuple[torch.Tensor, ...]:
-        if not rendered:
-            return ()
-        paths = [item.row.original_image_path for item in rendered]
-        targets = self.dino.load(paths, device=torch.device("cpu")).detach().float().cpu()
-        if targets.shape != (len(rendered), 16, 1024) or not torch.isfinite(targets).all():
+        targets: list[torch.Tensor] = []
+        for item in rendered:
+            path = Path(item.row.original_image_path)
+            digest = item.row.original_image_sha256
+            if not path.is_file() or sha256_file(path) != digest:
+                raise ValueError("Query-State teacher original observation identity changed")
+            targets.append(
+                self.memo.get_or_compute(
+                    original_image_sha256=digest,
+                    dino_identity=self.dino_identity,
+                    compute=lambda path=path: self.dino.load(
+                        [path], device=torch.device("cpu")
+                    )[0].detach().float().cpu(),
+                )
+            )
+        result = tuple(targets)
+        if any(target.shape != (16, 1024) or not torch.isfinite(target).all() for target in result):
             raise RuntimeError("Query-State DINO teacher returned invalid targets")
-        return tuple(targets[index].clone() for index in range(len(rendered)))
+        return result
+
+    def memo_report(self) -> QueryStateTeacherMemoReport:
+        return self.memo.report()
 
 
 def prepare_query_state_row(
@@ -350,6 +484,8 @@ def prepare_query_state_row(
         original_image_sha256=row.original_image_sha256,
         archived_assistant_response=row.archived_assistant_response,
         executed_action_index=row.executed_action_index,
+        diagnostic_image_token_indices=rendered.diagnostic_image_token_indices,
+        diagnostic_instruction_token_span=rendered.diagnostic_instruction_token_span,
         encoded_tensors={name: value.detach() for name, value in encoded.items()},
         dino_regions=dino_regions.detach().float(),
     )
@@ -357,6 +493,8 @@ def prepare_query_state_row(
 
 __all__ = [
     "FreshQueryStateDINOTeacher",
+    "QueryStateTeacherMemoReport",
+    "StrictQueryStateTeacherMemo",
     "QUERY_STATE_PREPARED_ROW_SCHEMA",
     "QUERY_STATE_RENDERED_ROW_SCHEMA",
     "QueryStatePreparedRow",

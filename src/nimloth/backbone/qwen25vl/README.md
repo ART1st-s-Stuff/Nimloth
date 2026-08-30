@@ -8,7 +8,7 @@
 | `batch.py` | chat rendering、图片处理、CE label 与 tensor collate |
 | `policy.py` | Qwen direct policy score 与 masked-token PPO replay 适配器 |
 | `vllm_policy.py` | 独立 vLLM 单请求 CoT/action behavior backend；不承担训练 |
-| `turn_generation.py` | turn continuation 的可测试 token 状态机与 logits mask |
+| `turn_generation.py` | production共享的response-policy prompt delegation、`TurnGenerationSpec` builder、exact continuation parser、token状态机/logits mask与detached FSDP greedy format probe |
 | `vllm_logits.py` | 把 turn 状态机接入 vLLM V1 per-request logits processor |
 | `checkpoint.py` | PEFT 与 full vision artifact |
 | `latent.py` | final hidden 捕获与 latent query 提取 |
@@ -31,6 +31,13 @@ SFT1-v2 state-training 是独立的可微能力：输入必须携带每行真实
 response/CoT provenance。多轮prefix也可能在system prompt或observation context中包含格式示例；所有结构pair必须
 完整相邻，只选择消息序列最后一个current pair，并让其K16 hidden和八动作logits来自同一次
 模型forward。新Query-State调用还可携带由公共batch renderer生成的final-assistant labels；Query labels必须为`-100`，forward只请求有效target predecessor与action boundary的vocabulary logits并返回CE numerator/count，不执行第二次student call。无labels的legacy v2调用仍返回相同K16/action结果。普通`Backbone.forward()`、Agent policy与PPO replay的既有输出不因此改变。
+Query-State validation可显式提供image token indices与exact instruction spans；
+`state_training.py`会在同一次final-norm hook所捕获的forward中额外返回fused-image与
+instruction feature。普通training调用不提供这些位置，因此不会保留额外大张量。
+Production vLLM与in-training FSDP probe共同调用`turn_generation.py`的spec builder和
+pure parser；FSDP probe逐token使用当前wrapped checkpoint logits，只返回真实thought/
+action envelope的detached证据，不执行动作、不写rollout、不导出bundle。
+
 `Qwen25VLBackbone.save_pretrained()`可接收官方FSDP聚合后的完整state dict；query delta
 只在该完整副本中materialize到embedding行，训练中的sharded参数保持不变，adapter私有key
 不会进入HF artifact。

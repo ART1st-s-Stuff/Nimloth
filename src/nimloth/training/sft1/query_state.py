@@ -14,6 +14,7 @@ from torch import nn
 
 from nimloth.backbone.qwen25vl.state_training import (
     QwenStateTrainingBatch,
+    QwenStateTrainingOutput,
     require_archived_assistant_response,
 )
 from nimloth.backbone.qwen25vl.tuning import is_llm_param, is_vision_param
@@ -65,6 +66,14 @@ class QueryStateObjectiveOutput:
     total_loss: torch.Tensor
     loss_sums: Mapping[str, torch.Tensor]
     local_valid_counts: Mapping[str, int]
+
+
+@dataclass(frozen=True)
+class QueryStateValidationForwardOutput:
+    """Detached-validation views from the same single Qwen/objective forward."""
+
+    objective: QueryStateObjectiveOutput
+    student: QwenStateTrainingOutput
 
 
 class SFT1QueryStateObjective(nn.Module):
@@ -346,10 +355,30 @@ class SFT1QueryStateTrainingRoot(nn.Module):
 
     def forward(
         self,
-        batch: QwenStateTrainingBatch,
-        targets: QueryStateTargets,
-        normalization: QueryStateNormalization,
-    ) -> QueryStateObjectiveOutput:
+        batch: QwenStateTrainingBatch | None = None,
+        targets: QueryStateTargets | None = None,
+        normalization: QueryStateNormalization | None = None,
+        *,
+        generation_inputs: Mapping[str, torch.Tensor] | None = None,
+        generation_logits_to_keep: int | None = None,
+        diagnostic: bool = False,
+    ) -> QueryStateObjectiveOutput | QueryStateValidationForwardOutput | object:
+        if generation_inputs is not None:
+            if batch is not None or targets is not None or normalization is not None:
+                raise ValueError("Query-State generation probe cannot enter the active objective")
+            if generation_logits_to_keep != 1:
+                raise ValueError("Query-State generation probe requires one next-token logit row")
+            model = getattr(self.backbone, "model", None)
+            if model is None:
+                raise TypeError("Query-State generation probe requires the wrapped Qwen model")
+            return model(
+                **dict(generation_inputs),
+                logits_to_keep=1,
+                output_hidden_states=False,
+                return_dict=True,
+            )
+        if batch is None or targets is None or normalization is None:
+            raise ValueError("Query-State training forward requires batch, targets, and normalization")
         if "labels" not in batch.backbone_batch.tensors:
             raise ValueError("Query-State requires final-assistant LM labels")
         for response, source in zip(
@@ -364,7 +393,7 @@ class SFT1QueryStateTrainingRoot(nn.Module):
         student = forward(batch)
         if student.lm_loss_sum is None:
             raise RuntimeError("same-forward Qwen output omitted its LM loss sum")
-        return self.objective(
+        objective = self.objective(
             student.query_hidden,
             student.action_logits,
             student.lm_loss_sum,
@@ -372,6 +401,11 @@ class SFT1QueryStateTrainingRoot(nn.Module):
             targets,
             normalization,
         )
+        if diagnostic:
+            if student.fused_image_features is None or student.instruction_features is None:
+                raise RuntimeError("Query-State diagnostic forward omitted real-row positions")
+            return QueryStateValidationForwardOutput(objective=objective, student=student)
+        return objective
 
     def assert_trainable_contract(self) -> QueryStateParameterInventory:
         return query_state_parameter_inventory(self)
@@ -386,6 +420,7 @@ __all__ = [
     "QueryStateParameterInventory",
     "QueryStateTargets",
     "QueryStateTrainableParameterGroup",
+    "QueryStateValidationForwardOutput",
     "SFT1QueryStateObjective",
     "SFT1QueryStateTrainingRoot",
     "query_state_parameter_inventory",
