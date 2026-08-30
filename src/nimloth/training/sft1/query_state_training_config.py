@@ -41,7 +41,7 @@ _SECTION_FIELDS: Mapping[str, frozenset[str]] = {
     "authorization": frozenset({"approval_id", "approval_sha256", "launch_authorized"}),
     "initialization": frozenset({"actor_checkpoint", "actor_checkpoint_identity", "direct_head_initialization", "resume_checkpoint", "resume_mode"}),
     "tracking": frozenset({"enabled", "entity", "project", "group", "run_name", "run_id", "resume"}),
-    "environment": frozenset({"python_executable", "hf_home", "hf_hub_cache", "offline", "dont_write_bytecode", "pycache_prefix", "python_hash_seed", "python_version", "torch_version", "transformers_version"}),
+    "environment": frozenset({"python_executable", "hf_home", "hf_hub_cache", "offline", "dont_write_bytecode", "pycache_prefix", "python_hash_seed", "python_version", "torch_version", "transformers_version", "nccl_socket_ifname", "nccl_ib_disable"}),
     "command": frozenset({"argv", "identity"}),
     "artifacts": frozenset({"file_sha256"}),
 }
@@ -738,6 +738,18 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         raise ValueError("Query-State launch requires locked HF offline mode")
     if not _bool(environment["dont_write_bytecode"], "environment.dont_write_bytecode"):
         raise ValueError("Query-State launch requires bytecode writes disabled")
+    nccl_socket_ifname = _text(
+        environment["nccl_socket_ifname"], "environment.nccl_socket_ifname"
+    )
+    nccl_ib_disable = _text(
+        environment["nccl_ib_disable"], "environment.nccl_ib_disable"
+    )
+    if mode == "formal" and (
+        nccl_socket_ifname != "ibp24s0" or nccl_ib_disable != "1"
+    ):
+        raise ValueError("formal Query-State NCCL network contract changed")
+    if nccl_ib_disable not in {"0", "1"}:
+        raise ValueError("environment.nccl_ib_disable must be 0 or 1")
 
     command = sections["command"]
     argv = command["argv"]

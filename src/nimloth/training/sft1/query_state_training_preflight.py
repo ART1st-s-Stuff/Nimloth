@@ -162,6 +162,8 @@ def _verify_environment(config: QueryStateTrainingConfig, environ: Mapping[str, 
         "PYTHONHASHSEED": str(expected["python_hash_seed"]),
         "HF_HUB_OFFLINE": "1",
         "TRANSFORMERS_OFFLINE": "1",
+        "NCCL_SOCKET_IFNAME": str(expected["nccl_socket_ifname"]),
+        "NCCL_IB_DISABLE": str(expected["nccl_ib_disable"]),
     }
     for name, value in expected_values.items():
         if environ.get(name) != value:
@@ -178,6 +180,79 @@ def _verify_environment(config: QueryStateTrainingConfig, environ: Mapping[str, 
         raise ValueError(
             f"Query-State package identity mismatch: {actual_versions} != {expected_versions}"
         )
+
+
+def validate_query_state_distributed_topology(
+    records: Sequence[Mapping[str, object]],
+    *,
+    resources: Mapping[str, object],
+    environment: Mapping[str, object],
+) -> tuple[Mapping[str, object], ...]:
+    """Validate the exact two-node/four-local-rank runtime assignment."""
+
+    world_size = int(resources["world_size"])
+    nodes = int(resources["nodes"])
+    local_world_size = int(resources["gpus_per_node"])
+    expected_fields = {
+        "rank",
+        "group_rank",
+        "local_rank",
+        "hostname",
+        "cuda_visible_devices",
+        "nccl_socket_ifname",
+        "nccl_ib_disable",
+    }
+    if len(records) != world_size:
+        raise ValueError("Query-State topology gate rank count mismatch")
+    normalized: list[dict[str, object]] = []
+    for record in records:
+        if not isinstance(record, Mapping) or set(record) != expected_fields:
+            raise ValueError("Query-State topology gate record fields mismatch")
+        value = dict(record)
+        for name in ("rank", "group_rank", "local_rank"):
+            if isinstance(value[name], bool) or not isinstance(value[name], int):
+                raise ValueError("Query-State topology gate rank type mismatch")
+        if any(
+            not isinstance(value[name], str) or not value[name]
+            for name in (
+                "hostname",
+                "cuda_visible_devices",
+                "nccl_socket_ifname",
+                "nccl_ib_disable",
+            )
+        ):
+            raise ValueError("Query-State topology gate string identity is invalid")
+        if value["nccl_socket_ifname"] != environment["nccl_socket_ifname"] or value[
+            "nccl_ib_disable"
+        ] != environment["nccl_ib_disable"]:
+            raise ValueError("Query-State topology gate NCCL environment mismatch")
+        normalized.append(value)
+    normalized.sort(key=lambda value: int(value["rank"]))
+    if [value["rank"] for value in normalized] != list(range(world_size)):
+        raise ValueError("Query-State topology gate global ranks are incomplete")
+    hostnames: set[str] = set()
+    for group_rank in range(nodes):
+        group = [value for value in normalized if value["group_rank"] == group_rank]
+        if len(group) != local_world_size:
+            raise ValueError("Query-State topology gate node rank count mismatch")
+        hosts = {str(value["hostname"]) for value in group}
+        visible = {str(value["cuda_visible_devices"]) for value in group}
+        if len(hosts) != 1 or len(visible) != 1:
+            raise ValueError("Query-State topology gate node identity is inconsistent")
+        if sorted(int(value["local_rank"]) for value in group) != list(
+            range(local_world_size)
+        ):
+            raise ValueError("Query-State topology gate local ranks are incomplete")
+        if sorted(int(value["rank"]) for value in group) != list(
+            range(group_rank * local_world_size, (group_rank + 1) * local_world_size)
+        ):
+            raise ValueError("Query-State topology gate global/local rank mapping changed")
+        if len(next(iter(visible)).split(",")) != local_world_size:
+            raise ValueError("Query-State topology gate CUDA visibility count mismatch")
+        hostnames.update(hosts)
+    if len(hostnames) != nodes:
+        raise ValueError("Query-State topology gate physical node count mismatch")
+    return tuple(normalized)
 
 
 def _verify_id176_and_dino(config: QueryStateTrainingConfig) -> tuple[str, str]:
@@ -349,6 +424,8 @@ def verify_query_state_training_preflight(
         "nodes": config.resources["nodes"],
         "gpus_per_node": config.resources["gpus_per_node"],
         "world_size": config.resources["world_size"],
+        "nccl_socket_ifname": config.environment["nccl_socket_ifname"],
+        "nccl_ib_disable": config.environment["nccl_ib_disable"],
     }
     if topology != expected_topology or config.resources["backend"] != "nccl":
         raise ValueError("Query-State command/resource topology mismatch")
@@ -440,5 +517,6 @@ def assert_query_state_training_backend_ready(
 __all__ = [
     "QueryStateTrainingPreflightEvidence",
     "assert_query_state_training_backend_ready",
+    "validate_query_state_distributed_topology",
     "verify_query_state_training_preflight",
 ]

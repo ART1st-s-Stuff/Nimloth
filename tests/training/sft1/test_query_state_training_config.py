@@ -208,6 +208,8 @@ def _raw(*, mode: str = "pilot", resume_mode: str = "fresh") -> dict:
             "python_version": "3.12.13",
             "torch_version": "2.8.0+cu128",
             "transformers_version": "4.55.4",
+            "nccl_socket_ifname": "ibp24s0" if not pilot else "test0",
+            "nccl_ib_disable": "1",
         },
         "command": {
             "argv": [
@@ -468,6 +470,11 @@ def test_formal_ws8_max10_early_stop_contract_is_strict_and_identity_bound() -> 
     del missing["early_stopping"]
     with pytest.raises(ValueError, match="early_stopping"):
         parse_query_state_training_config(missing)
+    wrong_network = deepcopy(raw)
+    wrong_network["environment"]["nccl_socket_ifname"] = "eth0"
+    with pytest.raises(ValueError, match="NCCL network"):
+        parse_query_state_training_config(wrong_network)
+
     old_candidate = deepcopy(raw)
     old_candidate["schedule"].update(epochs=2, max_updates=12836)
     old_candidate["resources"].update(world_size=2, nodes=1, gpus_per_node=2)

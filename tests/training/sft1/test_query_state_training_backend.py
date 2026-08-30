@@ -434,6 +434,17 @@ def test_backend_generation_format_evidence_is_exact_and_side_effect_free(
     assert failed["failure"]["stage"] == "current_fsdp_greedy_parse"
 
 
+def test_backend_run_identity_binds_network_environment() -> None:
+    raw = _raw(mode="pilot")
+    first = parse_query_state_training_config(raw)
+    changed = deepcopy(raw)
+    changed["environment"]["nccl_socket_ifname"] = "test1"
+    second = parse_query_state_training_config(changed)
+    assert query_state_training_run_identity(first) != query_state_training_run_identity(
+        second
+    )
+
+
 def test_backend_validation_wires_global_diagnostics_and_fail_closed_safety() -> None:
     source = Path(query_state_training_backend.__file__).read_text(encoding="utf-8")
     assert "controlled_gather_query_state_diagnostics(" in source
@@ -617,6 +628,10 @@ def test_thin_entrypoint_is_launchable_but_never_submits_slurm() -> None:
     source = Path("experiments/training/sft1/query_state_train.py").read_text(encoding="utf-8")
     assert "run_query_state_training(" in source
     assert "init_process_group" in source
+    assert "validate_query_state_distributed_topology" in source
+    assert "all_gather_object" in source
+    assert "all_reduce" in source
+    assert '"model_or_output_transaction_entered": False' in source
     assert "sbatch" not in source
     assert "subprocess" not in source
     assert '"terminal_epoch": result.terminal_epoch' in source

@@ -17,6 +17,7 @@ from nimloth.training.sft1.query_state_training_config import (
 from nimloth.training.sft1.query_state_training_preflight import (
     _verify_training_data_contract,
     assert_query_state_training_backend_ready,
+    validate_query_state_distributed_topology,
     verify_query_state_training_preflight,
 )
 from tests.training.sft1.test_query_state_training_config import _raw
@@ -158,7 +159,14 @@ def _resolved_contract(tmp_path: Path, *, launch_locked: bool) -> tuple[dict, di
     command_payload = {
         "schema": "nimloth_sft1_query_state_training_command_v1",
         "child_argv": child_argv,
-        "topology": {"backend": "nccl", "nodes": 1, "gpus_per_node": 2, "world_size": 2},
+        "topology": {
+            "backend": "nccl",
+            "nodes": 1,
+            "gpus_per_node": 2,
+            "world_size": 2,
+            "nccl_socket_ifname": "test0",
+            "nccl_ib_disable": "1",
+        },
     }
     command_manifest.write_text(json.dumps(command_payload, sort_keys=True) + "\n", encoding="utf-8")
 
@@ -259,8 +267,47 @@ def _resolved_contract(tmp_path: Path, *, launch_locked: bool) -> tuple[dict, di
         "HF_HUB_CACHE": raw["environment"]["hf_hub_cache"],
         "HF_HUB_OFFLINE": "1",
         "TRANSFORMERS_OFFLINE": "1",
+        "NCCL_SOCKET_IFNAME": raw["environment"]["nccl_socket_ifname"],
+        "NCCL_IB_DISABLE": raw["environment"]["nccl_ib_disable"],
     }
     return raw, environment
+
+
+def test_ws8_topology_gate_requires_two_complete_four_rank_nodes() -> None:
+    resources = {
+        "world_size": 8,
+        "nodes": 2,
+        "gpus_per_node": 4,
+    }
+    environment = {"nccl_socket_ifname": "ibp24s0", "nccl_ib_disable": "1"}
+    records = tuple(
+        {
+            "rank": rank,
+            "group_rank": rank // 4,
+            "local_rank": rank % 4,
+            "hostname": f"dgx-{rank // 4}",
+            "cuda_visible_devices": "0,1,2,3",
+            "nccl_socket_ifname": "ibp24s0",
+            "nccl_ib_disable": "1",
+        }
+        for rank in range(8)
+    )
+    assert validate_query_state_distributed_topology(
+        records, resources=resources, environment=environment
+    ) == records
+
+    duplicate_host = [dict(record) for record in records]
+    duplicate_host[4]["hostname"] = "dgx-0"
+    with pytest.raises(ValueError, match="node identity|physical node"):
+        validate_query_state_distributed_topology(
+            duplicate_host, resources=resources, environment=environment
+        )
+    wrong_network = [dict(record) for record in records]
+    wrong_network[7]["nccl_socket_ifname"] = "eth0"
+    with pytest.raises(ValueError, match="NCCL environment"):
+        validate_query_state_distributed_topology(
+            wrong_network, resources=resources, environment=environment
+        )
 
 
 def test_data_preflight_uses_post_index_exact_audit_not_missing_selection_namespace(

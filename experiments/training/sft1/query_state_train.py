@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import sys
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,60 @@ def _canonical_run_argv(config_path: Path) -> list[str]:
     ]
 
 
+def _distributed_topology_gate(
+    config: Any,
+    *,
+    rank: int,
+    world_size: int,
+    local_rank: int,
+    group_rank: int,
+    device: Any,
+) -> None:
+    import torch
+    import torch.distributed as dist
+
+    from nimloth.training.sft1.query_state_training_preflight import (
+        validate_query_state_distributed_topology,
+    )
+
+    record = {
+        "rank": rank,
+        "group_rank": group_rank,
+        "local_rank": local_rank,
+        "hostname": socket.gethostname(),
+        "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES", ""),
+        "nccl_socket_ifname": os.environ.get("NCCL_SOCKET_IFNAME", ""),
+        "nccl_ib_disable": os.environ.get("NCCL_IB_DISABLE", ""),
+    }
+    gathered: list[object] = [None] * world_size
+    dist.all_gather_object(gathered, record)
+    topology = validate_query_state_distributed_topology(
+        gathered,
+        resources=config.resources,
+        environment=config.environment,
+    )
+    probe = torch.tensor(float(rank + 1), dtype=torch.float64, device=device)
+    dist.all_reduce(probe, op=dist.ReduceOp.SUM)
+    expected = float(world_size * (world_size + 1) // 2)
+    if probe.item() != expected:
+        raise RuntimeError("Query-State NCCL collective gate produced the wrong sum")
+    dist.barrier()
+    if rank == 0:
+        print(
+            json.dumps(
+                {
+                    "kind": "query_state_distributed_topology_gate",
+                    "topology": topology,
+                    "collective_sum": probe.item(),
+                    "passed": True,
+                    "model_or_output_transaction_entered": False,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
+
+
 def _distributed_device(config: Any) -> tuple[int, int, Any]:
     import torch
     import torch.distributed as dist
@@ -79,7 +134,16 @@ def _distributed_device(config: Any) -> tuple[int, int, Any]:
         dist.init_process_group(str(config.resources["backend"]))
     if dist.get_rank() != rank or dist.get_world_size() != world_size:
         raise ValueError("Query-State process-group identity mismatch")
-    return rank, world_size, torch.device(f"cuda:{local_rank}")
+    device = torch.device(f"cuda:{local_rank}")
+    _distributed_topology_gate(
+        config,
+        rank=rank,
+        world_size=world_size,
+        local_rank=local_rank,
+        group_rank=group_rank,
+        device=device,
+    )
+    return rank, world_size, device
 
 
 def main(argv: list[str] | None = None) -> int:

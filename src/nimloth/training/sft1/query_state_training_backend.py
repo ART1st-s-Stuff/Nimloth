@@ -425,6 +425,7 @@ def query_state_training_run_identity(config: QueryStateTrainingConfig) -> str:
         "run_root": config.output["run_root"],
         "controller_root": config.output["controller_root"],
         "resources": _plain(config.resources),
+        "environment": _plain(config.environment),
         "actor_checkpoint": config.initialization["actor_checkpoint"],
         "actor_checkpoint_identity": config.initialization["actor_checkpoint_identity"],
         "direct_head_initialization": config.initialization["direct_head_initialization"],
