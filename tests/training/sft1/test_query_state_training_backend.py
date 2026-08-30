@@ -13,6 +13,7 @@ from nimloth.training.sft1 import query_state_training_backend
 from nimloth.training.sft1.query_state_training_backend import (
     _FormalTrackingOwner,
     _actor_baseline_path,
+    _global_teacher_memo_metric,
     _authoritative_entries_for_restart,
     _index_training_rows,
     _load_actor_baseline,
@@ -90,6 +91,40 @@ def _tracking_owner(*, initial_cursor: int = 0) -> tuple[_FormalTrackingOwner, _
         initial_cursor=initial_cursor,
     )
     return owner, run
+
+
+def test_teacher_memo_metric_gathers_process_local_reports_in_rank_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local = {
+        "process_identity": "rank-0-process",
+        "dino_identity": "facebook/dinov2-large@commit",
+        "entries": 7,
+        "current_bytes": 7 * 16 * 1024 * 4,
+        "peak_bytes": 7 * 16 * 1024 * 4,
+    }
+    remote = {
+        **local,
+        "process_identity": "rank-1-process",
+        "entries": 6,
+        "current_bytes": 6 * 16 * 1024 * 4,
+        "peak_bytes": 6 * 16 * 1024 * 4,
+    }
+    gathered: list[tuple[object, int]] = []
+
+    def all_gather(value: object, world_size: int):
+        gathered.append((value, world_size))
+        return [value, remote]
+
+    monkeypatch.setattr(query_state_training_backend, "_all_gather", all_gather)
+
+    metric = _global_teacher_memo_metric(local, world_size=2)
+
+    assert gathered == [(local, 2)]
+    assert metric == {
+        "scope": "process_local_by_rank",
+        "reports": [local, remote],
+    }
 
 
 def test_backend_runtime_reindex_uses_data_only_contract_and_strict_audit(

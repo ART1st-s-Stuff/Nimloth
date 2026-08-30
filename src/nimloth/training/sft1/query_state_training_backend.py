@@ -443,6 +443,36 @@ def _all_gather(value: Any, world_size: int) -> tuple[Any, ...]:
     return tuple(gathered)
 
 
+def _global_teacher_memo_metric(
+    local_report: Mapping[str, Any],
+    *,
+    world_size: int,
+) -> Mapping[str, Any]:
+    """Gather process-local memo telemetry into one rank-identical metric value."""
+
+    expected = {
+        "process_identity",
+        "dino_identity",
+        "entries",
+        "current_bytes",
+        "peak_bytes",
+    }
+    gathered = _all_gather(dict(local_report), world_size)
+    if len(gathered) != world_size or any(
+        not isinstance(report, Mapping) or set(report) != expected
+        for report in gathered
+    ):
+        raise RuntimeError("Query-State teacher memo rank telemetry is invalid")
+    reports = [dict(report) for report in gathered]
+    dino_identities = {report["dino_identity"] for report in reports}
+    if len(dino_identities) != 1:
+        raise RuntimeError("Query-State teacher memo DINO identity differs across ranks")
+    return {
+        "scope": "process_local_by_rank",
+        "reports": reports,
+    }
+
+
 def _coordinated_rank0_status(
     error: BaseException | None,
     *,
@@ -1449,11 +1479,15 @@ def run_query_state_training(
             raise RuntimeError(
                 "Query-State actor safety failed; no checkpoint/index/terminal completion published"
             )
+        teacher_memo_metric = _global_teacher_memo_metric(
+            asdict(assembly.dino_teacher.memo_report()),
+            world_size=world_size,
+        )
         metric_cursor = {
             "validation": validation_cursor,
             "log": log_cursor,
             "wandb": tracking_cursor,
-            "teacher_memo": asdict(assembly.dino_teacher.memo_report()),
+            "teacher_memo": teacher_memo_metric,
         }
         checkpoint = run_root / "checkpoints" / f"update_{segment_end:08d}"
         control = QueryStateDistributedControl(
