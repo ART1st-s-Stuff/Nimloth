@@ -38,7 +38,10 @@ from nimloth.training.sft1.query_state_config import (
     bind_query_state_code_canary_identity,
     parse_query_state_code_canary_config,
 )
-from nimloth.training.sft1.query_state_distributed import QueryStateUpdateCore
+from nimloth.training.sft1.query_state_distributed import (
+    QueryStateUpdateCore,
+    query_state_global_normalization,
+)
 from nimloth.training.sft1.query_state_driver import (
     QueryStateDataCursor,
     deterministic_query_state_schedule,
@@ -122,6 +125,8 @@ def _data() -> _FakeDataProto:
             "splits": np.asarray(["train"] * 3, dtype=object),
             "original_image_paths": np.asarray(["a.png", "b.png", "c.png"], dtype=object),
             "original_image_sha256": np.asarray(["a" * 64, "b" * 64, "c" * 64], dtype=object),
+            "diagnostic_image_token_indices": np.asarray([(), (), ()], dtype=object),
+            "diagnostic_instruction_token_spans": np.asarray([(), (), ()], dtype=object),
         },
         meta_info={
             "schema": QUERY_STATE_DATAPROTO_SCHEMA,
@@ -191,6 +196,32 @@ class _CountingSGD(torch.optim.SGD):
     def step(self, closure=None):
         self.step_calls += 1
         return super().step(closure)
+
+
+def test_global_normalization_reduces_exact_state_and_lm_counts_in_fixed_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reduced: list[int] = []
+
+    def global_sum(value: int, device: torch.device) -> int:
+        assert device == torch.device("cpu")
+        reduced.append(value)
+        return value * 2
+
+    monkeypatch.setattr(query_state_distributed, "_global_sum_int", global_sum)
+    monkeypatch.setattr(query_state_distributed, "_distributed_world_size", lambda: 2)
+
+    normalization = query_state_global_normalization(
+        _data(),
+        device=torch.device("cpu"),
+    )
+
+    assert reduced == [2 * 16 * 1024, 6]
+    assert normalization == QueryStateNormalization(
+        global_state_valid_element_count=4 * 16 * 1024,
+        global_lm_valid_token_count=12,
+        gradient_average_world_size=2,
+    )
 
 
 def test_update_core_uses_update_global_denominators_and_equal_padding_order(

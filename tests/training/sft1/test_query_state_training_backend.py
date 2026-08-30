@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 import torch
 
+from nimloth.training.sft1 import query_state_training_backend
 from nimloth.training.sft1.query_state_training_backend import (
     _FormalTrackingOwner,
     _actor_baseline_path,
@@ -288,9 +289,7 @@ def test_backend_generation_format_evidence_is_exact_and_side_effect_free(
 
 
 def test_backend_validation_wires_global_diagnostics_and_fail_closed_safety() -> None:
-    source = Path(
-        "src/nimloth/training/sft1/query_state_training_backend.py"
-    ).read_text(encoding="utf-8")
+    source = Path(query_state_training_backend.__file__).read_text(encoding="utf-8")
     assert "controlled_gather_query_state_diagnostics(" in source
     assert "compute_query_state_diagnostics(" in source
     assert "evaluate_actor_safety(" in source
@@ -300,6 +299,9 @@ def test_backend_validation_wires_global_diagnostics_and_fail_closed_safety() ->
     assert 'config.validation["generation_format_updates"]' in source
     assert "run_fsdp_greedy_turn_probe(" in source
     assert "update-zero safety failed; no optimizer update or checkpoint" in source
+    assert "normalization = query_state_global_normalization(" in source
+    assert "device=validation_device" in source
+    assert "QueryStateNormalization(1, 1, world_size)" not in source
 
 
 def test_backend_first_boundary_crash_replay_quarantines_checkpoint_path(

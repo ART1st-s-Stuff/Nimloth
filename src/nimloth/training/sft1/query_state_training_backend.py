@@ -32,10 +32,7 @@ from nimloth.backbone.qwen25vl.turn_generation import (
     turn_generation_spec_identity,
 )
 from nimloth.latent import special_token_ids
-from nimloth.training.sft1.query_state import (
-    QueryStateNormalization,
-    QueryStateValidationForwardOutput,
-)
+from nimloth.training.sft1.query_state import QueryStateValidationForwardOutput
 from nimloth.training.sft1.query_state_adapter import query_state_update_inputs
 from nimloth.training.sft1.query_state_checkpoint import (
     QueryStateDistributedControl,
@@ -45,6 +42,7 @@ from nimloth.training.sft1.query_state_data import FreshQueryStateDINOTeacher
 from nimloth.training.sft1.query_state_distributed import (
     QueryStateDistributedWorkerAssembly,
     build_query_state_distributed_worker,
+    query_state_global_normalization,
 )
 from nimloth.training.sft1.query_state_driver import (
     QueryStateScheduledRow,
@@ -752,10 +750,14 @@ def _run_detached_validation(
                 input_builder=assembly.distributed_worker.core.input_builder,
                 include_diagnostics=True,
             )
+            normalization = query_state_global_normalization(
+                data,
+                device=validation_device,
+            )
             output = assembly.distributed_worker.root(
                 inputs.student_batch,
                 inputs.targets,
-                QueryStateNormalization(1, 1, world_size),
+                normalization,
                 diagnostic=True,
             )
             if not isinstance(output, QueryStateValidationForwardOutput):

@@ -134,6 +134,35 @@ def _local_lm_valid_token_count(data: Any) -> int:
     return total
 
 
+def query_state_global_normalization(
+    data: Any,
+    *,
+    device: torch.device,
+) -> QueryStateNormalization:
+    """Reduce exact state/token denominators before a train or validation forward."""
+
+    row_valid = data.batch.get("row_valid")
+    if (
+        not isinstance(row_valid, torch.Tensor)
+        or row_valid.dtype != torch.bool
+        or row_valid.shape != (len(data),)
+    ):
+        raise ValueError("Query-State normalization row_valid is invalid")
+    local_state_count = int(row_valid.sum().item()) * 16 * 1024
+    local_lm_count = _local_lm_valid_token_count(data)
+    global_state_count = _global_sum_int(local_state_count, device)
+    global_lm_count = _global_sum_int(local_lm_count, device)
+    if global_state_count < 1:
+        raise ValueError("Query-State normalization has no globally valid state element")
+    if global_lm_count < 1:
+        raise ValueError("Query-State normalization has no globally valid LM token")
+    return QueryStateNormalization(
+        global_state_valid_element_count=global_state_count,
+        global_lm_valid_token_count=global_lm_count,
+        gradient_average_world_size=_distributed_world_size(),
+    )
+
+
 def build_query_state_distributed_worker(
     *,
     worker: QueryStateWorkerAssembly,
@@ -207,20 +236,7 @@ class QueryStateUpdateCore:
 
         # Both denominators cover the entire rank update and are globally reduced
         # before any rank begins a micro-batch forward.
-        local_state_count = int(row_valid.sum().item()) * 16 * 1024
-        local_lm_count = _local_lm_valid_token_count(data)
-        global_state_count = _global_sum_int(local_state_count, self.device)
-        global_lm_count = _global_sum_int(local_lm_count, self.device)
-        if global_state_count < 1:
-            raise ValueError("Query-State update has no globally valid state element")
-        if global_lm_count < 1:
-            raise ValueError("Query-State update has no globally valid LM token")
-        world_size = _distributed_world_size()
-        normalization = QueryStateNormalization(
-            global_state_valid_element_count=global_state_count,
-            global_lm_valid_token_count=global_lm_count,
-            gradient_average_world_size=world_size,
-        )
+        normalization = query_state_global_normalization(data, device=self.device)
 
         micro_batches = list(
             query_state_micro_batches(
