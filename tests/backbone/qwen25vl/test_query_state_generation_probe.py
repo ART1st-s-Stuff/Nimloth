@@ -59,6 +59,9 @@ class _Tokenizer:
             elif values[index] == 13:
                 pieces.append("</think> trailing")
                 index += 1
+            elif values[index] == 14:
+                pieces.append("</think>")
+                index += 1
             elif values[index] == 60:
                 pieces.append("reason ")
                 index += 1
@@ -187,6 +190,40 @@ class _GreedyFSDP(nn.Module):
         logits[..., 60] = 10.0
         logits[..., self.preferred_action] = 20.0
         return SimpleNamespace(logits=logits)
+
+
+def test_fsdp_probe_persists_alternate_decoded_close_during_injection() -> None:
+    tokenizer, _token_map, actions, spec = _contract()
+    model = _GreedyFSDP(vocab=128, preferred_action=actions[-1])
+    original_forward = model.forward
+
+    def prefer_alternate_close(input_ids: torch.Tensor, **kwargs):
+        output = original_forward(input_ids, **kwargs)
+        output.logits[..., 14] = 30.0
+        return output
+
+    model.forward = prefer_alternate_close
+    result = run_fsdp_greedy_turn_probe(
+        model,
+        prompt_inputs={
+            "input_ids": torch.tensor([[1, 2]], dtype=torch.long),
+            "attention_mask": torch.ones(1, 2, dtype=torch.long),
+        },
+        tokenizer=tokenizer,
+        spec=spec,
+        checkpoint_identity="a" * 64,
+        prompt_identity="b" * 64,
+        require_fsdp=False,
+    )
+
+    assert result.continuation_token_ids == (
+        14,
+        *spec.injected_token_ids,
+        actions[-1],
+        spec.action_end_token_id,
+    )
+    assert result.parsed.thought == ""
+    assert result.parsed.action_index == 7
 
 
 def test_actual_model_logits_drive_fsdp_greedy_probe_without_side_effects() -> None:

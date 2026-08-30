@@ -336,9 +336,13 @@ def run_fsdp_greedy_turn_probe(
             raise TypeError("production greedy format probe requires the complete FSDP root")
     inputs = {name: value for name, value in prompt_inputs.items()}
     output_ids: list[int] = []
+    decoded_close_end: int | None = None
     for _index in range(spec.max_output_tokens):
-        decoded_close_end = None
-        if output_ids and _decode(tokenizer, output_ids).endswith(spec.close_text):
+        if (
+            decoded_close_end is None
+            and output_ids
+            and _decode(tokenizer, output_ids).endswith(spec.close_text)
+        ):
             decoded_close_end = len(output_ids)
         if require_fsdp:
             output = model(
