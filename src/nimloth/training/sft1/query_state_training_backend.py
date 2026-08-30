@@ -67,6 +67,7 @@ from nimloth.training.sft1.query_state_training_manifest import (
     deserialize_generation_format_manifest,
     deserialize_query_state_validation_split,
     rows_for_validation_mode,
+    validate_query_state_row_audit,
 )
 from nimloth.training.sft1.query_state_training_controller import (
     QueryStateTrainingController,
@@ -85,7 +86,11 @@ from nimloth.training.sft1.query_state_training_validation import (
     evaluate_actor_safety,
     validation_mode,
 )
-from nimloth.training.sft1.real_rows import SFT1V2Early4Row, index_early4_rows
+from nimloth.training.sft1.real_rows import (
+    SFT1V2Early4Row,
+    SFT1V2RowAudit,
+    index_early4_rows,
+)
 from nimloth.training.verl.runtime import MixedPrecisionConfig
 
 
@@ -161,6 +166,19 @@ def _index_contract(config: QueryStateTrainingConfig) -> SimpleNamespace:
         train_split="train",
         validation_split="val",
     ))
+
+
+def _index_training_rows(
+    config: QueryStateTrainingConfig,
+) -> tuple[tuple[SFT1V2Early4Row, ...], SFT1V2RowAudit]:
+    """Rebuild rows from the data-only contract and enforce the canonical audit."""
+
+    rows, audit = index_early4_rows(
+        _index_contract(config),
+        enforce_approved_counts=False,
+    )
+    validate_query_state_row_audit(audit)
+    return rows, audit
 
 
 def _manifest_ordinals(
@@ -267,7 +285,7 @@ def construct_query_state_training_backend(
         latent_token_count=16,
         mask_latent_query_labels=True,
     )
-    rows, _audit = index_early4_rows(_index_contract(config))
+    rows, _audit = _index_training_rows(config)
     by_identity = {row.identity: row for row in rows}
     by_ordinal = {row.ordinal: row for row in rows}
     training_ordinals = _manifest_ordinals(

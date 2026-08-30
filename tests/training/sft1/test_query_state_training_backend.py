@@ -13,6 +13,7 @@ from nimloth.training.sft1.query_state_training_backend import (
     _FormalTrackingOwner,
     _actor_baseline_path,
     _authoritative_entries_for_restart,
+    _index_training_rows,
     _load_actor_baseline,
     _publish_actor_baseline,
     _recover_first_boundary_crash,
@@ -88,6 +89,38 @@ def _tracking_owner(*, initial_cursor: int = 0) -> tuple[_FormalTrackingOwner, _
         initial_cursor=initial_cursor,
     )
     return owner, run
+
+
+def test_backend_runtime_reindex_uses_data_only_contract_and_strict_audit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = parse_query_state_training_config(_raw(mode="pilot"))
+    expected_rows = (SimpleNamespace(identity="row-a"),)
+    expected_audit = object()
+    calls: list[tuple[object, bool]] = []
+
+    def index_rows(contract: object, *, enforce_approved_counts: bool):
+        calls.append((contract, enforce_approved_counts))
+        assert hasattr(contract, "data")
+        assert not hasattr(contract, "selection")
+        return expected_rows, expected_audit
+
+    validated: list[object] = []
+    monkeypatch.setattr(
+        "nimloth.training.sft1.query_state_training_backend.index_early4_rows",
+        index_rows,
+    )
+    monkeypatch.setattr(
+        "nimloth.training.sft1.query_state_training_backend.validate_query_state_row_audit",
+        validated.append,
+    )
+
+    rows, audit = _index_training_rows(config)
+
+    assert rows == expected_rows
+    assert audit is expected_audit
+    assert calls and calls[0][1] is False
+    assert validated == [expected_audit]
 
 
 def test_backend_uses_one_stable_run_identity_across_exact_restart_delta() -> None:
