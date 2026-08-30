@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 from copy import deepcopy
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -91,6 +92,42 @@ def _tracking_owner(*, initial_cursor: int = 0) -> tuple[_FormalTrackingOwner, _
         initial_cursor=initial_cursor,
     )
     return owner, run
+
+
+def test_formal_tracking_queries_wandb_by_storage_name_not_public_id_column(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = parse_query_state_training_config(_raw(mode="formal"))
+    queries: list[tuple[str, dict[str, str]]] = []
+
+    class _Api:
+        def runs(self, path: str, *, filters: dict[str, str]):
+            queries.append((path, filters))
+            return []
+
+    run = SimpleNamespace(
+        entity=config.tracking.entity,
+        project=config.tracking.project,
+        id=config.tracking.run_id,
+        url="https://wandb.example/fresh",
+    )
+    fake_wandb = SimpleNamespace(
+        Api=lambda: _Api(),
+        init=lambda **_kwargs: run,
+    )
+    monkeypatch.setitem(sys.modules, "wandb", fake_wandb)
+
+    owner = _FormalTrackingOwner(config, rank=0, world_size=1)
+    owner.initialize(0)
+
+    assert queries == [
+        (
+            f"{config.tracking.entity}/{config.tracking.project}",
+            {"name": config.tracking.run_id},
+        )
+    ]
+    assert owner.run is run
+    assert owner.mirror is not None
 
 
 def test_teacher_memo_metric_gathers_process_local_reports_in_rank_order(

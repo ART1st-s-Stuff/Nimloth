@@ -998,7 +998,7 @@ class _FormalTrackingOwner:
                 tracking = self.config.tracking
                 remote_runs = list(wandb.Api().runs(
                     f"{tracking.entity}/{tracking.project}",
-                    filters={"id": tracking.run_id},
+                    filters={"name": tracking.run_id},
                 ))
                 if len(remote_runs) > 1:
                     raise RuntimeError("W&B query returned duplicate locked run IDs")
