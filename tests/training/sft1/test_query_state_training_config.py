@@ -227,6 +227,16 @@ def test_training_schema_is_distinct_strict_and_has_no_missing_or_unknown_fields
     assert parsed.lifecycle_state == "launch_locked"
     assert len(parsed.identity) == 64
 
+    # ID176 ownership is established by the locked content identity, not a
+    # human-readable directory basename. The real owner begins with `176_`.
+    real_owner = _raw()
+    real_path = "/checkpoints/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint"
+    real_owner["initialization"]["actor_checkpoint"] = real_path
+    real_owner["model"]["processor_path"] = real_path
+    assert parse_query_state_training_config(real_owner).initialization[
+        "actor_checkpoint"
+    ] == real_path
+
     for bad_schema in (
         "nimloth_sft1_query_state_smoke_v1",
         "nimloth_sft1_query_state_code_canary_v1",

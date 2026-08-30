@@ -518,9 +518,9 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         raise ValueError("launch authorization must exactly match launch-locked lifecycle")
 
     initialization = sections["initialization"]
-    actor_checkpoint = _absolute(initialization["actor_checkpoint"], "initialization.actor_checkpoint")
-    if "id176" not in actor_checkpoint.lower():
-        raise ValueError("pilot/formal initialization must use ID176, never a pilot checkpoint")
+    actor_checkpoint = _absolute(
+        initialization["actor_checkpoint"], "initialization.actor_checkpoint"
+    )
     if not _is_sha256(initialization["actor_checkpoint_identity"]):
         raise ValueError("initialization.actor_checkpoint_identity must be SHA256")
     if model["initialization_identity"] != "id176:" + initialization["actor_checkpoint_identity"]:
