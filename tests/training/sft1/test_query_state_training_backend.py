@@ -396,6 +396,25 @@ def test_backend_first_boundary_crash_replay_quarantines_checkpoint_path(
     assert committed.end_update == 2
 
 
+def test_pilot_tracking_ignores_authoritative_entries_without_a_wandb_mirror() -> None:
+    pilot = _FormalTrackingOwner(
+        parse_query_state_training_config(_raw(mode="pilot")),
+        rank=0,
+        world_size=1,
+    )
+    entry = SimpleNamespace(end_update=7)
+
+    pilot.publish(entry)
+
+    formal = _FormalTrackingOwner(
+        parse_query_state_training_config(_raw(mode="formal")),
+        rank=0,
+        world_size=1,
+    )
+    with pytest.raises(RuntimeError, match="authoritative mirror batches"):
+        formal.publish(entry)
+
+
 def test_formal_restart_reloads_authoritative_mirrors_before_next_segment(
     tmp_path: Path,
 ) -> None:

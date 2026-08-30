@@ -1061,6 +1061,10 @@ class _FormalTrackingOwner:
         self,
         entries: Sequence[QueryStateAuthoritativeEntry],
     ) -> None:
+        if self.config.mode == "pilot":
+            if self.run is not None or self.mirror is not None:
+                raise RuntimeError("pilot tracking must remain disabled")
+            return
         if self.mirror is None:
             if entries:
                 raise RuntimeError("authoritative mirror batches require formal tracking")
