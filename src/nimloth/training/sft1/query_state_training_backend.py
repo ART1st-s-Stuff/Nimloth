@@ -867,6 +867,14 @@ def _run_detached_validation(
         effective_rank_collapse_threshold=float(
             config.validation["effective_rank_collapse_threshold"]
         ),
+        bootstrap_seed=int(config.validation["bootstrap_seed"]),
+        bootstrap_resamples=int(config.validation["bootstrap_resamples"]),
+        ordinary_cluster_unit=str(config.validation["ordinary_cluster_unit"]),
+        ordinary_bootstrap_formula=str(
+            config.validation["ordinary_bootstrap_formula"]
+        ),
+        natural_pair_unit=str(config.validation["natural_pair_unit"]),
+        natural_pair_formula=str(config.validation["natural_pair_formula"]),
         globally_aggregated=True,
     )
     actor_safety = evaluate_actor_safety(
@@ -910,6 +918,10 @@ def _run_detached_validation(
         "global_rank_coverage": world_size,
         "diagnostic_only": True,
         "automatic_checkpoint_selection": False,
+        "automatic_state_gate": False,
+        "human_terminal_state_gate": dict(
+            config.validation["terminal_state_gates"]
+        ),
     }
     return QueryStateDetachedValidationResult(publication, current_baseline)
 

@@ -34,7 +34,7 @@ _SECTION_FIELDS: Mapping[str, frozenset[str]] = {
     "optimizer": frozenset({"name", "language_learning_rate", "direct_state_learning_rate", "weight_decay", "betas", "epsilon", "scheduler", "warmup_updates"}),
     "runtime": frozenset({"max_sequence_length", "min_pixels", "max_pixels", "attention_implementation", "model_dtype", "dino_dtype", "dino_batch_size", "max_padded_tokens", "max_rows_per_micro_batch", "max_grad_norm", "gradient_checkpointing", "fsdp_sharding", "fsdp_use_orig_params", "fsdp_wrap_policy"}),
     "schedule": frozenset({"seed", "epochs", "max_updates", "rows_per_rank_update", "checkpoint_cadence_updates", "validation_updates", "forced_restart_update"}),
-    "validation": frozenset({"split", "baseline_update", "terminal_update", "generation_format_manifest_path", "generation_format_manifest_identity", "generation_format_updates", "actor_tolerances", "effective_rank_formula", "effective_rank_collapse_threshold"}),
+    "validation": frozenset({"split", "baseline_update", "terminal_update", "generation_format_manifest_path", "generation_format_manifest_identity", "generation_format_updates", "actor_tolerances", "effective_rank_formula", "effective_rank_collapse_threshold", "bootstrap_seed", "bootstrap_resamples", "ordinary_cluster_unit", "ordinary_bootstrap_formula", "natural_pair_unit", "natural_pair_formula", "terminal_state_gates"}),
     "output": frozenset({"run_root", "controller_root", "overwrite", "resolved_config_path", "command_manifest_path", "minimum_free_bytes"}),
     "resources": frozenset({"world_size", "nodes", "gpus_per_node", "cpus_per_task", "memory_gib", "walltime", "partition", "backend", "gpu_model_allowlist"}),
     "authorization": frozenset({"approval_id", "approval_sha256", "launch_authorized"}),
@@ -483,6 +483,59 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         "validation.effective_rank_collapse_threshold",
         positive=True,
     )
+    _int(validation["bootstrap_seed"], "validation.bootstrap_seed", minimum=0)
+    _int(validation["bootstrap_resamples"], "validation.bootstrap_resamples")
+    if validation["ordinary_cluster_unit"] != "record_id":
+        raise ValueError("validation ordinary cluster unit must be record_id")
+    if validation["ordinary_bootstrap_formula"] != (
+        "record_cluster_percentile_95_row_weighted_mean_v1"
+    ):
+        raise ValueError("validation ordinary bootstrap formula is unsupported")
+    if validation["natural_pair_unit"] != "natural_group_mean":
+        raise ValueError("validation natural pair unit must be natural_group_mean")
+    if validation["natural_pair_formula"] != (
+        "equal_group_mean_percentile_95_group_bootstrap_v1"
+    ):
+        raise ValueError("validation natural pair formula is unsupported")
+    state_gates = validation["terminal_state_gates"]
+    expected_gate_fields = {
+        "terminal_primary_only",
+        "canonical_effective_rank_min",
+        "raw_query_effective_rank_min",
+        "dino_mse_max_fraction_of_update0",
+        "dino_cosine_min_increase_from_update0",
+        "instruction_relation_max_decrease_from_update0",
+    }
+    if not isinstance(state_gates, Mapping) or set(state_gates) != expected_gate_fields:
+        raise ValueError("validation.terminal_state_gates must be fully pre-registered")
+    if _bool(
+        state_gates["terminal_primary_only"],
+        "validation.terminal_state_gates.terminal_primary_only",
+    ) is not True:
+        raise ValueError("formal state gate primary must be the terminal checkpoint")
+    for field in ("canonical_effective_rank_min", "raw_query_effective_rank_min"):
+        _number(
+            state_gates[field],
+            f"validation.terminal_state_gates.{field}",
+            positive=True,
+        )
+    mse_fraction = _number(
+        state_gates["dino_mse_max_fraction_of_update0"],
+        "validation.terminal_state_gates.dino_mse_max_fraction_of_update0",
+        positive=True,
+    )
+    cosine_increase = _number(
+        state_gates["dino_cosine_min_increase_from_update0"],
+        "validation.terminal_state_gates.dino_cosine_min_increase_from_update0",
+        positive=False,
+    )
+    instruction_decrease = _number(
+        state_gates["instruction_relation_max_decrease_from_update0"],
+        "validation.terminal_state_gates.instruction_relation_max_decrease_from_update0",
+        positive=False,
+    )
+    if mse_fraction > 1.0 or cosine_increase > 2.0 or instruction_decrease > 2.0:
+        raise ValueError("validation terminal state gate bounds are inconsistent")
 
     output = sections["output"]
     for field in ("run_root", "controller_root", "resolved_config_path", "command_manifest_path"):

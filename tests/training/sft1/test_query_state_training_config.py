@@ -126,6 +126,20 @@ def _raw(*, mode: str = "pilot", resume_mode: str = "fresh") -> dict:
             },
             "effective_rank_formula": "entropy_rank_rows_slots_centered_float64_eps1e-12",
             "effective_rank_collapse_threshold": 1.5,
+            "bootstrap_seed": 3335631237,
+            "bootstrap_resamples": 2000,
+            "ordinary_cluster_unit": "record_id",
+            "ordinary_bootstrap_formula": "record_cluster_percentile_95_row_weighted_mean_v1",
+            "natural_pair_unit": "natural_group_mean",
+            "natural_pair_formula": "equal_group_mean_percentile_95_group_bootstrap_v1",
+            "terminal_state_gates": {
+                "terminal_primary_only": True,
+                "canonical_effective_rank_min": 1.5,
+                "raw_query_effective_rank_min": 1.5,
+                "dino_mse_max_fraction_of_update0": 0.70,
+                "dino_cosine_min_increase_from_update0": 0.15,
+                "instruction_relation_max_decrease_from_update0": 0.05,
+            },
         },
         "output": {
             "run_root": f"/outputs/{mode}",
@@ -316,6 +330,42 @@ def test_pilot_and_formal_contracts_fail_closed_on_split_tracking_and_initializa
     pilot_init["initialization"]["actor_checkpoint"] = "/outputs/pilot/checkpoint"
     with pytest.raises(ValueError, match="ID176|pilot checkpoint"):
         parse_query_state_training_config(pilot_init)
+
+
+def test_formal_statistics_and_terminal_state_gates_are_config_identity_bound() -> None:
+    raw = _raw(mode="formal")
+    parsed = parse_query_state_training_config(raw)
+    assert parsed.validation["bootstrap_resamples"] == 2000
+    assert parsed.validation["ordinary_cluster_unit"] == "record_id"
+    assert parsed.validation["ordinary_bootstrap_formula"] == (
+        "record_cluster_percentile_95_row_weighted_mean_v1"
+    )
+    assert parsed.validation["natural_pair_unit"] == "natural_group_mean"
+    assert parsed.validation["natural_pair_formula"] == (
+        "equal_group_mean_percentile_95_group_bootstrap_v1"
+    )
+    assert parsed.validation["terminal_state_gates"]["terminal_primary_only"] is True
+
+    mutations = (
+        ("bootstrap_seed", 3335631238),
+        ("bootstrap_resamples", 1999),
+        ("canonical_effective_rank_min", 1.6),
+    )
+    for field, value in mutations:
+        changed = deepcopy(raw)
+        if field == "canonical_effective_rank_min":
+            changed["validation"]["terminal_state_gates"][field] = value
+        else:
+            changed["validation"][field] = value
+        assert parse_query_state_training_config(changed).identity != parsed.identity
+    missing = deepcopy(raw)
+    del missing["validation"]["terminal_state_gates"]
+    with pytest.raises(ValueError, match="terminal_state_gates"):
+        parse_query_state_training_config(missing)
+    unsupported_formula = deepcopy(raw)
+    unsupported_formula["validation"]["ordinary_bootstrap_formula"] = "percentile_95"
+    with pytest.raises(ValueError, match="ordinary bootstrap formula"):
+        parse_query_state_training_config(unsupported_formula)
 
 
 def test_generation_format_manifest_is_path_hash_owned_and_has_explicit_cadence() -> None:

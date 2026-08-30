@@ -24,6 +24,17 @@ from nimloth.training.sft1.real_rows import SFT1V2Early4Row
 _SHA = "a" * 64
 
 
+def _statistics() -> dict[str, object]:
+    return {
+        "bootstrap_seed": 17,
+        "bootstrap_resamples": 40,
+        "ordinary_cluster_unit": "record_id",
+        "ordinary_bootstrap_formula": "record_cluster_percentile_95_row_weighted_mean_v1",
+        "natural_pair_unit": "natural_group_mean",
+        "natural_pair_formula": "equal_group_mean_percentile_95_group_bootstrap_v1",
+    }
+
+
 def _row(index: int, *, action: int = 0, success: bool | None = True) -> SFT1V2Early4Row:
     instruction = "Find chair" if index < 2 else "Find lamp"
     image = "1" * 64 if index % 2 == 0 else f"{index + 1:064x}"
@@ -101,6 +112,7 @@ def test_complete_diagnostics_lock_pairwise_effective_rank_content_and_actor_for
         archived_action_ce=0.4,
         metadata=gathered_metadata,
         effective_rank_collapse_threshold=1.5,
+        **_statistics(),
         globally_aggregated=True,
     )
 
@@ -153,6 +165,70 @@ def test_complete_diagnostics_lock_pairwise_effective_rank_content_and_actor_for
     ).passed is False
 
 
+def test_diagnostics_use_record_cluster_bootstrap_and_equal_natural_group_weight() -> None:
+    vectors = torch.eye(3)
+    state_rows = torch.stack(
+        [vectors[0], vectors[1], vectors[2], vectors[0], vectors[0]],
+    ).unsqueeze(1).expand(-1, 16, -1).contiguous()
+    raw = torch.cat((state_rows, state_rows), dim=-1)
+    metadata = tuple(
+        replace(
+            QueryStateValidationMetadata.from_row(_row(index)),
+            record_id="record-shared" if index < 2 else f"record-{index}",
+            image_content_group=f"image-{index}",
+            instruction_equivalence_group=("large" if index < 3 else "small"),
+        )
+        for index in range(5)
+    )
+    action = torch.arange(40, dtype=torch.float32).reshape(5, 8)
+    report = compute_query_state_diagnostics(
+        raw_query_hidden=raw,
+        canonical_state=state_rows,
+        dino_regions=state_rows.clone(),
+        action_logits=action,
+        baseline_action_logits=action.clone(),
+        fused_image_features=torch.randn(5, 6),
+        instruction_features=torch.randn(5, 6),
+        archived_assistant_ce=1.0,
+        archived_action_ce=0.5,
+        metadata=metadata,
+        effective_rank_collapse_threshold=1.5,
+        bootstrap_seed=17,
+        bootstrap_resamples=40,
+        ordinary_cluster_unit="record_id",
+        ordinary_bootstrap_formula="record_cluster_percentile_95_row_weighted_mean_v1",
+        natural_pair_unit="natural_group_mean",
+        natural_pair_formula="equal_group_mean_percentile_95_group_bootstrap_v1",
+        globally_aggregated=True,
+    )
+
+    assert report.metrics[
+        "pairs/same_instruction_multi_image_state_distance"
+    ] == pytest.approx(0.5)
+    assert report.metrics["pairs/same_instruction_pair_count"] == 4.0
+    assert report.metrics["pairs/same_instruction_group_count"] == 2.0
+    assert report.bootstrap_seed == 17
+    assert report.bootstrap_resamples == 40
+    assert report.ordinary_cluster_unit == "record_id"
+    assert report.ordinary_bootstrap_formula == (
+        "record_cluster_percentile_95_row_weighted_mean_v1"
+    )
+    assert report.natural_pair_unit == "natural_group_mean"
+    assert report.natural_pair_formula == (
+        "equal_group_mean_percentile_95_group_bootstrap_v1"
+    )
+    interval = report.uncertainty["direct_state/dino_mse"]
+    assert interval["estimate"] == pytest.approx(0.0)
+    assert interval["ci_low"] == pytest.approx(0.0)
+    assert interval["ci_high"] == pytest.approx(0.0)
+    assert interval["unit"] == "record_id"
+    pair_interval = report.uncertainty[
+        "pairs/same_instruction_multi_image_state_distance"
+    ]
+    assert pair_interval["unit"] == "natural_group_mean"
+    assert pair_interval["group_count"] == 2
+
+
 def test_diagnostics_reject_rank0_only_claim_and_metadata_misalignment() -> None:
     tensor = torch.randn(2, 16, 4)
     action = torch.randn(2, 8)
@@ -170,6 +246,7 @@ def test_diagnostics_reject_rank0_only_claim_and_metadata_misalignment() -> None
             archived_action_ce=0.5,
             metadata=metadata,
             effective_rank_collapse_threshold=1.0,
+            **_statistics(),
             globally_aggregated=False,
         )
     with pytest.raises(ValueError, match="metadata"):
@@ -185,6 +262,7 @@ def test_diagnostics_reject_rank0_only_claim_and_metadata_misalignment() -> None
             archived_action_ce=0.5,
             metadata=metadata[:1],
             effective_rank_collapse_threshold=1.0,
+            **_statistics(),
             globally_aggregated=True,
         )
 

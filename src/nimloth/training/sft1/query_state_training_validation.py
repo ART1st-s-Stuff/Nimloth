@@ -18,6 +18,8 @@ from nimloth.wm.grid import DirectSlotProjector
 
 QUERY_STATE_TRAINING_DIAGNOSTIC_SCHEMA = "nimloth_sft1_query_state_training_diagnostic_v1"
 _EFFECTIVE_RANK_FORMULA = "entropy_rank_rows_slots_centered_float64_eps1e-12"
+_ORDINARY_BOOTSTRAP_FORMULA = "record_cluster_percentile_95_row_weighted_mean_v1"
+_NATURAL_PAIR_FORMULA = "equal_group_mean_percentile_95_group_bootstrap_v1"
 _EPSILON = 1e-12
 
 
@@ -165,12 +167,12 @@ def build_same_forward_diagnostic(
     )
 
 
-def _offdiagonal_slot_cosine(value: torch.Tensor) -> float:
+def _row_offdiagonal_slot_cosine(value: torch.Tensor) -> torch.Tensor:
     normalized = F.normalize(value.float(), dim=-1, eps=_EPSILON)
     similarity = normalized @ normalized.transpose(1, 2)
     slots = int(value.shape[1])
     mask = ~torch.eye(slots, dtype=torch.bool, device=value.device)
-    return float(similarity[:, mask].mean().item())
+    return similarity[:, mask].mean(dim=1)
 
 
 def _effective_rank(value: torch.Tensor) -> float:
@@ -227,21 +229,105 @@ def _paired_distance(
     *,
     group_field: str,
     varying_field: str,
-) -> tuple[float, int]:
+) -> tuple[float, int, tuple[float, ...]]:
     groups: dict[str, list[int]] = {}
     for index, item in enumerate(metadata):
         groups.setdefault(str(getattr(item, group_field)), []).append(index)
-    distances: list[torch.Tensor] = []
+    group_means: list[float] = []
+    pair_count = 0
     row_state = state_rows.float().mean(dim=1)
-    for indices in groups.values():
+    for group in sorted(groups):
+        distances: list[torch.Tensor] = []
+        indices = groups[group]
         for left_index, left in enumerate(indices):
             for right in indices[left_index + 1 :]:
                 if getattr(metadata[left], varying_field) == getattr(metadata[right], varying_field):
                     continue
-                distances.append(1.0 - F.cosine_similarity(row_state[left], row_state[right], dim=0))
-    if not distances:
-        return 0.0, 0
-    return float(torch.stack(distances).mean().item()), len(distances)
+                distances.append(
+                    1.0 - F.cosine_similarity(row_state[left], row_state[right], dim=0)
+                )
+        if distances:
+            pair_count += len(distances)
+            group_means.append(float(torch.stack(distances).mean().item()))
+    if not group_means:
+        return 0.0, 0, ()
+    return float(sum(group_means) / len(group_means)), pair_count, tuple(group_means)
+
+
+def _percentile_interval(values: torch.Tensor) -> tuple[float, float]:
+    quantiles = torch.quantile(
+        values.to(dtype=torch.float64),
+        torch.tensor([0.025, 0.975], dtype=torch.float64),
+    )
+    return float(quantiles[0].item()), float(quantiles[1].item())
+
+
+def _record_cluster_interval(
+    values: torch.Tensor,
+    record_ids: Sequence[str],
+    *,
+    seed: int,
+    resamples: int,
+) -> Mapping[str, Any]:
+    rows = values.detach().to(device="cpu", dtype=torch.float64).flatten()
+    if rows.numel() != len(record_ids) or rows.numel() < 1:
+        raise ValueError("record-cluster bootstrap rows do not align")
+    groups: dict[str, list[int]] = {}
+    for index, record_id in enumerate(record_ids):
+        groups.setdefault(record_id, []).append(index)
+    ordered = sorted(groups)
+    sums = torch.tensor(
+        [float(rows[groups[group]].sum().item()) for group in ordered],
+        dtype=torch.float64,
+    )
+    counts = torch.tensor([len(groups[group]) for group in ordered], dtype=torch.float64)
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(seed)
+    draws = torch.randint(
+        len(ordered),
+        (resamples, len(ordered)),
+        generator=generator,
+    )
+    estimates = sums[draws].sum(dim=1) / counts[draws].sum(dim=1)
+    low, high = _percentile_interval(estimates)
+    return {
+        "estimate": float(rows.mean().item()),
+        "ci_low": low,
+        "ci_high": high,
+        "unit": "record_id",
+        "cluster_count": len(ordered),
+        "resamples": resamples,
+        "seed": seed,
+    }
+
+
+def _natural_group_interval(
+    group_means: Sequence[float],
+    *,
+    seed: int,
+    resamples: int,
+) -> Mapping[str, Any]:
+    values = torch.tensor(tuple(group_means), dtype=torch.float64)
+    if values.numel() < 1 or not torch.isfinite(values).all():
+        raise ValueError("natural-group bootstrap requires finite group estimates")
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(seed)
+    draws = torch.randint(
+        values.numel(),
+        (resamples, values.numel()),
+        generator=generator,
+    )
+    estimates = values[draws].mean(dim=1)
+    low, high = _percentile_interval(estimates)
+    return {
+        "estimate": float(values.mean().item()),
+        "ci_low": low,
+        "ci_high": high,
+        "unit": "natural_group_mean",
+        "group_count": int(values.numel()),
+        "resamples": resamples,
+        "seed": seed,
+    }
 
 
 @dataclass(frozen=True)
@@ -250,6 +336,13 @@ class QueryStateCompleteDiagnosticReport:
     sample_count: int
     record_ids: tuple[str, ...]
     metrics: Mapping[str, float]
+    uncertainty: Mapping[str, Mapping[str, Any]]
+    bootstrap_seed: int
+    bootstrap_resamples: int
+    ordinary_cluster_unit: str
+    ordinary_bootstrap_formula: str
+    natural_pair_unit: str
+    natural_pair_formula: str
     effective_rank_formula: str
     effective_rank_collapse_threshold: float
     global_aggregation: bool
@@ -318,6 +411,12 @@ def compute_query_state_diagnostics(
     archived_action_ce: float,
     metadata: Sequence[QueryStateValidationMetadata],
     effective_rank_collapse_threshold: float,
+    bootstrap_seed: int,
+    bootstrap_resamples: int,
+    ordinary_cluster_unit: str,
+    ordinary_bootstrap_formula: str,
+    natural_pair_unit: str,
+    natural_pair_formula: str,
     globally_aggregated: bool = False,
 ) -> QueryStateCompleteDiagnosticReport:
     """Compute the preregistered formulas on controlled globally joined rows."""
@@ -362,6 +461,19 @@ def compute_query_state_diagnostics(
         raise ValueError("diagnostic metadata identities are duplicated")
     if not math.isfinite(effective_rank_collapse_threshold) or effective_rank_collapse_threshold <= 0:
         raise ValueError("effective-rank collapse threshold must be pre-registered and positive")
+    if (
+        isinstance(bootstrap_seed, bool)
+        or not isinstance(bootstrap_seed, int)
+        or bootstrap_seed < 0
+        or isinstance(bootstrap_resamples, bool)
+        or not isinstance(bootstrap_resamples, int)
+        or bootstrap_resamples < 1
+        or ordinary_cluster_unit != "record_id"
+        or ordinary_bootstrap_formula != _ORDINARY_BOOTSTRAP_FORMULA
+        or natural_pair_unit != "natural_group_mean"
+        or natural_pair_formula != _NATURAL_PAIR_FORMULA
+    ):
+        raise ValueError("diagnostic bootstrap/statistical-unit contract is invalid")
 
     raw_rank = _effective_rank(raw_query_hidden)
     state_rank = _effective_rank(canonical_state)
@@ -373,13 +485,13 @@ def compute_query_state_diagnostics(
     current_top1 = action_logits.argmax(dim=-1)
     baseline_rms = baseline_action_logits.float().square().mean().sqrt()
     current_rms = action_logits.float().square().mean().sqrt()
-    same_image, same_image_count = _paired_distance(
+    same_image, same_image_count, same_image_groups = _paired_distance(
         canonical_state,
         metadata,
         group_field="image_content_group",
         varying_field="instruction_equivalence_group",
     )
-    same_instruction, same_instruction_count = _paired_distance(
+    same_instruction, same_instruction_count, same_instruction_groups = _paired_distance(
         canonical_state,
         metadata,
         group_field="instruction_equivalence_group",
@@ -387,23 +499,39 @@ def compute_query_state_diagnostics(
     )
     state_row = canonical_state.float().mean(dim=1)
     raw_row = raw_query_hidden.float().mean(dim=1)
+    raw_norm_rows = raw_query_hidden.float().norm(dim=-1).mean(dim=1)
+    raw_variance_rows = raw_query_hidden.float().var(dim=1, unbiased=False).mean(dim=1)
+    raw_offdiag_rows = _row_offdiagonal_slot_cosine(raw_query_hidden)
+    state_norm_rows = canonical_state.float().norm(dim=-1).mean(dim=1)
+    state_variance_rows = canonical_state.float().var(dim=1, unbiased=False).mean(dim=1)
+    state_offdiag_rows = _row_offdiagonal_slot_cosine(canonical_state)
+    dino_mse_rows = (
+        canonical_state.float() - dino_regions.float()
+    ).square().mean(dim=(1, 2))
+    dino_cosine_rows = F.cosine_similarity(
+        canonical_state.float(), dino_regions.float(), dim=-1
+    ).mean(dim=1)
+    actor_kl_rows = (
+        baseline_probability * (baseline_log_probability - current_log_probability)
+    ).sum(dim=-1)
+    actor_top1_rows = (baseline_top1 == current_top1).float()
     observed_movement = [
         item.movement_success
         for item in metadata
         if item.movement_success is not None
     ]
     metrics = {
-        "raw_query/norm_mean": float(raw_query_hidden.float().norm(dim=-1).mean().item()),
-        "raw_query/slot_variance": float(raw_query_hidden.float().var(dim=1, unbiased=False).mean().item()),
-        "raw_query/offdiag_pairwise_cosine": _offdiagonal_slot_cosine(raw_query_hidden),
+        "raw_query/norm_mean": float(raw_norm_rows.mean().item()),
+        "raw_query/slot_variance": float(raw_variance_rows.mean().item()),
+        "raw_query/offdiag_pairwise_cosine": float(raw_offdiag_rows.mean().item()),
         "raw_query/effective_rank": raw_rank,
-        "canonical_state/norm_mean": float(canonical_state.float().norm(dim=-1).mean().item()),
-        "canonical_state/slot_variance": float(canonical_state.float().var(dim=1, unbiased=False).mean().item()),
-        "canonical_state/offdiag_pairwise_cosine": _offdiagonal_slot_cosine(canonical_state),
+        "canonical_state/norm_mean": float(state_norm_rows.mean().item()),
+        "canonical_state/slot_variance": float(state_variance_rows.mean().item()),
+        "canonical_state/offdiag_pairwise_cosine": float(state_offdiag_rows.mean().item()),
         "canonical_state/effective_rank": state_rank,
         "canonical_state/collapse": float(state_rank < effective_rank_collapse_threshold),
-        "direct_state/dino_mse": float((canonical_state.float() - dino_regions.float()).square().mean().item()),
-        "direct_state/dino_cosine": float(F.cosine_similarity(canonical_state.float(), dino_regions.float(), dim=-1).mean().item()),
+        "direct_state/dino_mse": float(dino_mse_rows.mean().item()),
+        "direct_state/dino_cosine": float(dino_cosine_rows.mean().item()),
         "direct_state/content_relation": _content_relation(canonical_state, dino_regions),
         "lm/archived_assistant_ce": float(archived_assistant_ce),
         "lm/archived_action_ce": float(archived_action_ce),
@@ -416,6 +544,8 @@ def compute_query_state_diagnostics(
         "pairs/same_instruction_multi_image_state_distance": same_instruction,
         "pairs/same_image_pair_count": float(same_image_count),
         "pairs/same_instruction_pair_count": float(same_instruction_count),
+        "pairs/same_image_group_count": float(len(same_image_groups)),
+        "pairs/same_instruction_group_count": float(len(same_instruction_groups)),
         "executed_outcome/authoritative_movement_rows": float(len(observed_movement)),
         "executed_outcome/movement_success_rows": float(sum(observed_movement)),
         "executed_outcome/movement_failure_rows": float(
@@ -424,11 +554,56 @@ def compute_query_state_diagnostics(
     }
     if any(not math.isfinite(value) for value in metrics.values()):
         raise ValueError("complete Query-State diagnostic metric is non-finite")
+    record_ids = tuple(item.record_id for item in metadata)
+    ordinary_rows = {
+        "raw_query/norm_mean": raw_norm_rows,
+        "raw_query/slot_variance": raw_variance_rows,
+        "raw_query/offdiag_pairwise_cosine": raw_offdiag_rows,
+        "canonical_state/norm_mean": state_norm_rows,
+        "canonical_state/slot_variance": state_variance_rows,
+        "canonical_state/offdiag_pairwise_cosine": state_offdiag_rows,
+        "direct_state/dino_mse": dino_mse_rows,
+        "direct_state/dino_cosine": dino_cosine_rows,
+        "actor/kl_baseline_to_current": actor_kl_rows,
+        "actor/top1_agreement": actor_top1_rows,
+    }
+    uncertainty: dict[str, Mapping[str, Any]] = {
+        name: _record_cluster_interval(
+            values,
+            record_ids,
+            seed=bootstrap_seed + offset,
+            resamples=bootstrap_resamples,
+        )
+        for offset, (name, values) in enumerate(sorted(ordinary_rows.items()))
+    }
+    if same_image_groups:
+        uncertainty["pairs/same_image_multi_instruction_state_distance"] = (
+            _natural_group_interval(
+                same_image_groups,
+                seed=bootstrap_seed + 100,
+                resamples=bootstrap_resamples,
+            )
+        )
+    if same_instruction_groups:
+        uncertainty["pairs/same_instruction_multi_image_state_distance"] = (
+            _natural_group_interval(
+                same_instruction_groups,
+                seed=bootstrap_seed + 101,
+                resamples=bootstrap_resamples,
+            )
+        )
     return QueryStateCompleteDiagnosticReport(
         schema=QUERY_STATE_TRAINING_DIAGNOSTIC_SCHEMA,
         sample_count=size,
-        record_ids=tuple(item.record_id for item in metadata),
+        record_ids=record_ids,
         metrics=metrics,
+        uncertainty=uncertainty,
+        bootstrap_seed=bootstrap_seed,
+        bootstrap_resamples=bootstrap_resamples,
+        ordinary_cluster_unit=ordinary_cluster_unit,
+        ordinary_bootstrap_formula=ordinary_bootstrap_formula,
+        natural_pair_unit=natural_pair_unit,
+        natural_pair_formula=natural_pair_formula,
         effective_rank_formula=_EFFECTIVE_RANK_FORMULA,
         effective_rank_collapse_threshold=float(effective_rank_collapse_threshold),
         global_aggregation=True,
