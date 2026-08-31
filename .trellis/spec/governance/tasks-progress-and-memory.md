@@ -13,6 +13,17 @@ A Trellis task is mandatory for:
 
 After task consent is declined, only a one-reply explanation, read-only lookup with no durable decision, or clearly bounded low-risk small edit may remain inline. Task creation authorizes planning only; implementation waits for reviewed artifacts and `task.py start`. Experiments require a separate launch approval.
 
+## Work-item authority and runtime projection
+
+- `task.json.parent/children/status` owns task-tree identity and lifecycle; `implement.md` headings, item order/text and checkbox own the execution plan and done state.
+- New plan items use task-local `W-` plus at least three digits, for example `[W-010]`. Duplicate or malformed explicit IDs invalidate the plan projection. Existing unlabelled items receive `legacy-<full SHA-256>` from task ref, heading path and normalized text; they are displayed with `stable=false` and are never written back automatically.
+- `.trellis/.runtime/execution/<context-key>.json` is a versioned, gitignored, non-authoritative assignment projection. It stores only task/item references, executor identity, declared runtime state, timestamps, blocker/next action, bounded typed evidence and observed tool identity; it must not copy the task list, tool args/output or CoT.
+- Runtime states are `working`, `verifying`, `delegated`, `waiting_human`, `waiting_external`, `blocked` and `failed`. Live states heartbeat every 10 seconds and become stale after 30 seconds without live session evidence. Waiting/blocked states persist across turns until release, supersede, invalid reference or checkbox completion.
+- `done` comes only from an `[x]`/`[X]` checkbox. An active assignment for a checked item is a visible conflict; a missing task/item is orphaned. Runtime mutation fails closed for an invalid plan, context, schema, transition or evidence payload.
+- Pi Agents use `trellis_work_item` at substantive item start/switch, state changes, blocking, evidence and release. `trellis_subagent` requires an explicit full work-item ref; ordinary subagents may only attach to the already-declared primary item.
+- The read-only consumer contract is `python3 ./.trellis/scripts/task.py dashboard --json --context <context-key>`. Consumers inspect `schemaVersion`, `valid` and typed `issues`; they do not parse Markdown independently or read/write Pi TaskTree.
+- Typed approval requests bind root fingerprint, context/session/request/tool-call identity, task, approval kind, exact artifact/review hashes, scope, exclusions and validation commands. One request accepts at most one terminal receipt. A receipt authorizes only an exact approve decision for that gate; comments/declines do not authorize, any artifact change invalidates it, and task lifecycle status never implies approval or auto-starts implementation.
+
 ## Persistence routing
 
 - `.trellis/tasks/`: current requirements, design, plan, research, checks, unresolved decisions, and execution state.

@@ -35,6 +35,8 @@ The Pi tool and context-producing events must call `resolveContextRoot(ctx)` bef
 - Agent discovery and prompt construction use the same resolved root. Discovery fails visibly when `.pi/agents/<name>.md` is absent there; it must not search or build a prompt from another worktree.
 - Claude Code and Codex adapters load the same `.trellis/workflow.md`, task artifacts, task JSONL, and repository-owned `.agents/skills/` semantics.
 - Codex repository configuration does not silently modify the user's global hook setting; agents report the `features.hooks = true` and `/hooks` requirements.
+- Desktop interactive requests and typed Trellis approvals preserve resolved root/workspace, session file, request ID and tool-call ID end to end. Background execution and session switching suspend requests in a workspace-scoped attention registry instead of fabricating user decline. “Later”, explicit user decline and system cancellation are distinct; unknown, duplicate, stale or late responses fail closed and never route to the foreground session by fallback.
+- A typed approval UI is actionable only when its live request exactly matches the dashboard request's root/context/session/task/kind/artifact/review identity. The source tool validates and records one terminal receipt before reporting a decision; UI response alone never starts a task or widens authorization.
 
 ## 4. Validation and Error Matrix
 
@@ -62,7 +64,8 @@ When the Pi adapter changes:
 2. Run a harness with foreign `process.cwd()` and worktree callback `ctx.cwd`; assert agent lookup and context use the worktree.
 3. Use two different roots with the same context key; assert cached workflow/task content does not cross roots.
 4. After `/reload`, dispatch a safe `trellis-implement` or `trellis-check` probe and confirm it resolves `.pi/agents/` in the active worktree.
-5. Run `trellis platforms` and `trellis update --dry-run`; record intentional adapter divergence.
+5. For desktop question/approval changes, test background request retention, session-switch/reload recovery, concurrent requests, source-worker routing, later/user-decline/system-cancel semantics, artifact invalidation and duplicate/late response rejection.
+6. Run `trellis platforms` and `trellis update --dry-run`; record intentional adapter divergence.
 
 ## 7. Wrong vs Correct
 

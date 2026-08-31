@@ -1,0 +1,154 @@
+{
+  "tasks": {
+    "parent": {
+      "taskJson": {
+        "id": "parent",
+        "title": "Parent",
+        "status": "in_progress",
+        "parent": null,
+        "children": ["child"]
+      },
+      "artifacts": {
+        "prd.md": "# Parent\n",
+        "implement.md": "# Parent plan\n\n- [x] completed legacy\n"
+      }
+    },
+    "child": {
+      "taskJson": {
+        "id": "child",
+        "title": "Child",
+        "status": "in_progress",
+        "parent": "parent",
+        "children": []
+      },
+      "artifacts": {
+        "prd.md": "# Child\n\n## Scope\n\n- .trellis/scripts\n",
+        "design.md": "# Design\n",
+        "implement.md": "# Plan\n\n## Green\n\n- [ ] [W-010] Implement dashboard.\n"
+      }
+    }
+  },
+  "expected": {
+    "schemaVersion": 1,
+    "kind": "trellis-work-item-dashboard",
+    "selected": {
+      "contextKey": "pi_fixture",
+      "taskRef": "child"
+    },
+    "treeRoots": ["parent"],
+    "childItems": [
+      {
+        "ref": "W-010",
+        "stable": true,
+        "malformed": false,
+        "text": "Implement dashboard.",
+        "checked": false,
+        "planState": "pending",
+        "line": 5,
+        "sectionIndex": 2,
+        "headingPath": ["Plan", "Green"]
+      }
+    ],
+    "childReview": {
+      "artifacts": {
+        "prd.md": {
+          "present": true,
+          "raw": "# Child\n\n## Scope\n\n- .trellis/scripts\n",
+          "sha256": "3420c46c87da3e5f618d3df83e97faea02d6e191a3f6e81d7cf3f684b2d710c1",
+          "sections": [
+            {"level": 1, "title": "Child", "line": 1},
+            {"level": 2, "title": "Scope", "line": 3}
+          ]
+        },
+        "design.md": {
+          "present": true,
+          "raw": "# Design\n",
+          "sha256": "2c1f01e37a150fd02e10dd63ce8a268c168a68813b40f16f18c3430319073ce6",
+          "sections": [
+            {"level": 1, "title": "Design", "line": 1}
+          ]
+        },
+        "implement.md": {
+          "present": true,
+          "raw": "# Plan\n\n## Green\n\n- [ ] [W-010] Implement dashboard.\n",
+          "sha256": "40abe5b96e204800f5a114d3a4ba7feaba80248cc5156d3203e174325651d265",
+          "sections": [
+            {"level": 1, "title": "Plan", "line": 1},
+            {"level": 2, "title": "Green", "line": 3}
+          ]
+        }
+      },
+      "artifactHashes": {
+        "design.md": "2c1f01e37a150fd02e10dd63ce8a268c168a68813b40f16f18c3430319073ce6",
+        "implement.md": "40abe5b96e204800f5a114d3a4ba7feaba80248cc5156d3203e174325651d265",
+        "prd.md": "3420c46c87da3e5f618d3df83e97faea02d6e191a3f6e81d7cf3f684b2d710c1"
+      },
+      "reviewSetHash": "addfb5080a3c6f8ea369e3d83e359f52de1f9f3119ab6a709ad07413971e296c",
+      "changesSinceRequest": {
+        "bound": true,
+        "changed": false,
+        "artifacts": {
+          "design.md": "unchanged",
+          "implement.md": "unchanged",
+          "prd.md": "unchanged"
+        }
+      }
+    },
+    "assignments": [
+      {
+        "assignmentId": "a-fixture",
+        "role": "primary",
+        "taskRef": "child",
+        "workItemRef": "W-010",
+        "declaredState": "working",
+        "executor": {
+          "kind": "main",
+          "sessionId": "session-file",
+          "agent": "main"
+        },
+        "since": "2026-08-31T08:00:00Z",
+        "updatedAt": "2026-08-31T08:00:00Z",
+        "heartbeatAt": "2026-08-31T08:00:00Z",
+        "blocker": null,
+        "nextAction": "run fixture test",
+        "evidence": [],
+        "observedActivity": null,
+        "releasedAt": null,
+        "validity": "fresh"
+      }
+    ],
+    "approvalRequests": [
+      {
+        "requestId": "request-fixture",
+        "rootFingerprint": "<ROOT_FINGERPRINT>",
+        "contextKey": "pi_fixture",
+        "sessionId": "session-file",
+        "taskRef": "child",
+        "kind": "implementation",
+        "artifactHashes": {
+          "design.md": "2c1f01e37a150fd02e10dd63ce8a268c168a68813b40f16f18c3430319073ce6",
+          "implement.md": "40abe5b96e204800f5a114d3a4ba7feaba80248cc5156d3203e174325651d265",
+          "prd.md": "3420c46c87da3e5f618d3df83e97faea02d6e191a3f6e81d7cf3f684b2d710c1"
+        },
+        "reviewSetHash": "addfb5080a3c6f8ea369e3d83e359f52de1f9f3119ab6a709ad07413971e296c",
+        "scope": [".trellis/scripts"],
+        "exclusions": ["pi-app"],
+        "validationCommands": ["python3 -m unittest"],
+        "createdAt": "2026-08-31T08:00:00Z",
+        "status": "pending",
+        "current": true,
+        "changes": {
+          "bound": true,
+          "changed": false,
+          "artifacts": {
+            "design.md": "unchanged",
+            "implement.md": "unchanged",
+            "prd.md": "unchanged"
+          }
+        },
+        "receipt": null
+      }
+    ],
+    "issues": []
+  }
+}

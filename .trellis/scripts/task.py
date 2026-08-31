@@ -47,6 +47,17 @@ from common.active_task import (
 from common.io import read_json, write_json
 from common.task_utils import resolve_task_dir, run_task_hooks
 from common.tasks import iter_active_tasks, children_progress
+from common.approvals import (
+    APPROVAL_KINDS,
+    DECISIONS,
+    artifact_review_package,
+    create_approval_receipt,
+    create_approval_request,
+    validate_approval_receipt,
+)
+from common.dashboard import build_dashboard
+from common.execution import ContractError, ExecutionStore
+from common.work_items import resolve_active_task_dir
 
 # Import command handlers from split modules (also re-exports for plan.py compatibility)
 from common.task_store import (
@@ -212,6 +223,198 @@ def cmd_current(args: argparse.Namespace) -> int:
         return 0
 
     return 1
+
+
+# =============================================================================
+# Command: dashboard / work-item runtime
+# =============================================================================
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    """Print the versioned, read-only task/plan/runtime dashboard."""
+    repo_root = get_repo_root()
+    context_key = args.context or resolve_context_key()
+    try:
+        dashboard = build_dashboard(repo_root, context_key=context_key)
+    except ContractError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(dashboard, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _execution_store(args: argparse.Namespace) -> ExecutionStore:
+    context_key = args.context or resolve_context_key()
+    if not context_key:
+        raise ContractError("session context is required; pass --context or TRELLIS_CONTEXT_ID")
+    return ExecutionStore(get_repo_root(), context_key)
+
+
+def _required(args: argparse.Namespace, name: str) -> str:
+    value = getattr(args, name)
+    if not isinstance(value, str) or not value.strip():
+        raise ContractError(f"--{name.replace('_', '-')} is required for {args.action}")
+    return value
+
+
+def cmd_work_item(args: argparse.Namespace) -> int:
+    """Mutate only the gitignored session execution projection."""
+    try:
+        store = _execution_store(args)
+        action = args.action
+        result: dict[str, object]
+        if action == "select":
+            executor = {
+                "kind": _required(args, "executor_kind"),
+                "sessionId": _required(args, "session_id"),
+                "agent": _required(args, "agent"),
+            }
+            if args.run_id:
+                executor["runId"] = args.run_id
+            if args.tool_call_id:
+                executor["toolCallId"] = args.tool_call_id
+            assignment = store.select(
+                task_ref=_required(args, "task"),
+                work_item_ref=_required(args, "item"),
+                role=args.role,
+                executor=executor,
+                assignment_id=args.assignment,
+                next_action=args.next_action,
+            )
+            result = {"assignment": assignment}
+        elif action == "update":
+            assignment = store.update(
+                _required(args, "assignment"),
+                _required(args, "state"),
+                blocker=args.blocker,
+                next_action=args.next_action,
+            )
+            result = {"assignment": assignment}
+        elif action == "block":
+            blocking_state = _required(args, "state")
+            if blocking_state not in {"waiting_human", "waiting_external", "blocked"}:
+                raise ContractError("block requires a blocking state")
+            assignment = store.update(
+                _required(args, "assignment"),
+                blocking_state,
+                blocker=_required(args, "blocker"),
+                next_action=args.next_action,
+            )
+            result = {"assignment": assignment}
+        elif action == "evidence":
+            evidence = store.add_evidence(_required(args, "assignment"), {
+                "kind": _required(args, "evidence_kind"),
+                "ref": _required(args, "ref"),
+                "summary": _required(args, "summary"),
+            })
+            result = {"evidence": evidence}
+        elif action == "release":
+            assignment = store.release(
+                _required(args, "assignment"), reason=args.reason or "released"
+            )
+            result = {"assignment": assignment}
+        elif action == "heartbeat":
+            observed = None
+            if args.tool_name:
+                observed = {
+                    "toolName": args.tool_name,
+                    "toolCallId": args.tool_call_id,
+                    "status": args.tool_status or "update",
+                }
+            if args.assignment:
+                result = {"assignment": store.heartbeat(args.assignment, observed=observed)}
+            else:
+                result = {"updated": store.heartbeat_live(observed=observed, executor_kind=args.executor_kind or "main")}
+        elif action == "shutdown":
+            store.shutdown()
+            result = {"shutdown": True}
+        elif action == "resume":
+            store.resume()
+            result = {"resumed": True}
+        elif action == "request-approval":
+            task_ref = _required(args, "task")
+            task_dir = resolve_active_task_dir(store.root, task_ref)
+            if task_dir is None:
+                raise ContractError(f"unknown active task: {task_ref}")
+            review = artifact_review_package(task_dir)
+            if review.get("issues"):
+                raise ContractError("planning artifacts must be readable UTF-8 before requesting approval")
+            request = create_approval_request(
+                root=store.root,
+                context_key=store.context_key,
+                session_id=_required(args, "session_id"),
+                request_id=_required(args, "request_id"),
+                task_ref=task_ref,
+                kind=_required(args, "approval_kind"),
+                artifact_hashes=review["artifactHashes"],
+                scope=args.scope or [],
+                exclusions=args.exclusion or [],
+                validation_commands=args.validation_command or [],
+            )
+            store.add_approval_request(request)
+            result = {"approvalRequest": request}
+        elif action in {"record-approval", "validate-approval"}:
+            state = store.read()
+            request_id = _required(args, "request_id")
+            request = next((item for item in state["approvalRequests"] if item.get("requestId") == request_id), None)
+            if request is None:
+                raise ContractError(f"unknown approval request: {request_id}")
+            if action == "record-approval":
+                receipt = create_approval_receipt(
+                    request,
+                    decision=_required(args, "decision"),
+                    receipt_id=_required(args, "receipt_id"),
+                    comment=args.comment,
+                )
+                task_dir = resolve_active_task_dir(store.root, request["taskRef"])
+                if task_dir is None:
+                    raise ContractError(f"unknown active task: {request['taskRef']}")
+                review = artifact_review_package(task_dir)
+                if review.get("issues"):
+                    raise ContractError("planning artifacts must remain readable UTF-8 while recording approval")
+                validation = validate_approval_receipt(
+                    request=request,
+                    receipt=receipt,
+                    current_artifact_hashes=review["artifactHashes"],
+                    root=store.root,
+                    context_key=store.context_key,
+                    task_ref=request["taskRef"],
+                    kind=request["kind"],
+                )
+                blocking = [
+                    issue for issue in validation["issues"]
+                    if issue.get("code") != "approval_not_granted"
+                ]
+                if blocking:
+                    codes = ", ".join(sorted({str(issue.get("code")) for issue in blocking}))
+                    raise ContractError(f"approval response failed closed: {codes}")
+                store.add_approval_receipt(receipt)
+                result = {"approvalReceipt": receipt, "validation": validation}
+            else:
+                receipt_id = _required(args, "receipt_id")
+                receipt = next((item for item in state["approvalReceipts"] if item.get("receiptId") == receipt_id), None)
+                if receipt is None:
+                    raise ContractError(f"unknown approval receipt: {receipt_id}")
+                task_dir = resolve_active_task_dir(store.root, request["taskRef"])
+                if task_dir is None:
+                    raise ContractError(f"unknown active task: {request['taskRef']}")
+                current = artifact_review_package(task_dir)["artifactHashes"]
+                result = validate_approval_receipt(
+                    request=request,
+                    receipt=receipt,
+                    current_artifact_hashes=current,
+                    root=store.root,
+                    context_key=store.context_key,
+                    task_ref=request["taskRef"],
+                    kind=request["kind"],
+                )
+        else:
+            raise ContractError(f"unknown work-item action: {action}")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    except (ContractError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
 
 
 # =============================================================================
@@ -556,6 +759,50 @@ def main() -> int:
     p_archive.add_argument("name", help="Task directory or name")
     p_archive.add_argument("--no-commit", action="store_true", help="Skip auto git commit after archive")
 
+    # dashboard
+    p_dashboard = subparsers.add_parser("dashboard", help="Print versioned task/plan/runtime dashboard JSON")
+    p_dashboard.add_argument("--json", action="store_true", help="Machine-readable JSON (dashboard is always JSON)")
+    p_dashboard.add_argument("--context", help="Explicit session context key")
+
+    # work-item runtime projection
+    p_work = subparsers.add_parser("work-item", help="Manage the session work-item runtime cursor")
+    p_work.add_argument("action", choices=[
+        "select", "update", "block", "evidence", "release", "heartbeat",
+        "shutdown", "resume", "request-approval", "record-approval", "validate-approval",
+    ])
+    p_work.add_argument("--context", help="Explicit session context key")
+    p_work.add_argument("--task")
+    p_work.add_argument("--item")
+    p_work.add_argument("--assignment")
+    p_work.add_argument("--role", choices=["primary", "delegated"], default="primary")
+    p_work.add_argument("--executor-kind", choices=["main", "subagent"], default="main")
+    p_work.add_argument("--session-id")
+    p_work.add_argument("--agent")
+    p_work.add_argument("--run-id")
+    p_work.add_argument("--tool-call-id")
+    p_work.add_argument("--state", choices=[
+        "working", "verifying", "delegated", "waiting_human",
+        "waiting_external", "blocked", "failed",
+    ])
+    p_work.add_argument("--blocker")
+    p_work.add_argument("--next-action")
+    p_work.add_argument("--evidence-kind", choices=[
+        "artifact", "test", "command", "commit", "job", "approval", "url",
+    ])
+    p_work.add_argument("--ref")
+    p_work.add_argument("--summary")
+    p_work.add_argument("--reason")
+    p_work.add_argument("--tool-name")
+    p_work.add_argument("--tool-status", choices=["running", "succeeded", "failed", "update"])
+    p_work.add_argument("--request-id")
+    p_work.add_argument("--receipt-id")
+    p_work.add_argument("--approval-kind", choices=sorted(APPROVAL_KINDS))
+    p_work.add_argument("--decision", choices=sorted(DECISIONS))
+    p_work.add_argument("--comment")
+    p_work.add_argument("--scope", action="append")
+    p_work.add_argument("--exclusion", action="append")
+    p_work.add_argument("--validation-command", action="append")
+
     # list
     p_list = subparsers.add_parser("list", help="List tasks")
     p_list.add_argument("--mine", "-m", action="store_true", help="My tasks only")
@@ -597,6 +844,8 @@ def main() -> int:
         "archive": cmd_archive,
         "add-subtask": cmd_add_subtask,
         "remove-subtask": cmd_remove_subtask,
+        "dashboard": cmd_dashboard,
+        "work-item": cmd_work_item,
         "list": cmd_list,
         "list-archive": cmd_list_archive,
     }

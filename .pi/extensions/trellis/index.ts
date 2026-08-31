@@ -21,6 +21,7 @@ interface PiToolResult {
 interface PiExtensionContext {
   cwd?: string;
   hasUI?: boolean;
+  mode?: "tui" | "rpc" | "json" | "print";
   model?: {
     provider?: string;
     id?: string;
@@ -31,6 +32,9 @@ interface PiExtensionContext {
   };
   ui?: {
     notify?: (msg: string, type?: "info" | "warning" | "error") => void;
+    select?: (title: string, options: string[], opts?: { signal?: AbortSignal }) => Promise<string | undefined>;
+    input?: (title: string, placeholder?: string, opts?: { signal?: AbortSignal }) => Promise<string | undefined>;
+    custom?: <T>(factory: (...args: unknown[]) => unknown, options?: JsonObject) => Promise<T>;
   };
 }
 interface SubagentInput {
@@ -40,6 +44,53 @@ interface SubagentInput {
   prompts?: string[];
   model?: string;
   thinking?: string;
+  workItemRef?: string;
+}
+interface ApprovalInput {
+  taskRef?: string;
+  kind?: "planning" | "implementation" | "experiment_launch" | "commit" | "push_merge";
+  scope?: string[];
+  exclusions?: string[];
+  validationCommands?: string[];
+}
+interface TypedApprovalPayload {
+  workspaceRoot: string;
+  rootFingerprint: string;
+  contextKey: string;
+  sessionId: string;
+  toolCallId: string;
+  approvalRequestId: string;
+  taskRef: string;
+  approvalKind: string;
+  artifactHashes: Record<string, string>;
+  reviewSetHash: string;
+}
+interface TypedApprovalResult {
+  status?: "system_cancelled";
+  reason?: string;
+  decision?: "approve" | "decline" | "comment";
+  comment?: string;
+  workspaceRoot?: string;
+  rootFingerprint?: string;
+  contextKey?: string;
+  sessionId?: string;
+  toolCallId?: string;
+  requestId?: string;
+  taskRef?: string;
+  kind?: string;
+  artifactHashes?: Record<string, string>;
+  reviewSetHash?: string;
+}
+interface WorkItemInput {
+  action?: "select" | "update" | "block" | "evidence" | "release";
+  taskRef?: string;
+  workItemRef?: string;
+  state?: "working" | "verifying" | "delegated" | "waiting_human" | "waiting_external" | "blocked" | "failed";
+  blocker?: string;
+  nextAction?: string;
+  evidenceKind?: "artifact" | "test" | "command" | "commit" | "job" | "approval" | "url";
+  ref?: string;
+  summary?: string;
 }
 interface AgentConfig {
   model?: string;
@@ -96,6 +147,8 @@ const MAX_PARALLEL_PROMPTS = 6;
 const ABORT_KILL_GRACE_MS = 1500;
 const SESSION_OVERVIEW_TIMEOUT_MS = 1500;
 const THROTTLE_MS = 500;
+const WORK_ITEM_HEARTBEAT_MS = 10_000;
+const WORK_ITEM_COMMAND_TIMEOUT_MS = 5_000;
 const FIRST_REPLY_NOTICE = `<first-reply-notice>
 On the first visible assistant reply in this session, briefly acknowledge that Trellis SessionStart context loaded.
 Choose the acknowledgment language in this order:
@@ -1143,6 +1196,136 @@ function runContextScript(root: string, key: string | null, args: string[]): str
   }
 }
 
+function runTaskJson(root: string, args: string[], key?: string | null): JsonObject {
+  const script = join(root, ".trellis", "scripts", "task.py");
+  if (!exists(script)) throw new Error(`Trellis task script not found: ${script}`);
+  const py = process.platform === "win32" ? "python" : "python3";
+  const result = spawnSync(py, [script, ...args], {
+    cwd: root,
+    env: key ? { ...process.env, TRELLIS_CONTEXT_ID: key } : process.env,
+    encoding: "utf-8",
+    timeout: WORK_ITEM_COMMAND_TIMEOUT_MS,
+    windowsHide: true,
+  });
+  if (result.status !== 0) {
+    const detail = (result.stderr || result.stdout || `exit ${result.status}`).trim();
+    throw new Error(detail || "Trellis work-item command failed");
+  }
+  try {
+    const parsed = JSON.parse(result.stdout || "{}") as unknown;
+    if (!isObj(parsed)) throw new Error("non-object result");
+    return parsed;
+  } catch (error) {
+    throw new Error(`Invalid Trellis work-item JSON: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function executionFile(root: string, key: string): string {
+  return join(root, ".trellis", ".runtime", "execution", `${key}.json`);
+}
+
+function activePrimaryAssignment(root: string, key: string): JsonObject | null {
+  try {
+    const state = JSON.parse(readText(executionFile(root, key))) as JsonObject;
+    if (state.schemaVersion !== 1 || state.contextKey !== key || !Array.isArray(state.assignments))
+      return null;
+    for (let index = state.assignments.length - 1; index >= 0; index--) {
+      const assignment = state.assignments[index];
+      if (
+        isObj(assignment) &&
+        assignment.role === "primary" &&
+        assignment.releasedAt == null &&
+        isObj(assignment.executor) &&
+        assignment.executor.kind === "main"
+      ) return assignment;
+    }
+  } catch {}
+  return null;
+}
+
+function assignmentId(assignment: JsonObject | null): string | null {
+  return str(assignment?.assignmentId);
+}
+
+function parseFullWorkItemRef(value: string | null): { taskRef: string; workItemRef: string } {
+  const index = value?.lastIndexOf("#") ?? -1;
+  const taskRef = index > 0 ? value!.slice(0, index).trim() : "";
+  const workItemRef = index > 0 ? value!.slice(index + 1).trim() : "";
+  if (!taskRef || !workItemRef)
+    throw new Error("workItemRef must be an explicit <taskRef>#<workItemRef> reference");
+  return { taskRef, workItemRef };
+}
+
+function sessionIdentity(ctx?: PiExtensionContext): string {
+  return (
+    callStr(ctx?.sessionManager?.getSessionFile, ctx?.sessionManager) ??
+    callStr(ctx?.sessionManager?.getSessionId, ctx?.sessionManager) ??
+    "ephemeral-session"
+  );
+}
+
+function sameStringRecord(left: unknown, right: Record<string, string>): boolean {
+  if (!isObj(left)) return false;
+  const leftEntries = Object.entries(left);
+  const rightEntries = Object.entries(right);
+  return leftEntries.length === rightEntries.length &&
+    rightEntries.every(([key, value]) => left[key] === value);
+}
+
+function exactApprovalResponse(
+  response: unknown,
+  payload: TypedApprovalPayload,
+): { decision: "approve" | "decline" | "comment"; comment?: string } {
+  if (!isObj(response)) throw new Error("Typed approval UI returned no response; request remains pending");
+  if (response.status === "system_cancelled") {
+    throw new Error(`Typed approval system_cancelled: ${str(response.reason) ?? "unknown reason"}`);
+  }
+  const decision = str(response.decision);
+  if (!decision || !["approve", "decline", "comment"].includes(decision))
+    throw new Error("Typed approval UI returned an invalid decision");
+  const expected: Record<string, string> = {
+    workspaceRoot: payload.workspaceRoot,
+    rootFingerprint: payload.rootFingerprint,
+    contextKey: payload.contextKey,
+    sessionId: payload.sessionId,
+    toolCallId: payload.toolCallId,
+    requestId: payload.approvalRequestId,
+    taskRef: payload.taskRef,
+    kind: payload.approvalKind,
+    reviewSetHash: payload.reviewSetHash,
+  };
+  for (const [field, value] of Object.entries(expected)) {
+    if (response[field] !== value) throw new Error(`Typed approval response identity mismatch: ${field}`);
+  }
+  if (!sameStringRecord(response.artifactHashes, payload.artifactHashes))
+    throw new Error("Typed approval response identity mismatch: artifactHashes");
+  const comment = typeof response.comment === "string" ? response.comment.trim() : undefined;
+  if (decision === "comment" && !comment)
+    throw new Error("Typed approval comment decision requires a non-empty comment");
+  return { decision: decision as "approve" | "decline" | "comment", ...(comment ? { comment } : {}) };
+}
+
+function approvalResponsePayload(
+  payload: TypedApprovalPayload,
+  decision: "approve" | "decline" | "comment",
+  comment?: string,
+): TypedApprovalResult {
+  return {
+    decision,
+    ...(comment ? { comment } : {}),
+    workspaceRoot: payload.workspaceRoot,
+    rootFingerprint: payload.rootFingerprint,
+    contextKey: payload.contextKey,
+    sessionId: payload.sessionId,
+    toolCallId: payload.toolCallId,
+    requestId: payload.approvalRequestId,
+    taskRef: payload.taskRef,
+    kind: payload.approvalKind,
+    artifactHashes: payload.artifactHashes,
+    reviewSetHash: payload.reviewSetHash,
+  };
+}
+
 function sessionOverview(root: string, key: string | null): string {
   const stdout = runContextScript(root, key, []);
   return stdout ? `<session-overview>\n${stdout}\n</session-overview>` : "";
@@ -1727,6 +1910,48 @@ export default function trellisExtension(pi: {
   const taskCtxSnapshot = new Map<string, string>();
   const lastSentTaskCtx = new Map<string, string>();
   const lastSentRuntimeCtx = new Map<string, string>();
+  const heartbeatTargets = new Map<string, { root: string; key: string }>();
+  const genericSubagentAssignments = new Map<string, { root: string; key: string; assignmentId: string }>();
+  let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+  const targetKey = (...parts: string[]) => JSON.stringify(parts);
+  const rememberHeartbeatTarget = (root: string, key: string) => {
+    heartbeatTargets.set(targetKey(root, key), { root, key });
+    if (heartbeatTimer) return;
+    heartbeatTimer = setInterval(() => {
+      for (const target of heartbeatTargets.values()) {
+        if (!exists(executionFile(target.root, target.key))) continue;
+        for (const executorKind of ["main", "subagent"]) {
+          try {
+            runTaskJson(target.root, ["work-item", "heartbeat", "--context", target.key, "--executor-kind", executorKind], target.key);
+          } catch {}
+        }
+      }
+    }, WORK_ITEM_HEARTBEAT_MS);
+    heartbeatTimer.unref?.();
+  };
+
+  const heartbeatObserved = (
+    root: string,
+    key: string,
+    event: { toolName?: string; toolCallId?: string },
+    status: "running" | "succeeded" | "failed" | "update",
+  ) => {
+    if (!exists(executionFile(root, key)) || !event.toolName) return;
+    const executorKinds = event.toolName === "subagent" || event.toolName === "trellis_subagent"
+      ? ["main", "subagent"]
+      : ["main"];
+    for (const executorKind of executorKinds) {
+      try {
+        runTaskJson(root, [
+          "work-item", "heartbeat", "--context", key, "--executor-kind", executorKind,
+          "--tool-name", event.toolName,
+          ...(event.toolCallId ? ["--tool-call-id", event.toolCallId] : []),
+          "--tool-status", status,
+        ], key);
+      } catch {}
+    }
+  };
 
   // Toggle only the latest subagent native card; do not use Pi global tool expansion.
   const toggleDetail = (ctx: PiExtensionContext) => {
@@ -1747,13 +1972,216 @@ export default function trellisExtension(pi: {
 
   // Tool registration
   pi.registerTool?.({
+    name: "trellis_work_item",
+    label: "Trellis Work Item",
+    description: "Explicitly select, update, block, add bounded evidence to, or release the current Trellis work-item assignment. This changes only the gitignored runtime projection and never checks off implement.md.",
+    promptSnippet: "Declare the exact Trellis work item before substantive implementation work",
+    promptGuidelines: [
+      "Use trellis_work_item select before starting or switching a substantive plan item; use update/block/evidence as state changes, then check implement.md before release.",
+      "Never use trellis_work_item to infer the first unchecked item or to mark a plan item done.",
+    ],
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["select", "update", "block", "evidence", "release"] },
+        taskRef: { type: "string", description: "Task directory name for select." },
+        workItemRef: { type: "string", description: "Exact W-xxx or displayed legacy ref for select." },
+        state: { type: "string", enum: ["working", "verifying", "delegated", "waiting_human", "waiting_external", "blocked", "failed"] },
+        blocker: { type: "string", maxLength: 200 },
+        nextAction: { type: "string", maxLength: 500 },
+        evidenceKind: { type: "string", enum: ["artifact", "test", "command", "commit", "job", "approval", "url"] },
+        ref: { type: "string", maxLength: 512 },
+        summary: { type: "string", maxLength: 200 },
+      },
+      required: ["action"],
+    },
+    execute: async (
+      _id: string,
+      input: WorkItemInput,
+      _signal?: AbortSignal,
+      _onUpdate?: (r: PiToolResult) => void,
+      ctx?: PiExtensionContext,
+    ) => {
+      const root = resolveContextRoot(ctx);
+      const key = getKey(input, ctx);
+      rememberHeartbeatTarget(root, key);
+      const action = input.action;
+      if (!action) throw new Error("work-item action is required");
+      const base = ["work-item", action, "--context", key];
+      let fullArgs: string[];
+      if (action === "select") {
+        if (!input.taskRef || !input.workItemRef)
+          throw new Error("taskRef and workItemRef are required for select");
+        fullArgs = [
+          ...base, "--task", input.taskRef, "--item", input.workItemRef,
+          "--role", "primary", "--executor-kind", "main",
+          "--session-id", sessionIdentity(ctx), "--agent", "main",
+          ...(input.nextAction ? ["--next-action", input.nextAction] : []),
+        ];
+      } else {
+        const active = activePrimaryAssignment(root, key);
+        const activeId = assignmentId(active);
+        if (!activeId) throw new Error("No active primary Trellis work-item assignment");
+        fullArgs = [...base, "--assignment", activeId];
+        if (action === "update") {
+          if (!input.state) throw new Error("state is required for update");
+          fullArgs.push("--state", input.state);
+          if (input.blocker) fullArgs.push("--blocker", input.blocker);
+          if (input.nextAction) fullArgs.push("--next-action", input.nextAction);
+        } else if (action === "block") {
+          if (!input.blocker) throw new Error("blocker is required for block");
+          if (input.state && !["waiting_human", "waiting_external", "blocked"].includes(input.state))
+            throw new Error("block requires a blocking state");
+          fullArgs.push("--state", input.state ?? "blocked", "--blocker", input.blocker);
+          if (input.nextAction) fullArgs.push("--next-action", input.nextAction);
+        } else if (action === "evidence") {
+          if (!input.evidenceKind || !input.ref || !input.summary)
+            throw new Error("evidenceKind, ref, and summary are required for evidence");
+          fullArgs.push("--evidence-kind", input.evidenceKind, "--ref", input.ref, "--summary", input.summary);
+        }
+      }
+      const result = runTaskJson(root, fullArgs!, key);
+      const assignment = isObj(result.assignment) ? result.assignment : activePrimaryAssignment(root, key);
+      const label = assignment
+        ? `${str(assignment.taskRef) ?? input.taskRef ?? "task"}#${str(assignment.workItemRef) ?? input.workItemRef ?? "item"}`
+        : action;
+      return {
+        content: [{ type: "text", text: `${action}: ${label}` }],
+        details: result,
+      };
+    },
+  });
+
+  pi.registerTool?.({
+    name: "trellis_approval",
+    label: "Trellis Typed Approval",
+    description: "Publish a hash-bound Trellis review request, wait for an exact approve/decline/comment response, and persist a validated receipt. This never starts a task or broadens authorization.",
+    promptSnippet: "Request one exact typed Trellis approval gate after the planning artifacts and scope are ready for review",
+    promptGuidelines: [
+      "Use trellis_approval only for the exact gate named in kind, with explicit scope and exclusions; it never implies another approval kind or starts the task automatically.",
+    ],
+    parameters: {
+      type: "object",
+      properties: {
+        taskRef: { type: "string", minLength: 1, maxLength: 512 },
+        kind: { type: "string", enum: ["planning", "implementation", "experiment_launch", "commit", "push_merge"] },
+        scope: { type: "array", minItems: 1, maxItems: 100, items: { type: "string", minLength: 1, maxLength: 1000 } },
+        exclusions: { type: "array", minItems: 1, maxItems: 100, items: { type: "string", minLength: 1, maxLength: 1000 } },
+        validationCommands: { type: "array", maxItems: 100, items: { type: "string", minLength: 1, maxLength: 2000 } },
+      },
+      required: ["taskRef", "kind", "scope", "exclusions"],
+    },
+    execute: async (
+      toolCallId: string,
+      input: ApprovalInput,
+      signal?: AbortSignal,
+      _onUpdate?: (r: PiToolResult) => void,
+      ctx?: PiExtensionContext,
+    ) => {
+      const root = resolveContextRoot(ctx);
+      const key = getKey(input, ctx);
+      const sessionId = sessionIdentity(ctx);
+      if (!input.taskRef || !input.kind || !input.scope?.length || !input.exclusions?.length)
+        throw new Error("taskRef, kind, non-empty scope, and non-empty exclusions are required");
+      if (signal?.aborted) throw new Error("Typed approval system_cancelled: abort");
+      const approvalRequestId = `approval-${hash(`${root}:${key}:${sessionId}:${toolCallId}`)}`;
+      const requested = runTaskJson(root, [
+        "work-item", "request-approval", "--context", key,
+        "--task", input.taskRef, "--request-id", approvalRequestId,
+        "--session-id", sessionId, "--approval-kind", input.kind,
+        ...input.scope.flatMap((value) => ["--scope", value]),
+        ...input.exclusions.flatMap((value) => ["--exclusion", value]),
+        ...(input.validationCommands ?? []).flatMap((value) => ["--validation-command", value]),
+      ], key);
+      if (!isObj(requested.approvalRequest))
+        throw new Error("Trellis approval CLI did not return a request");
+      const request = requested.approvalRequest;
+      if (!isObj(request.artifactHashes))
+        throw new Error("Trellis approval request has invalid artifact hashes");
+      const payload: TypedApprovalPayload = {
+        workspaceRoot: root,
+        rootFingerprint: str(request.rootFingerprint) ?? "",
+        contextKey: str(request.contextKey) ?? "",
+        sessionId: str(request.sessionId) ?? "",
+        toolCallId,
+        approvalRequestId: str(request.requestId) ?? "",
+        taskRef: str(request.taskRef) ?? "",
+        approvalKind: str(request.kind) ?? "",
+        artifactHashes: Object.fromEntries(
+          Object.entries(request.artifactHashes).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+        ),
+        reviewSetHash: str(request.reviewSetHash) ?? "",
+      };
+      if (Object.values(payload).some((value) => typeof value === "string" && !value))
+        throw new Error("Trellis approval request identity is incomplete");
+
+      let rawResponse: unknown;
+      if (ctx?.mode === "tui") {
+        if (!ctx.ui?.select) throw new Error("Typed approval TUI is unavailable; request remains pending");
+        const choice = await ctx.ui.select(
+          `${input.kind} approval for ${input.taskRef}`,
+          ["approve", "decline", "comment", "later"],
+          { signal },
+        );
+        if (!choice || choice === "later")
+          throw new Error("Typed approval deferred; request remains pending");
+        let comment: string | undefined;
+        if (choice === "comment") {
+          comment = (await ctx.ui.input?.("Approval comment", "Describe required changes", { signal }))?.trim();
+          if (!comment) throw new Error("Typed approval comment was cancelled; request remains pending");
+        }
+        rawResponse = approvalResponsePayload(
+          payload, choice as "approve" | "decline" | "comment", comment,
+        );
+      } else if (ctx?.mode === "rpc") {
+        if (!ctx.ui?.custom) throw new Error("Typed approval RPC transport is unavailable; request remains pending");
+        rawResponse = await ctx.ui.custom<TypedApprovalResult>(
+          () => ({ render: () => [], invalidate: () => {} }),
+          { trellisApproval: payload, signal },
+        );
+      } else {
+        throw new Error(`Typed approval requires Pi TUI or an explicit RPC custom transport; mode=${ctx?.mode ?? "unknown"}`);
+      }
+
+      const response = exactApprovalResponse(rawResponse, payload);
+      const receiptId = `receipt-${hash(`${approvalRequestId}:${response.decision}:${Date.now()}:${randomBytes(8).toString("hex")}`)}`;
+      const recorded = runTaskJson(root, [
+        "work-item", "record-approval", "--context", key,
+        "--request-id", approvalRequestId, "--receipt-id", receiptId,
+        "--decision", response.decision,
+        ...(response.comment ? ["--comment", response.comment] : []),
+      ], key);
+      if (!isObj(recorded.approvalReceipt))
+        throw new Error("Trellis approval CLI did not persist a receipt");
+      const validation = runTaskJson(root, [
+        "work-item", "validate-approval", "--context", key,
+        "--request-id", approvalRequestId, "--receipt-id", receiptId,
+      ], key);
+      const issueCodes = Array.isArray(validation.issues)
+        ? validation.issues.filter(isObj).map((issue) => str(issue.code)).filter(Boolean)
+        : [];
+      const exact = issueCodes.every((code) => code === "approval_not_granted");
+      if (!exact) throw new Error(`Recorded approval receipt failed exact validation: ${issueCodes.join(", ") || "unknown"}`);
+      const authorized = validation.authorized === true;
+      if (response.decision === "approve" && !authorized)
+        throw new Error("Approve receipt was recorded but did not authorize the exact gate");
+      if (response.decision !== "approve" && authorized)
+        throw new Error("Non-approve receipt unexpectedly authorized the gate");
+      const message = response.decision === "approve"
+        ? `Approval approved and exact receipt recorded; authorized for ${input.kind} only.`
+        : `Approval ${response.decision} and exact receipt recorded; no authorization granted.`;
+      return { content: [{ type: "text", text: message }], details: { request, receipt: recorded.approvalReceipt, validation } };
+    },
+  });
+
+  pi.registerTool?.({
     name: "trellis_subagent",
     label: "Trellis Subagent",
     description: "Run a Trellis project sub-agent with active task context.",
     promptSnippet:
       'Sub-agent dispatch protocol (Trellis): your dispatch prompt MUST start with one line "Active task: <task path from `task.py current`>" before any other instructions.',
     promptGuidelines: [
-      'Use subagent for task delegation. Your dispatch prompt MUST start with "Active task: <task path from `task.py current`>".',
+      'Use trellis_subagent for task delegation only with an explicit "<taskRef>#<workItemRef>" assignment, and start its prompt with "Active task: <task path from `task.py current`>".',
     ],
     parameters: {
       type: "object",
@@ -1784,7 +2212,12 @@ export default function trellisExtension(pi: {
             "Optional Pi thinking level override for the child sub-agent process.",
           enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
         },
+        workItemRef: {
+          type: "string",
+          description: "Required explicit <taskRef>#<workItemRef> assignment for this dispatch.",
+        },
       },
+      required: ["workItemRef"],
     },
     execute: async (
       id: string,
@@ -1836,12 +2269,40 @@ export default function trellisExtension(pi: {
         throw new Error(
           `subagent parallel mode supports at most ${MAX_PARALLEL_PROMPTS} prompts`,
         );
+      const workItem = parseFullWorkItemRef(str(input.workItemRef));
       const cleanInput: SubagentInput = {
         ...input,
         prompt,
         prompts: prompts?.length ? prompts : undefined,
       };
       const key = getKey(cleanInput, ctx);
+      rememberHeartbeatTarget(activeRoot, key);
+      const runCount = mode === "single" ? 1 : (prompts?.length ?? (prompt ? 1 : 0));
+      const delegatedIds: string[] = [];
+      try {
+        for (let index = 0; index < runCount; index++) {
+          const delegatedId = `a-sub-${hash(`${id}:${index}`)}`;
+          runTaskJson(activeRoot, [
+            "work-item", "select", "--context", key,
+            "--task", workItem.taskRef, "--item", workItem.workItemRef,
+            "--assignment", delegatedId, "--role", "delegated",
+            "--executor-kind", "subagent", "--session-id", sessionIdentity(ctx),
+            "--agent", agentName, "--run-id", `${id}:${index + 1}`,
+            "--tool-call-id", id,
+          ], key);
+          delegatedIds.push(delegatedId);
+        }
+      } catch (error) {
+        for (const delegatedId of delegatedIds) {
+          try {
+            runTaskJson(activeRoot, [
+              "work-item", "release", "--context", key,
+              "--assignment", delegatedId, "--reason", "subagent setup failed",
+            ], key);
+          } catch {}
+        }
+        throw error;
+      }
       const inheritedThinking = pi.getThinkingLevel?.();
       const inheritedModel = contextModelRef(ctx);
       const result = await runSubagent(
@@ -1853,6 +2314,27 @@ export default function trellisExtension(pi: {
         inheritedThinking,
         inheritedModel,
       );
+      for (const [index, delegatedId] of delegatedIds.entries()) {
+        const run = result.details.runs[index];
+        try {
+          if (!run) {
+            runTaskJson(activeRoot, [
+              "work-item", "release", "--context", key,
+              "--assignment", delegatedId, "--reason", "subagent run not started",
+            ], key);
+          } else if (run.status === "succeeded") {
+            runTaskJson(activeRoot, [
+              "work-item", "release", "--context", key,
+              "--assignment", delegatedId, "--reason", "subagent finished",
+            ], key);
+          } else {
+            runTaskJson(activeRoot, [
+              "work-item", "update", "--context", key,
+              "--assignment", delegatedId, "--state", "failed",
+            ], key);
+          }
+        } catch {}
+      }
       return {
         content: [{ type: "text", text: result.output }],
         details: result.details,
@@ -1906,14 +2388,32 @@ export default function trellisExtension(pi: {
 
   // Events
   pi.on?.("session_start", (event, ctx) => {
-    getKey(event, ctx);
+    const key = getKey(event, ctx);
     const activeRoot = resolveContextRoot(ctx);
+    rememberHeartbeatTarget(activeRoot, key);
+    if (exists(executionFile(activeRoot, key))) {
+      try {
+        runTaskJson(activeRoot, ["work-item", "resume", "--context", key], key);
+      } catch {}
+    }
     ctx?.ui?.notify?.(
       `Trellis project context is available from ${activeRoot}. Use /trellis-start to bootstrap or /trellis-continue to resume.`,
       "info",
     );
   });
-  pi.on?.("session_shutdown", () => {
+  pi.on?.("session_shutdown", (_event, ctx) => {
+    const root = resolveContextRoot(ctx);
+    const key = getKey(undefined, ctx);
+    if (exists(executionFile(root, key))) {
+      try {
+        runTaskJson(root, ["work-item", "shutdown", "--context", key], key);
+      } catch {}
+    }
+    heartbeatTargets.delete(targetKey(root, key));
+    if (!heartbeatTargets.size && heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
     nativeCards.clear();
     activeSubagentToolCallId = null;
   });
@@ -1927,6 +2427,50 @@ export default function trellisExtension(pi: {
       !cmdHasTrellisCtx(ev.input.command)
     )
       ev.input.command = `export TRELLIS_CONTEXT_ID=${shellQuote(k)}; ${ev.input.command}`;
+  });
+  pi.on?.("tool_execution_start", (event, ctx) => {
+    const root = resolveContextRoot(ctx);
+    const key = getKey(event, ctx);
+    const ev = event as { toolName?: string; toolCallId?: string; args?: JsonObject };
+    heartbeatObserved(root, key, ev, "running");
+    if (ev.toolName !== "subagent" || !ev.toolCallId) return;
+    const primary = activePrimaryAssignment(root, key);
+    const taskRef = str(primary?.taskRef);
+    const workItemRef = str(primary?.workItemRef);
+    if (!taskRef || !workItemRef) return;
+    const delegatedId = `a-generic-${hash(ev.toolCallId)}`;
+    try {
+      runTaskJson(root, [
+        "work-item", "select", "--context", key,
+        "--task", taskRef, "--item", workItemRef,
+        "--assignment", delegatedId, "--role", "delegated",
+        "--executor-kind", "subagent", "--session-id", sessionIdentity(ctx),
+        "--agent", str(ev.args?.agent) ?? "generic-subagent",
+        "--run-id", ev.toolCallId, "--tool-call-id", ev.toolCallId,
+      ], key);
+      genericSubagentAssignments.set(targetKey(root, key, ev.toolCallId), { root, key, assignmentId: delegatedId });
+    } catch {}
+  });
+  pi.on?.("tool_execution_update", (event, ctx) => {
+    const root = resolveContextRoot(ctx);
+    const key = getKey(event, ctx);
+    heartbeatObserved(root, key, event as { toolName?: string; toolCallId?: string }, "update");
+  });
+  pi.on?.("tool_execution_end", (event, ctx) => {
+    const root = resolveContextRoot(ctx);
+    const key = getKey(event, ctx);
+    const ev = event as { toolName?: string; toolCallId?: string; isError?: boolean };
+    heartbeatObserved(root, key, ev, ev.isError ? "failed" : "succeeded");
+    if (ev.toolName !== "subagent" || !ev.toolCallId) return;
+    const mappingKey = targetKey(root, key, ev.toolCallId);
+    const delegated = genericSubagentAssignments.get(mappingKey);
+    if (!delegated) return;
+    try {
+      runTaskJson(root, ev.isError
+        ? ["work-item", "update", "--context", delegated.key, "--assignment", delegated.assignmentId, "--state", "failed"]
+        : ["work-item", "release", "--context", delegated.key, "--assignment", delegated.assignmentId, "--reason", "generic subagent finished"], delegated.key);
+    } catch {}
+    genericSubagentAssignments.delete(mappingKey);
   });
   // Preserve progress details from execute(); mark failed subagent results through
   // the official tool_result patch hook instead of throwing away renderer details.

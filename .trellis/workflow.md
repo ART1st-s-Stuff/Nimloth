@@ -184,6 +184,14 @@ python3 ./.trellis/scripts/task.py start <task>
 
 主会话通常启动`trellis-implement`，其prompt首行为`Active task: <path>`。实施agent加载JSONL条目和任务产物，阅读相邻源码/测试，直接编辑并运行针对性检查。它禁止启动另一个实施或检查agent。
 
+Pi的work-item runtime producer可用时，Agent必须维护显式cursor：
+
+- 开始或切换实质`implement.md`计划项前，调用`trellis_work_item select`并提供精确task/item引用；禁止猜第一个未勾选项或从assistant文本/tool名推断。
+- 状态进入验证、委派、等待、阻塞或失败时立即`update`/`block`；证据只保存typed ref与短summary。
+- `trellis_subagent`委派必须提供显式`<taskRef>#<workItemRef>`；generic subagent只能继承已声明primary item，不能改为另一item。
+- 完成只由`implement.md`checkbox表达：先更新checkbox并审查diff，再`release`或选择下一项。runtime工具不得直接标记done。
+- 非Pi平台或producer不可用时不得伪造runtime；继续以task artifact为权威并明确说明没有live assignment projection。
+
 每次编辑前：
 
 - 核验branch/worktree和完整dirty状态；
