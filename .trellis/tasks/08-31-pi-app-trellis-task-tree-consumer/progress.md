@@ -91,3 +91,11 @@ Implemented in the approved pi-app worktree only:
 - Independent check found and RED-first fixed one P1 no-Electron-candidate diagnostic bug under `pipefail`; focused regression `scripts/tests/start-nixos-wayland.test.mjs`, shell parse, npm help/dry-run, production build and diff checks pass.
 - This closes only the launcher/startup portion of W-042. The broader task-tree/review/approval manual interaction matrix remains pending user operation in the running feature app.
 - Human directed that this session's remaining modifications be staged or committed. The reviewed launcher/package/test scope was committed locally in the feature worktree as `3a2ab1c` (`feat(dev): add NixOS Wayland launcher`). Nothing was pushed or merged.
+
+## 2026-08-31 — pi-app canonical directory switched to feature branch
+
+- Human explicitly requested preserving the dirty pi-app main worktree, deleting the nested feature worktree, and checking the canonical `/workspace/pi-app` directory out to the feature branch.
+- Validated the seven pre-existing main-worktree files with three focused suites (11 tests), production build and diff check, then preserved them on dedicated branch `wip/main-local-changes-before-trellis-switch-20260831` as commit `28d59ff` rather than mixing them into the Trellis feature branch. Original `main` remains at `1b2834d`.
+- Before cleanup, verified nested worktree tracked/untracked cleanliness, 147 ignored entries limited to the shared `node_modules` symlink, build outputs and TypeScript build info, no submodules, exact branch/HEAD and the isolated feature app process group. Stopped only that isolated process group, then ordinary `git worktree remove` succeeded without force; path and registration disappeared.
+- `/workspace/pi-app` is now clean on `feature/trellis-work-item-visibility@3a2ab1c`, and it is the repository's sole registered worktree. `npm run start:nixos -- --build --isolated-profile /tmp/pi-desktop-trellis-root-feature-20260831` built and launched successfully; renderer PID `510592` reports exact `--app-path=/workspace/pi-app` and the isolated profile.
+- No change was discarded, no force/prune/manual Git metadata edit occurred, and nothing was pushed or merged.
