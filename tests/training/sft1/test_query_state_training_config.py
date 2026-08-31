@@ -482,6 +482,21 @@ def test_formal_ws8_max10_early_stop_contract_is_strict_and_identity_bound() -> 
         parse_query_state_training_config(old_candidate)
 
 
+def test_formal_partition_is_normal_or_preempt_and_identity_bound() -> None:
+    normal = parse_query_state_training_config(_raw(mode="formal"))
+
+    preempt_raw = _raw(mode="formal")
+    preempt_raw["resources"]["partition"] = "preempt"
+    preempt = parse_query_state_training_config(preempt_raw)
+    assert preempt.resources["partition"] == "preempt"
+    assert preempt.identity != normal.identity
+
+    unsupported = _raw(mode="formal")
+    unsupported["resources"]["partition"] = "debug"
+    with pytest.raises(ValueError, match="normal or preempt"):
+        parse_query_state_training_config(unsupported)
+
+
 def test_formal_dual_split_cadence_keeps_holdout_out_of_early_stop() -> None:
     raw = _raw(mode="formal")
     parsed = parse_query_state_training_config(raw)

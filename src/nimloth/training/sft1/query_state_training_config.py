@@ -662,9 +662,11 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         world != 8
         or nodes != 2
         or gpus != 4
-        or resources["partition"] != "normal"
+        or resources["partition"] not in {"normal", "preempt"}
     ):
-        raise ValueError("formal Query-State topology must be normal 2x4 WS8")
+        raise ValueError(
+            "formal Query-State topology must be normal or preempt 2x4 WS8"
+        )
     _int(resources["cpus_per_task"], "resources.cpus_per_task")
     _int(resources["memory_gib"], "resources.memory_gib")
     _text(resources["walltime"], "resources.walltime")
