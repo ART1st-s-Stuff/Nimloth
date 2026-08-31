@@ -1,0 +1,8 @@
+{"file": ".trellis/tasks/08-31-research-pi-app-trellis-visibility/prd.md", "reason": "锁定只读调研目标、范围、排除项和验收标准。"}
+{"file": ".trellis/tasks/08-31-research-pi-app-trellis-visibility/design.md", "reason": "提供证据方法、候选架构和必须验证的边界。"}
+{"file": ".trellis/spec/governance/platform-integration.md", "reason": "约束ctx.cwd、root/session隔离与adapter验证。"}
+{"file": ".trellis/spec/guides/investigation-and-uncertainty.md", "reason": "要求源码证据优先并区分事实、建议与证据缺口。"}
+{"file": ".trellis/tasks/archive/2026-08/08-31-audit-sft-debug-training-latency/research/workflow-audit-2026-08-31.md", "reason": "复核上一审计的可见性初步结论，不能替代当前源码证据。"}
+{"file": "/workspace/pi-app/README.md", "reason": "理解pi-app公开的timeline、side panel、queue与通知能力。"}
+{"file": "/workspace/pi-app/doc/adapter-authoring-guide.md", "reason": "理解pi-app adapter的匹配、树形卡片与兼容边界。"}
+{"file": "/workspace/pi-app/node_modules/@earendil-works/pi-coding-agent/docs/tui.md", "reason": "理解Pi status、widget、notification与工具渲染原语。"}

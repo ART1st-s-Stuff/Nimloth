@@ -1,0 +1,7 @@
+{"file": ".trellis/tasks/08-31-trellis-work-item-runtime-producer/prd.md", "reason": "检查producer验收与禁止越界。"}
+{"file": ".trellis/tasks/08-31-trellis-work-item-runtime-producer/design.md", "reason": "检查plan/runtime authority、状态机和compatibility。"}
+{"file": ".trellis/tasks/08-31-implement-trellis-work-item-visibility/research/ask-user-question-cross-session-correlation-2026-08-31.md", "reason": "检查approval identity不会依赖丢失的session/toolCall correlation。"}
+{"file": ".trellis/spec/governance/authority-and-safety.md", "reason": "检查授权、protected runtime和honesty边界。"}
+{"file": ".trellis/spec/governance/platform-integration.md", "reason": "检查foreign cwd、cache和reload验证。"}
+{"file": ".trellis/spec/governance/tasks-progress-and-memory.md", "reason": "检查progress、TaskTree和memory边界。"}
+{"file": ".agents/skills/trellis-meta/references/customize-local/change-task-lifecycle.md", "reason": "检查本地Trellis修改点与禁止手改runtime pointer。"}

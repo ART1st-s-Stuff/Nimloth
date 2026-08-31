@@ -1,0 +1,8 @@
+{"file": ".trellis/tasks/08-31-pi-app-trellis-task-tree-consumer/prd.md", "reason": "检查consumer验收、fallback和isolation。"}
+{"file": ".trellis/tasks/08-31-pi-app-trellis-task-tree-consumer/design.md", "reason": "检查merge优先级、错误和UI语义。"}
+{"file": ".trellis/tasks/08-31-implement-trellis-work-item-visibility/design.md", "reason": "检查consumer未偏离跨child schema。"}
+{"file": ".trellis/tasks/08-31-implement-trellis-work-item-visibility/research/ask-user-question-cross-session-correlation-2026-08-31.md", "reason": "检查RED tests覆盖已证实路径并区分user decline与system cancel。"}
+{"file": ".trellis/spec/governance/platform-integration.md", "reason": "检查root/session隔离。"}
+{"file": "ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md", "reason": "检查每条pi-app mutation均绑定正确worktree。"}
+{"file": "/workspace/pi-app/README.md", "reason": "核对现有用户能力与兼容承诺。"}
+{"file": "/workspace/pi-app/node_modules/@earendil-works/pi-coding-agent/docs/tui.md", "reason": "核对Pi UI/extension bridge能力边界。"}

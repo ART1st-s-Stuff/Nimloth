@@ -1,0 +1,29 @@
+{
+  "id": "implement-trellis-work-item-visibility",
+  "name": "implement-trellis-work-item-visibility",
+  "title": "实现 Trellis 工作项级实时可见性",
+  "description": "端到端实现 task tree、implement.md work item、主/子代理assignment、实时状态与证据在pi-app Trellis面板中的统一可见性。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-08-31",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "dev",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-31-trellis-work-item-runtime-producer",
+    "08-31-pi-app-trellis-task-tree-consumer"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

@@ -1,0 +1,7 @@
+{"file": ".trellis/tasks/08-31-implement-trellis-work-item-visibility/prd.md", "reason": "逐项检查parent端到端验收标准。"}
+{"file": ".trellis/tasks/08-31-implement-trellis-work-item-visibility/design.md", "reason": "检查authority、compatibility和rollback。"}
+{"file": ".trellis/tasks/archive/2026-08/08-31-research-pi-app-trellis-visibility/research/pi-app-trellis-visibility-design-2026-08-31.md", "reason": "复核实施未退化为tool-only visibility。"}
+{"file": ".trellis/tasks/08-31-implement-trellis-work-item-visibility/research/ask-user-question-cross-session-correlation-2026-08-31.md", "reason": "检查questionnaire修复是否覆盖已证实取消路径且未夸大答案串线。"}
+{"file": ".trellis/spec/governance/authority-and-safety.md", "reason": "检查授权、dirty repo和跨仓库边界。"}
+{"file": ".trellis/spec/governance/platform-integration.md", "reason": "检查root/session隔离与adapter tests。"}
+{"file": ".trellis/spec/governance/tasks-progress-and-memory.md", "reason": "检查Trellis唯一权威和TaskTree禁用。"}
