@@ -107,3 +107,11 @@ Implemented in the approved pi-app worktree only:
 - RED tests fail on `3a2ab1c` and GREEN 3/3 covers worker rejection, fresh host-display resolution and no-Electron diagnostics. Independent review plus a fake-`wh` quoting/recursion probe found no remaining P0/P1 launcher issue.
 - Real host-channel probe succeeded, then the actual app was launched with a distinct `WAYLAND_DISPLAY=wayland-qVzd6k92DA` and isolated profile `/tmp/pi-desktop-trellis-host-visible-20260831`; renderer PID `515342` is live. This proves a separate host-forward channel and live renderer, while actual human visual confirmation remains pending.
 - The launcher correction was committed locally in pi-app as `97ef029` (`fix(dev): require host-forwarded Wayland launch`). Nothing was pushed or merged.
+
+## 2026-08-31 — native Wayland initial-window fallback
+
+- Human still saw no window after a distinct host-forward channel, so channel/process evidence was again treated as insufficient. Source inspection found the feature branch only presented the BrowserWindow from `ready-to-show`; Electron native Wayland can complete renderer `did-finish-load` without emitting that event.
+- RED imported the previously preserved window-presentation test while the module was absent. Implemented a shared exactly-once presenter using `ready-to-show` plus `did-finish-load` fallback, preserving development `showInactive`, production/e2e `show`, and destroyed-window safety. Only the three window-presentation paths were recovered from the WIP evidence; unrelated markdown and old launcher content were not merged.
+- Independent review expanded focused coverage to 6 cases and found no remaining P0/P1 source issue. Focused test, Node typecheck, ESLint/build and diff checks pass; the behavior matches Electron native Wayland `ready-to-show` omission evidence.
+- Rebuilt and launched a fresh host-forward instance on `WAYLAND_DISPLAY=wayland-DS5xFcoF5p` with renderer PID `518965` and profile `/tmp/pi-desktop-trellis-window-fallback-20260831`. This proves the fixed build is live but still awaits human visual confirmation.
+- The fix was committed locally in pi-app as `f596a9c` (`fix(window): show app after renderer load on Wayland`). Nothing was pushed or merged.
