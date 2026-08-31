@@ -29,6 +29,7 @@ QUERY_STATE_RANK_CHECKPOINT_SCHEMA = "nimloth_sft1_query_state_rank_checkpoint_v
 QUERY_STATE_DEPLOYABLE_SCHEMA = "nimloth_sft1_query_state_deployable_v1"
 QUERY_STATE_DEPLOYABLE_BUNDLE_SCHEMA = "nimloth_sft1_query_state_bundle_v1"
 _COMPLETE_MARKER = "COMPLETED"
+_QUERY_STATE_SEGMENT_SCHEMA = "nimloth_sft1_query_state_segment_v1"
 _HEX = frozenset("0123456789abcdef")
 
 
@@ -346,6 +347,7 @@ class QueryStateDistributedControl:
     data_cursor: Mapping[str, Any]
     metric_cursor: Mapping[str, Any]
     terminal_primary: bool = False
+    forensic_only: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -355,7 +357,9 @@ class QueryStateDistributedControl:
             or not isinstance(self.data_cursor, Mapping)
             or not isinstance(self.metric_cursor, Mapping)
             or not isinstance(self.terminal_primary, bool)
+            or not isinstance(self.forensic_only, bool)
             or (self.terminal_primary and self.identity.experiment_mode != "formal")
+            or (self.terminal_primary and self.forensic_only)
         ):
             raise ValueError("Query-State distributed control is invalid")
 
@@ -621,6 +625,7 @@ def finalize_query_state_rank_checkpoint(
         "source_commit": control.identity.source_commit,
         "global_step": control.global_step,
         "terminal_primary": control.terminal_primary,
+        "forensic_only": control.forensic_only,
         "data_cursor": dict(control.data_cursor),
         "metric_cursor": dict(control.metric_cursor),
         "rank_shard_sha256": shard_hashes,
@@ -749,6 +754,7 @@ def load_query_state_rank_state(
         data_cursor=raw.pop("data_cursor", None),
         metric_cursor=raw.pop("metric_cursor", None),
         terminal_primary=raw.pop("terminal_primary", None),
+        forensic_only=raw.pop("forensic_only", False),
     )
     if raw:
         raise ValueError("Query-State rank checkpoint control has unknown fields")
@@ -778,6 +784,74 @@ def load_query_state_rank_state(
     ):
         raise ValueError("Query-State rank checkpoint shard payload is incomplete")
     return QueryStateRankState(identity=identity, **payload), control
+
+
+def load_query_state_forensic_model_for_debug(
+    path: Path,
+    *,
+    root: torch.nn.Module,
+    rank: int,
+    expected_identity: QueryStateResumeIdentity,
+    failure_manifest_path: Path,
+) -> QueryStateDistributedControl:
+    """Load only forensic model shards; never restore optimizer, scheduler, or RNG."""
+
+    checkpoint = Path(path).resolve()
+    failure_path = Path(failure_manifest_path).resolve()
+    try:
+        failure = json.loads(failure_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("Query-State forensic failure manifest is invalid") from error
+    forensic = failure.get("forensic_checkpoint") if isinstance(failure, dict) else None
+    run_root = failure_path.parents[2]
+    expected_root = (run_root / "forensics").resolve()
+    if (
+        failure_path.parent != (run_root / "durable" / "failures").resolve()
+        or failure.get("schema") != _QUERY_STATE_SEGMENT_SCHEMA
+        or failure.get("run_identity") != expected_identity.run_identity
+        or failure.get("mode") != expected_identity.experiment_mode
+        or isinstance(failure.get("end_update"), bool)
+        or not isinstance(failure.get("end_update"), int)
+        or failure.get("end_update") < 0
+        or failure.get("resumable") is not False
+        or not isinstance(forensic, dict)
+        or forensic.get("path") != str(checkpoint)
+        or forensic.get("forensic_only") is not True
+        or forensic.get("resumable") is not False
+        or forensic.get("authoritative") is not False
+        or checkpoint.parent != expected_root
+        or checkpoint.name != f"unsafe_update_{int(failure['end_update']):08d}"
+        or not _is_sha256(forensic.get("control_sha256"))
+        or _sha256_file(checkpoint / "control.json") != forensic["control_sha256"]
+    ):
+        raise ValueError("Query-State forensic checkpoint provenance is invalid")
+    state, control = load_query_state_rank_state(
+        checkpoint,
+        rank=rank,
+        expected_identity=expected_identity,
+    )
+    if (
+        not control.forensic_only
+        or control.terminal_primary
+        or control.global_step != failure["end_update"]
+    ):
+        raise ValueError("Query-State debug loader requires exact forensic provenance")
+    current = {
+        name: parameter
+        for name, parameter in root.named_parameters()
+        if parameter.requires_grad
+    }
+    if set(current) != set(state.model):
+        raise ValueError("Query-State forensic model key set mismatch")
+    _validate_model_tensor_set_before_restore(
+        current,
+        state.model,
+        owner="forensic checkpoint",
+    )
+    with torch.no_grad():
+        for name, parameter in current.items():
+            parameter.copy_(state.model[name].to(device=parameter.device))
+    return control
 
 
 def export_query_state_deployable_bundle(
@@ -882,6 +956,7 @@ __all__ = [
     "export_query_state_deployable_bundle",
     "finalize_query_state_rank_checkpoint",
     "load_direct_query_state_artifact",
+    "load_query_state_forensic_model_for_debug",
     "load_query_state_rank_state",
     "load_query_state_resume_checkpoint",
     "restore_query_state_rank_state",

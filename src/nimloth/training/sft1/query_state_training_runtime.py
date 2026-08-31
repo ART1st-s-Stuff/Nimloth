@@ -275,14 +275,21 @@ def build_training_event_plan(
     *,
     mode: str,
     total_updates: int,
+    epoch_updates: int,
     checkpoint_cadence: int,
     validation_updates: Sequence[int],
     forced_restart_update: int,
 ) -> tuple[QueryStateTrainingEvent, ...]:
     if mode not in {"pilot", "formal"}:
         raise ValueError("training event mode must be pilot or formal")
-    if total_updates < 1 or checkpoint_cadence < 1 or total_updates % checkpoint_cadence:
-        raise ValueError("terminal update must be a commit boundary")
+    if (
+        total_updates < 1
+        or epoch_updates < 1
+        or checkpoint_cadence < 1
+        or total_updates % epoch_updates
+        or epoch_updates % checkpoint_cadence
+    ):
+        raise ValueError("epoch and terminal updates must be commit boundaries")
     validations = tuple(validation_updates)
     if (
         not validations
@@ -301,8 +308,13 @@ def build_training_event_plan(
     events = [QueryStateTrainingEvent(mode, 0, "validation")]
     for update in range(1, total_updates + 1):
         events.append(QueryStateTrainingEvent(mode, update, "optimizer_update"))
-        if update in validations:
+        calibration_due = mode == "formal" and update % epoch_updates == 0
+        registered_validation_due = update in validations
+        if calibration_due:
+            events.append(QueryStateTrainingEvent(mode, update, "calibration"))
+        if registered_validation_due:
             events.append(QueryStateTrainingEvent(mode, update, "validation"))
+        if calibration_due or registered_validation_due:
             events.append(QueryStateTrainingEvent(mode, update, "safety_verdict"))
         if update % checkpoint_cadence == 0:
             events.append(QueryStateTrainingEvent(mode, update, "commit"))
@@ -385,23 +397,6 @@ class QueryStateSegment:
     ) -> QueryStateAuthoritativeEntry:
         if len(self._updates) != self.end_update - self.start_update:
             raise ValueError("segment cannot commit with missing update records")
-        if safety.get("passed") is not True:
-            failure = {
-                "schema": QUERY_STATE_SEGMENT_SCHEMA,
-                "run_identity": self.store.run_identity,
-                "mode": self.store.mode,
-                "start_update": self.start_update,
-                "end_update": self.end_update,
-                "validation": dict(validation),
-                "safety": dict(safety),
-                "resumable": False,
-            }
-            _atomic_json(
-                self.store.root / "failures" / f"unsafe_{self.start_update:08d}_{self.end_update:08d}.json",
-                failure,
-                overwrite=False,
-            )
-            raise RuntimeError("unsafe validation is non-resumable and cannot advance the index")
         checkpoint = Path(checkpoint_path).resolve()
         marker = checkpoint / "COMPLETED"
         control = checkpoint / "control.json"
@@ -409,6 +404,19 @@ class QueryStateSegment:
             raise ValueError("segment commit requires a complete immutable checkpoint")
         if marker.read_text(encoding="utf-8") != f"control_sha256={checkpoint_control_hash}\n":
             raise ValueError("checkpoint completion marker/control hash mismatch")
+        if safety.get("passed") is not True:
+            self.store.record_unsafe_forensic_checkpoint(
+                start_update=self.start_update,
+                end_update=self.end_update,
+                checkpoint_path=checkpoint,
+                checkpoint_control_hash=checkpoint_control_hash,
+                validation=validation,
+                safety=safety,
+            )
+            raise RuntimeError(
+                "unsafe validation preserved a forensic checkpoint; it is non-resumable "
+                "and cannot advance the authoritative index"
+            )
         mirror = tuple(dict(record) for record in mirror_records)
         mirror_updates = tuple(record.get("update") for record in mirror)
         expected_updates = tuple(range(self.start_update + 1, self.end_update + 1))
@@ -534,6 +542,105 @@ class QueryStateSegmentStore:
         if raw.get("schema") != QUERY_STATE_SEGMENT_SCHEMA or raw.get("run_identity") != self.run_identity or raw.get("mode") != self.mode or raw.get("wandb_run_id") != self.wandb_run_id or not isinstance(raw.get("entries"), list):
             raise ValueError("authoritative segment index identity mismatch")
         return raw
+
+    def record_unsafe_forensic_checkpoint(
+        self,
+        *,
+        start_update: int,
+        end_update: int,
+        checkpoint_path: Path,
+        checkpoint_control_hash: str,
+        validation: Mapping[str, Any],
+        safety: Mapping[str, Any],
+    ) -> Path:
+        checkpoint = Path(checkpoint_path).resolve()
+        forensic_root = (self.root.parent / "forensics").resolve()
+        if (
+            start_update < 0
+            or end_update < start_update
+            or checkpoint.parent != forensic_root
+            or checkpoint.name != f"unsafe_update_{end_update:08d}"
+        ):
+            raise ValueError("unsafe checkpoint must use the run-owned forensic namespace")
+        marker = checkpoint / "COMPLETED"
+        control = checkpoint / "control.json"
+        if (
+            not marker.is_file()
+            or not control.is_file()
+            or not _is_sha256(checkpoint_control_hash)
+            or marker.read_text(encoding="utf-8")
+            != f"control_sha256={checkpoint_control_hash}\n"
+            or hashlib.sha256(control.read_bytes()).hexdigest()
+            != checkpoint_control_hash
+        ):
+            raise ValueError("unsafe forensic checkpoint is incomplete")
+        control_raw = _read_json(control)
+        control_identity = control_raw.get("identity")
+        if (
+            control_raw.get("forensic_only") is not True
+            or control_raw.get("terminal_primary") is not False
+            or control_raw.get("global_step") != end_update
+            or not isinstance(control_identity, dict)
+            or control_identity.get("run_identity") != self.run_identity
+            or control_identity.get("experiment_mode") != self.mode
+        ):
+            raise ValueError("unsafe checkpoint control provenance is invalid")
+        failure_path = (
+            self.root
+            / "failures"
+            / f"unsafe_{start_update:08d}_{end_update:08d}.json"
+        )
+        _atomic_json(
+            failure_path,
+            {
+                "schema": QUERY_STATE_SEGMENT_SCHEMA,
+                "run_identity": self.run_identity,
+                "mode": self.mode,
+                "start_update": start_update,
+                "end_update": end_update,
+                "validation": dict(validation),
+                "safety": dict(safety),
+                "forensic_checkpoint": {
+                    "path": str(checkpoint),
+                    "control_sha256": checkpoint_control_hash,
+                    "forensic_only": True,
+                    "resumable": False,
+                    "authoritative": False,
+                },
+                "resumable": False,
+            },
+            overwrite=False,
+        )
+        return failure_path
+
+    def record_forensic_save_failure(
+        self,
+        *,
+        update: int,
+        validation: Mapping[str, Any],
+        safety: Mapping[str, Any],
+        error: str,
+    ) -> Path:
+        if update < 0 or not isinstance(error, str) or not error.strip():
+            raise ValueError("forensic save failure evidence is invalid")
+        failure_path = self.root / "failures" / f"forensic_save_failed_{update:08d}.json"
+        _atomic_json(
+            failure_path,
+            {
+                "schema": QUERY_STATE_SEGMENT_SCHEMA,
+                "run_identity": self.run_identity,
+                "mode": self.mode,
+                "update": update,
+                "validation": dict(validation),
+                "safety": dict(safety),
+                "forensic_checkpoint": None,
+                "forensic_checkpoint_preserved": False,
+                "error": error,
+                "resumable": False,
+            },
+            overwrite=False,
+        )
+        return failure_path
 
     def authoritative_entries(self) -> tuple[QueryStateAuthoritativeEntry, ...]:
         entries = tuple(QueryStateAuthoritativeEntry(**value) for value in self._raw_index()["entries"])

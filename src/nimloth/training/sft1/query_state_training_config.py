@@ -22,7 +22,8 @@ from nimloth.training.sft1.query_state import (
     QUERY_STATE_OBJECTIVE_VERSION,
 )
 
-QUERY_STATE_TRAINING_CONFIG_SCHEMA = "nimloth_sft1_query_state_training_v2"
+QUERY_STATE_TRAINING_CONFIG_SCHEMA = "nimloth_sft1_query_state_training_v3"
+FORMAL_CHECKPOINT_ESTIMATED_BYTES = 20_500_000_000
 _HEX = frozenset("0123456789abcdef")
 
 _SECTION_FIELDS: Mapping[str, frozenset[str]] = {
@@ -33,10 +34,10 @@ _SECTION_FIELDS: Mapping[str, frozenset[str]] = {
     "objective": frozenset({"state_weight", "lm_weight", "state_target", "lm_target"}),
     "optimizer": frozenset({"name", "language_learning_rate", "direct_state_learning_rate", "weight_decay", "betas", "epsilon", "scheduler", "warmup_updates"}),
     "runtime": frozenset({"max_sequence_length", "min_pixels", "max_pixels", "attention_implementation", "model_dtype", "dino_dtype", "dino_batch_size", "max_padded_tokens", "max_rows_per_micro_batch", "max_grad_norm", "gradient_checkpointing", "fsdp_sharding", "fsdp_use_orig_params", "fsdp_wrap_policy"}),
-    "schedule": frozenset({"seed", "epochs", "max_updates", "rows_per_rank_update", "checkpoint_cadence_updates", "validation_updates", "forced_restart_update"}),
+    "schedule": frozenset({"seed", "epochs", "max_updates", "rows_per_rank_update", "epoch_updates", "checkpoint_cadence_updates", "validation_updates", "forced_restart_update", "approved_pause_update"}),
     "early_stopping": frozenset({"enabled", "metric", "min_epochs", "max_epochs", "patience_epochs", "min_relative_improvement", "calibration_split", "holdout_controls_early_stop", "actual_terminal_primary"}),
     "validation": frozenset({"split", "baseline_update", "terminal_update", "calibration_cadence_updates", "holdout_updates", "holdout_at_actual_terminal", "generation_format_manifest_path", "generation_format_manifest_identity", "generation_format_updates", "generation_format_at_actual_terminal", "actor_tolerances", "effective_rank_formula", "effective_rank_collapse_threshold", "bootstrap_seed", "bootstrap_resamples", "ordinary_cluster_unit", "ordinary_bootstrap_formula", "natural_pair_unit", "natural_pair_formula", "terminal_state_gates"}),
-    "output": frozenset({"run_root", "controller_root", "overwrite", "resolved_config_path", "command_manifest_path", "minimum_free_bytes"}),
+    "output": frozenset({"run_root", "controller_root", "overwrite", "resolved_config_path", "command_manifest_path", "minimum_free_bytes", "checkpoint_estimated_bytes", "checkpoint_budget_bytes"}),
     "resources": frozenset({"world_size", "nodes", "gpus_per_node", "cpus_per_task", "memory_gib", "walltime", "partition", "backend", "gpu_model_allowlist"}),
     "authorization": frozenset({"approval_id", "approval_sha256", "launch_authorized"}),
     "initialization": frozenset({"actor_checkpoint", "actor_checkpoint_identity", "direct_head_initialization", "resume_checkpoint", "resume_mode"}),
@@ -131,7 +132,10 @@ class QueryStateTrackingConfig:
 
     @property
     def identity(self) -> str:
-        return f"{self.entity}/{self.project}/{self.run_id}"
+        return (
+            f"{self.entity}/{self.project}/{self.group}/"
+            f"{self.run_name}/{self.run_id}"
+        )
 
 
 @dataclass(frozen=True)
@@ -180,6 +184,56 @@ def _canonical_identity(raw: Mapping[str, Any]) -> str:
     return hashlib.sha256(
         json.dumps(raw, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     ).hexdigest()
+
+
+def _plain_identity_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _plain_identity_value(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_plain_identity_value(item) for item in value]
+    return value
+
+
+def query_state_training_run_identity(config: QueryStateTrainingConfig) -> str:
+    """Bind resume-critical semantics while excluding process approval horizons."""
+
+    schedule_identity = dict(config.schedule)
+    schedule_identity.pop("approved_pause_update", None)
+    payload = {
+        "schema": config.schema,
+        "mode": config.mode,
+        "source": _plain_identity_value(config.source),
+        "data": _plain_identity_value(config.data),
+        "model": _plain_identity_value(config.model),
+        "objective": _plain_identity_value(config.objective),
+        "optimizer": _plain_identity_value(config.optimizer),
+        "runtime": _plain_identity_value(config.runtime),
+        "schedule": _plain_identity_value(schedule_identity),
+        "early_stopping": _plain_identity_value(config.early_stopping),
+        "validation": _plain_identity_value(config.validation),
+        "run_root": config.output["run_root"],
+        "controller_root": config.output["controller_root"],
+        "output_storage": {
+            "minimum_free_bytes": config.output["minimum_free_bytes"],
+            "checkpoint_estimated_bytes": config.output[
+                "checkpoint_estimated_bytes"
+            ],
+            "checkpoint_budget_bytes": config.output["checkpoint_budget_bytes"],
+        },
+        "resources": _plain_identity_value(config.resources),
+        "environment": _plain_identity_value(config.environment),
+        "actor_checkpoint": config.initialization["actor_checkpoint"],
+        "actor_checkpoint_identity": config.initialization[
+            "actor_checkpoint_identity"
+        ],
+        "direct_head_initialization": config.initialization[
+            "direct_head_initialization"
+        ],
+        "tracking_identity": (
+            None if config.mode == "pilot" else config.tracking.identity
+        ),
+    }
+    return _canonical_identity(payload)
 
 
 def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrainingConfig:
@@ -419,8 +473,25 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
             "schedule/topology max_updates must equal the exact deterministic "
             f"schedule cardinality: {terminal} != {exact_updates}"
         )
-    cadence = _int(schedule["checkpoint_cadence_updates"], "schedule.checkpoint_cadence_updates")
+    epoch_updates = _int(schedule["epoch_updates"], "schedule.epoch_updates")
+    exact_epoch_updates = math.ceil(rows_per_rank_epoch / rows_per_rank_update)
+    if epoch_updates != exact_epoch_updates:
+        raise ValueError(
+            "schedule.epoch_updates must equal the exact deterministic epoch "
+            f"update count: {epoch_updates} != {exact_epoch_updates}"
+        )
+    cadence = _int(
+        schedule["checkpoint_cadence_updates"],
+        "schedule.checkpoint_cadence_updates",
+    )
+    if epoch_updates % cadence:
+        raise ValueError("checkpoint cadence must divide the exact epoch updates")
     forced = _int(schedule["forced_restart_update"], "schedule.forced_restart_update", minimum=0)
+    approved_pause = _int(
+        schedule["approved_pause_update"],
+        "schedule.approved_pause_update",
+        minimum=0,
+    )
     updates = schedule["validation_updates"]
     if not isinstance(updates, (list, tuple)) or not updates or any(
         isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in updates
@@ -434,15 +505,24 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         raise ValueError("terminal update must be a resumable commit boundary")
     if mode == "pilot" and (epochs != 1 or not 0 < forced < terminal or forced % cadence):
         raise ValueError("pilot requires one coverage pass and a forced restart commit boundary")
+    if mode == "pilot" and approved_pause != 0:
+        raise ValueError("pilot cannot use a formal approved pause boundary")
     if mode == "formal":
         if forced != 0:
             raise ValueError("formal training has no pilot forced-restart boundary")
+        if approved_pause and (
+            approved_pause > terminal or approved_pause % epoch_updates
+        ):
+            raise ValueError(
+                "formal approved pause must be an exact epoch boundary at or before terminal"
+            )
         if (
             schedule_seed != 3335631237
             or epochs != 10
             or rows_per_rank_update != 1
             or terminal != 16050
-            or cadence != 1605
+            or epoch_updates != 1605
+            or cadence != 321
             or tuple(updates) != (0, 3210, 8025, 16050)
         ):
             raise ValueError("formal WS8 max10 schedule contract changed")
@@ -512,7 +592,8 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         validation["calibration_cadence_updates"],
         "validation.calibration_cadence_updates",
     )
-    if calibration_cadence != cadence:
+    expected_calibration_cadence = cadence if mode == "pilot" else epoch_updates
+    if calibration_cadence != expected_calibration_cadence:
         raise ValueError("calibration validation must run at every epoch commit boundary")
     holdout_updates = validation["holdout_updates"]
     if (
@@ -650,7 +731,34 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         _absolute(output[field], f"output.{field}")
     if _bool(output["overwrite"], "output.overwrite"):
         raise ValueError("Query-State training output overwrite is forbidden")
-    _int(output["minimum_free_bytes"], "output.minimum_free_bytes")
+    checkpoint_estimated_bytes = _int(
+        output["checkpoint_estimated_bytes"],
+        "output.checkpoint_estimated_bytes",
+    )
+    minimum_free_bytes = _int(
+        output["minimum_free_bytes"],
+        "output.minimum_free_bytes",
+    )
+    checkpoint_budget_bytes = _int(
+        output["checkpoint_budget_bytes"],
+        "output.checkpoint_budget_bytes",
+    )
+    expected_checkpoint_budget = (
+        terminal // cadence
+    ) * checkpoint_estimated_bytes
+    if checkpoint_budget_bytes != expected_checkpoint_budget:
+        raise ValueError(
+            "output.checkpoint_budget_bytes must cover every max-budget commit"
+        )
+    if mode == "formal" and minimum_free_bytes != 300_000_000_000:
+        raise ValueError("formal output.minimum_free_bytes must equal 300GB")
+    if (
+        mode == "formal"
+        and checkpoint_estimated_bytes != FORMAL_CHECKPOINT_ESTIMATED_BYTES
+    ):
+        raise ValueError(
+            "formal checkpoint estimate must equal the locked 20.5GB"
+        )
 
     resources = sections["resources"]
     world = _int(resources["world_size"], "resources.world_size")

@@ -18,12 +18,17 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import torch
 import transformers
 
 from nimloth.training.sft1.identity import audit_id176_processor_identity
-from nimloth.training.sft1.query_state_training_config import QueryStateTrainingConfig
+from nimloth.training.sft1.query_state_training_config import (
+    QueryStateTrainingConfig,
+    parse_query_state_training_config,
+    query_state_training_run_identity,
+)
 from nimloth.training.sft1.query_state_training_manifest import (
     deserialize_generation_format_manifest,
     deserialize_query_state_training_manifest,
@@ -49,6 +54,275 @@ class QueryStateTrainingPreflightEvidence:
     output_ownership_verified: bool
     resource_contract_verified: bool
     cuda_entered: bool = False
+
+
+def _is_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
+
+
+def _required_output_free_bytes(
+    config: QueryStateTrainingConfig,
+    *,
+    completed_checkpoint_update: int,
+) -> int:
+    cadence = int(config.schedule["checkpoint_cadence_updates"])
+    terminal_update = int(config.schedule["max_updates"])
+    approved_pause_update = int(config.schedule["approved_pause_update"])
+    authorized_stop_update = approved_pause_update or terminal_update
+    if (
+        isinstance(completed_checkpoint_update, bool)
+        or not isinstance(completed_checkpoint_update, int)
+        or completed_checkpoint_update < 0
+        or completed_checkpoint_update > terminal_update
+        or completed_checkpoint_update % cadence
+    ):
+        raise ValueError("completed checkpoint update is not a commit boundary")
+    if completed_checkpoint_update > 0 and approved_pause_update == 0:
+        raise ValueError("an approved pause boundary is required for restart")
+    if approved_pause_update and completed_checkpoint_update >= approved_pause_update:
+        raise ValueError("approved pause update must exceed restored update")
+    remaining_commits = (authorized_stop_update - completed_checkpoint_update) // cadence
+    return int(config.output["minimum_free_bytes"]) + (
+        remaining_commits * int(config.output["checkpoint_estimated_bytes"])
+    )
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _prior_process_requires_pause_receipt(
+    config: QueryStateTrainingConfig,
+    *,
+    completed_update: int,
+    controller_root: Path,
+) -> bool:
+    process_root = Path(controller_root) / "processes"
+    process_paths = sorted(process_root.glob("process_*.json"))
+    if not process_paths:
+        raise ValueError("Query-State exact restart lacks prior process evidence")
+    run_identity = query_state_training_run_identity(config)
+    requires_pause = False
+    for path in process_paths:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError("Query-State prior process evidence is invalid") from error
+        process_identity = payload.get("process_identity") if isinstance(payload, dict) else None
+        resolved_config = payload.get("resolved_config") if isinstance(payload, dict) else None
+        command_manifest_text = (
+            payload.get("command_manifest_text") if isinstance(payload, dict) else None
+        )
+        try:
+            prior_config = parse_query_state_training_config(resolved_config)
+            if not isinstance(command_manifest_text, str):
+                raise ValueError("command manifest text is absent")
+            command_manifest = json.loads(command_manifest_text)
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "Query-State prior process resolved config is invalid"
+            ) from error
+        if (
+            not isinstance(payload, dict)
+            or payload.get("run_identity") != run_identity
+            or payload.get("mode") != "formal"
+            or not _is_sha256(process_identity)
+            or path.name != f"process_{process_identity}.json"
+            or not _is_sha256(payload.get("config_identity"))
+            or prior_config.identity != payload.get("config_identity")
+            or query_state_training_run_identity(prior_config) != run_identity
+            or not _is_sha256(payload.get("command_identity"))
+            or prior_config.command["identity"] != payload.get("command_identity")
+            or hashlib.sha256(command_manifest_text.encode()).hexdigest()
+            != payload.get("command_identity")
+            or not isinstance(command_manifest, Mapping)
+            or command_manifest.get("schema")
+            != "nimloth_sft1_query_state_training_command_v1"
+            or command_manifest.get("child_argv")
+            != list(prior_config.command["argv"])
+            or payload.get("resume_mode")
+            not in {"fresh", "crash_replay", "exact_restart"}
+            or isinstance(payload.get("approved_pause_update"), bool)
+            or not isinstance(payload.get("approved_pause_update"), int)
+            or payload.get("approved_pause_update") < 0
+            or prior_config.schedule["approved_pause_update"]
+            != payload.get("approved_pause_update")
+        ):
+            raise ValueError("Query-State prior process evidence provenance is invalid")
+        requires_pause = requires_pause or (
+            payload["approved_pause_update"] == completed_update
+        )
+    return requires_pause
+
+
+def _authenticate_prior_pause_receipt(
+    config: QueryStateTrainingConfig,
+    *,
+    completed_update: int,
+    checkpoint: Path,
+    run_root: Path,
+    controller_root: Path,
+) -> bool:
+    pause_required = _prior_process_requires_pause_receipt(
+        config,
+        completed_update=completed_update,
+        controller_root=controller_root,
+    )
+    filename = f"pause_update_{completed_update:08d}.json"
+    run_receipt = Path(run_root) / "pauses" / filename
+    controller_receipt = Path(controller_root) / "pauses" / filename
+    exists = (run_receipt.is_file(), controller_receipt.is_file())
+    if exists == (False, False):
+        if pause_required:
+            raise ValueError("Query-State approved boundary lacks its pause receipt")
+        return False
+    if exists != (True, True):
+        raise ValueError("Query-State prior pause receipt mirrors are incomplete")
+    try:
+        run_payload = json.loads(run_receipt.read_text(encoding="utf-8"))
+        controller_payload = json.loads(
+            controller_receipt.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("Query-State prior pause receipt is invalid") from error
+    expected_run_identity = query_state_training_run_identity(config)
+    control_hash = _sha256_file(Path(checkpoint) / "control.json")
+    if (
+        run_payload != controller_payload
+        or not isinstance(run_payload, dict)
+        or run_payload.get("run_identity") != expected_run_identity
+        or run_payload.get("mode") != "formal"
+        or run_payload.get("status") != "paused"
+        or run_payload.get("update") != completed_update
+        or Path(str(run_payload.get("checkpoint"))).resolve()
+        != Path(checkpoint).resolve()
+        or run_payload.get("checkpoint_control_hash") != control_hash
+        or run_payload.get("terminal_primary") is not False
+        or run_payload.get("automatic_formal_extension") is not False
+        or run_payload.get("automatic_sft2_authorization") is not False
+        or run_payload.get("automatic_export") is not False
+    ):
+        raise ValueError("Query-State prior pause receipt provenance is invalid")
+    return True
+
+
+def _authenticated_exact_restart_update(
+    config: QueryStateTrainingConfig,
+    *,
+    checkpoint: Path,
+    run_root: Path,
+) -> int:
+    control_path = checkpoint / "control.json"
+    marker_path = checkpoint / "COMPLETED"
+    try:
+        control = json.loads(control_path.read_text(encoding="utf-8"))
+        marker = marker_path.read_text(encoding="utf-8")
+        index = json.loads(
+            (run_root / "durable" / "authoritative_index.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(
+            "Query-State exact restart authority is unreadable"
+        ) from error
+    if not isinstance(index, dict):
+        raise ValueError("Query-State exact restart authoritative index is invalid")
+    control_sha256 = _sha256_file(control_path)
+    if marker != f"control_sha256={control_sha256}\n" or not isinstance(
+        control, dict
+    ):
+        raise ValueError("Query-State exact restart marker/control hash mismatch")
+    control_hash = control.get("control_hash")
+    checkpoint_identity = control.get("checkpoint_identity")
+    canonical_with_checkpoint = {
+        key: value for key, value in control.items() if key != "control_hash"
+    }
+    canonical_base = {
+        key: value
+        for key, value in canonical_with_checkpoint.items()
+        if key != "checkpoint_identity"
+    }
+    if (
+        not isinstance(control_hash, str)
+        or hashlib.sha256(
+            json.dumps(
+                canonical_with_checkpoint,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode()
+        ).hexdigest()
+        != control_hash
+        or not isinstance(checkpoint_identity, str)
+        or hashlib.sha256(
+            json.dumps(
+                canonical_base,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode()
+        ).hexdigest()
+        != checkpoint_identity
+    ):
+        raise ValueError("Query-State exact restart control identity mismatch")
+    identity = control.get("identity")
+    expected_run_identity = query_state_training_run_identity(config)
+    update = control.get("global_step")
+    data_cursor = control.get("data_cursor")
+    entries = index.get("entries") if isinstance(index, dict) else None
+    latest = entries[-1] if isinstance(entries, list) and entries else None
+    if (
+        not isinstance(identity, dict)
+        or identity.get("config_identity") != expected_run_identity
+        or identity.get("run_identity") != expected_run_identity
+        or identity.get("source_commit") != config.source["commit"]
+        or identity.get("world_size") != config.resources["world_size"]
+        or identity.get("experiment_mode") != config.mode
+        or control.get("config_identity") != expected_run_identity
+        or control.get("source_commit") != config.source["commit"]
+        or not isinstance(update, int)
+        or isinstance(update, bool)
+        or not isinstance(data_cursor, dict)
+        or data_cursor.get("next_update") != update + 1
+        or index.get("mode") != config.mode
+        or index.get("run_identity") != identity.get("run_identity")
+        or not isinstance(latest, dict)
+        or latest.get("run_identity") != identity.get("run_identity")
+        or latest.get("end_update") != update
+        or Path(str(latest.get("checkpoint_path"))).resolve()
+        != checkpoint.resolve()
+        or latest.get("checkpoint_control_hash") != control_sha256
+    ):
+        raise ValueError(
+            "Query-State exact restart checkpoint/index identity mismatch"
+        )
+    return update
+
+
+def _reject_forensic_failure_restart(run_root: Path) -> None:
+    failure_root = Path(run_root) / "durable" / "failures"
+    if not failure_root.exists():
+        return
+    blockers = sorted(
+        path
+        for pattern in ("unsafe_*.json", "forensic_save_failed_*.json")
+        for path in failure_root.glob(pattern)
+        if path.is_file()
+    )
+    if blockers:
+        raise RuntimeError(
+            "Query-State run has forensic safety failure evidence and cannot restart: "
+            + ", ".join(path.name for path in blockers)
+        )
 
 
 def _run(repo: Path, *argv: str) -> str:
@@ -436,6 +710,7 @@ def verify_query_state_training_preflight(
         raise ValueError("Query-State GPU resource allowlist is invalid")
 
     resume_mode = config.initialization["resume_mode"]
+    completed_checkpoint_update = 0
     run_root = Path(str(config.output["run_root"]))
     controller_root = Path(str(config.output["controller_root"]))
     if resume_mode == "fresh":
@@ -455,10 +730,36 @@ def verify_query_state_training_preflight(
             for name in terminal_names
         ):
             raise RuntimeError("Query-State terminal run cannot restart or replay")
+        _reject_forensic_failure_restart(run_root)
         if resume_mode == "exact_restart":
             checkpoint = Path(str(config.initialization["resume_checkpoint"]))
-            if not (checkpoint / "COMPLETED").is_file() or not (checkpoint / "control.json").is_file():
+            control_path = checkpoint / "control.json"
+            if not (checkpoint / "COMPLETED").is_file() or not control_path.is_file():
                 raise FileNotFoundError("Query-State exact restart checkpoint is incomplete")
+            completed_checkpoint_update = _authenticated_exact_restart_update(
+                config,
+                checkpoint=checkpoint,
+                run_root=run_root,
+            )
+            _authenticate_prior_pause_receipt(
+                config,
+                completed_update=completed_checkpoint_update,
+                checkpoint=checkpoint,
+                run_root=run_root,
+                controller_root=controller_root,
+            )
+            cadence = int(config.schedule["checkpoint_cadence_updates"])
+            terminal_update = int(config.schedule["max_updates"])
+            if (
+                isinstance(completed_checkpoint_update, bool)
+                or not isinstance(completed_checkpoint_update, int)
+                or completed_checkpoint_update < 1
+                or completed_checkpoint_update > terminal_update
+                or completed_checkpoint_update % cadence
+            ):
+                raise ValueError(
+                    "Query-State exact restart checkpoint update is not a commit boundary"
+                )
         else:
             index_path = run_root / "durable" / "authoritative_index.json"
             baseline_path = run_root / "actor_baseline_id176.json"
@@ -482,8 +783,15 @@ def verify_query_state_training_preflight(
     output_parent = run_root.parent
     while not output_parent.exists() and output_parent != output_parent.parent:
         output_parent = output_parent.parent
-    if shutil.disk_usage(output_parent).free < int(config.output["minimum_free_bytes"]):
-        raise OSError("Query-State output filesystem free-space gate failed")
+    required_free_bytes = _required_output_free_bytes(
+        config,
+        completed_checkpoint_update=completed_checkpoint_update,
+    )
+    if shutil.disk_usage(output_parent).free < required_free_bytes:
+        raise OSError(
+            "Query-State output filesystem lacks the locked checkpoint budget "
+            "plus minimum-free reserve"
+        )
 
     return QueryStateTrainingPreflightEvidence(
         config_identity=config.identity,

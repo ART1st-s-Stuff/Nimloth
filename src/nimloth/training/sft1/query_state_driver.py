@@ -225,6 +225,7 @@ def save_query_state_distributed_checkpoint(
                         "data_cursor": dict(control.data_cursor),
                         "metric_cursor": dict(control.metric_cursor),
                         "terminal_primary": control.terminal_primary,
+                        "forensic_only": control.forensic_only,
                     },
                     sort_keys=True,
                     separators=(",", ":"),
@@ -335,6 +336,10 @@ def restore_query_state_distributed_checkpoint(
         state, control = load_query_state_rank_state(
             path, rank=rank, expected_identity=expected_identity
         )
+        if control.forensic_only:
+            raise ValueError(
+                "Query-State forensic checkpoint cannot be used for training resume"
+            )
         scheduler = restore_query_state_rank_state(root, optimizer, state)
     except Exception as error:  # Ensure peers do not enter later FSDP collectives alone.
         restore_error = error

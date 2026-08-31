@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,8 +14,13 @@ from nimloth.latent import LatentActionTokens, latent_state_tokens
 from nimloth.training.sft1.identity import audit_id176_processor_identity
 from nimloth.training.sft1.query_state_training_config import (
     parse_query_state_training_config,
+    query_state_training_run_identity,
 )
 from nimloth.training.sft1.query_state_training_preflight import (
+    _authenticate_prior_pause_receipt,
+    _authenticated_exact_restart_update,
+    _reject_forensic_failure_restart,
+    _required_output_free_bytes,
     _verify_training_data_contract,
     assert_query_state_training_backend_ready,
     validate_query_state_distributed_topology,
@@ -356,6 +362,348 @@ def test_live_preflight_hashes_real_files_and_returns_launch_evidence(
         )
     with pytest.raises(PermissionError, match="launch-locked"):
         assert_query_state_training_backend_ready(config)
+
+
+def test_forensic_failure_evidence_independently_blocks_restart(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run"
+    failure_root = run_root / "durable" / "failures"
+    failure_root.mkdir(parents=True)
+    _reject_forensic_failure_restart(run_root)
+    (failure_root / "unsafe_00000000_00000321.json").write_text(
+        "{}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError, match="forensic safety failure.*cannot restart"):
+        _reject_forensic_failure_restart(run_root)
+
+
+def test_prior_pause_receipt_is_mirrored_and_identity_bound(tmp_path: Path) -> None:
+    raw = _raw(mode="formal")
+    raw["schedule"]["approved_pause_update"] = 3210
+    command_manifest = {
+        "schema": "nimloth_sft1_query_state_training_command_v1",
+        "child_argv": raw["command"]["argv"],
+    }
+    command_manifest_text = json.dumps(command_manifest, sort_keys=True) + "\n"
+    command_digest = hashlib.sha256(command_manifest_text.encode()).hexdigest()
+    raw["command"]["identity"] = command_digest
+    raw["artifacts"]["file_sha256"][
+        raw["output"]["command_manifest_path"]
+    ] = command_digest
+    config = parse_query_state_training_config(raw)
+    run_root = tmp_path / "run"
+    controller_root = tmp_path / "controller"
+    checkpoint = run_root / "checkpoints" / "update_00001605"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "control.json").write_text("{}\n", encoding="utf-8")
+    process_identity = "c" * 64
+    prior_raw = json.loads(json.dumps(raw))
+    prior_raw["schedule"]["approved_pause_update"] = 1605
+    prior_config = parse_query_state_training_config(prior_raw)
+    process_path = controller_root / "processes" / f"process_{process_identity}.json"
+    process_path.parent.mkdir(parents=True)
+    process_path.write_text(
+        json.dumps(
+            {
+                "run_identity": query_state_training_run_identity(config),
+                "mode": "formal",
+                "process_identity": process_identity,
+                "config_identity": prior_config.identity,
+                "command_identity": prior_config.command["identity"],
+                "resume_mode": "fresh",
+                "approved_pause_update": 1605,
+                "resume_checkpoint": None,
+                "resolved_config": prior_raw,
+                "command_manifest_text": command_manifest_text,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="approved boundary lacks.*pause receipt"):
+        _authenticate_prior_pause_receipt(
+            config,
+            completed_update=1605,
+            checkpoint=checkpoint,
+            run_root=run_root,
+            controller_root=controller_root,
+        )
+    payload = {
+        "run_identity": query_state_training_run_identity(config),
+        "mode": "formal",
+        "status": "paused",
+        "update": 1605,
+        "checkpoint": str(checkpoint),
+        "checkpoint_control_hash": _sha(checkpoint / "control.json"),
+        "terminal_primary": False,
+        "automatic_formal_extension": False,
+        "automatic_sft2_authorization": False,
+        "automatic_export": False,
+    }
+    filename = "pause_update_00001605.json"
+    for root in (run_root, controller_root):
+        path = root / "pauses" / filename
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    assert _authenticate_prior_pause_receipt(
+        config,
+        completed_update=1605,
+        checkpoint=checkpoint,
+        run_root=run_root,
+        controller_root=controller_root,
+    )
+    process_payload = process_path.read_text(encoding="utf-8")
+    tampered_process = json.loads(process_payload)
+    tampered_manifest = json.loads(tampered_process["command_manifest_text"])
+    tampered_manifest["topology"] = {"world_size": 999}
+    tampered_process["command_manifest_text"] = (
+        json.dumps(tampered_manifest, sort_keys=True) + "\n"
+    )
+    process_path.write_text(json.dumps(tampered_process) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="prior process evidence provenance"):
+        _authenticate_prior_pause_receipt(
+            config,
+            completed_update=1605,
+            checkpoint=checkpoint,
+            run_root=run_root,
+            controller_root=controller_root,
+        )
+    process_path.write_text(process_payload, encoding="utf-8")
+    process_path.unlink()
+    with pytest.raises(ValueError, match="lacks prior process evidence"):
+        _authenticate_prior_pause_receipt(
+            config,
+            completed_update=1605,
+            checkpoint=checkpoint,
+            run_root=run_root,
+            controller_root=controller_root,
+        )
+    process_path.write_text(process_payload, encoding="utf-8")
+    (controller_root / "pauses" / filename).unlink()
+    with pytest.raises(ValueError, match="mirrors are incomplete"):
+        _authenticate_prior_pause_receipt(
+            config,
+            completed_update=1605,
+            checkpoint=checkpoint,
+            run_root=run_root,
+            controller_root=controller_root,
+        )
+
+    preempt_run = tmp_path / "preempt-run"
+    preempt_controller = tmp_path / "preempt-controller"
+    preempt_checkpoint = preempt_run / "checkpoints" / "update_00001605"
+    preempt_checkpoint.mkdir(parents=True)
+    (preempt_checkpoint / "control.json").write_text("{}\n", encoding="utf-8")
+    preempt_process = (
+        preempt_controller / "processes" / f"process_{process_identity}.json"
+    )
+    preempt_process.parent.mkdir(parents=True)
+    preempt_process.write_text(
+        json.dumps(
+            {
+                "run_identity": query_state_training_run_identity(config),
+                "mode": "formal",
+                "process_identity": process_identity,
+                "config_identity": config.identity,
+                "command_identity": config.command["identity"],
+                "resume_mode": "fresh",
+                "approved_pause_update": 3210,
+                "resume_checkpoint": None,
+                "resolved_config": raw,
+                "command_manifest_text": command_manifest_text,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert not _authenticate_prior_pause_receipt(
+        config,
+        completed_update=1605,
+        checkpoint=preempt_checkpoint,
+        run_root=preempt_run,
+        controller_root=preempt_controller,
+    )
+
+
+def test_exact_restart_authority_authenticates_marker_control_and_index(
+    tmp_path: Path,
+) -> None:
+    config = parse_query_state_training_config(_raw(mode="formal"))
+    checkpoint = tmp_path / "run" / "checkpoints" / "update_00000321"
+    checkpoint.mkdir(parents=True)
+    run_identity = query_state_training_run_identity(config)
+    base = {
+        "identity": {
+            "config_identity": run_identity,
+            "source_commit": config.source["commit"],
+            "world_size": 8,
+            "experiment_mode": "formal",
+            "run_identity": run_identity,
+        },
+        "config_identity": run_identity,
+        "source_commit": config.source["commit"],
+        "global_step": 321,
+        "data_cursor": {"next_update": 322},
+    }
+    checkpoint_identity = hashlib.sha256(
+        json.dumps(base, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    with_checkpoint = {**base, "checkpoint_identity": checkpoint_identity}
+    control_hash = hashlib.sha256(
+        json.dumps(
+            with_checkpoint,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    control_path = checkpoint / "control.json"
+    control_path.write_text(
+        json.dumps({**with_checkpoint, "control_hash": control_hash}, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    control_sha256 = _sha(control_path)
+    (checkpoint / "COMPLETED").write_text(
+        f"control_sha256={control_sha256}\n",
+        encoding="utf-8",
+    )
+    index_path = checkpoint.parents[1] / "durable" / "authoritative_index.json"
+    index_path.parent.mkdir()
+    index = {
+        "mode": "formal",
+        "run_identity": run_identity,
+        "entries": [{
+            "run_identity": run_identity,
+            "end_update": 321,
+            "checkpoint_path": str(checkpoint.resolve()),
+            "checkpoint_control_hash": control_sha256,
+        }],
+    }
+    index_path.write_text(json.dumps(index) + "\n", encoding="utf-8")
+    assert _authenticated_exact_restart_update(
+        config,
+        checkpoint=checkpoint,
+        run_root=checkpoint.parents[1],
+    ) == 321
+
+    (checkpoint / "COMPLETED").write_text(
+        "control_sha256=" + ("0" * 64) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="marker/control hash"):
+        _authenticated_exact_restart_update(
+            config,
+            checkpoint=checkpoint,
+            run_root=checkpoint.parents[1],
+        )
+
+    (checkpoint / "COMPLETED").write_text(
+        f"control_sha256={control_sha256}\n",
+        encoding="utf-8",
+    )
+    tampered_control = json.loads(control_path.read_text(encoding="utf-8"))
+    tampered_control["control_hash"] = "0" * 64
+    control_path.write_text(json.dumps(tampered_control) + "\n", encoding="utf-8")
+    (checkpoint / "COMPLETED").write_text(
+        f"control_sha256={_sha(control_path)}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="control identity"):
+        _authenticated_exact_restart_update(
+            config,
+            checkpoint=checkpoint,
+            run_root=checkpoint.parents[1],
+        )
+
+    control_path.write_text(
+        json.dumps({**with_checkpoint, "control_hash": control_hash}, sort_keys=True)
+        + "\n",
+        encoding="utf-8",
+    )
+    control_sha256 = _sha(control_path)
+    (checkpoint / "COMPLETED").write_text(
+        f"control_sha256={control_sha256}\n",
+        encoding="utf-8",
+    )
+    index["entries"][0]["end_update"] = 322
+    index["entries"][0]["checkpoint_control_hash"] = control_sha256
+    index_path.write_text(json.dumps(index) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="checkpoint/index identity"):
+        _authenticated_exact_restart_update(
+            config,
+            checkpoint=checkpoint,
+            run_root=checkpoint.parents[1],
+        )
+
+
+def test_exact_restart_free_space_budget_counts_only_remaining_commits() -> None:
+    config = parse_query_state_training_config(_raw(mode="formal"))
+    estimate = int(config.output["checkpoint_estimated_bytes"])
+    fresh_required = _required_output_free_bytes(
+        config,
+        completed_checkpoint_update=0,
+    )
+    assert fresh_required == int(config.output["minimum_free_bytes"]) + (
+        50 * estimate
+    )
+    paused_raw = _raw(mode="formal")
+    paused_raw["schedule"]["approved_pause_update"] = 1605
+    paused = parse_query_state_training_config(paused_raw)
+    assert _required_output_free_bytes(
+        paused,
+        completed_checkpoint_update=0,
+    ) == 402_500_000_000
+    with pytest.raises(ValueError, match="must exceed restored update"):
+        _required_output_free_bytes(paused, completed_checkpoint_update=1605)
+    continued_raw = _raw(mode="formal")
+    continued_raw["schedule"]["approved_pause_update"] = 3210
+    continued = parse_query_state_training_config(continued_raw)
+    assert _required_output_free_bytes(
+        continued,
+        completed_checkpoint_update=1605,
+    ) == 402_500_000_000
+    terminal_raw = _raw(mode="formal")
+    terminal_raw["schedule"]["approved_pause_update"] = 16050
+    terminal_window = parse_query_state_training_config(terminal_raw)
+    assert _required_output_free_bytes(
+        terminal_window,
+        completed_checkpoint_update=14445,
+    ) == 402_500_000_000
+    unbounded_restart = parse_query_state_training_config(_raw(mode="formal"))
+    with pytest.raises(ValueError, match="approved pause.*required for restart"):
+        _required_output_free_bytes(
+            unbounded_restart,
+            completed_checkpoint_update=1605,
+        )
+    with pytest.raises(ValueError, match="commit boundary"):
+        _required_output_free_bytes(config, completed_checkpoint_update=400)
+
+
+def test_live_preflight_requires_checkpoint_budget_plus_free_space_reserve(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw, environment = _resolved_contract(tmp_path, launch_locked=False)
+    raw["output"]["checkpoint_estimated_bytes"] = 1_000_000
+    raw["output"]["checkpoint_budget_bytes"] = 8_000_000
+    config = parse_query_state_training_config(raw)
+    monkeypatch.setattr(
+        "nimloth.training.sft1.query_state_training_preflight._verify_training_data_contract",
+        lambda _config: None,
+    )
+    monkeypatch.setattr(
+        "nimloth.training.sft1.query_state_training_preflight.shutil.disk_usage",
+        lambda _path: SimpleNamespace(free=8_000_000),
+    )
+    with pytest.raises(OSError, match="checkpoint budget.*minimum-free"):
+        verify_query_state_training_preflight(
+            config,
+            repo_root=Path(config.source["repo_root"]),
+            current_argv=config.command["argv"],
+            environ=environment,
+        )
 
 
 def test_live_preflight_rejects_dirty_source_hash_and_command_changes(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 from dataclasses import asdict
+import hashlib
 import json
 from pathlib import Path
 import random
@@ -29,6 +30,7 @@ from nimloth.training.sft1.query_state_checkpoint import (
     QueryStateResumeIdentity,
     export_query_state_deployable_bundle,
     finalize_query_state_rank_checkpoint,
+    load_query_state_forensic_model_for_debug,
     load_query_state_rank_state,
     restore_query_state_rank_state,
     save_query_state_rank_state,
@@ -438,13 +440,18 @@ def test_diagnostics_accumulate_only_direct_query_state_lm_and_action() -> None:
     } <= set(report.metrics)
 
 
-def _resume_identity(world_size: int = 2) -> QueryStateResumeIdentity:
+def _resume_identity(
+    world_size: int = 2,
+    *,
+    experiment_mode: str = "mechanics",
+) -> QueryStateResumeIdentity:
     return QueryStateResumeIdentity(
         source_commit="1" * 40,
         source_manifest_identity="2" * 64,
         config_identity="3" * 64,
         run_identity="4" * 64,
         world_size=world_size,
+        experiment_mode=experiment_mode,
     )
 
 
@@ -616,6 +623,93 @@ def test_distributed_checkpoint_driver_restores_model_optimizer_rng_and_cursors(
     assert optimizer.state
     assert restored.metric_cursor == {"count/lm_ce": 9}
     assert scheduler == {"last_epoch": 3}
+
+
+def test_forensic_checkpoint_is_debug_loadable_but_rejected_for_training_resume(
+    tmp_path: Path,
+) -> None:
+    root = nn.Module()
+    root.objective = nn.Module()
+    root.objective.projector = DirectSlotProjector()
+    optimizer = torch.optim.AdamW(root.parameters(), lr=1e-4)
+    root.objective.projector(torch.ones(1, 16, 2048)).sum().backward()
+    optimizer.step()
+    expected = root.objective.projector.linear.weight.detach().clone()
+    control = QueryStateDistributedControl(
+        identity=_resume_identity(world_size=1, experiment_mode="formal"),
+        global_step=321,
+        data_cursor={"next_update": 322},
+        metric_cursor={"validation": 321},
+        forensic_only=True,
+    )
+    run_root = tmp_path / "run"
+    forensic = run_root / "forensics" / "unsafe_update_00000321"
+    save_query_state_distributed_checkpoint(
+        forensic,
+        root=root,
+        optimizer=optimizer,
+        scheduler_state={"last_epoch": 321},
+        control=control,
+        rank=0,
+    )
+    failure_path = run_root / "durable" / "failures" / "unsafe_00000000_00000321.json"
+    failure_path.parent.mkdir(parents=True)
+    control_sha = hashlib.sha256((forensic / "control.json").read_bytes()).hexdigest()
+    failure_path.write_text(
+        json.dumps(
+            {
+                "schema": "nimloth_sft1_query_state_segment_v1",
+                "run_identity": control.identity.run_identity,
+                "mode": "formal",
+                "end_update": 321,
+                "forensic_checkpoint": {
+                    "path": str(forensic.resolve()),
+                    "control_sha256": control_sha,
+                    "forensic_only": True,
+                    "resumable": False,
+                    "authoritative": False,
+                },
+                "resumable": False,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with torch.no_grad():
+        root.objective.projector.linear.weight.zero_()
+    optimizer.state.clear()
+    with pytest.raises(ValueError, match="forensic checkpoint cannot be used.*resume"):
+        restore_query_state_distributed_checkpoint(
+            forensic,
+            root=root,
+            optimizer=optimizer,
+            expected_identity=control.identity,
+            rank=0,
+        )
+    assert not optimizer.state
+    restored = load_query_state_forensic_model_for_debug(
+        forensic,
+        root=root,
+        rank=0,
+        expected_identity=control.identity,
+        failure_manifest_path=failure_path,
+    )
+    torch.testing.assert_close(root.objective.projector.linear.weight, expected)
+    assert not optimizer.state
+    assert restored.global_step == 321
+    assert restored.forensic_only is True
+    wrong_run_failure = run_root / "durable" / "failures" / "wrong-run.json"
+    wrong = json.loads(failure_path.read_text())
+    wrong["run_identity"] = "f" * 64
+    wrong_run_failure.write_text(json.dumps(wrong) + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="forensic checkpoint provenance"):
+        load_query_state_forensic_model_for_debug(
+            forensic,
+            root=root,
+            rank=0,
+            expected_identity=control.identity,
+            failure_manifest_path=wrong_run_failure,
+        )
 
 
 def _actor_exporter(path: Path) -> None:

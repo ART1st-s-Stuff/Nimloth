@@ -14,7 +14,9 @@ from nimloth.training.sft1 import query_state_training_backend
 from nimloth.training.sft1.query_state_training_backend import (
     _FormalTrackingOwner,
     _actor_baseline_path,
+    _approved_pause_due,
     _coordinate_early_stopping_decision,
+    _forensic_metric_cursor,
     _global_teacher_memo_metric,
     _authoritative_entries_for_restart,
     _index_training_rows,
@@ -23,6 +25,7 @@ from nimloth.training.sft1.query_state_training_backend import (
     _recover_first_boundary_crash,
     _run_generation_format_probe,
     _validation_boundary_plan,
+    _validate_formal_restart_early_stopping_cursor,
     build_query_state_training_updates,
     query_state_training_run_identity,
 )
@@ -113,6 +116,8 @@ def test_formal_tracking_queries_wandb_by_storage_name_not_public_id_column(
         entity=config.tracking.entity,
         project=config.tracking.project,
         id=config.tracking.run_id,
+        group=config.tracking.group,
+        name=config.tracking.run_name,
         url="https://wandb.example/fresh",
     )
     fake_wandb = SimpleNamespace(
@@ -452,18 +457,101 @@ def test_backend_validation_wires_global_diagnostics_and_fail_closed_safety() ->
     assert "evaluate_actor_safety(" in source
     assert "VALIDATOR_FAILED" not in source  # controller owns the filename
     assert "not_evaluated_by_p5_backend" not in source
-    assert "actor safety failed; no checkpoint/index/terminal completion" in source
+    assert "actor safety failed; forensic checkpoint preserved " in source
+    assert "without authoritative index" in source
+    assert 'run_root / "forensics" / f"unsafe_update_{segment_end:08d}"' in source
+    assert '"forensic_checkpoint_preserved": True' in source
+    assert 'checkpoint_path=run_root / "unsafe_checkpoint_not_published"' not in source
     assert 'config.validation["generation_format_updates"]' in source
     assert "run_fsdp_greedy_turn_probe(" in source
-    assert "update-zero safety failed; no optimizer update or checkpoint" in source
+    assert "update-zero safety failed; forensic checkpoint " in source
+    assert '"unsafe_update_00000000"' in source
+    assert "record_forensic_save_failure(" in source
+    assert "forensic checkpoint save failed" in source
     assert "normalization = query_state_global_normalization(" in source
     assert "device=validation_device" in source
     assert "QueryStateNormalization(1, 1, world_size)" not in source
     assert 'split="calibration"' in source
     assert 'split="holdout"' in source
+    assert 'epoch_updates = int(config.schedule["epoch_updates"])' in source
+    assert "segment_end % epoch_updates == 0" in source
+    assert "segment_end // epoch_updates" in source
+    assert "segment_end // cadence" not in source
+    assert "no_validation_due_at_sub_epoch_commit" in source
     assert '"holdout_controls_early_stop": False' in source
     assert '"actual_terminal_reason": terminal_reason' in source
     assert "terminal_primary=(config.mode == \"formal\" and actual_terminal is not None)" in source
+
+
+def test_approved_pause_is_due_only_at_exact_nonterminal_boundary() -> None:
+    config = parse_query_state_training_config(_raw(mode="formal"))
+    assert _approved_pause_due(config, segment_end=1605) is False
+    paused_raw = _raw(mode="formal")
+    paused_raw["schedule"]["approved_pause_update"] = 1605
+    paused = parse_query_state_training_config(paused_raw)
+    assert _approved_pause_due(paused, segment_end=321) is False
+    assert _approved_pause_due(paused, segment_end=1605) is True
+    assert _approved_pause_due(paused, segment_end=3210) is False
+
+
+def test_forensic_metric_cursor_rejects_terminal_candidate_without_losing_evidence() -> None:
+    terminal = {"epoch": 2, "update": 3210, "terminal_primary": True}
+    early = {
+        "last_epoch": 2,
+        "last_update": 3210,
+        "terminal_epoch": 2,
+        "terminal_update": 3210,
+        "stop_reason": "converged_early_stop",
+    }
+    forensic = _forensic_metric_cursor(
+        {"actual_terminal": terminal, "early_stopping": early, "log": 3210}
+    )
+    assert forensic["actual_terminal"] is None
+    assert forensic["rejected_terminal_candidate"] == terminal
+    assert forensic["early_stopping"] == {
+        **early,
+        "terminal_epoch": None,
+        "terminal_update": None,
+        "stop_reason": None,
+    }
+    assert forensic["rejected_early_stopping_cursor"] == early
+    assert forensic["log"] == 3210
+
+
+def test_formal_restart_accepts_sub_epoch_cursor_without_advancing_patience() -> None:
+    initial = QueryStateEarlyStoppingCursor.initial()
+    _validate_formal_restart_early_stopping_cursor(
+        initial,
+        start_update=321,
+        epoch_updates=1605,
+    )
+    epoch_one = QueryStateEarlyStoppingCursor(
+        best_composite=4.0,
+        last_composite=4.0,
+        best_epoch=1,
+        bad_epochs=0,
+        last_epoch=1,
+        last_update=1605,
+        terminal_epoch=None,
+        terminal_update=None,
+        stop_reason=None,
+    )
+    _validate_formal_restart_early_stopping_cursor(
+        epoch_one,
+        start_update=1605,
+        epoch_updates=1605,
+    )
+    _validate_formal_restart_early_stopping_cursor(
+        epoch_one,
+        start_update=1926,
+        epoch_updates=1605,
+    )
+    with pytest.raises(ValueError, match="early-stop cursor is not exact"):
+        _validate_formal_restart_early_stopping_cursor(
+            epoch_one,
+            start_update=321,
+            epoch_updates=1605,
+        )
 
 
 def test_backend_first_boundary_crash_replay_quarantines_checkpoint_path(

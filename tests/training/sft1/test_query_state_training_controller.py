@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -37,6 +38,50 @@ def test_controller_claim_is_nonoverwrite_and_publishes_durable_readme_first(tmp
             run_identity=_SHA,
             mode="pilot",
         ).claim(resolved_config={}, command_manifest={})
+
+
+def test_authoritative_pause_receipt_is_nonterminal_and_restartable(
+    tmp_path: Path,
+) -> None:
+    controller = QueryStateTrainingController(
+        run_root=tmp_path / "formal",
+        controller_root=tmp_path / "controller",
+        run_identity=_SHA,
+        mode="formal",
+    )
+    controller.claim(resolved_config={"mode": "formal"}, command_manifest={"argv": []})
+    command_manifest_text = '{"schema":"test"}\n'
+    process_path = controller.record_process(
+        process_identity="c" * 64,
+        details={
+            "config_identity": "d" * 64,
+            "command_identity": hashlib.sha256(
+                command_manifest_text.encode()
+            ).hexdigest(),
+            "resume_mode": "fresh",
+            "approved_pause_update": 1605,
+            "resume_checkpoint": None,
+            "resolved_config": {"schema": "test"},
+            "command_manifest_text": command_manifest_text,
+        },
+    )
+    process = json.loads(process_path.read_text())
+    assert process["approved_pause_update"] == 1605
+    assert process["run_identity"] == _SHA
+    details = {
+        "checkpoint": "/run/checkpoints/update_00001605",
+        "checkpoint_control_hash": "b" * 64,
+        "terminal_primary": False,
+    }
+    path = controller.record_pause(update=1605, details=details)
+    assert path.name == "pause_update_00001605.json"
+    receipt = json.loads(path.read_text())
+    assert receipt["status"] == "paused"
+    assert receipt["terminal_primary"] is False
+    assert not (controller.run_root / "COMPLETED.json").exists()
+    controller.verify_existing_claim()
+    with pytest.raises(FileExistsError, match="immutable"):
+        controller.record_pause(update=1605, details=details)
 
 
 def test_failure_preemption_and_completion_are_distinct_terminal_states(tmp_path: Path) -> None:

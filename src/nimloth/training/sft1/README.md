@@ -58,19 +58,34 @@ The formal Query-State owner is also schema-distinct from both paths above:
   separate immutable generation-format manifest registers exact rows, production
   prompt/spec/parser identities, and reasoning/output budgets.
 - `query_state_training_runtime.py` makes checkpoint cadence a resumable segment
-  boundary. Update records remain pending until due validation and safety, exact
-  checkpoint control/cursor hashes, and a same-run immutable mirror batch exist;
-  the atomic authoritative index moves before idempotent W&B replay. Pre-index
-  crashes quarantine the segment and replay from the prior commit. Pilot restart
-  receipts require a different process plus exact model/optimizer/scheduler/RNG
-  fingerprints and data/validation/log/W&B cursors.
+  boundary. Formal `epoch_updates` is separate from checkpoint cadence: sub-epoch
+  commits save the full exact-resume state without running calibration or advancing
+  early-stop patience, while real epoch boundaries retain calibration/holdout and
+  terminal semantics. Update records remain pending until due validation and safety,
+  exact checkpoint control/cursor hashes, and a same-run immutable mirror batch
+  exist. Preflight binds the measured complete-checkpoint byte estimate to every
+  commit in the currently approved process window plus the minimum-free reserve;
+  it does not assume retention or delete authoritative checkpoints. A formal
+  `approved_pause_update` may stop only at a real epoch boundary after its safe
+  authoritative commit and W&B mirror. The field limits process authorization,
+  remains outside resume-critical identity, and cannot mark a terminal-primary
+  checkpoint; continuation requires a newly approved higher boundary. The atomic
+  authoritative index moves before
+  idempotent W&B replay. A due safety failure preserves the complete rank transaction
+  under `forensics/unsafe_update_*` and binds it in immutable failure evidence for
+  explicit read-only debugging, but marks it forensic-only/non-resumable and never
+  advances the authoritative index or safe W&B mirror.
+  Pre-index crashes quarantine the segment and replay from the prior commit. Pilot
+  restart receipts require a different process plus exact model/optimizer/scheduler/
+  RNG fingerprints and data/validation/log/W&B cursors.
 - `query_state_training_backend.py` runs the shared production
   `TurnGenerationSpec`/parser through current complete-root FSDP logits on the
   registered real unacted response-policy prompts. Update 0 and terminal are
   mandatory; additional format checks require explicit cadence. Parse failure is
   non-resumable and never executes actions, persists rollout, or exports.
-- `query_state_training_controller.py` owns non-overwrite run claims and distinct
-  completed/failed/preempted/validator-failed terminals. It never submits Slurm,
+- `query_state_training_controller.py` owns non-overwrite run claims, immutable
+  nonterminal pause receipts, and distinct completed/failed/preempted/
+  validator-failed terminals. It never submits Slurm,
   extends pilot into formal, starts SFT2, or exports automatically.
 - `query_state_training_validation.py` owns detached same-forward metadata and
   feature joins, globally attributable raw/direct/DINO/actor/upstream/natural-pair

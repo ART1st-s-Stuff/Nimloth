@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from collections.abc import Mapping
@@ -131,6 +132,93 @@ class QueryStateTrainingController:
         ]
         if existing:
             raise RuntimeError("Query-State terminal run cannot restart or replay")
+
+    def record_process(
+        self,
+        *,
+        process_identity: str,
+        details: Mapping[str, Any],
+    ) -> Path:
+        config_identity = details.get("config_identity")
+        command_identity = details.get("command_identity")
+        resume_mode = details.get("resume_mode")
+        approved_pause_update = details.get("approved_pause_update")
+        resolved_config = details.get("resolved_config")
+        command_manifest_text = details.get("command_manifest_text")
+        if set(details) & {"run_identity", "mode", "process_identity"}:
+            raise ValueError("Query-State process evidence overrides protected identity")
+        if (
+            not isinstance(process_identity, str)
+            or len(process_identity) != 64
+            or any(char not in _HEX for char in process_identity)
+            or not isinstance(config_identity, str)
+            or len(config_identity) != 64
+            or any(char not in _HEX for char in config_identity)
+            or not isinstance(command_identity, str)
+            or len(command_identity) != 64
+            or any(char not in _HEX for char in command_identity)
+            or resume_mode not in {"fresh", "crash_replay", "exact_restart"}
+            or isinstance(approved_pause_update, bool)
+            or not isinstance(approved_pause_update, int)
+            or approved_pause_update < 0
+            or not isinstance(resolved_config, Mapping)
+            or not isinstance(command_manifest_text, str)
+            or hashlib.sha256(command_manifest_text.encode()).hexdigest()
+            != command_identity
+        ):
+            raise ValueError("Query-State process approval evidence is invalid")
+        payload = {
+            **dict(details),
+            "run_identity": self.run_identity,
+            "mode": self.mode,
+            "process_identity": process_identity,
+        }
+        process_root = self.controller_root / "processes"
+        process_root.mkdir(exist_ok=True)
+        return _atomic_json(
+            process_root / f"process_{process_identity}.json",
+            payload,
+        )
+
+    def record_pause(
+        self,
+        *,
+        update: int,
+        details: Mapping[str, Any],
+    ) -> Path:
+        if self.mode != "formal" or isinstance(update, bool) or update < 1:
+            raise ValueError("Query-State pause requires a positive formal update")
+        checkpoint = details.get("checkpoint")
+        control_hash = details.get("checkpoint_control_hash")
+        if (
+            not isinstance(checkpoint, str)
+            or not checkpoint
+            or not isinstance(control_hash, str)
+            or len(control_hash) != 64
+            or any(char not in _HEX for char in control_hash)
+            or details.get("terminal_primary") is not False
+        ):
+            raise ValueError("Query-State pause checkpoint evidence is invalid")
+        if set(details) & {"run_identity", "mode", "status", "update"}:
+            raise ValueError("Query-State pause evidence overrides protected identity")
+        payload = {
+            **dict(details),
+            "run_identity": self.run_identity,
+            "mode": self.mode,
+            "status": "paused",
+            "update": update,
+            "automatic_formal_extension": False,
+            "automatic_sft2_authorization": False,
+            "automatic_export": False,
+        }
+        filename = f"pause_update_{update:08d}.json"
+        run_pause_root = self.run_root / "pauses"
+        controller_pause_root = self.controller_root / "pauses"
+        run_pause_root.mkdir(exist_ok=True)
+        controller_pause_root.mkdir(exist_ok=True)
+        path = _atomic_json(run_pause_root / filename, payload)
+        _atomic_json(controller_pause_root / filename, payload)
+        return path
 
     def record_terminal(
         self,

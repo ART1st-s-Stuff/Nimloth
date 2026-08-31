@@ -10,6 +10,7 @@ from nimloth.training.sft1.query_state_training_config import (
     QueryStateTrackingInitResult,
     coordinate_tracking_init,
     parse_query_state_training_config,
+    query_state_training_run_identity,
     reapply_locked_wandb_environment,
     resolve_wandb_start,
 )
@@ -24,8 +25,13 @@ def _raw(*, mode: str = "pilot", resume_mode: str = "fresh") -> dict:
     restart_tracking = resume_mode != "fresh"
     checkpoint_restart = resume_mode == "exact_restart"
     max_updates = 32 if pilot else 16050
-    checkpoint_cadence = 4 if pilot else 1605
+    checkpoint_cadence = 4 if pilot else 321
+    epoch_updates = 32 if pilot else 1605
     validation_updates = [0, max_updates] if pilot else [0, 3210, 8025, 16050]
+    checkpoint_estimated_bytes = 1 if pilot else 20_500_000_000
+    checkpoint_budget_bytes = (
+        max_updates // checkpoint_cadence
+    ) * checkpoint_estimated_bytes
     return {
         "schema": QUERY_STATE_TRAINING_CONFIG_SCHEMA,
         "mode": mode,
@@ -108,9 +114,11 @@ def _raw(*, mode: str = "pilot", resume_mode: str = "fresh") -> dict:
             "epochs": 1 if pilot else 10,
             "max_updates": max_updates,
             "rows_per_rank_update": 2 if pilot else 1,
+            "epoch_updates": epoch_updates,
             "checkpoint_cadence_updates": checkpoint_cadence,
             "validation_updates": validation_updates,
             "forced_restart_update": 16 if pilot else 0,
+            "approved_pause_update": 0,
         },
         "early_stopping": {
             "enabled": not pilot,
@@ -127,7 +135,7 @@ def _raw(*, mode: str = "pilot", resume_mode: str = "fresh") -> dict:
             "split": "calibration" if pilot else "dual_calibration_control_holdout_primary",
             "baseline_update": 0,
             "terminal_update": max_updates,
-            "calibration_cadence_updates": checkpoint_cadence,
+            "calibration_cadence_updates": checkpoint_cadence if pilot else epoch_updates,
             "holdout_updates": [0, max_updates] if pilot else [0, 3210, 8025, 16050],
             "holdout_at_actual_terminal": not pilot,
             "generation_format_manifest_path": "/manifests/generation-format.json",
@@ -163,7 +171,9 @@ def _raw(*, mode: str = "pilot", resume_mode: str = "fresh") -> dict:
             "overwrite": False,
             "resolved_config_path": f"/contracts/{mode}.json",
             "command_manifest_path": f"/contracts/{mode}.commands",
-            "minimum_free_bytes": 1,
+            "minimum_free_bytes": 1 if pilot else 300_000_000_000,
+            "checkpoint_estimated_bytes": checkpoint_estimated_bytes,
+            "checkpoint_budget_bytes": checkpoint_budget_bytes,
         },
         "resources": {
             "world_size": 2 if pilot else 8,
@@ -422,6 +432,26 @@ def test_exact_schedule_cardinality_is_rejected_during_cpu_config_parse() -> Non
         parse_query_state_training_config(bad)
 
 
+def test_formal_one_epoch_pause_is_operational_not_resume_identity() -> None:
+    raw = _raw(mode="formal")
+    baseline = parse_query_state_training_config(raw)
+    paused = deepcopy(raw)
+    paused["schedule"]["approved_pause_update"] = 1605
+    parsed = parse_query_state_training_config(paused)
+    assert parsed.schedule["approved_pause_update"] == 1605
+    assert query_state_training_run_identity(parsed) == query_state_training_run_identity(
+        baseline
+    )
+    not_epoch = deepcopy(paused)
+    not_epoch["schedule"]["approved_pause_update"] = 321
+    with pytest.raises(ValueError, match="pause.*epoch boundary"):
+        parse_query_state_training_config(not_epoch)
+    low_floor = deepcopy(paused)
+    low_floor["output"]["minimum_free_bytes"] = 1
+    with pytest.raises(ValueError, match="minimum_free_bytes.*300GB"):
+        parse_query_state_training_config(low_floor)
+
+
 def test_formal_ws8_max10_early_stop_contract_is_strict_and_identity_bound() -> None:
     raw = _raw(mode="formal")
     parsed = parse_query_state_training_config(raw)
@@ -430,7 +460,8 @@ def test_formal_ws8_max10_early_stop_contract_is_strict_and_identity_bound() -> 
     assert parsed.resources["gpus_per_node"] == 4
     assert parsed.schedule["epochs"] == 10
     assert parsed.schedule["max_updates"] == 16050
-    assert parsed.schedule["checkpoint_cadence_updates"] == 1605
+    assert parsed.schedule["epoch_updates"] == 1605
+    assert parsed.schedule["checkpoint_cadence_updates"] == 321
     assert parsed.optimizer["language_learning_rate"] == 1e-6
     assert parsed.optimizer["direct_state_learning_rate"] == 1e-4
     assert parsed.optimizer["scheduler"] == "constant"
@@ -448,7 +479,6 @@ def test_formal_ws8_max10_early_stop_contract_is_strict_and_identity_bound() -> 
     }
     assert parsed.validation["holdout_updates"] == (0, 3210, 8025, 16050)
     assert parsed.validation["holdout_at_actual_terminal"] is True
-
     for section, field, value in (
         ("resources", "world_size", 2),
         ("resources", "nodes", 1),
@@ -465,6 +495,37 @@ def test_formal_ws8_max10_early_stop_contract_is_strict_and_identity_bound() -> 
                 parse_query_state_training_config(changed)
         else:
             assert parse_query_state_training_config(changed).identity != parsed.identity
+
+    nondivisor = deepcopy(raw)
+    nondivisor["schedule"]["checkpoint_cadence_updates"] = 400
+    with pytest.raises(ValueError, match="divide.*epoch|epoch.*divisible"):
+        parse_query_state_training_config(nondivisor)
+    wrong_epoch = deepcopy(raw)
+    wrong_epoch["schedule"]["epoch_updates"] = 321
+    with pytest.raises(ValueError, match="epoch_updates|epoch update"):
+        parse_query_state_training_config(wrong_epoch)
+    wrong_calibration = deepcopy(raw)
+    wrong_calibration["validation"]["calibration_cadence_updates"] = 321
+    with pytest.raises(ValueError, match="epoch commit boundary"):
+        parse_query_state_training_config(wrong_calibration)
+    understated_checkpoint = deepcopy(raw)
+    understated_checkpoint["output"]["checkpoint_estimated_bytes"] -= 1
+    understated_checkpoint["output"]["checkpoint_budget_bytes"] = (
+        50 * understated_checkpoint["output"]["checkpoint_estimated_bytes"]
+    )
+    with pytest.raises(ValueError, match="equal the locked 20.5GB"):
+        parse_query_state_training_config(understated_checkpoint)
+    overstated_checkpoint = deepcopy(raw)
+    overstated_checkpoint["output"]["checkpoint_estimated_bytes"] += 1
+    overstated_checkpoint["output"]["checkpoint_budget_bytes"] = (
+        50 * overstated_checkpoint["output"]["checkpoint_estimated_bytes"]
+    )
+    with pytest.raises(ValueError, match="equal the locked 20.5GB"):
+        parse_query_state_training_config(overstated_checkpoint)
+    incomplete_budget = deepcopy(raw)
+    incomplete_budget["output"]["checkpoint_budget_bytes"] -= 1
+    with pytest.raises(ValueError, match="every max-budget commit"):
+        parse_query_state_training_config(incomplete_budget)
 
     missing = deepcopy(raw)
     del missing["early_stopping"]

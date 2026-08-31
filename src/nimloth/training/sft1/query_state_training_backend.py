@@ -58,7 +58,10 @@ from nimloth.training.sft1.query_state_runtime import (
     assemble_query_state_training_root,
     construct_query_state_production_root,
 )
-from nimloth.training.sft1.query_state_training_config import QueryStateTrainingConfig
+from nimloth.training.sft1.query_state_training_config import (
+    QueryStateTrainingConfig,
+    query_state_training_run_identity,
+)
 from nimloth.training.sft1.query_state_training_manifest import (
     QueryStateGenerationFormatManifest,
     build_generation_response_policy_prompt,
@@ -397,43 +400,6 @@ def build_query_state_training_updates(
             f"Query-State max_updates disagrees with exact schedule: {expected_updates} != {len(updates)}"
         )
     return tuple(updates)
-
-
-def _plain(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {str(key): _plain(item) for key, item in value.items()}
-    if isinstance(value, (tuple, list)):
-        return [_plain(item) for item in value]
-    return value
-
-
-def query_state_training_run_identity(config: QueryStateTrainingConfig) -> str:
-    """Bind resume-critical semantics while allowing only the restart locator delta."""
-
-    payload = {
-        "schema": config.schema,
-        "mode": config.mode,
-        "source": _plain(config.source),
-        "data": _plain(config.data),
-        "model": _plain(config.model),
-        "objective": _plain(config.objective),
-        "optimizer": _plain(config.optimizer),
-        "runtime": _plain(config.runtime),
-        "schedule": _plain(config.schedule),
-        "early_stopping": _plain(config.early_stopping),
-        "validation": _plain(config.validation),
-        "run_root": config.output["run_root"],
-        "controller_root": config.output["controller_root"],
-        "resources": _plain(config.resources),
-        "environment": _plain(config.environment),
-        "actor_checkpoint": config.initialization["actor_checkpoint"],
-        "actor_checkpoint_identity": config.initialization["actor_checkpoint_identity"],
-        "direct_head_initialization": config.initialization["direct_head_initialization"],
-        "tracking_identity": None if config.mode == "pilot" else config.tracking.identity,
-    }
-    return hashlib.sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-    ).hexdigest()
 
 
 def _validation_boundary_plan(
@@ -1032,6 +998,57 @@ def _recover_first_boundary_crash(
     return recovery
 
 
+def _validate_formal_restart_early_stopping_cursor(
+    cursor: QueryStateEarlyStoppingCursor,
+    *,
+    start_update: int,
+    epoch_updates: int,
+) -> None:
+    if start_update < 0 or epoch_updates < 1:
+        raise ValueError("formal restart update/epoch cadence is invalid")
+    completed_epoch = start_update // epoch_updates
+    expected_early_stop_update = completed_epoch * epoch_updates
+    if (
+        cursor.stop_reason is not None
+        or cursor.last_epoch != completed_epoch
+        or cursor.last_update != expected_early_stop_update
+    ):
+        raise ValueError("formal restored early-stop cursor is not exact")
+
+
+def _approved_pause_due(
+    config: QueryStateTrainingConfig,
+    *,
+    segment_end: int,
+) -> bool:
+    approved_pause = int(config.schedule["approved_pause_update"])
+    return config.mode == "formal" and approved_pause > 0 and segment_end == approved_pause
+
+
+def _forensic_metric_cursor(
+    metric_cursor: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    forensic = dict(metric_cursor)
+    actual_terminal = forensic.get("actual_terminal")
+    early = forensic.get("early_stopping")
+    if actual_terminal is not None:
+        forensic["rejected_terminal_candidate"] = actual_terminal
+        forensic["actual_terminal"] = None
+    if isinstance(early, Mapping) and (
+        early.get("terminal_epoch") is not None
+        or early.get("terminal_update") is not None
+        or early.get("stop_reason") is not None
+    ):
+        forensic["rejected_early_stopping_cursor"] = dict(early)
+        forensic["early_stopping"] = {
+            **dict(early),
+            "terminal_epoch": None,
+            "terminal_update": None,
+            "stop_reason": None,
+        }
+    return forensic
+
+
 def _authoritative_entries_for_restart(
     store: QueryStateSegmentStore,
     *,
@@ -1091,8 +1108,13 @@ class _FormalTrackingOwner:
                 if len(remote_runs) > 1:
                     raise RuntimeError("W&B query returned duplicate locked run IDs")
                 remote_identity = (
-                    None if not remote_runs else
-                    f"{remote_runs[0].entity}/{remote_runs[0].project}/{remote_runs[0].id}"
+                    None
+                    if not remote_runs
+                    else (
+                        f"{remote_runs[0].entity}/{remote_runs[0].project}/"
+                        f"{remote_runs[0].group}/{remote_runs[0].name}/"
+                        f"{remote_runs[0].id}"
+                    )
                 )
                 start = resolve_wandb_start(
                     self.config,
@@ -1108,7 +1130,10 @@ class _FormalTrackingOwner:
                     resume=start.resume,
                     config={"query_state_config_identity": self.config.identity},
                 )
-                actual = f"{self.run.entity}/{self.run.project}/{self.run.id}"
+                actual = (
+                    f"{self.run.entity}/{self.run.project}/{self.run.group}/"
+                    f"{self.run.name}/{self.run.id}"
+                )
                 if actual != tracking.identity:
                     raise RuntimeError("initialized W&B identity differs from launch lock")
                 result = {"ok": True, "identity": actual, "url": self.run.url}
@@ -1211,20 +1236,44 @@ def run_query_state_training(
     claim_error: BaseException | None = None
     if rank == 0:
         try:
-            if fresh:
-                resolved_config = json.loads(
-                    Path(str(config.output["resolved_config_path"])).read_text(encoding="utf-8")
+            resolved_config = json.loads(
+                Path(str(config.output["resolved_config_path"])).read_text(
+                    encoding="utf-8"
                 )
-                if not isinstance(resolved_config, dict):
-                    raise ValueError("Query-State resolved config publication requires a mapping")
+            )
+            command_manifest_text = Path(
+                str(config.output["command_manifest_path"])
+            ).read_text(encoding="utf-8")
+            command_manifest = json.loads(command_manifest_text)
+            if not isinstance(resolved_config, dict) or not isinstance(
+                command_manifest, dict
+            ):
+                raise ValueError(
+                    "Query-State process config/command publication requires mappings"
+                )
+            if fresh:
                 controller.claim(
                     resolved_config=resolved_config,
-                    command_manifest=json.loads(
-                        Path(str(config.output["command_manifest_path"])).read_text()
-                    ),
+                    command_manifest=command_manifest,
                 )
             else:
                 controller.verify_existing_claim()
+            controller.record_process(
+                process_identity=current_process_identity(),
+                details={
+                    "config_identity": config.identity,
+                    "command_identity": config.command["identity"],
+                    "resume_mode": resume_mode,
+                    "approved_pause_update": int(
+                        config.schedule["approved_pause_update"]
+                    ),
+                    "resume_checkpoint": config.initialization[
+                        "resume_checkpoint"
+                    ],
+                    "resolved_config": resolved_config,
+                    "command_manifest_text": command_manifest_text,
+                },
+            )
         except BaseException as error:
             claim_error = error
     _coordinated_rank0_status(
@@ -1303,16 +1352,11 @@ def run_query_state_training(
             early_stopping_cursor = QueryStateEarlyStoppingCursor.from_mapping(
                 early_raw
             )
-            if early_stopping_cursor.stop_reason is not None:
-                raise ValueError("completed formal terminal checkpoint cannot restart")
-            expected_epoch = start_update // int(
-                config.schedule["checkpoint_cadence_updates"]
+            _validate_formal_restart_early_stopping_cursor(
+                early_stopping_cursor,
+                start_update=start_update,
+                epoch_updates=int(config.schedule["epoch_updates"]),
             )
-            if (
-                early_stopping_cursor.last_update != start_update
-                or early_stopping_cursor.last_epoch != expected_epoch
-            ):
-                raise ValueError("formal restored early-stop cursor is not exact")
         log_cursor = int(metric_cursor.get("log", -1))
         tracking_cursor = int(metric_cursor.get("wandb", -1))
         recovery_error: BaseException | None = None
@@ -1488,8 +1532,82 @@ def run_query_state_training(
             torch.distributed.broadcast_object_list(baseline_identity_payload, src=0)
         actor_baseline_identity = baseline_identity_payload[0]
         if baseline_publication["safety"]["passed"] is not True:
+            update_zero_forensic = run_root / "forensics" / "unsafe_update_00000000"
+            update_zero_metric_cursor = {
+                "validation": 0,
+                "calibration_validation": calibration_validation_cursor,
+                "holdout_validation": holdout_validation_cursor,
+                "log": 0,
+                "wandb": tracking_cursor,
+                "teacher_memo": _global_teacher_memo_metric(
+                    asdict(assembly.dino_teacher.memo_report()),
+                    world_size=world_size,
+                ),
+                "early_stopping": (
+                    early_stopping_cursor.to_mapping()
+                    if config.mode == "formal"
+                    else None
+                ),
+                "actual_terminal": None,
+            }
+            update_zero_control = QueryStateDistributedControl(
+                identity=identity,
+                global_step=0,
+                data_cursor={
+                    "mode": config.mode,
+                    "next_update": 1,
+                    "total_updates": len(updates),
+                    "schedule_seed": config.schedule["seed"],
+                    "train_manifest_identity": config.data["train_manifest_identity"],
+                },
+                metric_cursor=update_zero_metric_cursor,
+                terminal_primary=False,
+                forensic_only=True,
+            )
+            update_zero_save_error: BaseException | None = None
+            try:
+                save_query_state_distributed_checkpoint(
+                    update_zero_forensic,
+                    root=assembly.distributed_worker.root,
+                    optimizer=assembly.distributed_worker.optimizer,
+                    scheduler_state=assembly.scheduler.state_dict(),
+                    control=update_zero_control,
+                    rank=rank,
+                )
+            except BaseException as error:
+                update_zero_save_error = error
             terminal_error: BaseException | None = None
             if rank == 0:
+                assert store is not None
+                publication_errors: list[str] = []
+                forensic_evidence_published = False
+                try:
+                    if update_zero_save_error is None:
+                        store.record_unsafe_forensic_checkpoint(
+                            start_update=0,
+                            end_update=0,
+                            checkpoint_path=update_zero_forensic,
+                            checkpoint_control_hash=_checkpoint_control_hash(
+                                update_zero_forensic
+                            ),
+                            validation=baseline_publication,
+                            safety=baseline_publication["safety"],
+                        )
+                    else:
+                        store.record_forensic_save_failure(
+                            update=0,
+                            validation=baseline_publication,
+                            safety=baseline_publication["safety"],
+                            error=(
+                                f"{type(update_zero_save_error).__name__}: "
+                                f"{update_zero_save_error}"
+                            ),
+                        )
+                    forensic_evidence_published = True
+                except BaseException as error:
+                    publication_errors.append(
+                        f"durable failure evidence: {type(error).__name__}: {error}"
+                    )
                 try:
                     controller.record_terminal(
                         status="validator_failed",
@@ -1497,19 +1615,45 @@ def run_query_state_training(
                             "update": 0,
                             "validation": baseline_publication,
                             "non_resumable_safety_failure": True,
-                            "checkpoint_published": False,
+                            "forensic_checkpoint_preserved": (
+                                update_zero_save_error is None
+                            ),
+                            "forensic_failure_evidence_published": (
+                                forensic_evidence_published
+                            ),
+                            "forensic_checkpoint": (
+                                str(update_zero_forensic)
+                                if update_zero_save_error is None
+                                else None
+                            ),
+                            "forensic_checkpoint_save_error": (
+                                None
+                                if update_zero_save_error is None
+                                else f"{type(update_zero_save_error).__name__}: "
+                                f"{update_zero_save_error}"
+                            ),
+                            "authoritative_index_advanced": False,
                         },
                     )
                 except BaseException as error:
-                    terminal_error = error
+                    publication_errors.append(
+                        f"controller terminal evidence: {type(error).__name__}: {error}"
+                    )
+                if publication_errors:
+                    terminal_error = RuntimeError("; ".join(publication_errors))
             _coordinated_rank0_status(
                 terminal_error,
                 rank=rank,
                 world_size=world_size,
-                operation="update-zero generation-format safety failure publication",
+                operation="update-zero forensic checkpoint publication",
             )
+            if update_zero_save_error is not None:
+                raise RuntimeError(
+                    "Query-State update-zero forensic checkpoint save failed"
+                ) from update_zero_save_error
             raise RuntimeError(
-                "Query-State update-zero safety failed; no optimizer update or checkpoint published"
+                "Query-State update-zero safety failed; forensic checkpoint "
+                "preserved without optimizer update or authoritative index"
             )
     else:
         actor_baseline, actor_baseline_identity = _load_actor_baseline(
@@ -1534,6 +1678,7 @@ def run_query_state_training(
     if actor_baseline is None or actor_baseline_identity is None:
         raise RuntimeError("Query-State immutable ID176 actor baseline is unavailable")
 
+    epoch_updates = int(config.schedule["epoch_updates"])
     cadence = int(config.schedule["checkpoint_cadence_updates"])
     final_checkpoint = (
         Path(str(config.initialization["resume_checkpoint"]))
@@ -1606,8 +1751,8 @@ def run_query_state_training(
             "automatic_model_quality_pass": None,
         }
         actual_terminal: Mapping[str, Any] | None = None
-        if config.mode == "formal":
-            epoch = segment_end // cadence
+        if config.mode == "formal" and segment_end % epoch_updates == 0:
+            epoch = segment_end // epoch_updates
             calibration_result = _run_detached_validation(
                 config,
                 assembly,
@@ -1705,6 +1850,20 @@ def run_query_state_training(
                 "early_stopping": early_stopping_cursor.to_mapping(),
                 "actual_terminal": actual_terminal,
             }
+        elif config.mode == "formal":
+            validation = {
+                "due": False,
+                "update": segment_end,
+                "scope": "no_validation_due_at_sub_epoch_commit",
+                "early_stopping": early_stopping_cursor.to_mapping(),
+                "actual_terminal": None,
+            }
+            safety = {
+                "passed": True,
+                "scope": "no_validation_due_at_sub_epoch_commit",
+                "actor_baseline_identity": actor_baseline_identity,
+                "automatic_model_quality_pass": None,
+            }
         elif segment_end in validation_updates:
             validation_result = _run_detached_validation(
                 config,
@@ -1728,54 +1887,6 @@ def run_query_state_training(
             }
             calibration_validation_cursor = segment_end
             validation_cursor = segment_end
-        if safety.get("passed") is not True:
-            failure_error: BaseException | None = None
-            if segment is not None:
-                try:
-                    segment.commit(
-                        checkpoint_path=run_root / "unsafe_checkpoint_not_published",
-                        checkpoint_control_hash="0" * 64,
-                        data_cursor={"mode": config.mode, "next_update": segment_end + 1},
-                        metric_cursor={
-                            "validation": validation_cursor,
-                            "calibration_validation": calibration_validation_cursor,
-                            "holdout_validation": holdout_validation_cursor,
-                            "log": log_cursor,
-                            "early_stopping": (
-                                early_stopping_cursor.to_mapping()
-                                if config.mode == "formal"
-                                else None
-                            ),
-                            "actual_terminal": actual_terminal,
-                        },
-                        validation=validation,
-                        safety=safety,
-                        mirror_records=tuple(mirror_records),
-                    )
-                except RuntimeError:
-                    pass
-                try:
-                    controller.record_terminal(
-                        status="validator_failed",
-                        details={
-                            "update": segment_end,
-                            "validation": validation,
-                            "safety": safety,
-                            "non_resumable_safety_failure": True,
-                            "checkpoint_published": False,
-                        },
-                    )
-                except BaseException as error:
-                    failure_error = error
-            _coordinated_rank0_status(
-                failure_error,
-                rank=rank,
-                world_size=world_size,
-                operation="validator failure publication",
-            )
-            raise RuntimeError(
-                "Query-State actor safety failed; no checkpoint/index/terminal completion published"
-            )
         teacher_memo_metric = _global_teacher_memo_metric(
             asdict(assembly.dino_teacher.memo_report()),
             world_size=world_size,
@@ -1794,18 +1905,167 @@ def run_query_state_training(
             ),
             "actual_terminal": actual_terminal,
         }
+        data_cursor = {
+            "mode": config.mode,
+            "next_update": segment_end + 1,
+            "total_updates": len(updates),
+            "schedule_seed": config.schedule["seed"],
+            "train_manifest_identity": config.data["train_manifest_identity"],
+        }
+        if safety.get("passed") is not True:
+            forensic_checkpoint = (
+                run_root / "forensics" / f"unsafe_update_{segment_end:08d}"
+            )
+            forensic_metric_cursor = _forensic_metric_cursor(metric_cursor)
+            forensic_control = QueryStateDistributedControl(
+                identity=identity,
+                global_step=segment_end,
+                terminal_primary=False,
+                forensic_only=True,
+                data_cursor=data_cursor,
+                metric_cursor=forensic_metric_cursor,
+            )
+            forensic_save_error: BaseException | None = None
+            try:
+                save_query_state_distributed_checkpoint(
+                    forensic_checkpoint,
+                    root=assembly.distributed_worker.root,
+                    optimizer=assembly.distributed_worker.optimizer,
+                    scheduler_state=assembly.scheduler.state_dict(),
+                    control=forensic_control,
+                    rank=rank,
+                )
+            except BaseException as error:
+                forensic_save_error = error
+            if forensic_save_error is not None:
+                save_failure_publication_error: BaseException | None = None
+                if rank == 0:
+                    assert store is not None
+                    publication_errors: list[str] = []
+                    forensic_evidence_published = False
+                    try:
+                        store.record_forensic_save_failure(
+                            update=segment_end,
+                            validation=validation,
+                            safety=safety,
+                            error=(
+                                f"{type(forensic_save_error).__name__}: "
+                                f"{forensic_save_error}"
+                            ),
+                        )
+                        forensic_evidence_published = True
+                    except BaseException as error:
+                        publication_errors.append(
+                            f"durable failure evidence: {type(error).__name__}: {error}"
+                        )
+                    try:
+                        controller.record_terminal(
+                            status="validator_failed",
+                            details={
+                                "update": segment_end,
+                                "validation": validation,
+                                "safety": safety,
+                                "non_resumable_safety_failure": True,
+                                "forensic_checkpoint_preserved": False,
+                                "forensic_failure_evidence_published": (
+                                    forensic_evidence_published
+                                ),
+                                "forensic_checkpoint_save_error": (
+                                    f"{type(forensic_save_error).__name__}: "
+                                    f"{forensic_save_error}"
+                                ),
+                                "authoritative_index_advanced": False,
+                            },
+                        )
+                    except BaseException as error:
+                        publication_errors.append(
+                            f"controller terminal evidence: {type(error).__name__}: {error}"
+                        )
+                    if publication_errors:
+                        save_failure_publication_error = RuntimeError(
+                            "; ".join(publication_errors)
+                        )
+                _coordinated_rank0_status(
+                    save_failure_publication_error,
+                    rank=rank,
+                    world_size=world_size,
+                    operation="forensic checkpoint save failure publication",
+                )
+                raise RuntimeError(
+                    "Query-State unsafe forensic checkpoint save failed"
+                ) from forensic_save_error
+            failure_error: BaseException | None = None
+            if segment is not None:
+                publication_errors: list[str] = []
+                expected_failure_recorded = False
+                try:
+                    segment.commit(
+                        checkpoint_path=forensic_checkpoint,
+                        checkpoint_control_hash=_checkpoint_control_hash(
+                            forensic_checkpoint
+                        ),
+                        data_cursor=data_cursor,
+                        metric_cursor=forensic_metric_cursor,
+                        validation=validation,
+                        safety=safety,
+                        mirror_records=tuple(mirror_records),
+                    )
+                except RuntimeError as error:
+                    if "preserved a forensic checkpoint" in str(error):
+                        expected_failure_recorded = True
+                    else:
+                        publication_errors.append(
+                            f"durable failure evidence: {type(error).__name__}: {error}"
+                        )
+                except BaseException as error:
+                    publication_errors.append(
+                        f"durable failure evidence: {type(error).__name__}: {error}"
+                    )
+                if not expected_failure_recorded and not publication_errors:
+                    publication_errors.append(
+                        "durable failure evidence: unsafe manifest was not published"
+                    )
+                try:
+                    controller.record_terminal(
+                        status="validator_failed",
+                        details={
+                            "update": segment_end,
+                            "validation": validation,
+                            "safety": safety,
+                            "non_resumable_safety_failure": True,
+                            "forensic_checkpoint_preserved": True,
+                            "forensic_failure_evidence_published": (
+                                expected_failure_recorded
+                            ),
+                            "forensic_checkpoint": str(forensic_checkpoint),
+                            "checkpoint_control_sha256": (
+                                _checkpoint_control_hash(forensic_checkpoint)
+                            ),
+                            "authoritative_index_advanced": False,
+                        },
+                    )
+                except BaseException as error:
+                    publication_errors.append(
+                        f"controller terminal evidence: {type(error).__name__}: {error}"
+                    )
+                if publication_errors:
+                    failure_error = RuntimeError("; ".join(publication_errors))
+            _coordinated_rank0_status(
+                failure_error,
+                rank=rank,
+                world_size=world_size,
+                operation="validator failure forensic checkpoint publication",
+            )
+            raise RuntimeError(
+                "Query-State actor safety failed; forensic checkpoint preserved "
+                "without authoritative index"
+            )
         checkpoint = run_root / "checkpoints" / f"update_{segment_end:08d}"
         control = QueryStateDistributedControl(
             identity=identity,
             global_step=segment_end,
             terminal_primary=(config.mode == "formal" and actual_terminal is not None),
-            data_cursor={
-                "mode": config.mode,
-                "next_update": segment_end + 1,
-                "total_updates": len(updates),
-                "schedule_seed": config.schedule["seed"],
-                "train_manifest_identity": config.data["train_manifest_identity"],
-            },
+            data_cursor=data_cursor,
             metric_cursor=metric_cursor,
         )
         save_query_state_distributed_checkpoint(
@@ -1857,6 +2117,49 @@ def run_query_state_training(
             terminal_reason = str(actual_terminal["reason"])
             terminal_epoch = int(actual_terminal["epoch"])
             break
+        if _approved_pause_due(config, segment_end=segment_end):
+            pause_error: BaseException | None = None
+            if rank == 0:
+                try:
+                    controller.record_pause(
+                        update=segment_end,
+                        details={
+                            "checkpoint": str(checkpoint),
+                            "checkpoint_control_hash": _checkpoint_control_hash(
+                                checkpoint
+                            ),
+                            "terminal_primary": False,
+                            "validation_update": validation_cursor,
+                            "calibration_validation_update": (
+                                calibration_validation_cursor
+                            ),
+                            "holdout_validation_update": holdout_validation_cursor,
+                            "safety": safety,
+                            "early_stopping": early_stopping_cursor.to_mapping(),
+                            "next_action": "human approval required before exact restart",
+                        },
+                    )
+                except BaseException as error:
+                    pause_error = error
+            _coordinated_rank0_status(
+                pause_error,
+                rank=rank,
+                world_size=world_size,
+                operation="approved pause receipt publication",
+            )
+            return QueryStateTrainingRunResult(
+                mode=config.mode,
+                final_update=segment_end,
+                final_checkpoint=str(checkpoint),
+                validation_cursor=validation_cursor,
+                log_cursor=log_cursor,
+                tracking_cursor=tracking_cursor,
+                tracking_incomplete=bool(
+                    tracking.mirror and tracking.mirror.tracking_incomplete
+                ),
+                terminal_epoch=None,
+                terminal_reason=None,
+            )
         if (
             config.mode == "pilot"
             and resume_mode in {"fresh", "crash_replay"}
