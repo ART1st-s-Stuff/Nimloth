@@ -115,3 +115,11 @@ Implemented in the approved pi-app worktree only:
 - Independent review expanded focused coverage to 6 cases and found no remaining P0/P1 source issue. Focused test, Node typecheck, ESLint/build and diff checks pass; the behavior matches Electron native Wayland `ready-to-show` omission evidence.
 - Rebuilt and launched a fresh host-forward instance on `WAYLAND_DISPLAY=wayland-DS5xFcoF5p` with renderer PID `518965` and profile `/tmp/pi-desktop-trellis-window-fallback-20260831`. This proves the fixed build is live but still awaits human visual confirmation.
 - The fix was committed locally in pi-app as `f596a9c` (`fix(window): show app after renderer load on Wayland`). Nothing was pushed or merged.
+
+## 2026-08-31 — bare launcher defaults to host-forward
+
+- Human confirmed the fallback-fixed instance was visible, but a direct bare script invocation was not. The remaining difference was operational: successful probes passed `--host-display`, while bare invocation still reused any inherited shell `WAYLAND_DISPLAY`.
+- Changed the safe default so bare `scripts/start-nixos-wayland.sh` clears inherited display/socket and creates a fresh `wh --with-gtk-portal` channel. Existing display reuse now requires explicit `--reuse-display`; Pi Desktop worker non-dry-run invocation remains rejected.
+- RED/GREEN tests cover default host-forward under inherited display and explicit reuse. Independent check verified one `wh` call, recursion-marker termination, quoting, worker rejection and 5/5 focused tests with no P0/P1 issue.
+- Actual direct invocation without `--host-display` created `WAYLAND_DISPLAY=wayland-Z56g5Gl6yT`; renderer PID `523217` is live with profile `/tmp/pi-desktop-trellis-default-script-20260831`. This follows the same host-forward and window-presentation path the human previously confirmed visible; current direct-instance visual confirmation remains pending.
+- The default correction was committed locally in pi-app as `435706c` (`fix(dev): host-forward bare launcher by default`). Nothing was pushed or merged.
