@@ -39,7 +39,7 @@
 ## Check
 
 - [x] [W-040] focused unit/component tests通过。
-- [ ] [W-041] `npm run typecheck`、`npm run lint`、`npm run build`通过。
+- [x] [W-041] `npm run typecheck`、`npm run lint`、`npm run build`通过。
 - [ ] [W-042] 人工验证long tool、waiting、subagent、switch/reload/fallback。
 - [ ] [W-043] 人工验证新task review、approve/decline/comment、artifact变更失效和跨session questionnaire。
 - [x] [W-044] 独立P0/P1 review、完整diff和残余风险通过。

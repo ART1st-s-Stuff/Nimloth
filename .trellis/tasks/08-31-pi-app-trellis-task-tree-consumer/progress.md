@@ -123,3 +123,12 @@ Implemented in the approved pi-app worktree only:
 - RED/GREEN tests cover default host-forward under inherited display and explicit reuse. Independent check verified one `wh` call, recursion-marker termination, quoting, worker rejection and 5/5 focused tests with no P0/P1 issue.
 - Actual direct invocation without `--host-display` created `WAYLAND_DISPLAY=wayland-Z56g5Gl6yT`; renderer PID `523217` is live with profile `/tmp/pi-desktop-trellis-default-script-20260831`. This follows the same host-forward and window-presentation path the human previously confirmed visible; current direct-instance visual confirmation remains pending.
 - The default correction was committed locally in pi-app as `435706c` (`fix(dev): host-forward bare launcher by default`). Nothing was pushed or merged.
+
+## 2026-09-01 — legacy-reference visual-density P1 check
+
+- Reviewed only the latest dirty Trellis panel/component-test delta on canonical `/workspace/pi-app`, now verified on `feature/trellis-work-item-visibility@435706c`; the former nested worktree no longer exists.
+- Found two P1 primary-view identity defects: matched legacy current execution had dropped its task ref, and an orphaned legacy assignment could still expose the full `legacy-<hash>` ref. Added RED coverage for both, then kept the internal correlation identity while rendering `task#item text` or `task#旧计划项` plus the compact accessible legacy badge.
+- Stable `W-010` plan-row rendering remains visible. The presentation-model warning/error collection is unchanged; only the redundant `legacy_unstable_id` row text is represented by the accessible badge.
+- Refresh semantics were rechecked rather than overstated: selected session/workspace changes fetch immediately; dashboard/runtime files are polled every 10 seconds and also refresh at terminal run/tool-end events or manually; Pi run/tool activity is merged locally from AppEvent. Dashboard-only changes can therefore lag by roughly 10 seconds plus reader/render latency.
+- Final validation is GREEN: Trellis panel/model suites pass (2 files / 16 tests), canonical `npm run typecheck` passes, production build passes, and `git diff --check` passes. ESLint has zero errors and one unchanged pre-existing `timeline.tsx:794` unused-disable warning.
+- The compact legacy-label fix was committed locally in pi-app as `5dd9adc` (`fix(trellis): compact legacy work-item labels`). No producer parser/state semantics, push, merge, process lifecycle or Pi TaskTree state was changed.
