@@ -7,6 +7,64 @@ Qwen, `StateProjector`, and the WM predictor checkpoint, then trains only
 Reusable CFM and RCDM model code lives under `nimloth.recon`; this package owns
 their training orchestration and command-line entrypoints.
 
+## Direct Query-State diagnostics
+
+The new SFT1 direct Query-State path is intentionally separate from the legacy
+SFT2 adapters:
+
+- `query_state_cache.py` validates a human-gated Query-State deployable bundle,
+  rebuilds rows with the production pre-RL `SFT1V2Early4Row` indexer, loads the
+  full actor/processor and direct head only from hash-bound bundle owner paths,
+  then replays each original observation with its real archived assistant
+  response/CoT. Its public builder accepts explicit device, model dtype,
+  attention implementation, and maximum sequence length, but no owner-loader
+  callback, in-memory actor/processor/direct head, state tensor, or row
+  provenance. The internal production loader reads only validated
+  `bundle/actor`, `bundle/processor`, and `direct_state.pt`, checks owner hashes
+  before and after loading, enforces the exact vocabulary/token/K16 contract,
+  recursively freezes/evaluates Qwen and the direct head, and stores the ordered
+  canonical state as `[N,16,1024]`. Readers revalidate the live bundle, both
+  source JSONLs, the complete SFT1 resume identity, split identity, owner hashes,
+  image hashes, and shard hashes.
+- Cache selection is explicit and fingerprint-bound: `all_train` contains every
+  audited train row, while `external_validation` contains only rows whose live
+  source index marks `external_eligible`. The formal source audit is 1420 raw
+  validation rows, 1413 external rows, and 5 cross-split image hashes; these are
+  reconstructed from source and persisted as audit evidence, never synthesized.
+- `cfm_query_state.py` consumes only those schema-distinct `all_train` and
+  `external_validation` caches, enforces row/image non-overlap, and binds both row sets and
+  bundle/source/template/checkpoint identities into resume invariants. It flattens
+  K16 only at the generic CFM boundary and trains a 16-token-conditioned RGB
+  decoder. Every checkpoint comparison reuses the same explicitly preregistered
+  validation noise seeds; the final full-split gate may add robustness seeds and
+  retains per-seed plus aggregate correct-vs-global-shuffled sensitivity.
+  RGB interpretation is published only by an authoritative checkpoint-bound path:
+  it accepts no caller-provided reconstructions, originals, rows, config, or
+  sensitivity evidence. It loads and validates the decoder plus optimizer, reloads
+  the complete live validation split and recomputes all registered multi-noise evidence.
+  The experiment must preregister a positive
+  `--publication-min-shuffled-minus-correct` threshold (there is no project default),
+  and every publication seed must meet it before any artifact directory is created or
+  sampling begins. The path then deterministically selects/samples rows using
+  checkpoint-bound ODE/noise settings and persists the gate evidence/verdict with
+  original/output hashes and preprocessing metadata.
+
+Direct DINO feature maps and metrics remain the primary state diagnostic under
+`nimloth.eval.query_state_features`. CFM RGB images are a secondary human-readable
+probe: decoder/domain failure can make even oracle states reconstruct poorly, so
+image quality cannot override direct feature evidence or select an SFT1
+checkpoint.
+
+CPU tests cover manifest/cache primitives and fail-closed loader gates; they do
+not claim a successful real Hugging Face owner load. That requires future
+integration against the exact terminal bundle under its approved experiment.
+
+Actual feature extraction, cache building, CFM training, sampling, evaluation,
+or W&B/remote/GPU execution is an experiment. It requires a terminal bundle that
+passed the human SFT1 gate, a separate experiment contract, and explicit launch
+approval; importing these modules or implementing their code grants none of
+those permissions.
+
 The decoder is not part of the SFT2/RL objective.  Use it to compare:
 
 - `decoder(s_next)` vs next image: decoder/oracle upper bound.
