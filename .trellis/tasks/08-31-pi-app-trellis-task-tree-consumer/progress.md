@@ -82,3 +82,12 @@ Implemented in the approved pi-app worktree only:
 - After complete-diff review and explicit human commit approval, the entire pi-app consumer implementation/tests were committed locally in the approved worktree as `4efdce1` (`feat(trellis): add live task execution and approval review`).
 - W-045 is complete. The approved worktree is clean and dirty `main` remains unchanged. No push or merge occurred.
 - Consumer W-041/W-042/W-043 remain open because canonical nested-worktree composite typecheck and Electron visual/manual acceptance are not fully green in this environment.
+
+## 2026-08-31 — feature-worktree NixOS launcher GREEN
+
+- Kept dirty `/workspace/pi-app` main untouched; the approved branch was already checked out at `/workspace/pi-app/.worktree/feature-trellis-work-item-visibility`. Added `npm run start:nixos` plus a worktree-relative `scripts/start-nixos-wayland.sh` so the launcher resolves and runs the feature worktree rather than main.
+- The launcher supports conditional build, `--dry-run`, external `--isolated-profile`, proxy forwarding, cached Nix Electron 43 discovery and Waypipe/GTK portal recursion. It explicitly unsets inherited `ELECTRON_RUN_AS_NODE`, which otherwise made Chromium flags fail when launched from a Pi Desktop worker environment.
+- Actual launch succeeded with isolated profile `/tmp/pi-desktop-trellis-visibility-20260831-green`: renderer PID `493638` reports exact `--app-path=/workspace/pi-app/.worktree/feature-trellis-work-item-visibility`; launch log is `/tmp/pi-desktop-trellis-visibility-launch-green.log`.
+- Independent check found and RED-first fixed one P1 no-Electron-candidate diagnostic bug under `pipefail`; focused regression `scripts/tests/start-nixos-wayland.test.mjs`, shell parse, npm help/dry-run, production build and diff checks pass.
+- This closes only the launcher/startup portion of W-042. The broader task-tree/review/approval manual interaction matrix remains pending user operation in the running feature app.
+- Human directed that this session's remaining modifications be staged or committed. The reviewed launcher/package/test scope was committed locally in the feature worktree as `3a2ab1c` (`feat(dev): add NixOS Wayland launcher`). Nothing was pushed or merged.
