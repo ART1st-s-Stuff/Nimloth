@@ -7,8 +7,6 @@ or FSDP evidence.
 
 from __future__ import annotations
 
-import ctypes
-import errno
 import hashlib
 import json
 import math
@@ -149,6 +147,10 @@ class PreparedForensicRow:
     provenance: Mapping[str, str]
 
 
+class ForensicPublicationDurabilityError(RuntimeError):
+    """The manifest committed, but final publication durability was not confirmed."""
+
+
 @dataclass(frozen=True)
 class ForensicRankSummary:
     rank: int
@@ -210,18 +212,69 @@ class TorchForensicCollective:
             torch.distributed.destroy_process_group()
 
 
-def _require_gate(statuses: Sequence[Mapping[str, Any]], *, phase: str, world_size: int) -> None:
+def _failed_gate_status(
+    statuses: Sequence[Mapping[str, Any]], *, phase: str, world_size: int
+) -> Mapping[str, Any] | None:
     if len(statuses) != world_size:
         raise RuntimeError(f"forensic {phase} gate returned incomplete world status")
     ranks = {item.get("rank") for item in statuses}
-    if ranks != set(range(world_size)) or any(item.get("phase") != phase for item in statuses):
+    if ranks != set(range(world_size)) or any(
+        item.get("phase") != phase for item in statuses
+    ):
         raise RuntimeError(f"forensic {phase} gate rank/phase identity mismatch")
     failed = [item for item in statuses if item.get("ready") is not True]
-    if failed:
-        first = sorted(failed, key=lambda item: int(item["rank"]))[0]
+    return min(failed, key=lambda item: int(item["rank"])) if failed else None
+
+
+def _require_gate(
+    statuses: Sequence[Mapping[str, Any]], *, phase: str, world_size: int
+) -> None:
+    failed = _failed_gate_status(statuses, phase=phase, world_size=world_size)
+    if failed is not None:
         raise RuntimeError(
-            f"forensic {phase} gate failed on rank {first['rank']}: {first.get('detail', '')}"
+            f"forensic {phase} gate failed on rank {failed['rank']}: "
+            f"{failed.get('detail', '')}"
         )
+
+
+def _publication_gate_detail(error: BaseException | None) -> str:
+    if error is None:
+        payload = {"status": "published"}
+    elif isinstance(error, ForensicPublicationDurabilityError):
+        payload = {
+            "status": "committed_but_durability_unconfirmed",
+            "error": str(error),
+        }
+    else:
+        payload = {
+            "status": "failed",
+            "error_type": type(error).__name__,
+            "error": str(error),
+        }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _require_publication_gate(
+    statuses: Sequence[Mapping[str, Any]], *, world_size: int
+) -> None:
+    failed = _failed_gate_status(statuses, phase="publish", world_size=world_size)
+    if failed is None:
+        return
+    try:
+        detail = json.loads(str(failed.get("detail", "")))
+    except json.JSONDecodeError:
+        detail = None
+    if (
+        isinstance(detail, dict)
+        and set(detail) == {"status", "error"}
+        and detail.get("status") == "committed_but_durability_unconfirmed"
+        and isinstance(detail.get("error"), str)
+    ):
+        raise ForensicPublicationDurabilityError(detail["error"])
+    raise RuntimeError(
+        f"forensic publish gate failed on rank {failed['rank']}: "
+        f"{failed.get('detail', '')}"
+    )
 
 
 def _actor_failure_from_manifest(failure: Mapping[str, Any]) -> dict[str, Any]:
@@ -571,20 +624,65 @@ def _write_rank_payload(
     )
 
 
+def _fsync_directory(path: Path) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _publish_noreplace(source: Path, destination: Path) -> None:
-    libc = ctypes.CDLL(None, use_errno=True)
-    renameat2 = getattr(libc, "renameat2", None)
-    if renameat2 is None:
-        raise RuntimeError("atomic forensic cache publication requires renameat2")
-    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-    renameat2.restype = ctypes.c_int
-    result = renameat2(-100, os.fsencode(source), -100, os.fsencode(destination), 1)
-    if result == 0:
-        return
-    error = ctypes.get_errno()
-    if error == errno.EEXIST:
+    """Commit a validated cache with NFS-safe no-overwrite semantics.
+
+    The destination mkdir is the durable ownership claim. Readers treat the
+    manifest, moved last, as the validity commit and reject every earlier state.
+    """
+
+    if destination.exists() or destination.is_symlink():
         raise FileExistsError(f"forensic cache output already exists: {destination}")
-    raise OSError(error, os.strerror(error), str(destination))
+    manifest = source / "manifest.json"
+    if (
+        source.is_symlink()
+        or not source.is_dir()
+        or not manifest.is_file()
+        or manifest.is_symlink()
+    ):
+        raise ValueError("forensic publication source requires a regular manifest.json")
+    payloads = sorted(
+        path for path in source.iterdir() if path.name != manifest.name
+    )
+    if not payloads or any(
+        not path.is_file() or path.is_symlink() for path in payloads
+    ):
+        raise ValueError("forensic publication source contains invalid payload entries")
+
+    try:
+        destination.mkdir(exist_ok=False)
+    except FileExistsError as caught:
+        raise FileExistsError(
+            f"forensic cache output already exists: {destination}"
+        ) from caught
+    _fsync_directory(destination.parent)
+
+    committed = False
+    try:
+        for payload in payloads:
+            os.rename(payload, destination / payload.name)
+        _fsync_directory(destination)
+        os.rename(manifest, destination / manifest.name)
+        committed = True
+        _fsync_directory(destination)
+        source.rmdir()
+        _fsync_directory(destination.parent)
+    except BaseException as caught:
+        if committed:
+            raise ForensicPublicationDurabilityError(
+                "forensic manifest committed but publication durability "
+                "was not confirmed"
+            ) from caught
+        raise
 
 
 def _source_payload(source: QueryStateSourceContract) -> dict[str, Any]:
@@ -739,9 +837,6 @@ def _publish_rank_payloads(
         os.fsync(fd)
         os.close(fd)
         _publish_noreplace(publication, output)
-        parent_fd = os.open(output.parent, os.O_RDONLY)
-        os.fsync(parent_fd)
-        os.close(parent_fd)
         return manifest
     except BaseException:
         if publication.exists():
@@ -856,8 +951,12 @@ def build_forensic_query_state_cache_rank(
             )
         except BaseException as caught:
             publish_error = caught
-    statuses = collective.gate("publish", ready=publish_error is None, detail="published" if publish_error is None else f"{type(publish_error).__name__}: {publish_error}")
-    _require_gate(statuses, phase="publish", world_size=8)
+    statuses = collective.gate(
+        "publish",
+        ready=publish_error is None,
+        detail=_publication_gate_detail(publish_error),
+    )
+    _require_publication_gate(statuses, world_size=8)
     if collective.rank == 0:
         shutil.rmtree(staging)
     return manifest

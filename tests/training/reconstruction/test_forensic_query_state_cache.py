@@ -299,6 +299,187 @@ def test_checkpoint_gate_binds_ws8_failure_control_and_all_rank_shards(tmp_path:
         validate_forensic_checkpoint_identity(identity)
 
 
+def _publication_source(tmp_path: Path, name: str = "publication") -> Path:
+    source = tmp_path / name
+    source.mkdir()
+    (source / "shard_00000.pt").write_bytes(b"validated-shard")
+    (source / "manifest.json").write_text('{"schema":"test"}\n', encoding="utf-8")
+    return source
+
+
+def test_nfs_publication_claim_is_non_overwriting_and_manifest_commits_last(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _publication_source(tmp_path)
+    destination = tmp_path / "cache"
+    events: list[str] = []
+    original_mkdir = Path.mkdir
+    original_rename = forensic.os.rename
+    original_fsync_directory = forensic._fsync_directory
+
+    def traced_mkdir(path: Path, *args: Any, **kwargs: Any) -> None:
+        original_mkdir(path, *args, **kwargs)
+        if path == destination:
+            events.append("mkdir:destination")
+
+    def traced_rename(source_path: str | Path, destination_path: str | Path) -> None:
+        events.append(f"rename:{Path(source_path).name}")
+        original_rename(source_path, destination_path)
+
+    def traced_fsync_directory(path: str | Path) -> None:
+        path = Path(path)
+        events.append(f"fsync:{'destination' if path == destination else 'parent'}")
+        original_fsync_directory(path)
+
+    monkeypatch.setattr(Path, "mkdir", traced_mkdir)
+    monkeypatch.setattr(forensic.os, "rename", traced_rename)
+    monkeypatch.setattr(
+        forensic, "_fsync_directory", traced_fsync_directory
+    )
+    forensic._publish_noreplace(source, destination)
+    assert events == [
+        "mkdir:destination",
+        "fsync:parent",
+        "rename:shard_00000.pt",
+        "fsync:destination",
+        "rename:manifest.json",
+        "fsync:destination",
+        "fsync:parent",
+    ]
+    assert not source.exists()
+    assert (destination / "manifest.json").is_file()
+
+    concurrent = _publication_source(tmp_path, "concurrent")
+    sentinel = destination / "sentinel"
+    sentinel.write_bytes(b"do-not-change")
+    before = {path.name: path.read_bytes() for path in destination.iterdir()}
+    with pytest.raises(FileExistsError):
+        forensic._publish_noreplace(concurrent, destination)
+    assert {
+        path.name: path.read_bytes() for path in destination.iterdir()
+    } == before
+    assert concurrent.is_dir()
+    assert sentinel.read_bytes() == b"do-not-change"
+
+
+@pytest.mark.parametrize("failure_name", ["shard_00000.pt", "manifest.json"])
+def test_nfs_publication_pre_manifest_failure_burns_output_and_reader_rejects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_name: str
+) -> None:
+    source = _publication_source(tmp_path)
+    destination = tmp_path / "cache"
+    original_rename = forensic.os.rename
+
+    def fail_before_commit(
+        source_path: str | Path, destination_path: str | Path
+    ) -> None:
+        if Path(source_path).name == failure_name:
+            raise OSError("injected pre-manifest failure")
+        original_rename(source_path, destination_path)
+
+    monkeypatch.setattr(forensic.os, "rename", fail_before_commit)
+    with pytest.raises(OSError, match="pre-manifest"):
+        forensic._publish_noreplace(source, destination)
+    assert destination.is_dir()
+    assert not (destination / "manifest.json").exists()
+    with pytest.raises((FileNotFoundError, ValueError)):
+        ForensicQueryStateCacheDataset(destination)
+    with pytest.raises(FileExistsError):
+        forensic._publish_noreplace(source, destination)
+
+
+def test_nfs_publication_post_commit_fsync_failure_is_typed_and_preserved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _publication_source(tmp_path)
+    destination = tmp_path / "cache"
+    original_fsync_directory = forensic._fsync_directory
+    destination_fsyncs = 0
+
+    def fail_post_commit_fsync(path: str | Path) -> None:
+        nonlocal destination_fsyncs
+        path = Path(path)
+        if path == destination:
+            destination_fsyncs += 1
+            if destination_fsyncs == 2:
+                raise OSError("injected post-commit fsync failure")
+        original_fsync_directory(path)
+
+    monkeypatch.setattr(
+        forensic, "_fsync_directory", fail_post_commit_fsync
+    )
+    with pytest.raises(forensic.ForensicPublicationDurabilityError, match="durability"):
+        forensic._publish_noreplace(source, destination)
+    assert destination.is_dir()
+    assert (destination / "manifest.json").is_file()
+    with pytest.raises(FileExistsError):
+        forensic._publish_noreplace(source, destination)
+
+
+def test_rank_publication_preserves_reader_valid_cache_on_post_commit_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "cache"
+    original_fsync_directory = forensic._fsync_directory
+    destination_fsyncs = 0
+
+    def fail_post_commit_fsync(path: str | Path) -> None:
+        nonlocal destination_fsyncs
+        path = Path(path)
+        if path == destination:
+            destination_fsyncs += 1
+            if destination_fsyncs == 2:
+                raise OSError("injected post-commit fsync failure")
+        original_fsync_directory(path)
+
+    monkeypatch.setattr(
+        forensic, "_fsync_directory", fail_post_commit_fsync
+    )
+    with pytest.raises(forensic.ForensicPublicationDurabilityError):
+        _publish_cache(tmp_path)
+    assert not (tmp_path / ".cache.forensic-tmp.publish").exists()
+    dataset = ForensicQueryStateCacheDataset(destination)
+    assert len(dataset) == 64
+
+    detail = forensic._publication_gate_detail(
+        forensic.ForensicPublicationDurabilityError("durability unknown")
+    )
+    statuses = tuple(
+        {
+            "rank": rank,
+            "phase": "publish",
+            "ready": rank != 0,
+            "detail": detail if rank == 0 else '{"status":"published"}',
+        }
+        for rank in range(8)
+    )
+    with pytest.raises(
+        forensic.ForensicPublicationDurabilityError, match="durability unknown"
+    ):
+        forensic._require_publication_gate(statuses, world_size=8)
+
+
+def test_rank_publication_claim_fsync_failure_is_incomplete_and_not_cleaned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    destination = tmp_path / "cache"
+    original_fsync_directory = forensic._fsync_directory
+
+    def fail_claim_fsync(path: str | Path) -> None:
+        if Path(path) == destination.parent:
+            raise OSError("injected claim parent fsync failure")
+        original_fsync_directory(path)
+
+    monkeypatch.setattr(forensic, "_fsync_directory", fail_claim_fsync)
+    with pytest.raises(OSError, match="claim parent"):
+        _publish_cache(tmp_path)
+    assert destination.is_dir()
+    assert not (destination / "manifest.json").exists()
+    assert not (tmp_path / ".cache.forensic-tmp.publish").exists()
+    with pytest.raises((FileNotFoundError, ValueError)):
+        ForensicQueryStateCacheDataset(destination)
+
+
 def test_forensic_manifest_reader_live_hash_shape_and_bidirectional_schema_rejection(tmp_path: Path) -> None:
     cache = _publish_cache(tmp_path)
     manifest = json.loads((cache / "manifest.json").read_text())

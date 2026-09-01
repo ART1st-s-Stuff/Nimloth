@@ -68,8 +68,12 @@ Formal38 Job540589 unsafe_update_00001605 failure evidence + exact 8 rank shards
 config/run/control/failure identities, WS8 topology and shard hashes, plus each
 original image, row, real archived response/CoT, prompt history, renderer,
 template, and encoded-input identity. Cache state remains finite
-`[N,16,1024]`; publish is non-overwriting and atomic, and readers revalidate live
-source/checkpoint/image/shard provenance. The deployable and forensic readers
+`[N,16,1024]`. Publication atomically claims the destination with a durable
+non-overwriting `mkdir`, moves validated shards, and commits `manifest.json`
+last; readers reject every pre-manifest state and then revalidate live
+source/checkpoint/image/shard provenance. This manifest-gated protocol works on
+the production shared NFS without relying on unsupported
+`renameat2(RENAME_NOREPLACE)` flags. The deployable and forensic readers
 reject each other's schemas. No legacy `StateProjector`, WM, Value, grid encoder,
 or synthetic/fixed CoT is accepted.
 
