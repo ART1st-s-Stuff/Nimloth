@@ -308,7 +308,7 @@ def _raw(*, mode: str = "pilot", resume_mode: str = "fresh") -> dict:
             generation_format_at_actual_terminal=False,
         )
         raw["output"].update(
-            minimum_free_bytes=150_000_000_000,
+            minimum_free_bytes=0,
             checkpoint_estimated_bytes=23_370_000_000,
             checkpoint_budget_bytes=116_850_000_000,
         )
@@ -524,15 +524,16 @@ def test_exact_schedule_cardinality_is_rejected_during_cpu_config_parse() -> Non
         parse_query_state_training_config(bad)
 
 
-def test_visual_fork_uses_human_approved_150gb_floor_only() -> None:
+def test_visual_fork_uses_human_approved_zero_reserve_only() -> None:
     raw = _raw(mode="visual_only_forensic_fork")
     parsed = parse_query_state_training_config(raw)
-    assert parsed.output["minimum_free_bytes"] == 150_000_000_000
+    assert parsed.output["minimum_free_bytes"] == 0
 
-    stale_floor = deepcopy(raw)
-    stale_floor["output"]["minimum_free_bytes"] = 300_000_000_000
-    with pytest.raises(ValueError, match="visual fork.*150GB"):
-        parse_query_state_training_config(stale_floor)
+    for stale_reserve in (150_000_000_000, 300_000_000_000):
+        stale_floor = deepcopy(raw)
+        stale_floor["output"]["minimum_free_bytes"] = stale_reserve
+        with pytest.raises(ValueError, match="visual fork.*zero reserve"):
+            parse_query_state_training_config(stale_floor)
 
 
 def test_formal_one_epoch_pause_is_operational_not_resume_identity() -> None:

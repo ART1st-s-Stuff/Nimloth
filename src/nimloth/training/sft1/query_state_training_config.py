@@ -872,6 +872,7 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
     minimum_free_bytes = _int(
         output["minimum_free_bytes"],
         "output.minimum_free_bytes",
+        minimum=0 if visual_fork else 1,
     )
     checkpoint_budget_bytes = _int(
         output["checkpoint_budget_bytes"],
@@ -887,9 +888,9 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
             "output.checkpoint_budget_bytes must cover every max-budget commit"
         )
     if visual_fork:
-        if minimum_free_bytes != 150_000_000_000:
+        if minimum_free_bytes != 0:
             raise ValueError(
-                "visual fork output.minimum_free_bytes must equal the approved 150GB"
+                "visual fork output.minimum_free_bytes must equal the approved zero reserve"
             )
     elif mode != "pilot" and minimum_free_bytes != 300_000_000_000:
         raise ValueError("production output.minimum_free_bytes must equal 300GB")

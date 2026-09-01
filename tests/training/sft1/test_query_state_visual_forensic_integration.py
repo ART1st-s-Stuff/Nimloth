@@ -393,7 +393,7 @@ def test_visual_fork_known_unsafe_step0_is_report_only_while_formal_still_stops(
 def test_visual_fork_storage_budget_is_rolling_not_max_payload_count() -> None:
     config = parse_query_state_training_config(_visual_raw())
     assert _required_output_free_bytes(config, completed_checkpoint_update=1605) == (
-        150_000_000_000 + 5 * 23_370_000_000
+        5 * 23_370_000_000
     )
 
 
