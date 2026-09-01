@@ -33,6 +33,32 @@ image preprocessing, ODE steps, noise seed, row identity, and color conversion.
 These color reconstructions are secondary post-hoc readability aids and cannot
 replace direct DINO feature metrics.
 
-Building the real cache, training the decoder, or generating formal color images
-is an experiment requiring its own reviewed contract and explicit launch
-approval.
+The Formal38 forensic CFM adapter is deliberately separate from this deployable
+Query-State owner. It accepts only
+`nimloth_query_state_forensic_reconstruction_cache_v1` from Job540589's
+actor-failed, non-resumable, non-authoritative, nondeployable update1605 owner;
+there is no unsafe compatibility flag on the deployable CLI. Its state was
+extracted read-only from original observations plus matching real archived
+responses/CoT through the frozen final-current K16/direct-head path. The decoder
+still sees 16×1024 tokens and trains only `TokenConditionedFlowUNet`; no Qwen,
+direct head, optimizer/RNG from Formal38, `StateProjector`, WM, Value, or SFT2
+owner enters the decoder checkpoint.
+
+Forensic Stage A is a mechanics/overfit probe on 48 `mechanics_train` and 16
+exact-image-disjoint `mechanics_validation` train-derived rows. Correct and
+global shuffled conditions share noise/time for every preregistered seed. Only
+the final decoder checkpoint's mechanics-train gate controls pass;
+mechanics-validation is report-only and not held out. A pass does not authorize
+Stage B. Full `all_train`/`external_validation`, 128px training, thresholds,
+resources, and launch identity must be replanned and separately approved, and a
+fresh decoder is the default.
+
+Formal38's actor failure remains above all reconstruction evidence. Direct DINO
+metrics are primary, condition sensitivity is secondary, and three-channel sRGB
+strips/contact sheets are visual inspection aids that can also fail because of
+the decoder/domain. They cannot promote update1605, select or resume SFT1,
+establish deployability, or authorize SFT2.
+
+Building either real cache, training either decoder, or generating formal or
+forensic color images is an experiment requiring its own reviewed contract and
+explicit launch approval.

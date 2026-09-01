@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import contextlib
-from dataclasses import asdict
 import hashlib
 import json
-from pathlib import Path
 import random
+from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -15,6 +15,7 @@ from torch import nn
 
 from nimloth.backbone.base import BackboneBatch
 from nimloth.training.sft1 import query_state_distributed
+from nimloth.training.sft1.manifest import PINNED_VAGEN_COMMIT, PINNED_VERL_COMMIT
 from nimloth.training.sft1.query_state import (
     QueryStateNormalization,
     QueryStateObjectiveOutput,
@@ -40,6 +41,7 @@ from nimloth.training.sft1.query_state_config import (
     bind_query_state_code_canary_identity,
     parse_query_state_code_canary_config,
 )
+from nimloth.training.sft1.query_state_data import QUERY_STATE_PREPARED_ROW_SCHEMA
 from nimloth.training.sft1.query_state_distributed import (
     QueryStateUpdateCore,
     query_state_global_normalization,
@@ -55,10 +57,7 @@ from nimloth.training.sft1.query_state_driver import (
 from nimloth.training.sft1.query_state_validation import (
     QueryStateDiagnosticAccumulator,
 )
-from nimloth.training.sft1.query_state_data import QUERY_STATE_PREPARED_ROW_SCHEMA
-from nimloth.training.sft1.manifest import PINNED_VAGEN_COMMIT, PINNED_VERL_COMMIT
 from nimloth.wm.grid import DirectSlotProjector
-
 
 _RESPONSE = (
     "<think>Use the actual archived observation.</think>"
@@ -75,7 +74,7 @@ class _FakeDataProto:
     def __len__(self) -> int:
         return int(next(iter(self.batch.values())).shape[0])
 
-    def __getitem__(self, indices: torch.Tensor) -> "_FakeDataProto":
+    def __getitem__(self, indices: torch.Tensor) -> _FakeDataProto:
         selected = indices.tolist()
         return _FakeDataProto(
             batch={name: value.index_select(0, indices) for name, value in self.batch.items()},
@@ -698,18 +697,72 @@ def test_forensic_checkpoint_is_debug_loadable_but_rejected_for_training_resume(
     assert not optimizer.state
     assert restored.global_step == 321
     assert restored.forensic_only is True
-    wrong_run_failure = run_root / "durable" / "failures" / "wrong-run.json"
-    wrong = json.loads(failure_path.read_text())
-    wrong["run_identity"] = "f" * 64
-    wrong_run_failure.write_text(json.dumps(wrong) + "\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="forensic checkpoint provenance"):
+    identity_mutations = {
+        "source": {"source_commit": "f" * 40},
+        "config": {"config_identity": "f" * 64},
+        "world": {"world_size": 2},
+    }
+    for name, mutation in identity_mutations.items():
+        wrong_identity = QueryStateResumeIdentity(
+            **{**asdict(control.identity), **mutation}
+        )
+        with pytest.raises(ValueError, match="provenance|identity|world|shard"):
+            load_query_state_forensic_model_for_debug(
+                forensic,
+                root=root,
+                rank=0,
+                expected_identity=wrong_identity,
+                failure_manifest_path=failure_path,
+            )
+    with pytest.raises(ValueError, match="rank|identity|shard"):
+        load_query_state_forensic_model_for_debug(
+            forensic,
+            root=root,
+            rank=1,
+            expected_identity=control.identity,
+            failure_manifest_path=failure_path,
+        )
+
+    failure_mutations = {
+        "run": {"run_identity": "f" * 64},
+        "mode": {"mode": "mechanics"},
+        "path": {"forensic_checkpoint.path": str(tmp_path / "other")},
+        "failure-resumable": {"resumable": True},
+        "control": {"forensic_checkpoint.control_sha256": "f" * 64},
+        "forensic-role": {"forensic_checkpoint.forensic_only": False},
+        "authoritative": {"forensic_checkpoint.authoritative": True},
+    }
+    pristine_failure = json.loads(failure_path.read_text())
+    for name, mutation in failure_mutations.items():
+        wrong = json.loads(json.dumps(pristine_failure))
+        for field, value in mutation.items():
+            if field.startswith("forensic_checkpoint."):
+                wrong["forensic_checkpoint"][field.split(".", 1)[1]] = value
+            else:
+                wrong[field] = value
+        wrong_failure = failure_path.with_name(f"wrong-{name}.json")
+        wrong_failure.write_text(json.dumps(wrong) + "\n", encoding="utf-8")
+        with pytest.raises(ValueError, match="forensic checkpoint provenance"):
+            load_query_state_forensic_model_for_debug(
+                forensic,
+                root=root,
+                rank=0,
+                expected_identity=control.identity,
+                failure_manifest_path=wrong_failure,
+            )
+
+    shard_path = forensic / "rank_00000_of_00001.pt"
+    pristine_shard = shard_path.read_bytes()
+    shard_path.write_bytes(pristine_shard + b"tampered")
+    with pytest.raises(ValueError, match="shard hash mismatch"):
         load_query_state_forensic_model_for_debug(
             forensic,
             root=root,
             rank=0,
             expected_identity=control.identity,
-            failure_manifest_path=wrong_run_failure,
+            failure_manifest_path=failure_path,
         )
+    shard_path.write_bytes(pristine_shard)
 
 
 def _actor_exporter(path: Path) -> None:
@@ -721,6 +774,28 @@ def _actor_exporter(path: Path) -> None:
 def _processor_exporter(path: Path) -> None:
     path.mkdir()
     (path / "tokenizer_config.json").write_text("{}\n", encoding="utf-8")
+
+
+def test_deployable_bundle_exporter_rejects_forensic_source_metadata(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="forensic|unsafe|deployable"):
+        export_query_state_deployable_bundle(
+            tmp_path / "must-not-publish",
+            actor_exporter=_actor_exporter,
+            processor_exporter=_processor_exporter,
+            projector=DirectSlotProjector(),
+            source_identity=_resume_identity(world_size=1, experiment_mode="formal"),
+            metadata={
+                "forensic_only": True,
+                "resumable": False,
+                "authoritative": False,
+                "terminal_primary": False,
+                "failure_manifest_sha256": "f" * 64,
+                "checkpoint_control_sha256": "e" * 64,
+            },
+        )
+    assert not (tmp_path / "must-not-publish").exists()
 
 
 def test_deployable_bundle_separates_qwen_processor_and_direct_state(

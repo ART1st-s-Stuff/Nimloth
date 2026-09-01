@@ -97,6 +97,35 @@ The formal Query-State owner is also schema-distinct from both paths above:
   official FSDP full-state context, rejects local shards/training payloads and
   existing outputs, and emits no optimizer/scheduler/RNG or SFT2 authorization.
 
+### Formal38 unsafe forensic extraction
+
+Formal38 Job `540589` failed the update1605 actor gate (KL `1.057509`, top-1
+agreement `0.675`). Its complete WS8 checkpoint under
+`forensics/unsafe_update_00001605` remains `forensic_only=true`,
+`resumable=false`, `authoritative=false`, and `terminal_primary=false`; it is
+not a deployable bundle, safe SFT1 checkpoint, or SFT2 input.
+
+`load_query_state_forensic_model_for_debug()` is the only loader for that owner.
+It validates the run-owned failure/control/rank-shard identity, copies only model
+tensors into the exact complete root, then recursively freezes and evaluates the
+root. Although the trusted combined rank payload must be deserialized, its
+optimizer, scheduler, and RNG state is never applied to live objects or used to
+continue Formal38. Ordinary rank resume and the human-gated deployable exporter
+continue to reject the unsafe owner.
+
+The complete root has a mutually exclusive `extract_state=True` forward for this
+read-only path. It requires `torch.inference_mode()`, a recursively frozen/eval
+root, and a complete batch built from the original observation plus its matching
+real archived assistant response/CoT and prompt history. Missing, fixed,
+repaired, or generated CoT is rejected. The path runs the existing final-current
+K16 Query extraction and the same no-bias direct head only, returning detached
+finite `[B,16,1024]`; it does not read DINO targets, compute the SFT1 objective,
+or introduce `StateProjector`, WM, Value, or a second state transform.
+
+The forensic extraction API exists only for the separately gated reconstruction
+experiment. It does not promote update1605, resume SFT1, export a bundle, select
+an SFT1 checkpoint, or authorize SFT2.
+
 `FreshQueryStateDINOTeacher` now fronts online DINO with a strict process-local
 memo keyed by `original_image_sha256 + exact DINO identity`. Cached targets are
 immutable detached CPU clones, memory-accounted, and intentionally have no

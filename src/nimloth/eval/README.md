@@ -5,7 +5,8 @@
 | 文件 | 内容 |
 |------|------|
 | `reconstruction.py` | WM reconstruction diagnostic：oracle / predicted / copy / shuffled-action 对比 |
-| `query_state_features.py` | Direct Query-State 与 frozen DINO target 的 train-fit shared-basis feature 可视化、全 split metrics 和 shuffled-row baseline；这是 Nimloth 可复现方法，不是 DeepSight 未公开的 exact colorization |
+| `query_state_features.py` | Deployable Direct Query-State 与 frozen DINO target 的 train-fit shared-basis feature 可视化、全 split metrics 和 shuffled-row baseline；这是 Nimloth 可复现方法，不是 DeepSight 未公开的 exact colorization |
+| `forensic_query_state_features.py` | 仅接受 Formal38 unsafe update1605 forensic cache 的 Stage A direct-feature adapter；在 `mechanics_train` fit shared PCA/global scale，`mechanics_validation` 只 transform，并强制 unsafe/nondeployable/mechanics-only watermark |
 | `rcdm_reconstruction.py` | 从 SFT2 true / WM-predicted latent state 采样 RCDM 可视化 |
 | `rollout_browser/` | 将 VAGEN/SFT behavior-time rollout 证据原子归档为可筛选的离线 HTML |
 | `sft_checkpoint_state_matrix.py` | 在pre-RL validation上只读交叉比较SFT1/ID74 backbone、projector与vision EMA，并审计冻结ID74 WM/ValueHead兼容性 |
@@ -25,5 +26,23 @@ DINOv2-large owner。仅供tensor mechanics测试的private supplied-record help
 non-authoritative，不能产出正式provenance。validation只使用冻结basis/global scale做
 transform；逐图min-max和“DeepSight exact colorization”标记均被拒绝。实际feature
 extraction/report生成属于实验，需要terminal bundle、独立合同和显式launch approval。
+
+`forensic_query_state_features.py`是独立入口，不向上述正式reader/CLI增加unsafe开关。
+它只接受exact Formal38 Job540589 update1605 actor-failed cache及固定48/16
+`mechanics_train`/`mechanics_validation` roles；两组都从同一original image加载固定revision的
+frozen DINO。basis/global scale只由mechanics train拟合，validation只transform。报告包含
+original、target/state PCA-RGB、feature norm、slot cosine/RMSE、strip/contact sheet、direct与
+global shuffled metrics，并保留cache/checkpoint/failure/row/image/real-CoT/prompt/render/encoded
+identities。所有输出固定标记`forensic_only`、`unsafe_actor_checkpoint`、`not_deployable`、
+`mechanics_only`、`not_heldout`；它不复现Formal38 calibration-80聚合，也不声称DeepSight exact
+colorization。输入仍是original observation与其matching real archived response/CoT；缺失、fixed、
+修复或生成的CoT均不进入state。
+
+Forensic证据层级固定为：Formal38 update1605的actor safety failure最高；direct frozen-DINO
+metrics回答unsafe state与feature target的关系；CFM correct-vs-shuffled sensitivity回答decoder是否
+使用condition；sRGB图像只供人类检查。Stage A的mechanics-validation不是heldout且不控制pass或
+checkpoint选择。即使Stage A通过，也必须经人类审阅并重新锁定full train/external-validation、
+预算、阈值与资源后单独批准Stage B；不得自动启动、复用Stage A decoder或产生SFT2授权。真实
+提取仍是实验，须独立launch contract与批准。
 
 静态数据集统计位于 `nimloth.wm.statistics`，不能作为模型 checkpoint 指标。

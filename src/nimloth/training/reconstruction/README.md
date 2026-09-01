@@ -49,19 +49,93 @@ SFT2 adapters:
   checkpoint-bound ODE/noise settings and persists the gate evidence/verdict with
   original/output hashes and preprocessing metadata.
 
-Direct DINO feature maps and metrics remain the primary state diagnostic under
-`nimloth.eval.query_state_features`. CFM RGB images are a secondary human-readable
-probe: decoder/domain failure can make even oracle states reconstruct poorly, so
-image quality cannot override direct feature evidence or select an SFT1
-checkpoint.
+### Formal38 unsafe forensic diagnostics
 
-CPU tests cover manifest/cache primitives and fail-closed loader gates; they do
-not claim a successful real Hugging Face owner load. That requires future
-integration against the exact terminal bundle under its approved experiment.
+The deployable path above is unchanged and has no `--allow-unsafe` mode. It
+accepts only a human-gated terminal bundle and
+`nimloth_query_state_reconstruction_cache_v1`. The separate forensic path is:
+
+```text
+Formal38 Job540589 unsafe_update_00001605 failure evidence + exact 8 rank shards
+  -> load_query_state_forensic_model_for_debug (model tensors only)
+  -> frozen/eval/inference-only final-current K16 + DirectSlotProjector
+  -> nimloth_query_state_forensic_reconstruction_cache_v1
+  -> forensic_query_state_features / cfm_forensic_query_state
+```
+
+`forensic_query_state_cache.py` owns a distinct
+`unsafe_forensic_query_state` cache. It binds the actor failure, exact source,
+config/run/control/failure identities, WS8 topology and shard hashes, plus each
+original image, row, real archived response/CoT, prompt history, renderer,
+template, and encoded-input identity. Cache state remains finite
+`[N,16,1024]`; publish is non-overwriting and atomic, and readers revalidate live
+source/checkpoint/image/shard provenance. The deployable and forensic readers
+reject each other's schemas. No legacy `StateProjector`, WM, Value, grid encoder,
+or synthetic/fixed CoT is accepted.
+
+`forensic_query_state_production.py` is the only production composition for that
+cache. Its strict JSON config has no checkpoint/data/output/distributed defaults:
+it binds the clean integrated source commit, immutable Formal38 resolved config
+SHA and identity, full forensic checkpoint identity, output, selection seed, and
+exact WS8 NCCL topology. The module reconstructs ID176 plus the fresh no-bias
+direct head from the Formal38 config, wraps the complete root with the same
+FULL_SHARD policy **without constructing an optimizer or scheduler**, calls only
+`load_query_state_forensic_model_for_debug`, recursively freezes/evaluates the
+root, renders real archived-response rows, and feeds the collective-safe cache
+builder. It imports or constructs no DINO teacher.
+
+The later approved worker command must be exactly shaped as:
+
+```bash
+torchrun --nnodes=2 --nproc-per-node=4 --max-restarts=0 \
+  -m nimloth.training.reconstruction.forensic_query_state_production \
+  --config /absolute/path/to/locked-forensic-cache-config.json
+```
+
+The config still owns the exact rendezvous/launcher command through the separate
+launch contract; this example does not choose remote paths, resources, output,
+or authorize execution. The entry requires torchrun's
+`TORCHELASTIC_MAX_RESTARTS=0` evidence and rejects any other world/rank topology.
+
+`cfm_forensic_query_state.py` is Stage-A-only. It trains only
+`TokenConditionedFlowUNet` with 16×1024 conditions and the matching original
+observation target; the unsafe Query-State producer is absent from the optimizer
+and decoder checkpoint. Correct and global deterministic shuffled conditions use
+matched noise/time over at least three preregistered seeds. Only the final
+step10000 decoder checkpoint's `mechanics_train` sensitivity controls the Stage A
+mechanics verdict; image-disjoint `mechanics_validation` is report-only, is not
+held out, and cannot select a checkpoint.
+
+Stage A tests the loader→cache→decoder→condition-sensitive RGB mechanics on 48/16
+tiny train-derived rows. It cannot establish generalization or safe/deployable
+state quality. Stage B is not implemented or authorized by a Stage A pass: after
+human review it requires a new full `all_train`/`external_validation` cache,
+128px budget, publication thresholds, resources, output/W&B identity, experiment
+contract, and separate launch approval. Stage A checkpoints are not silently
+reused for Stage B.
+
+Evidence is interpreted in this order: Formal38's actor safety failure remains
+valid; direct frozen-DINO metrics describe the unsafe state's feature relation;
+CFM sensitivity describes whether the decoder uses that state; sRGB strips and
+contact sheets are human-readable examples only. None may resume Formal38,
+promote update1605, override actor failure, select SFT1, mark a cache deployable,
+or authorize SFT2.
+
+Direct DINO feature maps and metrics remain the primary state diagnostic under
+`nimloth.eval.query_state_features` (or the strict forensic adapter for the
+unsafe cache). CFM RGB images are a secondary human-readable probe:
+decoder/domain failure can make even oracle states reconstruct poorly, so image
+quality cannot override direct feature evidence or select an SFT1 checkpoint.
+
+CPU tests cover manifest/cache primitives, real-row wiring with fake model
+owners, and fail-closed loader gates. They do not prove real Hugging Face owner
+load, WS8 FSDP/NCCL, or GPU extraction. The deployable path requires an exact
+human-gated terminal bundle; the forensic path instead requires the exact unsafe
+Formal38 shards/failure evidence and remains nondeployable.
 
 Actual feature extraction, cache building, CFM training, sampling, evaluation,
-or W&B/remote/GPU execution is an experiment. It requires a terminal bundle that
-passed the human SFT1 gate, a separate experiment contract, and explicit launch
+or W&B/remote/GPU execution is an experiment. It requires the applicable exact
+owner above, a separate complete experiment launch contract, and explicit launch
 approval; importing these modules or implementing their code grants none of
 those permissions.
 

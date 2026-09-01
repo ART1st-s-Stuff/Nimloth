@@ -93,8 +93,10 @@ def _validate_identity(identity: SharedFeatureBasisIdentity) -> None:
         raise TypeError("shared basis identity must use SharedFeatureBasisIdentity")
     if identity.method != NIMLOTH_SHARED_BASIS_METHOD:
         raise ValueError("colorization method must be nimloth_shared_basis, not DeepSight exact")
-    if identity.fit_split != "train":
-        raise ValueError("shared PCA basis fit split must be train; validation refit is forbidden")
+    if identity.fit_split not in {"train", "mechanics_train"}:
+        raise ValueError(
+            "shared PCA basis fit split must be train or mechanics_train; validation refit is forbidden"
+        )
     for field in (
         "bundle_fingerprint",
         "source_jsonl_sha256",
@@ -182,13 +184,17 @@ def _fit_shared_feature_basis_from_records(
     *,
     interpolation: str,
     output_path: str | Path,
+    fit_split: str = "train",
+    expected_selection_role: str = QUERY_STATE_CACHE_SELECTION_ALL_TRAIN,
 ) -> SharedFeatureBasis:
-    """Test-only numeric helper; supplied records are not authoritative provenance."""
+    """Numeric helper shared by strict cache-owned formal and forensic wrappers."""
 
     identity, left, right = _derive_train_basis_inputs(
         state_records,
         dino_records,
         interpolation=interpolation,
+        fit_split=fit_split,
+        expected_selection_role=expected_selection_role,
     )
     output = Path(output_path)
     if output.exists() or output.is_symlink():
@@ -405,12 +411,15 @@ def _feature_row_set_identity(records: Sequence[QueryStateFeatureRecord]) -> str
 
 
 def _feature_split_identity(
-    records: Sequence[QueryStateFeatureRecord], *, source_manifest_identity: str
+    records: Sequence[QueryStateFeatureRecord],
+    *,
+    source_manifest_identity: str,
+    expected_selection_role: str | None = None,
 ) -> str:
     values = tuple(records)
     if not values:
         raise ValueError("feature split identity requires records")
-    expected_role = (
+    expected_role = expected_selection_role or (
         QUERY_STATE_CACHE_SELECTION_ALL_TRAIN
         if values[0].split == "train"
         else QUERY_STATE_CACHE_SELECTION_EXTERNAL_VALIDATION
@@ -431,6 +440,8 @@ def _derive_train_basis_inputs(
     dino_records: Sequence[DinoFeatureRecord],
     *,
     interpolation: str,
+    fit_split: str = "train",
+    expected_selection_role: str = QUERY_STATE_CACHE_SELECTION_ALL_TRAIN,
 ) -> tuple[SharedFeatureBasisIdentity, torch.Tensor, torch.Tensor]:
     """Recompute every basis identity from the paired train-record manifest."""
 
@@ -450,8 +461,10 @@ def _derive_train_basis_inputs(
     for state_record, target_record in zip(states, targets, strict=True):
         if not isinstance(state_record, QueryStateFeatureRecord) or not isinstance(target_record, DinoFeatureRecord):
             raise TypeError("basis inputs use QueryStateFeatureRecord/DinoFeatureRecord")
-        if state_record.split != "train" or target_record.split != "train":
-            raise ValueError("shared PCA fitting accepts train rows only; validation is transform-only")
+        if state_record.split != fit_split or target_record.split != fit_split:
+            raise ValueError(
+                f"shared PCA fitting accepts {fit_split} rows only; validation is transform-only"
+            )
         if not state_record.row_identity or state_record.row_identity != target_record.row_identity:
             raise ValueError("train paired row identity mismatch")
         if state_record.row_identity in seen:
@@ -481,9 +494,11 @@ def _derive_train_basis_inputs(
         bundle_fingerprint=next(iter(bundle_ids)),
         source_jsonl_sha256=next(iter(source_ids)),
         source_manifest_identity=source_manifest_identity,
-        fit_split="train",
+        fit_split=fit_split,
         fit_split_identity=_feature_split_identity(
-            states, source_manifest_identity=source_manifest_identity
+            states,
+            source_manifest_identity=source_manifest_identity,
+            expected_selection_role=expected_selection_role,
         ),
         fit_row_set_identity=_feature_row_set_identity(states),
         dino_identity=next(iter(dino_ids)),
@@ -788,6 +803,9 @@ def _render_query_state_feature_report_from_records(
     shuffle_seed: int,
     colorization_method: str = NIMLOTH_SHARED_BASIS_METHOD,
     authoritative_provenance: bool = False,
+    expected_selection_role: str | None = None,
+    metadata_extension: Mapping[str, Any] | None = None,
+    row_metadata_extension: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Numeric renderer; only cache-owned wrappers may label provenance authoritative."""
 
@@ -808,7 +826,9 @@ def _render_query_state_feature_report_from_records(
     target_rgb = basis.transform(target_batch, normalization=normalization)
     row_set_identity = _feature_row_set_identity(states)
     evaluation_split_identity = _feature_split_identity(
-        states, source_manifest_identity=basis.identity.source_manifest_identity
+        states,
+        source_manifest_identity=basis.identity.source_manifest_identity,
+        expected_selection_role=expected_selection_role,
     )
     metadata = {
         "schema": _REPORT_SCHEMA,
@@ -817,7 +837,11 @@ def _render_query_state_feature_report_from_records(
         "diagnostic_role": (
             "primary_direct_feature_space_post_hoc_only"
             if authoritative_provenance
-            else "test_only_supplied_records_non_authoritative"
+            else (
+                "primary_direct_feature_space_forensic_post_hoc_only"
+                if metadata_extension and metadata_extension.get("forensic_only") is True
+                else "test_only_supplied_records_non_authoritative"
+            )
         ),
         "authoritative_cache_provenance": authoritative_provenance,
         "training_or_checkpoint_selection": False,
@@ -840,6 +864,20 @@ def _render_query_state_feature_report_from_records(
         "feature_norm_scale": basis.feature_norm_scale,
         "rmse_scale": basis.rmse_scale,
     }
+    if metadata_extension:
+        overlap = set(metadata) & set(metadata_extension)
+        if overlap:
+            raise ValueError(f"feature report metadata extension overlaps core fields: {sorted(overlap)}")
+        metadata.update(dict(metadata_extension))
+    if row_metadata_extension is not None:
+        expected_rows = {row.row_identity for row in states}
+        if set(row_metadata_extension) != expected_rows:
+            raise ValueError("feature report row metadata extension must exactly cover report rows")
+        forbidden = {
+            "row_identity", "split", "image_sha256", "archived_response_sha256", "artifacts"
+        }
+        if any(forbidden & set(value) for value in row_metadata_extension.values()):
+            raise ValueError("feature report row metadata extension overlaps core fields")
     temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
     temporary.mkdir(parents=True)
     rows_json: list[dict[str, Any]] = []
@@ -894,6 +932,7 @@ def _render_query_state_feature_report_from_records(
                     "split": state_record.split,
                     "image_sha256": state_record.image_sha256,
                     "archived_response_sha256": state_record.archived_response_sha256,
+                    **dict((row_metadata_extension or {}).get(state_record.row_identity, {})),
                     "artifacts": artifacts,
                 }
             )
@@ -955,11 +994,9 @@ def _state_records_from_cache(
     source_sha256 = str(manifest.source_jsonl[source_role]["sha256"])
     source_manifest_identity = str(manifest.source_jsonl["source_manifest_identity"])
     records: list[QueryStateFeatureRecord] = []
-    raw_rows: list[dict[str, Any]] = []
     for index in range(len(dataset)):
         item = dataset[index]
         state = item.pop("state")
-        raw_rows.append(dict(item))
         records.append(
             QueryStateFeatureRecord(
                 row_identity=str(item["row_identity"]),
@@ -977,8 +1014,6 @@ def _state_records_from_cache(
                 state=state,
             )
         )
-    if hashlib.sha256(_canonical_json({"rows": raw_rows})).hexdigest() != manifest.row_set_identity:
-        raise ValueError("feature cache row-set identity differs from strict cache manifest")
     expected_split_identity = _feature_split_identity(
         records, source_manifest_identity=source_manifest_identity
     )

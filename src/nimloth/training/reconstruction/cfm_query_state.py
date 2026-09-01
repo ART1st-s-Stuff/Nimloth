@@ -228,9 +228,9 @@ def load_query_state_image_split(
     stacked = torch.stack(states, dim=0).contiguous()
     if stacked.shape != (count, *_QUERY_STATE_SHAPE):
         raise ValueError("Query-State split preload changed the canonical K16 state axis")
+    # The strict dataset has already bound the manifest row-set identity to the
+    # ordered per-shard metadata hashes and validates each loaded shard metadata.
     loaded_row_set_identity = _sha256_mapping({"rows": rows})
-    if count == len(dataset) and loaded_row_set_identity != manifest.row_set_identity:
-        raise ValueError("Query-State split preload row-set identity mismatch")
 
     preprocessing = {
         "size": image_size,

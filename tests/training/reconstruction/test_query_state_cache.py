@@ -199,6 +199,19 @@ def _write_valid_bundle(
     return path
 
 
+def _rendered_provenance(row_identity: str) -> dict[str, str]:
+    return {
+        name: hashlib.sha256(f"{name}:{row_identity}".encode()).hexdigest()
+        for name in (
+            "prompt_history_identity",
+            "messages_identity",
+            "renderer_identity",
+            "template_identity",
+            "encoded_input_identity",
+        )
+    } | {"response_source": "archived"}
+
+
 def _production_builder_kwargs() -> dict[str, object]:
     return {
         "device": torch.device("cpu"),
@@ -226,6 +239,7 @@ def _build_valid_cache(tmp_path: Path, _monkeypatch: pytest.MonkeyPatch) -> Path
             row=row,
             state=torch.arange(16 * 1024, dtype=torch.float32).reshape(16, 1024)
             + row.ordinal,
+            provenance=_rendered_provenance(row.identity),
         )
         for row in selected
     )
@@ -269,6 +283,7 @@ def test_audited_selection_excludes_overlap_binds_counts_and_allows_disjoint_gat
             cache_module._QueryStateCacheRecord(
                 row=row,
                 state=torch.full((16, 1024), float(row.ordinal)),
+                provenance=_rendered_provenance(row.identity),
             )
             for row in selected
         )
@@ -340,7 +355,11 @@ def test_selection_manifest_tamper_is_rejected_against_live_audit(
         source=source,
         selection_role="external_validation",
         records=tuple(
-            cache_module._QueryStateCacheRecord(row=row, state=torch.zeros(16, 1024))
+            cache_module._QueryStateCacheRecord(
+                row=row,
+                state=torch.zeros(16, 1024),
+                provenance=_rendered_provenance(row.identity),
+            )
             for row in selected
         ),
         state_dtype="float32",
@@ -348,6 +367,13 @@ def test_selection_manifest_tamper_is_rejected_against_live_audit(
     )
     manifest_path = cache / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    original_row_set_identity = manifest["row_set_identity"]
+    manifest["row_set_identity"] = "f" * 64
+    manifest["cache_fingerprint"] = cache_module._manifest_fingerprint(manifest)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="row-set|live audited source"):
+        QueryStateReconstructionCacheDataset(cache)
+    manifest["row_set_identity"] = original_row_set_identity
     manifest["selection"]["source_audit"]["cross_split_image_hashes"] = 0
     manifest["cache_fingerprint"] = cache_module._manifest_fingerprint(manifest)
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
@@ -378,6 +404,68 @@ def test_cache_primitives_preserve_real_pre_rl_state_and_provenance(
     dataset = QueryStateReconstructionCacheDataset(cache)
     assert dataset[0]["state"].shape == (16, 1024)
     assert dataset[0]["row_identity"]
+
+
+def test_cache_writer_rejects_missing_actual_rendered_provenance(
+    tmp_path: Path,
+) -> None:
+    source = _write_sources(tmp_path)
+    bundle = validate_query_state_bundle(
+        _write_valid_bundle(
+            tmp_path / "bundle",
+            source_manifest_identity=source.source_manifest_identity,
+        )
+    )
+    rows, _audit = index_early4_rows(source, enforce_approved_counts=False)
+    selected = tuple(row for row in rows if row.split == "train")
+    output = tmp_path / "must-not-publish"
+
+    with pytest.raises(ValueError, match="actual rendered|provenance"):
+        cache_module._write_query_state_reconstruction_cache(
+            output,
+            bundle=bundle,
+            source=source,
+            selection_role="all_train",
+            records=tuple(
+                cache_module._QueryStateCacheRecord(
+                    row=row,
+                    state=torch.zeros(16, 1024),
+                )
+                for row in selected
+            ),
+            state_dtype="float32",
+            shard_size=2,
+        )
+    assert not output.exists()
+
+
+def test_cache_row_persists_prompt_renderer_encoding_and_archived_response_identities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache = _build_valid_cache(tmp_path, monkeypatch)
+    manifest = json.loads((cache / "manifest.json").read_text(encoding="utf-8"))
+    shard = torch.load(
+        cache / manifest["shards"][0]["file"],
+        map_location="cpu",
+        weights_only=False,
+    )
+    row = shard["rows"][0]
+    required = {
+        "prompt_history_identity",
+        "messages_identity",
+        "renderer_identity",
+        "template_identity",
+        "encoded_input_identity",
+        "response_source",
+    }
+
+    missing = sorted(required - set(row))
+    assert not missing, f"cache row provenance is incomplete: {missing}"
+    assert row["response_source"] == "archived"
+    for name in required - {"response_source"}:
+        assert isinstance(row[name], str) and len(row[name]) == 64
+        assert set(row[name]) <= set("0123456789abcdef")
 
 
 def test_production_builder_exposes_no_owner_or_state_injection() -> None:

@@ -40,7 +40,10 @@ from nimloth.training.sft1.query_state_checkpoint import (
     QueryStateResumeIdentity,
     load_direct_query_state_artifact,
 )
-from nimloth.training.sft1.query_state_data import render_query_state_row
+from nimloth.training.sft1.query_state_data import (
+    QueryStateRenderedRow,
+    render_query_state_row,
+)
 from nimloth.training.sft1.query_state_smoke_runtime import (
     build_query_state_source_manifest_identity,
 )
@@ -226,6 +229,13 @@ class _LoadedQueryStateBundleOwners:
 class _QueryStateCacheRecord:
     row: SFT1V2Early4Row
     state: torch.Tensor
+    provenance: Mapping[str, str] | None = None
+
+
+@dataclass(frozen=True)
+class _ExtractedQueryStateBatch:
+    state: torch.Tensor
+    rendered: tuple[QueryStateRenderedRow, ...]
 
 
 @dataclass(frozen=True)
@@ -458,7 +468,7 @@ def _extract_canonical_query_states(
     token_id_map: Mapping[str, int],
     device: torch.device,
     max_length: int,
-) -> torch.Tensor:
+) -> _ExtractedQueryStateBatch:
     """Render archived rows and run the unique one-forward frozen state path."""
 
     if not rows:
@@ -500,7 +510,29 @@ def _extract_canonical_query_states(
         )
         state = projector(student.query_hidden)
     validate_frozen_query_state_producer(actor=actor, projector=projector)
-    return validate_canonical_query_state(state.detach()).cpu().clone()
+    canonical = validate_canonical_query_state(state.detach()).cpu().clone()
+    return _ExtractedQueryStateBatch(state=canonical, rendered=rendered)
+
+
+_PROVENANCE_IDENTITY_FIELDS = (
+    "prompt_history_identity",
+    "messages_identity",
+    "renderer_identity",
+    "template_identity",
+    "encoded_input_identity",
+)
+
+
+def _rendered_row_provenance(rendered: QueryStateRenderedRow) -> dict[str, str]:
+    if rendered.response_source != "archived":
+        raise ValueError("Query-State cache requires archived rendered-row provenance")
+    provenance = {
+        name: getattr(rendered, name)
+        for name in _PROVENANCE_IDENTITY_FIELDS
+    }
+    if any(not _is_sha256(value) for value in provenance.values()):
+        raise ValueError("Query-State rendered-row provenance identity is invalid")
+    return {**provenance, "response_source": "archived"}
 
 
 def _metadata_for_source_row(row: SFT1V2Early4Row) -> dict[str, Any]:
@@ -518,6 +550,23 @@ def _metadata_for_source_row(row: SFT1V2Early4Row) -> dict[str, Any]:
         "original_image_sha256": row.original_image_sha256,
         "archived_assistant_response_sha256": _sha256_bytes(response.encode("utf-8")),
     }
+
+
+def _row_set_identity_from_shards(shards: Sequence[Mapping[str, Any]]) -> str:
+    return _sha256_bytes(
+        _canonical_json(
+            {
+                "shards": [
+                    {
+                        "start": shard["start"],
+                        "stop": shard["stop"],
+                        "row_metadata_sha256": shard["row_metadata_sha256"],
+                    }
+                    for shard in shards
+                ]
+            }
+        )
+    )
 
 
 def _validate_record(
@@ -538,7 +587,18 @@ def _validate_record(
     if _sha256_file(image_path) != row.original_image_sha256:
         raise ValueError("Query-State original image SHA256 identity mismatch")
     state = validate_canonical_query_state(record.state.unsqueeze(0)).squeeze(0)
-    return state, _metadata_for_source_row(row)
+    if record.provenance is None:
+        raise ValueError(
+            "Query-State cache requires actual rendered prompt/template/encoding provenance"
+        )
+    provenance = dict(record.provenance)
+    if set(provenance) != {*_PROVENANCE_IDENTITY_FIELDS, "response_source"}:
+        raise ValueError("Query-State cache row provenance fields are incomplete")
+    if provenance["response_source"] != "archived" or any(
+        not _is_sha256(provenance[name]) for name in _PROVENANCE_IDENTITY_FIELDS
+    ):
+        raise ValueError("Query-State cache row provenance identity is invalid")
+    return state, {**_metadata_for_source_row(row), **provenance}
 
 
 def _index_audited_sources(
@@ -727,6 +787,8 @@ def _validate_shard_payload(
         "original_image_path",
         "original_image_sha256",
         "archived_assistant_response_sha256",
+        *_PROVENANCE_IDENTITY_FIELDS,
+        "response_source",
     }
     for row in rows:
         if not isinstance(row, dict) or set(row) != required_row_fields:
@@ -748,6 +810,8 @@ def _validate_shard_payload(
             or not Path(row["original_image_path"]).is_absolute()
             or not _is_sha256(row["original_image_sha256"])
             or not _is_sha256(row["archived_assistant_response_sha256"])
+            or row["response_source"] != "archived"
+            or any(not _is_sha256(row[name]) for name in _PROVENANCE_IDENTITY_FIELDS)
         ):
             raise ValueError("Query-State shard row/image/CoT identity is invalid")
         image_path = Path(row["original_image_path"])
@@ -989,7 +1053,7 @@ def build_query_state_reconstruction_cache(
     records: list[_QueryStateCacheRecord] = []
     for start in range(0, len(selected), extraction_batch_size):
         rows = selected[start : start + extraction_batch_size]
-        states = _extract_canonical_query_states(
+        extracted = _extract_canonical_query_states(
             rows,
             processor=loaded.processor,
             input_builder=loaded.input_builder,
@@ -999,11 +1063,20 @@ def build_query_state_reconstruction_cache(
             device=loaded.device,
             max_length=max_length,
         )
-        if states.shape[0] != len(rows):
+        if extracted.state.shape[0] != len(rows) or len(extracted.rendered) != len(rows):
             raise ValueError("Query-State extraction row/state count mismatch")
         records.extend(
-            _QueryStateCacheRecord(row=row, state=state)
-            for row, state in zip(rows, states, strict=True)
+            _QueryStateCacheRecord(
+                row=row,
+                state=state,
+                provenance=_rendered_row_provenance(rendered),
+            )
+            for row, state, rendered in zip(
+                rows,
+                extracted.state,
+                extracted.rendered,
+                strict=True,
+            )
         )
     return _write_query_state_reconstruction_cache(
         output,
@@ -1093,10 +1166,6 @@ def _write_query_state_reconstruction_cache(
             raise ValueError("duplicate Query-State row identity")
         seen.add(metadata["row_identity"])
         validated.append((state, metadata))
-    row_set_identity = _sha256_bytes(
-        _canonical_json({"rows": [metadata for _, metadata in validated]})
-    )
-
     temporary.mkdir(parents=True)
     try:
         descriptors: list[dict[str, Any]] = []
@@ -1158,7 +1227,7 @@ def _write_query_state_reconstruction_cache(
             },
             "split": {"name": split, "identity": split_identity},
             "selection": selection,
-            "row_set_identity": row_set_identity,
+            "row_set_identity": _row_set_identity_from_shards(descriptors),
             "shards": descriptors,
         }
         manifest["cache_fingerprint"] = _manifest_fingerprint(manifest)
@@ -1350,6 +1419,8 @@ def _parse_manifest(raw: Mapping[str, Any]) -> QueryStateCacheManifest:
         cursor = item["stop"]
     if cursor != count:
         raise ValueError("Query-State cache manifest count disagrees with shards")
+    if _row_set_identity_from_shards(raw_shards) != raw["row_set_identity"]:
+        raise ValueError("Query-State cache manifest row-set identity mismatch")
     return QueryStateCacheManifest(
         schema=raw["schema"],
         version=raw["version"],
@@ -1425,13 +1496,7 @@ class QueryStateReconstructionCacheDataset:
             raise ValueError("Query-State cache live split/selection identity mismatch")
         self._source_rows = {row.identity: row for row in selected}
         self._ordered_source_row_ids = tuple(row.identity for row in selected)
-        expected_row_set_identity = _sha256_bytes(_canonical_json({
-            "rows": [_metadata_for_source_row(row) for row in selected]
-        }))
-        if (
-            len(self._source_rows) != self.manifest.count
-            or expected_row_set_identity != self.manifest.row_set_identity
-        ):
+        if len(self._source_rows) != self.manifest.count:
             raise ValueError("Query-State cache row set differs from live audited source")
         self._loaded: dict[int, tuple[torch.Tensor, list[dict[str, Any]]]] = {}
 
@@ -1474,8 +1539,13 @@ class QueryStateReconstructionCacheDataset:
             if source_row is None:
                 raise ValueError("Query-State cache row is absent from live audited source")
             expected = _metadata_for_source_row(source_row)
-            if metadata != expected:
+            if any(metadata.get(name) != value for name, value in expected.items()):
                 raise ValueError("Query-State cache row/source provenance identity mismatch")
+            if metadata.get("response_source") != "archived" or any(
+                not _is_sha256(metadata.get(name))
+                for name in _PROVENANCE_IDENTITY_FIELDS
+            ):
+                raise ValueError("Query-State cache rendered provenance identity mismatch")
         self._loaded[shard_index] = (state, rows)
         return state, rows
 

@@ -28,16 +28,16 @@ from nimloth.latent import (
 )
 from nimloth.training.sft1 import query_state_adapter
 from nimloth.training.sft1.data import sha256_file
-from nimloth.training.sft1.query_state_adapter import (
-    QUERY_STATE_DATAPROTO_SCHEMA,
-    build_query_state_dataproto,
-    query_state_update_inputs,
-)
 from nimloth.training.sft1.query_state import (
     QueryStateNormalization,
     SFT1QueryStateObjective,
     SFT1QueryStateTrainingRoot,
     query_state_trainable_parameter_groups,
+)
+from nimloth.training.sft1.query_state_adapter import (
+    QUERY_STATE_DATAPROTO_SCHEMA,
+    build_query_state_dataproto,
+    query_state_update_inputs,
 )
 from nimloth.training.sft1.query_state_checkpoint import (
     QUERY_STATE_CHECKPOINT_SCHEMA,
@@ -49,8 +49,8 @@ from nimloth.training.sft1.query_state_checkpoint import (
     save_query_state_resume_checkpoint,
 )
 from nimloth.training.sft1.query_state_data import (
-    FreshQueryStateDINOTeacher,
     QUERY_STATE_PREPARED_ROW_SCHEMA,
+    FreshQueryStateDINOTeacher,
     prepare_query_state_row,
     render_query_state_row,
 )
@@ -392,6 +392,32 @@ def test_full_archived_response_renderer_masks_exact_queries_and_labels_final_sp
         multi_labels[boundaries[-1] : boundaries[-1] + 3],
         multi_ids[boundaries[-1] : boundaries[-1] + 3],
     )
+
+
+def test_rendered_forensic_row_binds_complete_prompt_and_encoding_provenance(
+    tmp_path: Path,
+) -> None:
+    rendered = render_query_state_row(
+        _early_row(tmp_path, step_index=1),
+        processor=_Processor(),
+        max_length=8192,
+    )
+    required = {
+        "prompt_history_identity",
+        "messages_identity",
+        "renderer_identity",
+        "template_identity",
+        "encoded_input_identity",
+        "response_source",
+    }
+    missing = sorted(name for name in required if not hasattr(rendered, name))
+
+    assert not missing, f"forensic row provenance is incomplete: {missing}"
+    assert rendered.response_source == "archived"
+    for name in required - {"response_source"}:
+        identity = getattr(rendered, name)
+        assert isinstance(identity, str) and len(identity) == 64
+        assert set(identity) <= set("0123456789abcdef")
 
 
 def test_original_observation_dino_and_distinct_dataproto_round_trip(
