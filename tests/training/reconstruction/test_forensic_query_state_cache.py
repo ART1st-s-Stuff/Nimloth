@@ -112,13 +112,21 @@ def _checkpoint(tmp_path: Path) -> ForensicCheckpointIdentity:
         },
         "safety": safety,
     }
+    global_safety = {
+        "actor_baseline_identity": "a" * 64,
+        "automatic_model_quality_pass": None,
+        "calibration": safety,
+        "holdout": {"passed": True},
+        "passed": False,
+        "scope": "global_id176_actor_generation_safety",
+    }
     failure_payload = {
         "schema": "nimloth_sft1_query_state_segment_v1",
         "run_identity": "3" * 64,
         "mode": "formal",
         "end_update": 1605,
         "validation": validation,
-        "safety": safety,
+        "safety": global_safety,
         "resumable": False,
         "forensic_checkpoint": {
             "path": str(checkpoint), "control_sha256": control_sha,
@@ -213,6 +221,26 @@ def test_generic_schedule_has_equal_forward_count_and_explicit_padding(tmp_path:
     assert sum(contributing for schedule in schedules for _entry, contributing in schedule) == 63
     assert schedules[7][-1][1] is False
     assert schedules[7][-1][0] == entries[0]
+
+
+def test_actor_failure_parser_requires_global_calibration_safety_wrapper(
+    tmp_path: Path,
+) -> None:
+    identity = _checkpoint(tmp_path)
+    failure_path = Path(identity.failure_manifest_path)
+    raw = json.loads(failure_path.read_text())
+    assert forensic.actor_failure_evidence_from_manifest(failure_path)["passed"] is False
+
+    raw["safety"]["scope"] = "calibration_only"
+    failure_path.write_text(json.dumps(raw, sort_keys=True) + "\n")
+    with pytest.raises(ValueError, match="actor-safety evidence"):
+        forensic.actor_failure_evidence_from_manifest(failure_path)
+
+    raw["safety"]["scope"] = "global_id176_actor_generation_safety"
+    raw["validation"]["safety"] = {**raw["validation"]["safety"], "passed": True}
+    failure_path.write_text(json.dumps(raw, sort_keys=True) + "\n")
+    with pytest.raises(ValueError, match="actor-safety evidence"):
+        forensic.actor_failure_evidence_from_manifest(failure_path)
 
 
 def test_checkpoint_gate_binds_ws8_failure_control_and_all_rank_shards(tmp_path: Path) -> None:

@@ -226,18 +226,30 @@ def _require_gate(statuses: Sequence[Mapping[str, Any]], *, phase: str, world_si
 
 def _actor_failure_from_manifest(failure: Mapping[str, Any]) -> dict[str, Any]:
     validation = failure.get("validation")
-    safety = failure.get("safety")
+    global_safety = failure.get("safety")
     diagnostics = validation.get("diagnostics") if isinstance(validation, Mapping) else None
     metrics = diagnostics.get("metrics") if isinstance(diagnostics, Mapping) else None
     validation_safety = validation.get("safety") if isinstance(validation, Mapping) else None
-    checks = safety.get("checks") if isinstance(safety, Mapping) else None
+    calibration_safety = (
+        global_safety.get("calibration")
+        if isinstance(global_safety, Mapping)
+        else None
+    )
+    checks = (
+        calibration_safety.get("checks")
+        if isinstance(calibration_safety, Mapping)
+        else None
+    )
     kl = metrics.get("actor/kl_baseline_to_current") if isinstance(metrics, Mapping) else None
     top1 = metrics.get("actor/top1_agreement") if isinstance(metrics, Mapping) else None
     if (
         not isinstance(validation, Mapping)
-        or not isinstance(safety, Mapping)
-        or validation_safety != safety
-        or safety.get("passed") is not False
+        or not isinstance(global_safety, Mapping)
+        or global_safety.get("scope") != "global_id176_actor_generation_safety"
+        or global_safety.get("passed") is not False
+        or not isinstance(calibration_safety, Mapping)
+        or validation_safety != calibration_safety
+        or calibration_safety.get("passed") is not False
         or not isinstance(checks, Mapping)
         or checks.get("kl") is not False
         or checks.get("top1") is not False
@@ -251,7 +263,7 @@ def _actor_failure_from_manifest(failure: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("forensic failure manifest actor-safety evidence is invalid")
     return {
         "evidence_identity": _identity(
-            {"validation": dict(validation), "safety": dict(safety)}
+            {"validation": dict(validation), "safety": dict(global_safety)}
         ),
         "kl": float(kl),
         "top1_agreement": float(top1),
