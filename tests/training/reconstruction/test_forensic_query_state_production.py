@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
@@ -81,6 +82,7 @@ def _raw() -> dict[str, object]:
         "cache": {
             "output_path": "/forensic/cache",
             "selection_seed": 20260901,
+            "row_index_identity": production.FORMAL38_ROW_INDEX_IDENTITY,
         },
         "torchrun": {
             "backend": "nccl",
@@ -96,6 +98,7 @@ def test_forensic_production_config_has_no_semantic_defaults() -> None:
     assert len(parsed.identity) == 64
     assert parsed.formal_config_identity == production.FORMAL38_CONFIG_IDENTITY
     assert parsed.selection_seed == 20260901
+    assert parsed.row_index_identity == production.FORMAL38_ROW_INDEX_IDENTITY
     assert parsed.torchrun_max_restarts == 0
     assert parsed.output_path == Path("/forensic/cache")
 
@@ -112,6 +115,10 @@ def test_forensic_production_config_has_no_semantic_defaults() -> None:
     wrong = _raw()
     wrong["allow_unsafe"] = True
     with pytest.raises(ValueError, match="unknown"):
+        production.parse_forensic_query_state_production_config(wrong)
+    wrong = json.loads(json.dumps(_raw()))
+    wrong["cache"]["row_index_identity"] = production.FORMAL38_SOURCE_MANIFEST_IDENTITY
+    with pytest.raises(ValueError, match="row_index_identity"):
         production.parse_forensic_query_state_production_config(wrong)
     wrong = json.loads(json.dumps(_raw()))
     wrong["checkpoint"]["source_commit"] = "0" * 40
@@ -187,6 +194,52 @@ def _formal_config() -> SimpleNamespace:
     )
 
 
+def test_formal_source_manifest_and_live_row_index_have_distinct_strict_identities(
+    tmp_path: Path,
+) -> None:
+    formal = _formal_config()
+    manifest_path = tmp_path / "source_manifest.json"
+    payload = {
+        "schema": "nimloth_sft1_query_state_formal_source_v1",
+        "identity": production.FORMAL38_SOURCE_MANIFEST_IDENTITY,
+        "commit": production.FORMAL38_SOURCE_COMMIT,
+        "train_source_path": "/data/train.jsonl",
+        "train_source_sha256": "7" * 64,
+        "validation_source_path": "/data/val.jsonl",
+        "validation_source_sha256": "8" * 64,
+        "row_audit": {"train_rows": 12836},
+    }
+    manifest_path.write_text(json.dumps(payload, sort_keys=True) + "\n")
+    manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    formal.source = MappingProxyType({
+        "commit": production.FORMAL38_SOURCE_COMMIT,
+        "source_manifest_identity": production.FORMAL38_SOURCE_MANIFEST_IDENTITY,
+        "source_manifest_path": str(manifest_path),
+    })
+    formal.artifacts = MappingProxyType({"file_sha256": {
+        "/data/train.jsonl": "7" * 64,
+        "/data/val.jsonl": "8" * 64,
+        str(manifest_path): manifest_sha256,
+    }})
+
+    production._validate_formal_source_manifest(formal)
+    source = production._source_contract(
+        formal, row_index_identity=production.FORMAL38_ROW_INDEX_IDENTITY
+    )
+    assert source.source_manifest_identity == production.FORMAL38_ROW_INDEX_IDENTITY
+    assert source.source_manifest_identity != formal.source["source_manifest_identity"]
+
+    payload["identity"] = production.FORMAL38_ROW_INDEX_IDENTITY
+    manifest_path.write_text(json.dumps(payload, sort_keys=True) + "\n")
+    formal.artifacts = MappingProxyType({"file_sha256": {
+        "/data/train.jsonl": "7" * 64,
+        "/data/val.jsonl": "8" * 64,
+        str(manifest_path): hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+    }})
+    with pytest.raises(ValueError, match="source manifest contract identity"):
+        production._validate_formal_source_manifest(formal)
+
+
 def test_production_composition_uses_only_model_loader_and_no_optimizer_or_dino(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -230,7 +283,7 @@ def test_production_composition_uses_only_model_loader_and_no_optimizer_or_dino(
     )
 
     assert calls == ["source", "qwen", "fsdp", "forensic_loader"]
-    assert source.source_manifest_identity == "e" * 64
+    assert source.source_manifest_identity == production.FORMAL38_ROW_INDEX_IDENTITY
     assert all(not parameter.requires_grad for parameter in owner.root.parameters())
     assert all(not module.training for module in owner.root.modules())
     assert "dino" not in production.__dict__

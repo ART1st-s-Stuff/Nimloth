@@ -72,6 +72,8 @@ FORMAL38_CONFIG_IDENTITY = "ff5e9ef8862df9e352a3d981c20bfe67ea281a61e13709f1db1a
 FORMAL38_RUN_IDENTITY = "0f82a37c9e191e543d29f8e66857ca1d12a1e2941c2962fc24203666c4f5bcf1"
 FORMAL38_UNSAFE_CONTROL_SHA256 = "414daefe2b501a22805691aa101d76fcc0f5b28447a1332d81b19b3434e838af"
 FORMAL38_FAILURE_MANIFEST_SHA256 = "1b9c74ed400da5e3180f04a4402ff36773f6329c7b8fcbc4e4feaeee6bc71340"
+FORMAL38_SOURCE_MANIFEST_IDENTITY = "b36e45fc9d50b5d88dfc446a91ed4357e7f4b71a2effc82a9fd3cf0ab7fee4b3"
+FORMAL38_ROW_INDEX_IDENTITY = "782586e39fe25f031b913aae7705457a1b466401bd2ccb0631b86d16927546c9"
 _HEX = frozenset("0123456789abcdef")
 _TOP_FIELDS = {
     "schema",
@@ -84,7 +86,7 @@ _TOP_FIELDS = {
 _SECTION_FIELDS = {
     "integrated_source": {"repo_root", "commit"},
     "formal_resolved_config": {"path", "sha256", "identity"},
-    "cache": {"output_path", "selection_seed"},
+    "cache": {"output_path", "selection_seed", "row_index_identity"},
     "torchrun": {"backend", "world_size", "max_restarts"},
 }
 _PROVENANCE_FIELDS = (
@@ -226,6 +228,7 @@ class ForensicQueryStateProductionConfig:
     checkpoint: ForensicCheckpointIdentity
     output_path: Path
     selection_seed: int
+    row_index_identity: str
     torchrun_backend: str
     torchrun_world_size: int
     torchrun_max_restarts: int
@@ -258,6 +261,8 @@ def parse_forensic_query_state_production_config(
     seed = cache["selection_seed"]
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise ValueError("cache.selection_seed must be a non-negative integer")
+    if cache["row_index_identity"] != FORMAL38_ROW_INDEX_IDENTITY:
+        raise ValueError("cache.row_index_identity must bind the exact Formal38 live row index")
     if (
         torchrun["backend"] != "nccl"
         or torchrun["world_size"] != 8
@@ -304,6 +309,7 @@ def parse_forensic_query_state_production_config(
         checkpoint=checkpoint,
         output_path=_absolute(cache["output_path"], field="cache.output_path"),
         selection_seed=seed,
+        row_index_identity=str(cache["row_index_identity"]),
         torchrun_backend="nccl",
         torchrun_world_size=8,
         torchrun_max_restarts=0,
@@ -328,6 +334,37 @@ def _read_json(path: Path, *, owner: str) -> dict[str, Any]:
     return raw
 
 
+def _validate_formal_source_manifest(formal: QueryStateTrainingConfig) -> None:
+    source = formal.source
+    data = formal.data
+    hashes = formal.artifacts["file_sha256"]
+    manifest_path = Path(str(source.get("source_manifest_path", "")))
+    manifest_sha256 = hashes.get(str(manifest_path)) if isinstance(hashes, Mapping) else None
+    if (
+        not manifest_path.is_absolute()
+        or not manifest_path.is_file()
+        or manifest_path.is_symlink()
+        or not _is_sha256(manifest_sha256)
+        or _sha256_file(manifest_path) != manifest_sha256
+    ):
+        raise ValueError("Formal38 source manifest live path/hash identity mismatch")
+    manifest = _read_json(manifest_path, owner="Formal38 source manifest")
+    train_path = str(data["train_source_path"])
+    validation_path = str(data["validation_source_path"])
+    if (
+        source.get("source_manifest_identity") != FORMAL38_SOURCE_MANIFEST_IDENTITY
+        or manifest.get("schema") != "nimloth_sft1_query_state_formal_source_v1"
+        or manifest.get("identity") != FORMAL38_SOURCE_MANIFEST_IDENTITY
+        or manifest.get("commit") != FORMAL38_SOURCE_COMMIT
+        or manifest.get("train_source_path") != train_path
+        or manifest.get("train_source_sha256") != hashes.get(train_path)
+        or manifest.get("validation_source_path") != validation_path
+        or manifest.get("validation_source_sha256") != hashes.get(validation_path)
+        or not isinstance(manifest.get("row_audit"), Mapping)
+    ):
+        raise ValueError("Formal38 source manifest contract identity mismatch")
+
+
 def _load_and_validate_formal_config(
     config: ForensicQueryStateProductionConfig,
 ) -> QueryStateTrainingConfig:
@@ -339,6 +376,7 @@ def _load_and_validate_formal_config(
     ):
         raise ValueError("Formal38 resolved config live hash identity mismatch")
     formal = parse_query_state_training_config(_read_json(path, owner="Formal38 resolved config"))
+    _validate_formal_source_manifest(formal)
     checkpoint = config.checkpoint
     expected_model_data = {
         "id176_identity": str(formal.initialization["actor_checkpoint_identity"]),
@@ -429,12 +467,16 @@ def _resume_identity(
     )
 
 
-def _source_contract(formal: QueryStateTrainingConfig) -> QueryStateSourceContract:
+def _source_contract(
+    formal: QueryStateTrainingConfig, *, row_index_identity: str
+) -> QueryStateSourceContract:
     train = str(formal.data["train_source_path"])
     validation = str(formal.data["validation_source_path"])
     hashes = formal.artifacts["file_sha256"]
     if not isinstance(hashes, Mapping) or train not in hashes or validation not in hashes:
         raise ValueError("Formal38 source JSONL hashes are absent")
+    if row_index_identity != FORMAL38_ROW_INDEX_IDENTITY:
+        raise ValueError("forensic source contract row-index identity mismatch")
     return QueryStateSourceContract(
         data=QueryStateSourceData(
             train_jsonl=train,
@@ -444,7 +486,7 @@ def _source_contract(formal: QueryStateTrainingConfig) -> QueryStateSourceContra
             train_split="train",
             validation_split="val",
         ),
-        source_manifest_identity=str(formal.source["source_manifest_identity"]),
+        source_manifest_identity=row_index_identity,
     )
 
 
@@ -591,7 +633,7 @@ def construct_forensic_query_state_producer(
             input_builder=input_builder,
             max_length=int(formal.runtime["max_sequence_length"]),
         ),
-        _source_contract(formal),
+        _source_contract(formal, row_index_identity=config.row_index_identity),
     )
 
 
