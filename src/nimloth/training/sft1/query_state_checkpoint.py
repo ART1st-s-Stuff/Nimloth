@@ -96,7 +96,12 @@ class QueryStateResumeIdentity:
             self.objective_version,
             self.state_artifact_schema,
         )
-        if self.experiment_mode not in {"mechanics", "pilot", "formal"}:
+        if self.experiment_mode not in {
+            "mechanics",
+            "pilot",
+            "formal",
+            "visual_only_forensic_fork",
+        }:
             raise ValueError("Query-State resume experiment mode is incompatible")
         if (
             actual != expected
@@ -431,6 +436,8 @@ def _validated_rank_manifest(
     expected_identity: QueryStateResumeIdentity,
 ) -> str:
     manifest_path = _rank_manifest_path(path, rank, world_size)
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        raise ValueError("Query-State rank checkpoint manifest is invalid")
     try:
         raw = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -453,7 +460,11 @@ def _validated_rank_manifest(
     ):
         raise ValueError("Query-State rank checkpoint manifest identity mismatch")
     shard = _rank_path(path, rank, world_size)
-    if not shard.is_file() or _sha256_file(shard) != raw["shard_sha256"]:
+    if (
+        shard.is_symlink()
+        or not shard.is_file()
+        or _sha256_file(shard) != raw["shard_sha256"]
+    ):
         raise ValueError("Query-State rank checkpoint shard hash mismatch")
     return str(raw["shard_sha256"])
 
@@ -652,6 +663,112 @@ def finalize_query_state_rank_checkpoint(
     finally:
         os.close(descriptor)
     _fsync_directory(checkpoint)
+
+
+def validate_query_state_rank_checkpoint_metadata(
+    path: Path,
+    *,
+    expected_identity: QueryStateResumeIdentity,
+    expected_global_step: int,
+    expected_control_sha256: str,
+    expected_forensic_only: bool,
+    expected_terminal_primary: bool,
+) -> QueryStateDistributedControl:
+    """Validate the canonical control/manifests/shard hashes without loading tensors."""
+
+    checkpoint = Path(path)
+    marker = checkpoint / _COMPLETE_MARKER
+    control_path = checkpoint / "control.json"
+    if (
+        not marker.is_file()
+        or not control_path.is_file()
+        or not _is_sha256(expected_control_sha256)
+        or _sha256_file(control_path) != expected_control_sha256
+    ):
+        raise ValueError("Query-State checkpoint control/marker is incomplete")
+    try:
+        marker_text = marker.read_text(encoding="utf-8")
+        raw = json.loads(control_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("Query-State checkpoint metadata is invalid") from error
+    if marker_text != f"control_sha256={expected_control_sha256}\n" or not isinstance(raw, dict):
+        raise ValueError("Query-State checkpoint completion identity mismatch")
+    expected_keys = {
+        "schema", "training_schema", "objective_version", "state_artifact_schema",
+        "identity", "config_identity", "source_commit", "global_step",
+        "terminal_primary", "forensic_only", "data_cursor", "metric_cursor",
+        "rank_shard_sha256", "checkpoint_identity", "control_hash",
+    }
+    if set(raw) != expected_keys:
+        raise ValueError("Query-State checkpoint control contract is invalid")
+    canonical_with_checkpoint = {
+        key: value for key, value in raw.items() if key != "control_hash"
+    }
+    if (
+        not _is_sha256(raw["checkpoint_identity"])
+        or not _is_sha256(raw["control_hash"])
+        or hashlib.sha256(
+            json.dumps(
+                canonical_with_checkpoint,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode()
+        ).hexdigest()
+        != raw["control_hash"]
+    ):
+        raise ValueError("Query-State checkpoint control identity mismatch")
+    canonical_base = {
+        key: value
+        for key, value in canonical_with_checkpoint.items()
+        if key != "checkpoint_identity"
+    }
+    if hashlib.sha256(
+        json.dumps(
+            canonical_base,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode()
+    ).hexdigest() != raw["checkpoint_identity"]:
+        raise ValueError("Query-State checkpoint identity mismatch")
+    if (
+        raw["schema"] != QUERY_STATE_RANK_CHECKPOINT_SCHEMA
+        or raw["training_schema"] != QUERY_STATE_SCHEMA
+        or raw["objective_version"] != QUERY_STATE_OBJECTIVE_VERSION
+        or raw["state_artifact_schema"] != DIRECT_STATE_ARTIFACT_SCHEMA
+        or not isinstance(raw["identity"], dict)
+        or QueryStateResumeIdentity(**raw["identity"]) != expected_identity
+        or raw["config_identity"] != expected_identity.config_identity
+        or raw["source_commit"] != expected_identity.source_commit
+        or raw["global_step"] != expected_global_step
+        or raw["forensic_only"] is not expected_forensic_only
+        or raw["terminal_primary"] is not expected_terminal_primary
+        or not isinstance(raw["data_cursor"], dict)
+        or not isinstance(raw["metric_cursor"], dict)
+    ):
+        raise ValueError("Query-State checkpoint trusted identity mismatch")
+    rank_hashes = raw["rank_shard_sha256"]
+    if not isinstance(rank_hashes, dict) or set(rank_hashes) != {
+        str(rank) for rank in range(expected_identity.world_size)
+    }:
+        raise ValueError("Query-State checkpoint shard hash index is incomplete")
+    for rank in range(expected_identity.world_size):
+        if _validated_rank_manifest(
+            checkpoint,
+            rank=rank,
+            world_size=expected_identity.world_size,
+            expected_identity=expected_identity,
+        ) != rank_hashes[str(rank)]:
+            raise ValueError("Query-State checkpoint shard hash mismatch")
+    return QueryStateDistributedControl(
+        identity=expected_identity,
+        global_step=expected_global_step,
+        data_cursor=raw["data_cursor"],
+        metric_cursor=raw["metric_cursor"],
+        terminal_primary=expected_terminal_primary,
+        forensic_only=expected_forensic_only,
+    )
 
 
 def load_query_state_rank_state(

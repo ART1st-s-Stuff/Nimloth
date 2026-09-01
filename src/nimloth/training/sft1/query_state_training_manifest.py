@@ -192,10 +192,20 @@ def build_generation_format_manifest(
     """Bind registered real rows to the exact production prompt/spec/parser."""
 
     values = _validate_rows(rows)
-    expected_split = "calibration" if mode == "pilot" else "holdout" if mode == "formal" else None
+    expected_split = (
+        "calibration"
+        if mode in {"pilot", "visual_only_forensic_fork"}
+        else "holdout" if mode == "formal" else None
+    )
     if expected_split is None:
-        raise ValueError("generation-format mode must be pilot or formal")
-    allowed = set(rows_for_validation_mode(validation_split, mode=mode))
+        raise ValueError("generation-format mode is invalid")
+    allowed = set(
+        rows_for_validation_mode(
+            validation_split,
+            mode=mode,
+            requested_split=expected_split,
+        )
+    )
     if any(row.identity not in allowed or not row.external_eligible for row in values):
         raise ValueError(f"{mode} generation-format rows are outside the {expected_split} split")
     if (
@@ -580,7 +590,8 @@ def deserialize_query_state_training_manifest(
     rows_by_identity = {row.identity: row for row in values}
     expected_kind = (
         "coverage_first_pilot" if expected_mode == "pilot"
-        else "full_train_once_per_epoch" if expected_mode == "formal"
+        else "full_train_once_per_epoch"
+        if expected_mode in {"formal", "visual_only_forensic_fork"}
         else None
     )
     if expected_kind is None:
@@ -751,7 +762,13 @@ def rows_for_training_mode(
     *,
     mode: str,
 ) -> tuple[str, ...]:
-    expected = "coverage_first_pilot" if mode == "pilot" else "full_train_once_per_epoch" if mode == "formal" else None
+    expected = (
+        "coverage_first_pilot"
+        if mode == "pilot"
+        else "full_train_once_per_epoch"
+        if mode in {"formal", "visual_only_forensic_fork"}
+        else None
+    )
     if expected is None or manifest.kind != expected:
         if manifest.kind == "full_train_once_per_epoch":
             raise ValueError("full training manifest is formal-only")
@@ -765,15 +782,33 @@ def rows_for_validation_mode(
     mode: str,
     requested_split: str | None = None,
 ) -> tuple[str, ...]:
-    expected = "calibration" if mode == "pilot" else "holdout" if mode == "formal" else None
+    expected = (
+        "calibration"
+        if mode == "pilot"
+        else "holdout"
+        if mode == "formal"
+        else "both"
+        if mode == "visual_only_forensic_fork"
+        else None
+    )
     if expected is None:
-        raise ValueError("validation mode must be pilot or formal")
+        raise ValueError("validation mode is invalid")
     requested = requested_split or expected
-    if requested != expected:
-        if mode == "pilot":
-            raise ValueError("pilot must not open holdout validation rows")
+    if mode == "pilot" and requested != "calibration":
+        raise ValueError("pilot must not open holdout validation rows")
+    if mode == "formal" and requested != "holdout":
         raise ValueError("formal primary validation must use untouched holdout rows")
-    return split.calibration_row_identities if expected == "calibration" else split.holdout_row_identities
+    if mode == "visual_only_forensic_fork" and requested not in {
+        "calibration",
+        "holdout",
+        "both",
+    }:
+        raise ValueError("visual fork validation split request is invalid")
+    if requested == "calibration":
+        return split.calibration_row_identities
+    if requested == "holdout":
+        return split.holdout_row_identities
+    return (*split.calibration_row_identities, *split.holdout_row_identities)
 
 
 __all__ = [

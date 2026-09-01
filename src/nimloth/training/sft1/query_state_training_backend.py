@@ -81,7 +81,13 @@ from nimloth.training.sft1.query_state_training_runtime import (
     advance_query_state_early_stopping,
     current_process_identity,
 )
+from nimloth.training.sft1.query_state_visual_forensic_fork import (
+    authenticate_visual_fork_ancestor,
+    build_visual_fork_event_plan,
+    initialize_visual_fork_from_forensic_model,
+)
 from nimloth.training.sft1.query_state_training_validation import (
+    QueryStateActorSafetyVerdict,
     QueryStateValidationMetadata,
     compute_query_state_diagnostics,
     controlled_gather_query_state_diagnostics,
@@ -284,6 +290,22 @@ def construct_query_state_training_backend(
         adam_epsilon=float(config.optimizer["epsilon"]),
     )
     scheduler = _scheduler(worker.optimizer, config)
+    if (
+        config.mode == "visual_only_forensic_fork"
+        and config.initialization["resume_mode"] == "fresh"
+    ):
+        ancestor_identity = authenticate_visual_fork_ancestor(
+            config,
+            verify_payload_hashes=False,
+        )
+        initialize_visual_fork_from_forensic_model(
+            config,
+            root=worker.root,
+            optimizer=worker.optimizer,
+            scheduler=scheduler,
+            rank=torch.distributed.get_rank(),
+            expected_ancestor_identity=ancestor_identity,
+        )
     input_builder = build_input_builder(
         loaded,
         max_length=int(config.runtime["max_sequence_length"]),
@@ -383,14 +405,21 @@ def build_query_state_training_updates(
     ordinals: Sequence[int],
     *,
     epochs: int,
+    schedule_epoch_offset: int = 0,
     seed: int,
     rank: int,
     world_size: int,
     rows_per_rank_update: int,
     expected_updates: int,
 ) -> tuple[tuple[QueryStateScheduledRow, ...], ...]:
+    if (
+        isinstance(schedule_epoch_offset, bool)
+        or not isinstance(schedule_epoch_offset, int)
+        or schedule_epoch_offset < 0
+    ):
+        raise ValueError("Query-State schedule epoch offset is invalid")
     updates: list[tuple[QueryStateScheduledRow, ...]] = []
-    for epoch in range(epochs):
+    for epoch in range(schedule_epoch_offset, schedule_epoch_offset + epochs):
         local, _identity = deterministic_query_state_schedule(
             ordinals, epoch=epoch, seed=seed, rank=rank, world_size=world_size
         )
@@ -409,8 +438,8 @@ def _validation_boundary_plan(
     epoch: int,
     actual_terminal: bool,
 ) -> dict[str, bool]:
-    if config.mode != "formal":
-        raise ValueError("dynamic dual-split validation is formal-only")
+    if config.mode not in {"formal", "visual_only_forensic_fork"}:
+        raise ValueError("dynamic dual-split validation requires a production mode")
     cadence = int(config.validation["calibration_cadence_updates"])
     if (
         update != epoch * cadence
@@ -419,24 +448,30 @@ def _validation_boundary_plan(
         or not isinstance(actual_terminal, bool)
     ):
         raise ValueError("formal validation boundary is not an epoch commit")
-    holdout_due = (
-        update in {int(value) for value in config.validation["holdout_updates"]}
-        or actual_terminal
-    )
-    generation_due = holdout_due and (
-        update
-        in {
-            int(value)
-            for value in config.validation["generation_format_updates"]
-        }
-        or actual_terminal
-    )
+    holdout_due = update in {
+        int(value) for value in config.validation["holdout_updates"]
+    } or (config.mode == "formal" and actual_terminal)
+    generation_due = update in {
+        int(value) for value in config.validation["generation_format_updates"]
+    } or (config.mode == "formal" and actual_terminal)
     return {
         "calibration": True,
         "holdout": holdout_due,
         "generation_format": generation_due,
         "actual_terminal": actual_terminal,
     }
+
+
+def _initial_durable_cursor(*, schedule_start_update: int) -> int:
+    """Start durable log/mirror cursors at the first update's predecessor."""
+
+    if (
+        isinstance(schedule_start_update, bool)
+        or not isinstance(schedule_start_update, int)
+        or schedule_start_update < 0
+    ):
+        raise ValueError("Query-State schedule start update is invalid")
+    return schedule_start_update
 
 
 def _resume_identity(config: QueryStateTrainingConfig) -> QueryStateResumeIdentity:
@@ -590,6 +625,45 @@ def _load_actor_baseline(
     if raw != expected:
         raise ValueError("Query-State ID176 actor baseline identity mismatch")
     return baseline, str(expected["identity"])
+
+
+def _load_visual_fork_actor_baseline(
+    config: QueryStateTrainingConfig,
+    *,
+    calibration_row_identities: Sequence[str],
+    holdout_row_identities: Sequence[str],
+) -> tuple[dict[str, tuple[float, ...]], str]:
+    """Load the immutable ID176 baseline inherited from Formal38, never the fork model."""
+
+    if config.mode != "visual_only_forensic_fork":
+        raise ValueError("visual actor-baseline inheritance is visual-fork-only")
+    calibration = tuple(calibration_row_identities)
+    holdout = tuple(holdout_row_identities)
+    if (
+        len(calibration) != 80
+        or len(holdout) != 1333
+        or len(set(calibration)) != len(calibration)
+        or len(set(holdout)) != len(holdout)
+        or set(calibration) & set(holdout)
+    ):
+        raise ValueError(
+            "visual fork ID176 actor baseline requires disjoint calibration/holdout rows"
+        )
+    path = Path(str(config.forensic_fork["id176_actor_baseline_path"])).resolve()
+    expected_sha256 = str(config.forensic_fork["id176_actor_baseline_sha256"])
+    if (
+        config.artifacts["file_sha256"].get(str(path)) != expected_sha256
+        or not path.is_file()
+        or hashlib.sha256(path.read_bytes()).hexdigest() != expected_sha256
+    ):
+        raise ValueError("visual fork ID176 actor baseline artifact authentication failed")
+    baseline, identity = _load_actor_baseline(path, config=config)
+    expected_rows = set(calibration) | set(holdout)
+    if set(baseline) != expected_rows or len(baseline) != int(config.data["external_rows"]):
+        raise ValueError(
+            "visual fork ID176 actor baseline does not cover the exact disjoint validation split"
+        )
+    return baseline, identity
 
 
 def _verify_replayed_update_zero_evidence(
@@ -762,6 +836,39 @@ def _run_generation_format_probe(
         "action_execution": False,
         "rollout_persistence": False,
         "deployable_export": False,
+    }
+
+
+def _safety_requires_forensic_hard_stop(
+    *,
+    mode: str,
+    safety: Mapping[str, Any],
+) -> bool:
+    return mode != "visual_only_forensic_fork" and safety.get("passed") is not True
+
+
+def _validation_safety_publication(
+    actor_safety: QueryStateActorSafetyVerdict,
+    *,
+    generation_format: Mapping[str, Any],
+    report_only: bool,
+) -> Mapping[str, Any]:
+    """Keep observed policy verdicts distinct from the mode's stop decision."""
+
+    format_passed = generation_format["passed"] is not False
+    observed_safety_passed = actor_safety.passed and format_passed
+    return {
+        "passed": True if report_only else observed_safety_passed,
+        "observed_passed": observed_safety_passed,
+        "observed_actor_passed": actor_safety.passed,
+        "observed_generation_passed": format_passed,
+        "report_only": report_only,
+        "checks": {
+            **dict(actor_safety.checks),
+            "generation_format": format_passed,
+        },
+        "tolerances": dict(actor_safety.tolerances),
+        "generation_format_due": generation_format["due"],
     }
 
 
@@ -939,16 +1046,12 @@ def _run_detached_validation(
             "passed": None,
             "reason": "not_in_explicit_generation_format_cadence",
         }
-    format_passed = generation_format["passed"] is not False
-    safety = {
-        "passed": actor_safety.passed and format_passed,
-        "checks": {
-            **dict(actor_safety.checks),
-            "generation_format": format_passed,
-        },
-        "tolerances": dict(actor_safety.tolerances),
-        "generation_format_due": generation_due,
-    }
+    report_only = config.mode == "visual_only_forensic_fork"
+    safety = _validation_safety_publication(
+        actor_safety,
+        generation_format=generation_format,
+        report_only=report_only,
+    )
     publication = {
         "update": update,
         "split": split,
@@ -959,6 +1062,7 @@ def _run_detached_validation(
         "diagnostic_only": True,
         "automatic_checkpoint_selection": False,
         "automatic_state_gate": False,
+        "actor_generation_policy": "report_only" if report_only else "safety_gate",
         "human_terminal_state_gate": (
             dict(config.validation["terminal_state_gates"])
             if split == "holdout"
@@ -966,6 +1070,76 @@ def _run_detached_validation(
         ),
     }
     return QueryStateDetachedValidationResult(publication, current_baseline)
+
+
+def _verify_visual_fork_step0_parity(
+    config: QueryStateTrainingConfig,
+    publication: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Compare fork step-zero visual metrics to immutable Formal38 update-1605 evidence."""
+
+    if config.mode != "visual_only_forensic_fork":
+        raise ValueError("visual parity verification is visual-fork-only")
+    try:
+        ancestor = json.loads(
+            Path(str(config.forensic_fork["ancestor_failure_manifest_path"])).read_text(
+                encoding="utf-8"
+            )
+        )
+        expected_metrics = ancestor["validation"]["calibration"]["diagnostics"]["metrics"]
+        actual_metrics = publication["diagnostics"]["metrics"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+        raise ValueError("visual fork ancestor calibration evidence is incomplete") from error
+    metric_names = (
+        "raw_query/norm_mean",
+        "raw_query/slot_variance",
+        "raw_query/offdiag_pairwise_cosine",
+        "raw_query/effective_rank",
+        "canonical_state/norm_mean",
+        "canonical_state/slot_variance",
+        "canonical_state/offdiag_pairwise_cosine",
+        "canonical_state/effective_rank",
+        "canonical_state/collapse",
+        "direct_state/dino_mse",
+        "direct_state/dino_cosine",
+        "direct_state/content_relation",
+        "upstream/fused_to_raw_relation",
+        "upstream/instruction_to_state_relation",
+        "pairs/same_image_multi_instruction_state_distance",
+        "pairs/same_instruction_multi_image_state_distance",
+        "pairs/same_image_pair_count",
+        "pairs/same_instruction_pair_count",
+        "pairs/same_image_group_count",
+        "pairs/same_instruction_group_count",
+    )
+    relative = float(config.forensic_fork["parity_relative_tolerance"])
+    absolute = float(config.forensic_fork["parity_absolute_tolerance"])
+    comparisons: dict[str, Mapping[str, Any]] = {}
+    try:
+        values = tuple(
+            (name, float(expected_metrics[name]), float(actual_metrics[name]))
+            for name in metric_names
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("visual fork ancestor calibration evidence is incomplete") from error
+    if any(not math.isfinite(value) for _, expected, actual in values for value in (expected, actual)):
+        raise ValueError("visual fork step-zero parity metric is non-finite")
+    for name, expected, actual in values:
+        passed = math.isclose(actual, expected, rel_tol=relative, abs_tol=absolute)
+        comparisons[name] = {
+            "expected": expected,
+            "actual": actual,
+            "passed": passed,
+        }
+    if not all(value["passed"] for value in comparisons.values()):
+        raise RuntimeError("visual fork step-zero calibration parity failed")
+    return {
+        "passed": True,
+        "ancestor_update": int(config.forensic_fork["ancestor_update"]),
+        "relative_tolerance": relative,
+        "absolute_tolerance": absolute,
+        "metrics": comparisons,
+    }
 
 
 def _checkpoint_control_hash(path: Path) -> str:
@@ -1213,14 +1387,20 @@ def run_query_state_training(
     if world_size != int(config.resources["world_size"]) or not 0 <= rank < world_size:
         raise ValueError("Query-State backend rank/world-size differs from config")
     assembly = construct_query_state_training_backend(config, repo_root=repo_root, device=device)
+    schedule_start_update = int(config.schedule["schedule_start_update"])
+    epoch_updates = int(config.schedule["epoch_updates"])
+    terminal_update = int(config.schedule["max_updates"])
     updates = build_query_state_training_updates(
         assembly.training_ordinals,
         epochs=int(config.schedule["epochs"]),
+        schedule_epoch_offset=schedule_start_update // epoch_updates,
         seed=int(config.schedule["seed"]),
         rank=rank,
         world_size=world_size,
         rows_per_rank_update=int(config.schedule["rows_per_rank_update"]),
-        expected_updates=int(config.schedule["max_updates"]),
+        expected_updates=(
+            int(config.schedule["max_updates"]) - schedule_start_update
+        ),
     )
     run_root = Path(str(config.output["run_root"]))
     run_identity = query_state_training_run_identity(config)
@@ -1283,6 +1463,7 @@ def run_query_state_training(
         operation="run claim/restart ownership",
     )
 
+    identity = _resume_identity(config)
     store = None
     store_error: BaseException | None = None
     if rank == 0:
@@ -1292,6 +1473,22 @@ def run_query_state_training(
                 run_identity=run_identity,
                 mode=config.mode,
                 wandb_run_id=None if config.mode == "pilot" else config.tracking.run_id,
+                base_update=schedule_start_update,
+                epoch_updates=(
+                    epoch_updates
+                    if config.mode == "visual_only_forensic_fork"
+                    else None
+                ),
+                semantic_identity=(
+                    run_identity
+                    if config.mode == "visual_only_forensic_fork"
+                    else None
+                ),
+                expected_checkpoint_identity=(
+                    identity
+                    if config.mode == "visual_only_forensic_fork"
+                    else None
+                ),
             )
         except BaseException as error:
             store_error = error
@@ -1302,14 +1499,17 @@ def run_query_state_training(
         operation="durable store initialization",
     )
 
-    identity = _resume_identity(config)
-    start_update = 0
-    validation_cursor = -1
-    calibration_validation_cursor = -1
-    holdout_validation_cursor = -1
+    start_update = schedule_start_update
+    validation_cursor = schedule_start_update - 1
+    calibration_validation_cursor = schedule_start_update - 1
+    holdout_validation_cursor = schedule_start_update - 1
     early_stopping_cursor = QueryStateEarlyStoppingCursor.initial()
-    log_cursor = 0
-    tracking_cursor = 0
+    log_cursor = _initial_durable_cursor(
+        schedule_start_update=schedule_start_update
+    )
+    tracking_cursor = _initial_durable_cursor(
+        schedule_start_update=schedule_start_update
+    )
     restart_mirror_entries: tuple[QueryStateAuthoritativeEntry, ...] = ()
     if resume_mode == "exact_restart":
         if config.mode == "pilot":
@@ -1377,7 +1577,7 @@ def run_query_state_training(
             operation="durable exact-restart recovery",
         )
         mirror_payload: list[Any] = [(), None]
-        if config.mode == "formal" and rank == 0:
+        if config.mode != "pilot" and rank == 0:
             try:
                 if store is None:
                     raise RuntimeError("rank-zero durable store is absent")
@@ -1427,9 +1627,22 @@ def run_query_state_training(
         tracking_cursor = tracking.mirror.cursor
 
     validation_updates = {int(value) for value in config.schedule["validation_updates"]}
+    visual_event_kinds: set[tuple[int, str]] = set()
+    if config.mode == "visual_only_forensic_fork":
+        visual_event_kinds = {
+            (event.update, event.kind)
+            for event in build_visual_fork_event_plan(
+                schedule_start_update=schedule_start_update,
+                epoch_updates=epoch_updates,
+                checkpoint_cadence_updates=int(
+                    config.schedule["checkpoint_cadence_updates"]
+                ),
+                fixed_additional_epochs=int(config.schedule["epochs"]),
+            )
+        }
     actor_baseline: Mapping[str, tuple[float, ...]] | None = None
     actor_baseline_identity: str | None = None
-    if start_update == 0 and not crash_replay:
+    if start_update == schedule_start_update and not crash_replay:
         if config.mode == "formal":
             calibration_baseline = _run_detached_validation(
                 config,
@@ -1480,23 +1693,53 @@ def run_query_state_training(
                 "holdout_controls_early_stop": False,
             }
         else:
+            inherited_visual_baseline: Mapping[str, tuple[float, ...]] | None = None
+            if config.mode == "visual_only_forensic_fork":
+                inherited_visual_baseline, actor_baseline_identity = (
+                    _load_visual_fork_actor_baseline(
+                        config,
+                        calibration_row_identities=tuple(
+                            assembly.rows_by_ordinal[ordinal].identity
+                            for ordinal in assembly.calibration_ordinals
+                        ),
+                        holdout_row_identities=tuple(
+                            assembly.rows_by_ordinal[ordinal].identity
+                            for ordinal in assembly.holdout_ordinals
+                        ),
+                    )
+                )
             pilot_baseline = _run_detached_validation(
                 config,
                 assembly,
-                update=0,
+                update=schedule_start_update,
                 split="calibration",
-                generation_format_due=(0 in {
+                generation_format_due=(schedule_start_update in {
                     int(value)
                     for value in config.validation["generation_format_updates"]
                 }),
                 rank=rank,
                 world_size=world_size,
-                baseline_action_logits=None,
+                baseline_action_logits=inherited_visual_baseline,
             )
-            actor_baseline = pilot_baseline.baseline_action_logits
-            calibration_validation_cursor = 0
+            actor_baseline = (
+                inherited_visual_baseline
+                if inherited_visual_baseline is not None
+                else pilot_baseline.baseline_action_logits
+            )
+            calibration_validation_cursor = schedule_start_update
             baseline_publication = pilot_baseline.publication
-        validation_cursor = 0
+            if config.mode == "visual_only_forensic_fork":
+                baseline_publication = {
+                    **dict(baseline_publication),
+                    "actor_baseline_provenance": "authenticated_id176_formal38_artifact",
+                    "ancestor_calibration_parity": _verify_visual_fork_step0_parity(
+                        config,
+                        baseline_publication,
+                    ),
+                    "visual_only": True,
+                    "terminal_primary": False,
+                }
+        validation_cursor = schedule_start_update
         baseline_error: BaseException | None = None
         baseline_identity_payload: list[str | None] = [None]
         if rank == 0:
@@ -1507,7 +1750,7 @@ def run_query_state_training(
                     baseline=actor_baseline,
                 )
                 baseline_identity_payload[0] = actor_baseline_identity
-                path = run_root / "validation_update_00000000.json"
+                path = run_root / f"validation_update_{schedule_start_update:08d}.json"
                 path.write_text(
                     json.dumps(
                         {
@@ -1531,10 +1774,16 @@ def run_query_state_training(
         if world_size > 1:
             torch.distributed.broadcast_object_list(baseline_identity_payload, src=0)
         actor_baseline_identity = baseline_identity_payload[0]
-        if baseline_publication["safety"]["passed"] is not True:
-            update_zero_forensic = run_root / "forensics" / "unsafe_update_00000000"
-            update_zero_metric_cursor = {
-                "validation": 0,
+        if _safety_requires_forensic_hard_stop(
+            mode=config.mode,
+            safety=baseline_publication["safety"],
+        ):
+            baseline_update = schedule_start_update
+            baseline_forensic = (
+                run_root / "forensics" / f"unsafe_update_{baseline_update:08d}"
+            )
+            baseline_metric_cursor = {
+                "validation": baseline_update,
                 "calibration_validation": calibration_validation_cursor,
                 "holdout_validation": holdout_validation_cursor,
                 "log": 0,
@@ -1550,57 +1799,57 @@ def run_query_state_training(
                 ),
                 "actual_terminal": None,
             }
-            update_zero_control = QueryStateDistributedControl(
+            baseline_control = QueryStateDistributedControl(
                 identity=identity,
-                global_step=0,
+                global_step=baseline_update,
                 data_cursor={
                     "mode": config.mode,
-                    "next_update": 1,
-                    "total_updates": len(updates),
+                    "next_update": schedule_start_update + 1,
+                    "total_updates": terminal_update,
                     "schedule_seed": config.schedule["seed"],
                     "train_manifest_identity": config.data["train_manifest_identity"],
                 },
-                metric_cursor=update_zero_metric_cursor,
+                metric_cursor=baseline_metric_cursor,
                 terminal_primary=False,
                 forensic_only=True,
             )
-            update_zero_save_error: BaseException | None = None
+            baseline_save_error: BaseException | None = None
             try:
                 save_query_state_distributed_checkpoint(
-                    update_zero_forensic,
+                    baseline_forensic,
                     root=assembly.distributed_worker.root,
                     optimizer=assembly.distributed_worker.optimizer,
                     scheduler_state=assembly.scheduler.state_dict(),
-                    control=update_zero_control,
+                    control=baseline_control,
                     rank=rank,
                 )
             except BaseException as error:
-                update_zero_save_error = error
+                baseline_save_error = error
             terminal_error: BaseException | None = None
             if rank == 0:
                 assert store is not None
                 publication_errors: list[str] = []
                 forensic_evidence_published = False
                 try:
-                    if update_zero_save_error is None:
+                    if baseline_save_error is None:
                         store.record_unsafe_forensic_checkpoint(
-                            start_update=0,
-                            end_update=0,
-                            checkpoint_path=update_zero_forensic,
+                            start_update=baseline_update,
+                            end_update=baseline_update,
+                            checkpoint_path=baseline_forensic,
                             checkpoint_control_hash=_checkpoint_control_hash(
-                                update_zero_forensic
+                                baseline_forensic
                             ),
                             validation=baseline_publication,
                             safety=baseline_publication["safety"],
                         )
                     else:
                         store.record_forensic_save_failure(
-                            update=0,
+                            update=baseline_update,
                             validation=baseline_publication,
                             safety=baseline_publication["safety"],
                             error=(
-                                f"{type(update_zero_save_error).__name__}: "
-                                f"{update_zero_save_error}"
+                                f"{type(baseline_save_error).__name__}: "
+                                f"{baseline_save_error}"
                             ),
                         )
                     forensic_evidence_published = True
@@ -1612,25 +1861,25 @@ def run_query_state_training(
                     controller.record_terminal(
                         status="validator_failed",
                         details={
-                            "update": 0,
+                            "update": baseline_update,
                             "validation": baseline_publication,
                             "non_resumable_safety_failure": True,
                             "forensic_checkpoint_preserved": (
-                                update_zero_save_error is None
+                                baseline_save_error is None
                             ),
                             "forensic_failure_evidence_published": (
                                 forensic_evidence_published
                             ),
                             "forensic_checkpoint": (
-                                str(update_zero_forensic)
-                                if update_zero_save_error is None
+                                str(baseline_forensic)
+                                if baseline_save_error is None
                                 else None
                             ),
                             "forensic_checkpoint_save_error": (
                                 None
-                                if update_zero_save_error is None
-                                else f"{type(update_zero_save_error).__name__}: "
-                                f"{update_zero_save_error}"
+                                if baseline_save_error is None
+                                else f"{type(baseline_save_error).__name__}: "
+                                f"{baseline_save_error}"
                             ),
                             "authoritative_index_advanced": False,
                         },
@@ -1645,14 +1894,14 @@ def run_query_state_training(
                 terminal_error,
                 rank=rank,
                 world_size=world_size,
-                operation="update-zero forensic checkpoint publication",
+                operation="baseline forensic checkpoint publication",
             )
-            if update_zero_save_error is not None:
+            if baseline_save_error is not None:
                 raise RuntimeError(
-                    "Query-State update-zero forensic checkpoint save failed"
-                ) from update_zero_save_error
+                    "Query-State baseline forensic checkpoint save failed"
+                ) from baseline_save_error
             raise RuntimeError(
-                "Query-State update-zero safety failed; forensic checkpoint "
+                "Query-State baseline safety failed; forensic checkpoint "
                 "preserved without optimizer update or authoritative index"
             )
     else:
@@ -1688,8 +1937,9 @@ def run_query_state_training(
     final_update = start_update
     terminal_reason: str | None = None
     terminal_epoch: int | None = None
-    for segment_start in range(start_update, len(updates), cadence):
-        segment_end = min(segment_start + cadence, len(updates))
+    final_observed_actor_generation: Mapping[str, Any] | None = None
+    for segment_start in range(start_update, terminal_update, cadence):
+        segment_end = min(segment_start + cadence, terminal_update)
         if segment_end - segment_start != cadence:
             raise ValueError("Query-State schedule ends outside a commit boundary")
         segment = None
@@ -1710,9 +1960,10 @@ def run_query_state_training(
             operation="pending segment creation",
         )
         mirror_records: list[Mapping[str, Any]] = []
-        for update_index in range(segment_start, segment_end):
+        for absolute_update_index in range(segment_start, segment_end):
+            relative_update_index = absolute_update_index - schedule_start_update
             data = build_query_state_update_dataproto(
-                updates[update_index],
+                updates[relative_update_index],
                 rows_by_ordinal=assembly.rows_by_ordinal,
                 padding_row=assembly.padding_row,
                 processor=assembly.processor,
@@ -1721,7 +1972,7 @@ def run_query_state_training(
                 source_manifest_identity=str(config.source["source_manifest_identity"]),
             )
             result = assembly.distributed_worker.core.update(data)
-            update = update_index + 1
+            update = absolute_update_index + 1
             record = {
                 "update": update,
                 "metrics": dict(result.metrics),
@@ -1751,6 +2002,7 @@ def run_query_state_training(
             "automatic_model_quality_pass": None,
         }
         actual_terminal: Mapping[str, Any] | None = None
+        visual_fixed_budget_completion: Mapping[str, Any] | None = None
         if config.mode == "formal" and segment_end % epoch_updates == 0:
             epoch = segment_end // epoch_updates
             calibration_result = _run_detached_validation(
@@ -1864,6 +2116,78 @@ def run_query_state_training(
                 "actor_baseline_identity": actor_baseline_identity,
                 "automatic_model_quality_pass": None,
             }
+        elif (
+            config.mode == "visual_only_forensic_fork"
+            and (segment_end, "calibration") in visual_event_kinds
+        ):
+            epoch = segment_end // epoch_updates
+            plan = _validation_boundary_plan(
+                config,
+                update=segment_end,
+                epoch=epoch,
+                actual_terminal=segment_end == terminal_update,
+            )
+            calibration_result = _run_detached_validation(
+                config,
+                assembly,
+                update=segment_end,
+                split="calibration",
+                generation_format_due=plan["generation_format"],
+                rank=rank,
+                world_size=world_size,
+                baseline_action_logits=actor_baseline,
+            )
+            holdout_publication: Mapping[str, Any] = {
+                "due": False,
+                "update": segment_end,
+                "reason": "visual_fork_holdout_is_fixed_to_epoch5",
+            }
+            if plan["holdout"]:
+                holdout_result = _run_detached_validation(
+                    config,
+                    assembly,
+                    update=segment_end,
+                    split="holdout",
+                    generation_format_due=False,
+                    rank=rank,
+                    world_size=world_size,
+                    baseline_action_logits=actor_baseline,
+                )
+                holdout_publication = holdout_result.publication
+                holdout_validation_cursor = segment_end
+            calibration_validation_cursor = segment_end
+            validation_cursor = segment_end
+            if segment_end == terminal_update:
+                final_observed_actor_generation = dict(
+                    calibration_result.publication["safety"]
+                )
+                visual_fixed_budget_completion = {
+                    "kind": "visual_fixed_budget_diagnostic_complete",
+                    "epoch": epoch,
+                    "update": segment_end,
+                    "terminal_primary": False,
+                    "holdout_controls_selection": False,
+                    "best_checkpoint": None,
+                }
+            validation = {
+                "due": True,
+                "update": segment_end,
+                "calibration": calibration_result.publication,
+                "holdout": holdout_publication,
+                "early_stopping": None,
+                "actual_terminal": None,
+                "visual_fixed_budget_completion": visual_fixed_budget_completion,
+                "visual_only": True,
+                "holdout_controls_selection": False,
+                "best_checkpoint": None,
+            }
+            safety = {
+                "passed": True,
+                "scope": "actor_and_generation_report_only",
+                "observed_actor_generation": calibration_result.publication["safety"],
+                "actor_baseline_identity": actor_baseline_identity,
+                "automatic_model_quality_pass": None,
+            }
         elif segment_end in validation_updates:
             validation_result = _run_detached_validation(
                 config,
@@ -1904,15 +2228,16 @@ def run_query_state_training(
                 else None
             ),
             "actual_terminal": actual_terminal,
+            "visual_fixed_budget_completion": visual_fixed_budget_completion,
         }
         data_cursor = {
             "mode": config.mode,
             "next_update": segment_end + 1,
-            "total_updates": len(updates),
+            "total_updates": terminal_update,
             "schedule_seed": config.schedule["seed"],
             "train_manifest_identity": config.data["train_manifest_identity"],
         }
-        if safety.get("passed") is not True:
+        if _safety_requires_forensic_hard_stop(mode=config.mode, safety=safety):
             forensic_checkpoint = (
                 run_root / "forensics" / f"unsafe_update_{segment_end:08d}"
             )
@@ -2111,11 +2436,83 @@ def run_query_state_training(
         tracking.publish(entry)
         if tracking.mirror is not None:
             tracking_cursor = tracking.mirror.cursor
+        if config.mode == "visual_only_forensic_fork":
+            retention_block: list[str | None] = [None]
+            retention_evidence_error: BaseException | None = None
+            if rank == 0:
+                assert store is not None
+                try:
+                    if tracking.mirror is None or tracking.mirror.tracking_incomplete:
+                        retention_block[0] = (
+                            "W&B mirror is incomplete; successor-first compaction is forbidden"
+                        )
+                    else:
+                        entries = store.authoritative_entries()
+                        for candidate in entries[:-1]:
+                            if (
+                                not candidate.checkpoint_payload_present
+                                or not candidate.resumable
+                                or candidate.epoch_final
+                            ):
+                                continue
+                            compaction_path = (
+                                store.root
+                                / "compactions"
+                                / f"update_{candidate.end_update:08d}"
+                            )
+                            if compaction_path.exists():
+                                retention_block[0] = (
+                                    "a prior compaction attempt requires explicit review"
+                                )
+                                break
+                            try:
+                                store.compact_superseded_checkpoint(
+                                    candidate_update=candidate.end_update,
+                                    checkpoint_root=run_root / "checkpoints",
+                                    mirrored_through_update=tracking_cursor,
+                                )
+                            except BaseException as error:
+                                controller.record_compaction_failure(
+                                    candidate_update=candidate.end_update,
+                                    successor_update=entry.end_update,
+                                    error=f"{type(error).__name__}: {error}",
+                                )
+                                retention_block[0] = (
+                                    "rolling checkpoint compaction failed and requires review"
+                                )
+                                break
+                    if retention_block[0] is not None:
+                        controller.record_visual_retention_block(
+                            update=entry.end_update,
+                            checkpoint=entry.checkpoint_path,
+                            reason=retention_block[0],
+                        )
+                except BaseException as error:
+                    retention_evidence_error = error
+            _coordinated_rank0_status(
+                retention_evidence_error,
+                rank=rank,
+                world_size=world_size,
+                operation="rolling retention evidence publication",
+            )
+            if world_size > 1:
+                torch.distributed.broadcast_object_list(retention_block, src=0)
+            if retention_block[0] is not None:
+                raise RuntimeError(
+                    "visual fork stopped at an authoritative checkpoint: "
+                    + retention_block[0]
+                )
+            if world_size > 1:
+                torch.distributed.barrier()
         final_checkpoint = checkpoint
         final_update = segment_end
         if actual_terminal is not None:
             terminal_reason = str(actual_terminal["reason"])
             terminal_epoch = int(actual_terminal["epoch"])
+            break
+        if visual_fixed_budget_completion is not None:
+            terminal_reason = str(visual_fixed_budget_completion["kind"])
+            terminal_epoch = int(visual_fixed_budget_completion["epoch"])
             break
         if _approved_pause_due(config, segment_end=segment_end):
             pause_error: BaseException | None = None
@@ -2210,27 +2607,64 @@ def run_query_state_training(
     if config.mode == "formal" and terminal_reason is None:
         raise RuntimeError("formal training exhausted without an actual terminal verdict")
     if rank == 0:
-        controller.record_terminal(
-            status="completed",
-            details={
-                "final_update": final_update,
-                "actual_terminal_epoch": terminal_epoch,
-                "actual_terminal_reason": terminal_reason,
-                "terminal_primary": config.mode == "formal",
-                "checkpoint": str(final_checkpoint),
-                "checkpoint_control_hash": _checkpoint_control_hash(final_checkpoint),
-                "actor_baseline_identity": actor_baseline_identity,
-                "terminal_validation_update": validation_cursor,
-                "calibration_validation_update": calibration_validation_cursor,
-                "holdout_validation_update": holdout_validation_cursor,
-                "early_stopping": (
-                    early_stopping_cursor.to_mapping()
-                    if config.mode == "formal"
-                    else None
-                ),
-                "terminal_safety_passed": True,
-            },
-        )
+        if (
+            config.mode == "visual_only_forensic_fork"
+            and final_observed_actor_generation is None
+        ):
+            raise RuntimeError("visual fixed-budget completion lacks observed policy verdicts")
+        completion_details = {
+            "final_update": final_update,
+            "actual_terminal_epoch": terminal_epoch,
+            "actual_terminal_reason": terminal_reason,
+            "terminal_primary": config.mode == "formal",
+            "checkpoint": str(final_checkpoint),
+            "checkpoint_control_hash": _checkpoint_control_hash(final_checkpoint),
+            "actor_baseline_identity": actor_baseline_identity,
+            "terminal_validation_update": validation_cursor,
+            "calibration_validation_update": calibration_validation_cursor,
+            "holdout_validation_update": holdout_validation_cursor,
+            "early_stopping": (
+                early_stopping_cursor.to_mapping()
+                if config.mode == "formal"
+                else None
+            ),
+            "terminal_safety_passed": True if config.mode == "formal" else None,
+            "visual_only": config.mode == "visual_only_forensic_fork",
+            "holdout_controls_selection": False,
+            "best_checkpoint": None,
+            "actor_policy": (
+                "report_only"
+                if config.mode == "visual_only_forensic_fork"
+                else "safety_gate"
+            ),
+            "generation_policy": (
+                "report_only"
+                if config.mode == "visual_only_forensic_fork"
+                else "safety_gate"
+            ),
+            "observed_actor_safety_passed": (
+                final_observed_actor_generation.get("observed_actor_passed")
+                if final_observed_actor_generation is not None
+                else True
+            ),
+            "observed_generation_format_passed": (
+                final_observed_actor_generation.get("observed_generation_passed")
+                if final_observed_actor_generation is not None
+                else True
+            ),
+            "observed_actor_generation": final_observed_actor_generation,
+            "sft1_control_authorization": False,
+        }
+        if config.mode == "visual_only_forensic_fork":
+            controller.record_visual_fixed_budget_completion(
+                update=final_update,
+                details=completion_details,
+            )
+        else:
+            controller.record_terminal(
+                status="completed",
+                details=completion_details,
+            )
     return QueryStateTrainingRunResult(
         mode=config.mode,
         final_update=final_update,

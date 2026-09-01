@@ -22,8 +22,9 @@ from nimloth.training.sft1.query_state import (
     QUERY_STATE_OBJECTIVE_VERSION,
 )
 
-QUERY_STATE_TRAINING_CONFIG_SCHEMA = "nimloth_sft1_query_state_training_v3"
+QUERY_STATE_TRAINING_CONFIG_SCHEMA = "nimloth_sft1_query_state_training_v4"
 FORMAL_CHECKPOINT_ESTIMATED_BYTES = 20_500_000_000
+VISUAL_FORK_CHECKPOINT_ESTIMATED_BYTES = 23_370_000_000
 _HEX = frozenset("0123456789abcdef")
 
 _SECTION_FIELDS: Mapping[str, frozenset[str]] = {
@@ -34,7 +35,7 @@ _SECTION_FIELDS: Mapping[str, frozenset[str]] = {
     "objective": frozenset({"state_weight", "lm_weight", "state_target", "lm_target"}),
     "optimizer": frozenset({"name", "language_learning_rate", "direct_state_learning_rate", "weight_decay", "betas", "epsilon", "scheduler", "warmup_updates"}),
     "runtime": frozenset({"max_sequence_length", "min_pixels", "max_pixels", "attention_implementation", "model_dtype", "dino_dtype", "dino_batch_size", "max_padded_tokens", "max_rows_per_micro_batch", "max_grad_norm", "gradient_checkpointing", "fsdp_sharding", "fsdp_use_orig_params", "fsdp_wrap_policy"}),
-    "schedule": frozenset({"seed", "epochs", "max_updates", "rows_per_rank_update", "epoch_updates", "checkpoint_cadence_updates", "validation_updates", "forced_restart_update", "approved_pause_update"}),
+    "schedule": frozenset({"seed", "epochs", "schedule_start_update", "max_updates", "rows_per_rank_update", "epoch_updates", "checkpoint_cadence_updates", "validation_updates", "forced_restart_update", "approved_pause_update"}),
     "early_stopping": frozenset({"enabled", "metric", "min_epochs", "max_epochs", "patience_epochs", "min_relative_improvement", "calibration_split", "holdout_controls_early_stop", "actual_terminal_primary"}),
     "validation": frozenset({"split", "baseline_update", "terminal_update", "calibration_cadence_updates", "holdout_updates", "holdout_at_actual_terminal", "generation_format_manifest_path", "generation_format_manifest_identity", "generation_format_updates", "generation_format_at_actual_terminal", "actor_tolerances", "effective_rank_formula", "effective_rank_collapse_threshold", "bootstrap_seed", "bootstrap_resamples", "ordinary_cluster_unit", "ordinary_bootstrap_formula", "natural_pair_unit", "natural_pair_formula", "terminal_state_gates"}),
     "output": frozenset({"run_root", "controller_root", "overwrite", "resolved_config_path", "command_manifest_path", "minimum_free_bytes", "checkpoint_estimated_bytes", "checkpoint_budget_bytes"}),
@@ -43,6 +44,7 @@ _SECTION_FIELDS: Mapping[str, frozenset[str]] = {
     "initialization": frozenset({"actor_checkpoint", "actor_checkpoint_identity", "direct_head_initialization", "resume_checkpoint", "resume_mode"}),
     "tracking": frozenset({"enabled", "entity", "project", "group", "run_name", "run_id", "resume"}),
     "environment": frozenset({"python_executable", "hf_home", "hf_hub_cache", "offline", "dont_write_bytecode", "pycache_prefix", "python_hash_seed", "python_version", "torch_version", "transformers_version", "nccl_socket_ifname", "nccl_ib_disable"}),
+    "forensic_fork": frozenset({"enabled", "ancestor_checkpoint_path", "ancestor_failure_manifest_path", "id176_actor_baseline_path", "id176_actor_baseline_sha256", "ancestor_control_sha256", "ancestor_source_commit", "ancestor_run_identity", "ancestor_source_config_identity", "ancestor_update", "initialization_kind", "actor_policy", "generation_policy", "retention_policy", "ancestor_protected", "parity_relative_tolerance", "parity_absolute_tolerance"}),
     "command": frozenset({"argv", "identity"}),
     "artifacts": frozenset({"file_sha256"}),
 }
@@ -60,6 +62,12 @@ def _text(value: object, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be a non-empty string")
     return value
+
+
+def _path_trees_overlap(left: Path, right: Path) -> bool:
+    left = Path(left).resolve()
+    right = Path(right).resolve()
+    return left == right or left in right.parents or right in left.parents
 
 
 def _bool(value: object, field: str) -> bool:
@@ -159,6 +167,7 @@ class QueryStateTrainingConfig:
     initialization: Mapping[str, Any]
     tracking: QueryStateTrackingConfig
     environment: Mapping[str, Any]
+    forensic_fork: Mapping[str, Any]
     command: Mapping[str, Any]
     artifacts: Mapping[str, Any]
     identity: str
@@ -222,6 +231,7 @@ def query_state_training_run_identity(config: QueryStateTrainingConfig) -> str:
         },
         "resources": _plain_identity_value(config.resources),
         "environment": _plain_identity_value(config.environment),
+        "forensic_fork": _plain_identity_value(config.forensic_fork),
         "actor_checkpoint": config.initialization["actor_checkpoint"],
         "actor_checkpoint_identity": config.initialization[
             "actor_checkpoint_identity"
@@ -251,9 +261,12 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
     if raw["schema"] != QUERY_STATE_TRAINING_CONFIG_SCHEMA:
         raise ValueError("unsupported or legacy Query-State training schema")
     mode = _text(raw["mode"], "mode")
-    if mode not in {"pilot", "formal"}:
-        raise ValueError("Query-State training mode must be pilot or formal")
+    if mode not in {"pilot", "formal", "visual_only_forensic_fork"}:
+        raise ValueError(
+            "Query-State training mode must be pilot, formal, or visual_only_forensic_fork"
+        )
     sections = {name: _strict_section(raw, name) for name in _SECTION_FIELDS}
+    visual_fork = mode == "visual_only_forensic_fork"
 
     lifecycle = sections["lifecycle"]
     preflight = _bool(lifecycle["preflight_locked"], "lifecycle.preflight_locked")
@@ -337,6 +350,7 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
             initialization=_frozen_mapping(sections["initialization"]),
             tracking=tracking,
             environment=_frozen_mapping(sections["environment"]),
+            forensic_fork=_frozen_mapping(sections["forensic_fork"]),
             command=_frozen_mapping(sections["command"]),
             artifacts=_frozen_mapping(sections["artifacts"]),
             identity=_canonical_identity(canonical),
@@ -370,8 +384,8 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
     train_rows = _int(data["train_rows"], "data.train_rows")
     if _int(data["external_rows"], "data.external_rows") != 1413:
         raise ValueError("Query-State external manifest must contain exactly 1,413 rows")
-    if mode == "formal" and train_rows != 12836:
-        raise ValueError("formal Query-State manifest must contain all 12,836 valid train rows")
+    if mode != "pilot" and train_rows != 12836:
+        raise ValueError("production Query-State manifest must contain all 12,836 valid train rows")
     if mode == "pilot" and train_rows >= 12836:
         raise ValueError("pilot Query-State manifest must be a locked coverage subset")
 
@@ -391,8 +405,14 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         1024, "full", "freeze", "freeze", False,
     ):
         raise ValueError("Query-State canonical state/model contract changed")
-    if not str(model["initialization_identity"]).startswith("id176:"):
-        raise ValueError("Query-State training must initialize from exact ID176")
+    expected_model_initialization = (
+        "formal38_forensic_model_only:"
+        + str(sections["forensic_fork"]["ancestor_control_sha256"])
+        if visual_fork
+        else "id176:" + str(sections["initialization"]["actor_checkpoint_identity"])
+    )
+    if model["initialization_identity"] != expected_model_initialization:
+        raise ValueError("Query-State model initialization identity is invalid")
     _text(model["dino_identity"], "model.dino_identity")
 
     objective = sections["objective"]
@@ -419,7 +439,7 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
     warmup_updates = _int(
         optimizer["warmup_updates"], "optimizer.warmup_updates", minimum=0
     )
-    if mode == "formal" and (
+    if mode != "pilot" and (
         float(optimizer["language_learning_rate"]) != 1e-6
         or float(optimizer["direct_state_learning_rate"]) != 1e-4
         or float(optimizer["weight_decay"]) != 0.0
@@ -445,8 +465,8 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
     max_grad_norm = _number(
         runtime["max_grad_norm"], "runtime.max_grad_norm", positive=True
     )
-    if mode == "formal" and max_grad_norm != 1.0:
-        raise ValueError("formal Query-State max_grad_norm must remain 1.0")
+    if mode != "pilot" and max_grad_norm != 1.0:
+        raise ValueError("production Query-State max_grad_norm must remain 1.0")
     if (
         runtime["gradient_checkpointing"] is not True
         or runtime["fsdp_sharding"] != "full_shard"
@@ -459,6 +479,11 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
     schedule = sections["schedule"]
     schedule_seed = _int(schedule["seed"], "schedule.seed", minimum=0)
     epochs = _int(schedule["epochs"], "schedule.epochs")
+    schedule_start = _int(
+        schedule["schedule_start_update"],
+        "schedule.schedule_start_update",
+        minimum=0,
+    )
     terminal = _int(schedule["max_updates"], "schedule.max_updates")
     rows_per_rank_update = _int(
         schedule["rows_per_rank_update"], "schedule.rows_per_rank_update"
@@ -468,10 +493,10 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
     )
     rows_per_rank_epoch = math.ceil(train_rows / schedule_world_size)
     exact_updates = epochs * math.ceil(rows_per_rank_epoch / rows_per_rank_update)
-    if terminal != exact_updates:
+    if terminal != schedule_start + exact_updates:
         raise ValueError(
-            "schedule/topology max_updates must equal the exact deterministic "
-            f"schedule cardinality: {terminal} != {exact_updates}"
+            "schedule/topology max_updates must equal start plus the exact deterministic "
+            f"schedule cardinality: {terminal} != {schedule_start + exact_updates}"
         )
     epoch_updates = _int(schedule["epoch_updates"], "schedule.epoch_updates")
     exact_epoch_updates = math.ceil(rows_per_rank_epoch / rows_per_rank_update)
@@ -497,13 +522,20 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in updates
     ) or tuple(updates) != tuple(sorted(set(updates))):
         raise ValueError("schedule.validation_updates must be sorted unique update indices")
-    if tuple(updates)[0] != 0 or tuple(updates)[-1] != terminal or any(
-        value != 0 and value % cadence for value in updates
+    if tuple(updates)[0] != schedule_start or tuple(updates)[-1] != terminal or any(
+        value != schedule_start and (value - schedule_start) % cadence for value in updates
     ):
-        raise ValueError("validation must start at update 0 and otherwise use checkpoint boundaries")
-    if terminal % cadence:
+        raise ValueError(
+            "validation must start at the schedule offset and otherwise use checkpoint boundaries"
+        )
+    if (terminal - schedule_start) % cadence:
         raise ValueError("terminal update must be a resumable commit boundary")
-    if mode == "pilot" and (epochs != 1 or not 0 < forced < terminal or forced % cadence):
+    if mode == "pilot" and (
+        schedule_start != 0
+        or epochs != 1
+        or not 0 < forced < terminal
+        or forced % cadence
+    ):
         raise ValueError("pilot requires one coverage pass and a forced restart commit boundary")
     if mode == "pilot" and approved_pause != 0:
         raise ValueError("pilot cannot use a formal approved pause boundary")
@@ -517,7 +549,8 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
                 "formal approved pause must be an exact epoch boundary at or before terminal"
             )
         if (
-            schedule_seed != 3335631237
+            schedule_start != 0
+            or schedule_seed != 3335631237
             or epochs != 10
             or rows_per_rank_update != 1
             or terminal != 16050
@@ -526,6 +559,20 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
             or tuple(updates) != (0, 3210, 8025, 16050)
         ):
             raise ValueError("formal WS8 max10 schedule contract changed")
+    elif visual_fork:
+        if (
+            schedule_seed != 3335631237
+            or schedule_start != 1605
+            or epochs != 4
+            or rows_per_rank_update != 1
+            or terminal != 8025
+            or epoch_updates != 1605
+            or cadence != 321
+            or forced != 0
+            or approved_pause != 0
+            or tuple(updates) != (1605, 3210, 4815, 6420, 8025)
+        ):
+            raise ValueError("visual forensic fork schedule must cover fixed epochs 2-5")
 
     early_stopping = sections["early_stopping"]
     early_enabled = _bool(early_stopping["enabled"], "early_stopping.enabled")
@@ -565,6 +612,15 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
             or actual_terminal_primary
         ):
             raise ValueError("pilot must keep formal early stopping disabled")
+    elif visual_fork:
+        if (
+            early_enabled
+            or early_metric != "disabled"
+            or (min_epochs, early_max_epochs, patience, relative_improvement)
+            != (1, 4, 0, 0.0)
+            or actual_terminal_primary
+        ):
+            raise ValueError("visual forensic fork must use a fixed budget without early stopping")
     elif (
         not early_enabled
         or early_metric != "calibration_2x_dino_mse_plus_assistant_ce"
@@ -579,11 +635,16 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         raise ValueError("formal early-stopping contract is invalid")
 
     validation = sections["validation"]
-    if validation["baseline_update"] != 0 or validation["terminal_update"] != terminal:
+    if (
+        validation["baseline_update"] != schedule_start
+        or validation["terminal_update"] != terminal
+    ):
         raise ValueError("validation baseline/terminal identity disagrees with schedule")
     expected_split = (
         "calibration"
         if mode == "pilot"
+        else "visual_fork_calibration_trend_final_holdout"
+        if visual_fork
         else "dual_calibration_control_holdout_primary"
     )
     if validation["split"] != expected_split:
@@ -596,11 +657,12 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
     if calibration_cadence != expected_calibration_cadence:
         raise ValueError("calibration validation must run at every epoch commit boundary")
     holdout_updates = validation["holdout_updates"]
+    expected_holdout_updates = (terminal,) if visual_fork else tuple(updates)
     if (
         not isinstance(holdout_updates, (list, tuple))
-        or tuple(holdout_updates) != tuple(updates)
+        or tuple(holdout_updates) != expected_holdout_updates
     ):
-        raise ValueError("holdout validation updates must match the registered diagnostics cadence")
+        raise ValueError("holdout validation updates differ from the registered cadence")
     holdout_at_terminal = _bool(
         validation["holdout_at_actual_terminal"],
         "validation.holdout_at_actual_terminal",
@@ -627,11 +689,12 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
             for value in generation_updates
         )
         or tuple(generation_updates) != tuple(sorted(set(generation_updates)))
-        or not {0, terminal} <= set(generation_updates)
+        or not {schedule_start, terminal} <= set(generation_updates)
         or not set(generation_updates) <= set(updates)
     ):
         raise ValueError(
             "generation-format cadence must explicitly include update 0 and terminal "
+            "(the visual fork baseline is update 1605) "
             "and may only use registered validation updates"
         )
     tolerances = validation["actor_tolerances"]
@@ -726,6 +789,67 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
     if mse_fraction > 1.0 or cosine_increase > 2.0 or instruction_decrease > 2.0:
         raise ValueError("validation terminal state gate bounds are inconsistent")
 
+    forensic = sections["forensic_fork"]
+    if visual_fork:
+        for field in (
+            "ancestor_checkpoint_path",
+            "ancestor_failure_manifest_path",
+            "id176_actor_baseline_path",
+        ):
+            _absolute(forensic[field], f"forensic_fork.{field}")
+        if (
+            _bool(forensic["enabled"], "forensic_fork.enabled") is not True
+            or not _is_sha256(forensic["id176_actor_baseline_sha256"])
+            or not _is_sha256(forensic["ancestor_control_sha256"])
+            or not _is_git_sha(forensic["ancestor_source_commit"])
+            or forensic["ancestor_source_commit"] == source["commit"]
+            or not _is_sha256(forensic["ancestor_run_identity"])
+            or not _is_sha256(forensic["ancestor_source_config_identity"])
+            or forensic["ancestor_update"] != 1605
+            or forensic["initialization_kind"]
+            != "forensic_model_only_fresh_optimizer"
+            or forensic["actor_policy"] != "report_only"
+            or forensic["generation_policy"] != "report_only"
+            or forensic["retention_policy"]
+            != "successor_first_non_epoch_final_payload_v1"
+            or forensic["ancestor_protected"] is not True
+            or _number(
+                forensic["parity_relative_tolerance"],
+                "forensic_fork.parity_relative_tolerance",
+                positive=True,
+            ) <= 0.0
+            or _number(
+                forensic["parity_absolute_tolerance"],
+                "forensic_fork.parity_absolute_tolerance",
+                positive=False,
+            ) < 0.0
+        ):
+            if forensic.get("ancestor_source_commit") == source["commit"]:
+                raise ValueError(
+                    "visual forensic fork ancestor source commit must differ from current source.commit"
+                )
+            raise ValueError("visual forensic fork ancestor/fresh-runtime contract changed")
+    elif forensic != {
+        "enabled": False,
+        "ancestor_checkpoint_path": "disabled",
+        "ancestor_failure_manifest_path": "disabled",
+        "id176_actor_baseline_path": "disabled",
+        "id176_actor_baseline_sha256": "disabled",
+        "ancestor_control_sha256": "disabled",
+        "ancestor_source_commit": "disabled",
+        "ancestor_run_identity": "disabled",
+        "ancestor_source_config_identity": "disabled",
+        "ancestor_update": 0,
+        "initialization_kind": "disabled",
+        "actor_policy": "disabled",
+        "generation_policy": "disabled",
+        "retention_policy": "disabled",
+        "ancestor_protected": False,
+        "parity_relative_tolerance": 0.0,
+        "parity_absolute_tolerance": 0.0,
+    }:
+        raise ValueError("pilot/formal configs cannot carry forensic fork authority")
+
     output = sections["output"]
     for field in ("run_root", "controller_root", "resolved_config_path", "command_manifest_path"):
         _absolute(output[field], f"output.{field}")
@@ -744,21 +868,48 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         "output.checkpoint_budget_bytes",
     )
     expected_checkpoint_budget = (
-        terminal // cadence
-    ) * checkpoint_estimated_bytes
+        5 * checkpoint_estimated_bytes
+        if visual_fork
+        else (terminal // cadence) * checkpoint_estimated_bytes
+    )
     if checkpoint_budget_bytes != expected_checkpoint_budget:
         raise ValueError(
             "output.checkpoint_budget_bytes must cover every max-budget commit"
         )
-    if mode == "formal" and minimum_free_bytes != 300_000_000_000:
-        raise ValueError("formal output.minimum_free_bytes must equal 300GB")
-    if (
-        mode == "formal"
-        and checkpoint_estimated_bytes != FORMAL_CHECKPOINT_ESTIMATED_BYTES
-    ):
-        raise ValueError(
-            "formal checkpoint estimate must equal the locked 20.5GB"
-        )
+    if mode != "pilot" and minimum_free_bytes != 300_000_000_000:
+        raise ValueError("production output.minimum_free_bytes must equal 300GB")
+    expected_estimate = (
+        VISUAL_FORK_CHECKPOINT_ESTIMATED_BYTES
+        if visual_fork
+        else FORMAL_CHECKPOINT_ESTIMATED_BYTES
+    )
+    if mode != "pilot" and checkpoint_estimated_bytes != expected_estimate:
+        if visual_fork:
+            raise ValueError(
+                "visual fork checkpoint estimate must equal the locked 23.37GB"
+            )
+        raise ValueError("formal checkpoint estimate must equal the locked 20.5GB")
+    if visual_fork:
+        ancestor_checkpoint = Path(str(forensic["ancestor_checkpoint_path"])).resolve()
+        ancestor_failure = Path(
+            str(forensic["ancestor_failure_manifest_path"])
+        ).resolve()
+        protected_run_root = ancestor_checkpoint.parent.parent
+        if (
+            ancestor_checkpoint.parent.name != "forensics"
+            or ancestor_failure.parent.name != "failures"
+            or ancestor_failure.parent.parent.name != "durable"
+            or ancestor_failure.parent.parent.parent != protected_run_root
+        ):
+            raise ValueError(
+                "visual fork ancestor evidence paths must share the protected Formal38 run root"
+            )
+        for field in ("run_root", "controller_root"):
+            output_root = Path(str(output[field])).resolve()
+            if _path_trees_overlap(output_root, protected_run_root):
+                raise ValueError(
+                    f"visual fork output.{field} overlaps the protected Formal38 ancestor tree"
+                )
 
     resources = sections["resources"]
     world = _int(resources["world_size"], "resources.world_size")
@@ -766,14 +917,14 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
     gpus = _int(resources["gpus_per_node"], "resources.gpus_per_node")
     if nodes * gpus != world:
         raise ValueError("resources topology nodes*gpus_per_node must equal world_size")
-    if mode == "formal" and (
+    if mode != "pilot" and (
         world != 8
         or nodes != 2
         or gpus != 4
         or resources["partition"] not in {"normal", "preempt"}
     ):
         raise ValueError(
-            "formal Query-State topology must be normal or preempt 2x4 WS8"
+            "production Query-State topology must be normal or preempt 2x4 WS8"
         )
     _int(resources["cpus_per_task"], "resources.cpus_per_task")
     _int(resources["memory_gib"], "resources.memory_gib")
@@ -801,23 +952,45 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
     )
     if not _is_sha256(initialization["actor_checkpoint_identity"]):
         raise ValueError("initialization.actor_checkpoint_identity must be SHA256")
-    if model["initialization_identity"] != "id176:" + initialization["actor_checkpoint_identity"]:
+    if not visual_fork and (
+        model["initialization_identity"]
+        != "id176:" + initialization["actor_checkpoint_identity"]
+    ):
         raise ValueError("model and initialization ID176 identities disagree")
     if Path(model["processor_path"]).resolve() != Path(actor_checkpoint).resolve():
         raise ValueError("ID176 actor and processor owners must be the same exact bundle")
-    if initialization["direct_head_initialization"] != "fresh_seeded_no_bias":
-        raise ValueError("pilot/formal direct head must initialize fresh without bias")
+    expected_direct_initialization = (
+        "forensic_model_only" if visual_fork else "fresh_seeded_no_bias"
+    )
+    if initialization["direct_head_initialization"] != expected_direct_initialization:
+        raise ValueError("Query-State direct-head initialization owner is invalid")
     resume_mode = initialization["resume_mode"]
     if resume_mode not in {"fresh", "crash_replay", "exact_restart"}:
         raise ValueError(
             "initialization.resume_mode must be fresh, crash_replay, or exact_restart"
         )
+    if visual_fork and resume_mode == "crash_replay":
+        raise ValueError("visual forensic fork supports fresh start or its own exact resume")
     if resume_mode in {"fresh", "crash_replay"} and initialization["resume_checkpoint"] != "none":
         raise ValueError(
             "fresh/crash-replay initialization cannot consume a resume checkpoint"
         )
     if resume_mode == "exact_restart":
-        _absolute(initialization["resume_checkpoint"], "initialization.resume_checkpoint")
+        resume_checkpoint = Path(
+            _absolute(
+                initialization["resume_checkpoint"],
+                "initialization.resume_checkpoint",
+            )
+        ).resolve()
+        if visual_fork and (
+            resume_checkpoint.parent
+            != (Path(str(sections["output"]["run_root"])).resolve() / "checkpoints")
+            or resume_checkpoint
+            == Path(str(forensic["ancestor_checkpoint_path"])).resolve()
+        ):
+            raise ValueError(
+                "visual fork exact resume must consume only its run-owned checkpoint"
+            )
 
     tracking_raw = sections["tracking"]
     tracking = QueryStateTrackingConfig(
@@ -854,7 +1027,7 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
     nccl_ib_disable = _text(
         environment["nccl_ib_disable"], "environment.nccl_ib_disable"
     )
-    if mode == "formal" and (
+    if mode != "pilot" and (
         nccl_socket_ifname != "ibp24s0" or nccl_ib_disable != "1"
     ):
         raise ValueError("formal Query-State NCCL network contract changed")
@@ -895,8 +1068,22 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         validation["generation_format_manifest_path"],
         output["command_manifest_path"],
     }
+    if visual_fork:
+        ancestor_checkpoint_path = Path(
+            str(forensic["ancestor_checkpoint_path"])
+        )
+        required_hashed_paths.update({
+            str(ancestor_checkpoint_path / "control.json"),
+            str(forensic["ancestor_failure_manifest_path"]),
+            str(forensic["id176_actor_baseline_path"]),
+            *(
+                str(ancestor_checkpoint_path / f"rank_{rank:05d}_of_00008{suffix}")
+                for rank in range(8)
+                for suffix in (".pt", ".json")
+            ),
+        })
     if not required_hashed_paths <= set(artifacts):
-        raise ValueError("artifacts.file_sha256 omits a source/data/command owner")
+        raise ValueError("artifacts.file_sha256 omits a source/data/command/ancestor owner")
 
     canonical = deepcopy(dict(raw))
     return QueryStateTrainingConfig(
@@ -912,6 +1099,7 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         output=_frozen_mapping(output), resources=_frozen_mapping(resources),
         authorization=_frozen_mapping(authorization), initialization=_frozen_mapping(initialization),
         tracking=tracking, environment=_frozen_mapping(environment),
+        forensic_fork=_frozen_mapping(sections["forensic_fork"]),
         command=_frozen_mapping(command),
         artifacts=_frozen_mapping(sections["artifacts"]),
         identity=_canonical_identity(canonical),
@@ -926,8 +1114,8 @@ def resolve_wandb_start(
 ) -> QueryStateWandbStart:
     """Resolve fresh/restart before W&B init; identity errors are hard failures."""
 
-    if config.mode != "formal" or not config.tracking.enabled:
-        raise ValueError("W&B start resolution is formal-only")
+    if config.mode == "pilot" or not config.tracking.enabled:
+        raise ValueError("W&B start resolution requires a tracked production mode")
     mode = config.initialization["resume_mode"]
     identity = config.tracking.identity
     if mode == "fresh":
@@ -949,8 +1137,8 @@ def reapply_locked_wandb_environment(
 ) -> dict[str, str]:
     """Apply run-owned values after shared credentials/environment are sourced."""
 
-    if config.mode != "formal" or not config.tracking.enabled:
-        raise ValueError("locked W&B environment is formal-only")
+    if config.mode == "pilot" or not config.tracking.enabled:
+        raise ValueError("locked W&B environment requires a tracked production mode")
     effective = dict(sourced_environment)
     effective.update({
         "WANDB_ENTITY": config.tracking.entity,

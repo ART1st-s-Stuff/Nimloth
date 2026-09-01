@@ -12,10 +12,13 @@ import json
 import math
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from nimloth.training.sft1.query_state_checkpoint import QueryStateResumeIdentity
 
 QUERY_STATE_SEGMENT_SCHEMA = "nimloth_sft1_query_state_segment_v1"
 QUERY_STATE_RESTART_SCHEMA = "nimloth_sft1_query_state_pilot_restart_v1"
@@ -42,6 +45,14 @@ def current_process_identity() -> str:
 
 def _is_sha256(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and set(value) <= _HEX
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _canonical_hash(value: object) -> str:
@@ -342,6 +353,23 @@ class QueryStateAuthoritativeEntry:
     mirror_batch_hash: str
     early_stopping_cursor: Mapping[str, Any] | None = None
     actual_terminal: Mapping[str, Any] | None = None
+    visual_fixed_budget_completion: Mapping[str, Any] | None = None
+    epoch_final: bool = False
+    checkpoint_payload_present: bool = True
+    resumable: bool = True
+    compaction_manifest_path: str | None = None
+    compaction_manifest_hash: str | None = None
+
+
+@dataclass(frozen=True)
+class QueryStateCompactionReceipt:
+    candidate_update: int
+    successor_update: int
+    inventory_path: str
+    inventory_hash: str
+    tombstone_path: str
+    tombstone_hash: str
+    removed_payload_count: int
 
 
 @dataclass(frozen=True)
@@ -475,6 +503,33 @@ class QueryStateSegment:
                 or early_cursor["terminal_update"] != actual_terminal["update"]
             ):
                 raise ValueError("actual terminal and early-stop cursors disagree")
+        visual_completion_raw = metric_cursor.get("visual_fixed_budget_completion")
+        visual_completion: Mapping[str, Any] | None = None
+        if visual_completion_raw is not None:
+            expected_visual_fields = {
+                "kind",
+                "epoch",
+                "update",
+                "terminal_primary",
+                "holdout_controls_selection",
+                "best_checkpoint",
+            }
+            if (
+                self.store.mode != "visual_only_forensic_fork"
+                or not isinstance(visual_completion_raw, Mapping)
+                or set(visual_completion_raw) != expected_visual_fields
+                or visual_completion_raw.get("kind")
+                != "visual_fixed_budget_diagnostic_complete"
+                or visual_completion_raw.get("epoch") != 5
+                or visual_completion_raw.get("update") != 8025
+                or self.end_update != 8025
+                or visual_completion_raw.get("terminal_primary") is not False
+                or visual_completion_raw.get("holdout_controls_selection") is not False
+                or visual_completion_raw.get("best_checkpoint") is not None
+                or actual_terminal is not None
+            ):
+                raise ValueError("visual fixed-budget completion cursor is invalid")
+            visual_completion = dict(visual_completion_raw)
         segment_name = f"segment_{self.start_update:08d}_{self.end_update:08d}"
         committed_path = self.store.root / "segments" / segment_name
         if committed_path.exists():
@@ -498,6 +553,11 @@ class QueryStateSegment:
             mirror_batch_hash=_canonical_hash(mirror_payload),
             early_stopping_cursor=early_cursor,
             actual_terminal=actual_terminal,
+            visual_fixed_budget_completion=visual_completion,
+            epoch_final=(
+                self.store.epoch_updates is not None
+                and self.end_update % self.store.epoch_updates == 0
+            ),
         )
         _atomic_json(committed_path / "commit.json", asdict(entry), overwrite=False)
         if fail_before_index:
@@ -514,24 +574,62 @@ class QueryStateSegmentStore:
         run_identity: str,
         mode: str,
         wandb_run_id: str | None = None,
+        base_update: int = 0,
+        epoch_updates: int | None = None,
+        semantic_identity: str | None = None,
+        expected_checkpoint_identity: "QueryStateResumeIdentity | None" = None,
     ) -> None:
-        if not _is_sha256(run_identity) or mode not in {"pilot", "formal"}:
+        from nimloth.training.sft1.query_state_checkpoint import QueryStateResumeIdentity
+
+        allowed_modes = {"pilot", "formal", "visual_only_forensic_fork"}
+        if not _is_sha256(run_identity) or mode not in allowed_modes:
             raise ValueError("segment store run/mode identity is invalid")
         if mode == "pilot" and wandb_run_id is not None:
             raise ValueError("pilot segment store must keep W&B disabled")
-        if mode == "formal" and (not isinstance(wandb_run_id, str) or not wandb_run_id):
-            raise ValueError("formal segment store requires the locked W&B run ID")
+        if mode != "pilot" and (not isinstance(wandb_run_id, str) or not wandb_run_id):
+            raise ValueError("tracked segment store requires the locked W&B run ID")
+        if (
+            isinstance(base_update, bool)
+            or not isinstance(base_update, int)
+            or base_update < 0
+            or (epoch_updates is not None and (
+                isinstance(epoch_updates, bool)
+                or not isinstance(epoch_updates, int)
+                or epoch_updates < 1
+            ))
+            or (mode == "visual_only_forensic_fork" and (
+                base_update != 1605
+                or epoch_updates != 1605
+                or not _is_sha256(semantic_identity)
+                or semantic_identity != run_identity
+                or not isinstance(expected_checkpoint_identity, QueryStateResumeIdentity)
+                or expected_checkpoint_identity.run_identity != run_identity
+                or expected_checkpoint_identity.config_identity != semantic_identity
+                or expected_checkpoint_identity.world_size != 8
+                or expected_checkpoint_identity.experiment_mode != mode
+            ))
+            or (mode != "visual_only_forensic_fork" and (
+                base_update != 0
+                or semantic_identity is not None
+                or expected_checkpoint_identity is not None
+            ))
+        ):
+            raise ValueError("segment store base/epoch update identity is invalid")
         self.root = Path(root).resolve()
         self.run_identity = run_identity
         self.mode = mode
         self.wandb_run_id = wandb_run_id
+        self.base_update = base_update
+        self.epoch_updates = epoch_updates
+        self.semantic_identity = semantic_identity
+        self.expected_checkpoint_identity = expected_checkpoint_identity
         self.root.mkdir(parents=True, exist_ok=True)
         for name in ("pending", "segments", "abandoned", "failures"):
             (self.root / name).mkdir(exist_ok=True)
         if not (self.root / "authoritative_index.json").exists():
             _atomic_json(
                 self.root / "authoritative_index.json",
-                {"schema": QUERY_STATE_SEGMENT_SCHEMA, "run_identity": run_identity, "mode": mode, "wandb_run_id": wandb_run_id, "entries": []},
+                {"schema": QUERY_STATE_SEGMENT_SCHEMA, "run_identity": run_identity, "mode": mode, "wandb_run_id": wandb_run_id, "base_update": base_update, "epoch_updates": epoch_updates, "semantic_identity": semantic_identity, "expected_checkpoint_identity": asdict(expected_checkpoint_identity) if expected_checkpoint_identity is not None else None, "entries": []},
                 overwrite=False,
             )
         else:
@@ -539,7 +637,22 @@ class QueryStateSegmentStore:
 
     def _raw_index(self) -> dict[str, Any]:
         raw = _read_json(self.root / "authoritative_index.json")
-        if raw.get("schema") != QUERY_STATE_SEGMENT_SCHEMA or raw.get("run_identity") != self.run_identity or raw.get("mode") != self.mode or raw.get("wandb_run_id") != self.wandb_run_id or not isinstance(raw.get("entries"), list):
+        if (
+            raw.get("schema") != QUERY_STATE_SEGMENT_SCHEMA
+            or raw.get("run_identity") != self.run_identity
+            or raw.get("mode") != self.mode
+            or raw.get("wandb_run_id") != self.wandb_run_id
+            or raw.get("base_update", 0) != self.base_update
+            or raw.get("epoch_updates") != self.epoch_updates
+            or raw.get("semantic_identity") != self.semantic_identity
+            or raw.get("expected_checkpoint_identity")
+            != (
+                asdict(self.expected_checkpoint_identity)
+                if self.expected_checkpoint_identity is not None
+                else None
+            )
+            or not isinstance(raw.get("entries"), list)
+        ):
             raise ValueError("authoritative segment index identity mismatch")
         return raw
 
@@ -644,10 +757,16 @@ class QueryStateSegmentStore:
 
     def authoritative_entries(self) -> tuple[QueryStateAuthoritativeEntry, ...]:
         entries = tuple(QueryStateAuthoritativeEntry(**value) for value in self._raw_index()["entries"])
-        previous = 0
+        previous = self.base_update
         for entry in entries:
-            if entry.start_update != previous or entry.end_update <= entry.start_update:
-                raise ValueError("authoritative segment index is not contiguous")
+            if (
+                entry.start_update != previous
+                or entry.end_update <= entry.start_update
+                or (entry.checkpoint_payload_present is False and entry.resumable is not False)
+                or (entry.compaction_manifest_path is None)
+                != (entry.compaction_manifest_hash is None)
+            ):
+                raise ValueError("authoritative segment index is not contiguous or resumability is invalid")
             previous = entry.end_update
         return entries
 
@@ -659,7 +778,7 @@ class QueryStateSegmentStore:
         process_identity: str,
     ) -> QueryStateSegment:
         entries = self.authoritative_entries()
-        expected = entries[-1].end_update if entries else 0
+        expected = entries[-1].end_update if entries else self.base_update
         if start_update != expected or end_update <= start_update:
             raise ValueError("new segment must start at the authoritative resume cursor")
         if not isinstance(process_identity, str) or not process_identity.strip():
@@ -688,17 +807,398 @@ class QueryStateSegmentStore:
     def _append_authoritative(self, entry: QueryStateAuthoritativeEntry) -> None:
         current = self._raw_index()
         entries = self.authoritative_entries()
-        expected = entries[-1].end_update if entries else 0
+        expected = entries[-1].end_update if entries else self.base_update
         if entry.start_update != expected:
             raise ValueError("authoritative segment publication would skip or duplicate updates")
         current["entries"].append(asdict(entry))
         _atomic_json(self.root / "authoritative_index.json", current, overwrite=True)
+
+    def _authenticate_visual_checkpoint(
+        self,
+        entry: QueryStateAuthoritativeEntry,
+    ) -> None:
+        """Authenticate a complete WS8 checkpoint before it can supersede payload."""
+
+        if self.expected_checkpoint_identity is None:
+            raise ValueError("compaction checkpoint trusted identity is absent")
+        from nimloth.training.sft1.query_state_checkpoint import (
+            validate_query_state_rank_checkpoint_metadata,
+        )
+
+        try:
+            validate_query_state_rank_checkpoint_metadata(
+                Path(entry.checkpoint_path).resolve(),
+                expected_identity=self.expected_checkpoint_identity,
+                expected_global_step=entry.end_update,
+                expected_control_sha256=entry.checkpoint_control_hash,
+                expected_forensic_only=False,
+                expected_terminal_primary=False,
+            )
+        except ValueError as error:
+            raise ValueError(
+                "compaction successor lacks authenticated rank inventory or trusted identity"
+            ) from error
+
+    def _reconcile_compactions(self) -> None:
+        """Make an intent-bearing predecessor non-resumable after process death."""
+
+        if self.mode != "visual_only_forensic_fork":
+            return
+        index = self._raw_index()
+        changed = False
+        values = list(index["entries"])
+        by_end = {value.get("end_update"): value for value in values}
+        for offset, value in enumerate(values):
+            if value.get("checkpoint_payload_present") is False:
+                continue
+            update = value.get("end_update")
+            if not isinstance(update, int) or isinstance(update, bool):
+                continue
+            root = self.root / "compactions" / f"update_{update:08d}"
+            inventory_path = root / "inventory.json"
+            tombstone_path = root / "tombstone_intent.json"
+            completion_path = root / "COMPLETED.json"
+            if not tombstone_path.is_file():
+                continue
+            inventory = _read_json(inventory_path)
+            tombstone = _read_json(tombstone_path)
+            successor = by_end.get(tombstone.get("successor_update"))
+            if not isinstance(successor, dict):
+                raise ValueError("interrupted checkpoint compaction successor is absent")
+            successor_entry = QueryStateAuthoritativeEntry(**successor)
+            if (
+                successor_entry.start_update != update
+                or not successor_entry.checkpoint_payload_present
+                or not successor_entry.resumable
+            ):
+                raise ValueError(
+                    "interrupted checkpoint compaction successor is not intact/resumable"
+                )
+            self._authenticate_visual_checkpoint(successor_entry)
+            payloads = inventory.get("payloads")
+            expected_names = tuple(
+                f"rank_{rank:05d}_of_00008.pt" for rank in range(8)
+            )
+            if (
+                inventory.get("schema") != QUERY_STATE_SEGMENT_SCHEMA
+                or inventory.get("kind") != "checkpoint_payload_inventory"
+                or inventory.get("run_identity") != self.run_identity
+                or inventory.get("mode") != self.mode
+                or inventory.get("semantic_identity") != self.semantic_identity
+                or inventory.get("candidate_update") != update
+                or inventory.get("successor_update") != successor_entry.end_update
+                or inventory.get("checkpoint_path")
+                != str(Path(value["checkpoint_path"]).resolve())
+                or not isinstance(payloads, list)
+                or tuple(item.get("relative_path") for item in payloads) != expected_names
+                or tombstone.get("schema") != QUERY_STATE_SEGMENT_SCHEMA
+                or tombstone.get("kind") != "checkpoint_payload_tombstone_intent"
+                or tombstone.get("run_identity") != self.run_identity
+                or tombstone.get("mode") != self.mode
+                or tombstone.get("semantic_identity") != self.semantic_identity
+                or tombstone.get("candidate_update") != update
+                or tombstone.get("successor_update") != successor_entry.end_update
+                or tombstone.get("inventory_path") != str(inventory_path.resolve())
+                or tombstone.get("inventory_sha256") != _file_sha256(inventory_path)
+            ):
+                raise ValueError("interrupted checkpoint compaction evidence is invalid")
+            candidate_path = Path(value["checkpoint_path"]).resolve()
+            missing_before = 0
+            remaining_payloads: list[Path] = []
+            for item in payloads:
+                payload = candidate_path / str(item["relative_path"])
+                if not payload.exists():
+                    missing_before += 1
+                    continue
+                if (
+                    payload.is_symlink()
+                    or not payload.is_file()
+                    or payload.stat().st_size != item.get("size_bytes")
+                    or _file_sha256(payload) != item.get("sha256")
+                ):
+                    raise ValueError("interrupted compaction candidate payload was tampered")
+                remaining_payloads.append(payload)
+            manifest_path: Path
+            reconciled_path = root / "RECONCILED.json"
+            if completion_path.is_file() or reconciled_path.is_file():
+                manifest_path = (
+                    completion_path if completion_path.is_file() else reconciled_path
+                )
+                completion = _read_json(manifest_path)
+                expected_kind = (
+                    "checkpoint_payload_compaction_complete"
+                    if manifest_path == completion_path
+                    else "interrupted_checkpoint_payload_compaction_reconciled"
+                )
+                if (
+                    completion.get("schema") != QUERY_STATE_SEGMENT_SCHEMA
+                    or completion.get("kind") != expected_kind
+                    or completion.get("run_identity") != self.run_identity
+                    or completion.get("mode") != self.mode
+                    or completion.get("semantic_identity") != self.semantic_identity
+                    or completion.get("candidate_update") != update
+                    or completion.get("successor_update") != successor_entry.end_update
+                    or completion.get("inventory_sha256") != _file_sha256(inventory_path)
+                    or completion.get("tombstone_sha256") != _file_sha256(tombstone_path)
+                    or remaining_payloads
+                ):
+                    raise ValueError("completed checkpoint compaction evidence is invalid")
+            else:
+                removed_now = 0
+                try:
+                    for payload in remaining_payloads:
+                        payload.unlink()
+                        removed_now += 1
+                    _fsync_directory(candidate_path)
+                except BaseException as error:
+                    _atomic_json(
+                        root / "RECONCILE_FAILED.json",
+                        {
+                            "schema": QUERY_STATE_SEGMENT_SCHEMA,
+                            "kind": "interrupted_checkpoint_compaction_cleanup_failed",
+                            "run_identity": self.run_identity,
+                            "mode": self.mode,
+                            "semantic_identity": self.semantic_identity,
+                            "candidate_update": update,
+                            "successor_update": successor_entry.end_update,
+                            "payloads_missing_before_reconcile": missing_before,
+                            "removed_payload_count": removed_now,
+                            "payloads_remaining": 8 - missing_before - removed_now,
+                            "checkpoint_payload_present": True,
+                            "resumable": False,
+                            "error": f"{type(error).__name__}: {error}",
+                        },
+                        overwrite=True,
+                    )
+                    raise
+                manifest_path = reconciled_path
+                _atomic_json(
+                    manifest_path,
+                    {
+                        "schema": QUERY_STATE_SEGMENT_SCHEMA,
+                        "kind": "interrupted_checkpoint_payload_compaction_reconciled",
+                        "run_identity": self.run_identity,
+                        "mode": self.mode,
+                        "semantic_identity": self.semantic_identity,
+                        "candidate_update": update,
+                        "successor_update": successor_entry.end_update,
+                        "inventory_sha256": _file_sha256(inventory_path),
+                        "tombstone_sha256": _file_sha256(tombstone_path),
+                        "payloads_missing_before_reconcile": missing_before,
+                        "removed_payload_count": removed_now,
+                        "total_payload_count": 8,
+                        "checkpoint_payload_present": False,
+                        "resumable": False,
+                        "recovery_update": successor_entry.end_update,
+                    },
+                    overwrite=False,
+                )
+            updated = dict(value)
+            updated.update(
+                checkpoint_payload_present=False,
+                resumable=False,
+                compaction_manifest_path=str(manifest_path.resolve()),
+                compaction_manifest_hash=_file_sha256(manifest_path),
+            )
+            values[offset] = updated
+            changed = True
+        if changed:
+            index["entries"] = values
+            _atomic_json(self.root / "authoritative_index.json", index, overwrite=True)
+
+    def compact_superseded_checkpoint(
+        self,
+        *,
+        candidate_update: int,
+        checkpoint_root: Path,
+        mirrored_through_update: int,
+    ) -> QueryStateCompactionReceipt:
+        """Remove only superseded rank payloads after a complete successor is indexed."""
+
+        if self.mode != "visual_only_forensic_fork":
+            raise ValueError("rolling checkpoint compaction is visual-fork-only")
+        checkpoint_directory = Path(checkpoint_root).resolve()
+        entries = self.authoritative_entries()
+        matches = [entry for entry in entries if entry.end_update == candidate_update]
+        if len(matches) != 1:
+            raise ValueError("compaction candidate is not an authoritative checkpoint")
+        candidate = matches[0]
+        if candidate == entries[-1]:
+            raise ValueError("latest checkpoint payload cannot be compacted")
+        if candidate.epoch_final:
+            raise ValueError("epoch-final checkpoint payload cannot be compacted")
+        if not candidate.checkpoint_payload_present or not candidate.resumable:
+            raise ValueError("checkpoint payload is already non-resumable")
+        successor = next(
+            (entry for entry in entries if entry.start_update == candidate.end_update),
+            None,
+        )
+        if (
+            successor is None
+            or not successor.checkpoint_payload_present
+            or not successor.resumable
+        ):
+            raise ValueError("compaction requires a payload-present indexed successor")
+        if (
+            isinstance(mirrored_through_update, bool)
+            or not isinstance(mirrored_through_update, int)
+            or mirrored_through_update < successor.end_update
+        ):
+            raise ValueError("compaction requires successor W&B mirror publication first")
+        candidate_path = Path(candidate.checkpoint_path).resolve()
+        successor_path = Path(successor.checkpoint_path).resolve()
+        if (
+            candidate_path.parent != checkpoint_directory
+            or successor_path.parent != checkpoint_directory
+        ):
+            raise ValueError("compaction checkpoint lies outside the fork checkpoint root")
+        self._authenticate_visual_checkpoint(candidate)
+        self._authenticate_visual_checkpoint(successor)
+        payloads = tuple(sorted(candidate_path.glob("rank_*_of_*.pt")))
+        expected_payload_names = tuple(
+            f"rank_{rank:05d}_of_00008.pt" for rank in range(8)
+        )
+        if tuple(path.name for path in payloads) != expected_payload_names or any(
+            path.is_symlink() or not path.is_file() or path.parent != candidate_path
+            for path in payloads
+        ):
+            raise ValueError("compaction requires the exact eight-rank payload inventory")
+        inventory_payload = {
+            "schema": QUERY_STATE_SEGMENT_SCHEMA,
+            "kind": "checkpoint_payload_inventory",
+            "run_identity": self.run_identity,
+            "mode": self.mode,
+            "semantic_identity": self.semantic_identity,
+            "candidate_update": candidate.end_update,
+            "successor_update": successor.end_update,
+            "checkpoint_path": str(candidate_path),
+            "payloads": [
+                {
+                    "relative_path": path.name,
+                    "size_bytes": path.stat().st_size,
+                    "sha256": _file_sha256(path),
+                }
+                for path in payloads
+            ],
+        }
+        compaction_root = self.root / "compactions" / f"update_{candidate.end_update:08d}"
+        inventory_path = compaction_root / "inventory.json"
+        tombstone_path = compaction_root / "tombstone_intent.json"
+        completion_path = compaction_root / "COMPLETED.json"
+        _atomic_json(inventory_path, inventory_payload, overwrite=False)
+        inventory_hash = hashlib.sha256(inventory_path.read_bytes()).hexdigest()
+        _atomic_json(
+            tombstone_path,
+            {
+                "schema": QUERY_STATE_SEGMENT_SCHEMA,
+                "kind": "checkpoint_payload_tombstone_intent",
+                "run_identity": self.run_identity,
+                "mode": self.mode,
+                "semantic_identity": self.semantic_identity,
+                "candidate_update": candidate.end_update,
+                "successor_update": successor.end_update,
+                "inventory_path": str(inventory_path.resolve()),
+                "inventory_sha256": inventory_hash,
+            },
+            overwrite=False,
+        )
+        tombstone_hash = _file_sha256(tombstone_path)
+        try:
+            for path in payloads:
+                path.unlink()
+            _fsync_directory(candidate_path)
+        except BaseException as error:
+            removed_count = sum(not path.exists() for path in payloads)
+            failure_path = compaction_root / "FAILED.json"
+            _atomic_json(
+                failure_path,
+                {
+                    "schema": QUERY_STATE_SEGMENT_SCHEMA,
+                    "kind": "checkpoint_payload_compaction_failed",
+                    "run_identity": self.run_identity,
+                    "mode": self.mode,
+                    "semantic_identity": self.semantic_identity,
+                    "candidate_update": candidate.end_update,
+                    "successor_update": successor.end_update,
+                    "error": f"{type(error).__name__}: {error}",
+                    "removed_payload_count": removed_count,
+                    "payloads_remaining": len(payloads) - removed_count,
+                    "successor_remains_authoritative": True,
+                    "candidate_payload_complete": removed_count == 0,
+                    "candidate_resumable": removed_count == 0,
+                },
+                overwrite=False,
+            )
+            if removed_count:
+                failed_hash = _file_sha256(failure_path)
+                partial = replace(
+                    candidate,
+                    checkpoint_payload_present=True,
+                    resumable=False,
+                    compaction_manifest_path=str(failure_path.resolve()),
+                    compaction_manifest_hash=failed_hash,
+                )
+                index = self._raw_index()
+                index["entries"] = [
+                    asdict(partial)
+                    if value.get("end_update") == candidate.end_update
+                    else value
+                    for value in index["entries"]
+                ]
+                _atomic_json(
+                    self.root / "authoritative_index.json",
+                    index,
+                    overwrite=True,
+                )
+            raise
+        _atomic_json(
+            completion_path,
+            {
+                "schema": QUERY_STATE_SEGMENT_SCHEMA,
+                "kind": "checkpoint_payload_compaction_complete",
+                "run_identity": self.run_identity,
+                "mode": self.mode,
+                "semantic_identity": self.semantic_identity,
+                "candidate_update": candidate.end_update,
+                "successor_update": successor.end_update,
+                "inventory_sha256": inventory_hash,
+                "tombstone_sha256": tombstone_hash,
+                "removed_payload_count": len(payloads),
+                "checkpoint_payload_present": False,
+                "resumable": False,
+            },
+            overwrite=False,
+        )
+        completion_hash = hashlib.sha256(completion_path.read_bytes()).hexdigest()
+        updated = replace(
+            candidate,
+            checkpoint_payload_present=False,
+            resumable=False,
+            compaction_manifest_path=str(completion_path.resolve()),
+            compaction_manifest_hash=completion_hash,
+        )
+        index = self._raw_index()
+        index["entries"] = [
+            asdict(updated) if value.get("end_update") == candidate.end_update else value
+            for value in index["entries"]
+        ]
+        _atomic_json(self.root / "authoritative_index.json", index, overwrite=True)
+        return QueryStateCompactionReceipt(
+            candidate_update=candidate.end_update,
+            successor_update=successor.end_update,
+            inventory_path=str(inventory_path.resolve()),
+            inventory_hash=inventory_hash,
+            tombstone_path=str(tombstone_path.resolve()),
+            tombstone_hash=tombstone_hash,
+            removed_payload_count=len(payloads),
+        )
 
     def recover(
         self,
         *,
         checkpoint_root: Path | None = None,
     ) -> QueryStateRecovery:
+        self._reconcile_compactions()
         entries = self.authoritative_entries()
         indexed = {Path(entry.segment_path).resolve() for entry in entries}
         abandoned = 0
@@ -750,8 +1250,31 @@ class QueryStateSegmentStore:
                 abandoned_checkpoints += 1
             _fsync_directory(checkpoint_directory)
             _fsync_directory(quarantine)
+        resumable_entries = tuple(
+            entry
+            for entry in entries
+            if entry.checkpoint_payload_present and entry.resumable
+        )
+        if self.mode == "visual_only_forensic_fork":
+            for entry in resumable_entries:
+                checkpoint = Path(entry.checkpoint_path).resolve()
+                expected = tuple(
+                    f"rank_{rank:05d}_of_00008.pt" for rank in range(8)
+                )
+                actual = tuple(
+                    path.name for path in sorted(checkpoint.glob("rank_*_of_*.pt"))
+                    if path.is_file() and not path.is_symlink()
+                )
+                if actual != expected:
+                    raise RuntimeError(
+                        "visual-fork recovery refuses a payload-incomplete checkpoint"
+                    )
         return QueryStateRecovery(
-            resume_update=entries[-1].end_update if entries else 0,
+            resume_update=(
+                resumable_entries[-1].end_update
+                if resumable_entries
+                else self.base_update
+            ),
             abandoned_pending_segments=abandoned,
             abandoned_unindexed_checkpoints=abandoned_checkpoints,
         )
@@ -924,6 +1447,7 @@ __all__ = [
     "QUERY_STATE_RESTART_SCHEMA",
     "QUERY_STATE_SEGMENT_SCHEMA",
     "QueryStateAuthoritativeEntry",
+    "QueryStateCompactionReceipt",
     "QueryStateEarlyStoppingCursor",
     "QueryStateEarlyStoppingDecision",
     "QueryStatePilotRestartReceipt",

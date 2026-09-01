@@ -45,7 +45,7 @@ The Query-State production-preparation path is separate from legacy v2:
 The formal Query-State owner is also schema-distinct from both paths above:
 
 - `query_state_training_config.py` owns the explicit template/preflight/launch
-  lifecycle, pilot/formal incompatibility, complete optimizer/runtime/FSDP/
+  lifecycle, pilot/formal/visual-forensic-fork incompatibility, complete optimizer/runtime/FSDP/
   environment/command fields, and formal W&B fresh (`resume=never`) versus exact
   restart (`resume=must`) state machine. Shared environment values are reapplied
   from the locked run identity after credential sourcing; init/query disagreement
@@ -83,6 +83,27 @@ The formal Query-State owner is also schema-distinct from both paths above:
   registered real unacted response-policy prompts. Update 0 and terminal are
   mandatory; additional format checks require explicit cadence. Parse failure is
   non-resumable and never executes actions, persists rollout, or exports.
+- `query_state_visual_forensic_fork.py` is consumed only by the production
+  training config/preflight/backend owner; it has no alternate launch schema or
+  entry point. It binds the current runtime checkout commit separately from the
+  immutable Formal38 ancestor source commit, authenticates that ancestor's
+  update-1605 forensic control and eight rank shards, loads model/direct-head tensors only, and proves fresh
+  optimizer/scheduler/RNG/data/W&B ownership remains untouched on the fresh fork;
+  later exact resume accepts only fork-owned payload-present checkpoints. Its fixed event
+  plan covers equivalent epochs 2–5 from schedule offset 1605; durable log/W&B
+  cursors begin at that offset, and the segment index reopens against the stable
+  semantic run identity rather than process-specific config/approval identity.
+  Actor/generation remain report-only, calibration runs at fork step zero and every epoch end, and
+  holdout runs only at fixed epoch 5. The segment store permits successor-first
+  compaction only for this mode: after successor index and W&B mirror publication,
+  it inventories and hashes exactly eight rank payloads, writes a tombstone, removes
+  only superseded non-epoch-final payload files, and marks the historical index
+  entry non-resumable only after all inventoried rank payloads are absent. An
+  interrupted deletion records remaining payloads and recovery deterministically
+  authenticates the successor before removing every survivor. Before deletion it validates canonical control/manifests
+  and shard hashes against the store's complete trusted fork resume identity;
+  no source or manifest identity is learned from the candidate checkpoint.
+  Ancestor forensic paths are outside the fork checkpoint root.
 - `query_state_training_controller.py` owns non-overwrite run claims, immutable
   nonterminal pause receipts, and distinct completed/failed/preempted/
   validator-failed terminals. It never submits Slurm,

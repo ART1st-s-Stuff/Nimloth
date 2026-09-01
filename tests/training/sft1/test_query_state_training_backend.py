@@ -464,8 +464,9 @@ def test_backend_validation_wires_global_diagnostics_and_fail_closed_safety() ->
     assert 'checkpoint_path=run_root / "unsafe_checkpoint_not_published"' not in source
     assert 'config.validation["generation_format_updates"]' in source
     assert "run_fsdp_greedy_turn_probe(" in source
-    assert "update-zero safety failed; forensic checkpoint " in source
-    assert '"unsafe_update_00000000"' in source
+    assert "baseline safety failed; forensic checkpoint " in source
+    assert 'f"unsafe_update_{baseline_update:08d}"' in source
+    assert '"unsafe_update_00000000"' not in source
     assert "record_forensic_save_failure(" in source
     assert "forensic checkpoint save failed" in source
     assert "normalization = query_state_global_normalization(" in source

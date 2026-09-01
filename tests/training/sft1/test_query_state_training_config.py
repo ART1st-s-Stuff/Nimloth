@@ -32,7 +32,7 @@ def _raw(*, mode: str = "pilot", resume_mode: str = "fresh") -> dict:
     checkpoint_budget_bytes = (
         max_updates // checkpoint_cadence
     ) * checkpoint_estimated_bytes
-    return {
+    raw = {
         "schema": QUERY_STATE_TRAINING_CONFIG_SCHEMA,
         "mode": mode,
         "lifecycle": {
@@ -112,6 +112,7 @@ def _raw(*, mode: str = "pilot", resume_mode: str = "fresh") -> dict:
         "schedule": {
             "seed": 7 if pilot else 3335631237,
             "epochs": 1 if pilot else 10,
+            "schedule_start_update": 0,
             "max_updates": max_updates,
             "rows_per_rank_update": 2 if pilot else 1,
             "epoch_updates": epoch_updates,
@@ -221,6 +222,25 @@ def _raw(*, mode: str = "pilot", resume_mode: str = "fresh") -> dict:
             "nccl_socket_ifname": "ibp24s0" if not pilot else "test0",
             "nccl_ib_disable": "1",
         },
+        "forensic_fork": {
+            "enabled": False,
+            "ancestor_checkpoint_path": "disabled",
+            "ancestor_failure_manifest_path": "disabled",
+            "id176_actor_baseline_path": "disabled",
+            "id176_actor_baseline_sha256": "disabled",
+            "ancestor_control_sha256": "disabled",
+            "ancestor_source_commit": "disabled",
+            "ancestor_run_identity": "disabled",
+            "ancestor_source_config_identity": "disabled",
+            "ancestor_update": 0,
+            "initialization_kind": "disabled",
+            "actor_policy": "disabled",
+            "generation_policy": "disabled",
+            "retention_policy": "disabled",
+            "ancestor_protected": False,
+            "parity_relative_tolerance": 0.0,
+            "parity_absolute_tolerance": 0.0,
+        },
         "command": {
             "argv": [
                 "/venv/bin/python",
@@ -261,6 +281,75 @@ def _raw(*, mode: str = "pilot", resume_mode: str = "fresh") -> dict:
             }
         },
     }
+    if mode == "visual_only_forensic_fork":
+        raw["schedule"].update(
+            epochs=4,
+            schedule_start_update=1605,
+            max_updates=8025,
+            validation_updates=[1605, 3210, 4815, 6420, 8025],
+        )
+        raw["early_stopping"].update(
+            enabled=False,
+            metric="disabled",
+            min_epochs=1,
+            max_epochs=4,
+            patience_epochs=0,
+            min_relative_improvement=0.0,
+            actual_terminal_primary=False,
+        )
+        raw["validation"].update(
+            split="visual_fork_calibration_trend_final_holdout",
+            baseline_update=1605,
+            terminal_update=8025,
+            holdout_updates=[8025],
+            holdout_at_actual_terminal=False,
+            generation_format_updates=[1605, 3210, 4815, 6420, 8025],
+            generation_format_at_actual_terminal=False,
+        )
+        raw["output"].update(
+            checkpoint_estimated_bytes=23_370_000_000,
+            checkpoint_budget_bytes=116_850_000_000,
+        )
+        raw["initialization"]["direct_head_initialization"] = "forensic_model_only"
+        raw["model"]["initialization_identity"] = (
+            "formal38_forensic_model_only:" + "4" * 64
+        )
+        raw["tracking"].update(
+            group="visual-fork-group",
+            run_name="visual_fork",
+            run_id="visual-fork-run-id",
+        )
+        raw["forensic_fork"] = {
+            "enabled": True,
+            "ancestor_checkpoint_path": "/outputs/formal38/forensics/unsafe_update_00001605",
+            "ancestor_failure_manifest_path": "/outputs/formal38/durable/failures/unsafe_00001284_00001605.json",
+            "id176_actor_baseline_path": "/outputs/formal38/actor_baseline_id176.json",
+            "id176_actor_baseline_sha256": "5" * 64,
+            "ancestor_control_sha256": "4" * 64,
+            "ancestor_source_commit": "a" * 40,
+            "ancestor_run_identity": "d" * 64,
+            "ancestor_source_config_identity": "c" * 64,
+            "ancestor_update": 1605,
+            "initialization_kind": "forensic_model_only_fresh_optimizer",
+            "actor_policy": "report_only",
+            "generation_policy": "report_only",
+            "retention_policy": "successor_first_non_epoch_final_payload_v1",
+            "ancestor_protected": True,
+            "parity_relative_tolerance": 1e-6,
+            "parity_absolute_tolerance": 1e-8,
+        }
+        ancestor = "/outputs/formal38/forensics/unsafe_update_00001605"
+        raw["artifacts"]["file_sha256"].update({
+            f"{ancestor}/control.json": "4" * 64,
+            "/outputs/formal38/durable/failures/unsafe_00001284_00001605.json": "6" * 64,
+            "/outputs/formal38/actor_baseline_id176.json": "5" * 64,
+            **{
+                f"{ancestor}/rank_{rank:05d}_of_00008{suffix}": "7" * 64
+                for rank in range(8)
+                for suffix in (".pt", ".json")
+            },
+        })
+    return raw
 
 
 def test_training_schema_is_distinct_strict_and_has_no_missing_or_unknown_fields() -> None:

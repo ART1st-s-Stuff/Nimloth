@@ -71,6 +71,20 @@ def _required_output_free_bytes(
 ) -> int:
     cadence = int(config.schedule["checkpoint_cadence_updates"])
     terminal_update = int(config.schedule["max_updates"])
+    schedule_start = int(config.schedule["schedule_start_update"])
+    if config.mode == "visual_only_forensic_fork":
+        resume_mode = config.initialization["resume_mode"]
+        if (
+            completed_checkpoint_update < schedule_start
+            or completed_checkpoint_update > terminal_update
+            or (completed_checkpoint_update - schedule_start) % cadence
+            or (resume_mode == "fresh" and completed_checkpoint_update != schedule_start)
+            or (resume_mode == "exact_restart" and completed_checkpoint_update <= schedule_start)
+        ):
+            raise ValueError("visual fork launch/restart boundary is invalid")
+        return int(config.output["minimum_free_bytes"]) + int(
+            config.output["checkpoint_budget_bytes"]
+        )
     approved_pause_update = int(config.schedule["approved_pause_update"])
     authorized_stop_update = approved_pause_update or terminal_update
     if (
@@ -301,11 +315,29 @@ def _authenticated_exact_restart_update(
         or Path(str(latest.get("checkpoint_path"))).resolve()
         != checkpoint.resolve()
         or latest.get("checkpoint_control_hash") != control_sha256
+        or latest.get("checkpoint_payload_present", True) is not True
+        or latest.get("resumable", True) is not True
     ):
         raise ValueError(
             "Query-State exact restart checkpoint/index identity mismatch"
         )
     return update
+
+
+def _reject_visual_fixed_budget_completion_restart(
+    config: QueryStateTrainingConfig,
+    *,
+    run_root: Path,
+    controller_root: Path,
+) -> None:
+    if (
+        config.mode != "visual_only_forensic_fork"
+        or config.initialization["resume_mode"] != "exact_restart"
+    ):
+        return
+    marker = "VISUAL_FIXED_BUDGET_COMPLETED.json"
+    if (Path(run_root) / marker).exists() or (Path(controller_root) / marker).exists():
+        raise RuntimeError("visual fixed-budget completed run cannot restart")
 
 
 def _reject_forensic_failure_restart(run_root: Path) -> None:
@@ -669,6 +701,15 @@ def verify_query_state_training_preflight(
         label="production generation-format",
     )
     _verify_training_data_contract(config)
+    if config.mode == "visual_only_forensic_fork":
+        from nimloth.training.sft1.query_state_visual_forensic_fork import (
+            authenticate_visual_fork_ancestor,
+        )
+
+        authenticate_visual_fork_ancestor(
+            config,
+            verify_payload_hashes=False,
+        )
     processor_identity, tokenizer_identity = _verify_id176_and_dino(config)
     _verify_environment(config, environ or os.environ)
 
@@ -710,7 +751,7 @@ def verify_query_state_training_preflight(
         raise ValueError("Query-State GPU resource allowlist is invalid")
 
     resume_mode = config.initialization["resume_mode"]
-    completed_checkpoint_update = 0
+    completed_checkpoint_update = int(config.schedule["schedule_start_update"])
     run_root = Path(str(config.output["run_root"]))
     controller_root = Path(str(config.output["controller_root"]))
     if resume_mode == "fresh":
@@ -722,6 +763,11 @@ def verify_query_state_training_preflight(
             raise FileNotFoundError(
                 "Query-State restart/replay requires the existing run/controller owner"
             )
+        _reject_visual_fixed_budget_completion_restart(
+            config,
+            run_root=run_root,
+            controller_root=controller_root,
+        )
         terminal_names = (
             "COMPLETED.json", "FAILED.json", "PREEMPTED.json", "VALIDATOR_FAILED.json"
         )
@@ -741,13 +787,14 @@ def verify_query_state_training_preflight(
                 checkpoint=checkpoint,
                 run_root=run_root,
             )
-            _authenticate_prior_pause_receipt(
-                config,
-                completed_update=completed_checkpoint_update,
-                checkpoint=checkpoint,
-                run_root=run_root,
-                controller_root=controller_root,
-            )
+            if config.mode == "formal":
+                _authenticate_prior_pause_receipt(
+                    config,
+                    completed_update=completed_checkpoint_update,
+                    checkpoint=checkpoint,
+                    run_root=run_root,
+                    controller_root=controller_root,
+                )
             cadence = int(config.schedule["checkpoint_cadence_updates"])
             terminal_update = int(config.schedule["max_updates"])
             if (

@@ -16,6 +16,7 @@ _TERMINAL_FILES = {
     "preempted": "PREEMPTED.json",
     "validator_failed": "VALIDATOR_FAILED.json",
 }
+_VISUAL_COMPLETION_FILE = "VISUAL_FIXED_BUDGET_COMPLETED.json"
 _HEX = frozenset("0123456789abcdef")
 
 
@@ -64,7 +65,7 @@ class QueryStateTrainingController:
             not isinstance(run_identity, str)
             or len(run_identity) != 64
             or any(char not in _HEX for char in run_identity)
-            or mode not in {"pilot", "formal"}
+            or mode not in {"pilot", "formal", "visual_only_forensic_fork"}
         ):
             raise ValueError("Query-State controller run/mode identity is invalid")
         self.run_root = Path(run_root).resolve()
@@ -127,7 +128,7 @@ class QueryStateTrainingController:
         ).is_file():
             raise ValueError("Query-State existing claim artifacts are incomplete")
         existing = [
-            name for name in _TERMINAL_FILES.values()
+            name for name in (*_TERMINAL_FILES.values(), _VISUAL_COMPLETION_FILE)
             if (self.run_root / name).exists() or (self.controller_root / name).exists()
         ]
         if existing:
@@ -220,6 +221,159 @@ class QueryStateTrainingController:
         _atomic_json(controller_pause_root / filename, payload)
         return path
 
+    def record_compaction_failure(
+        self,
+        *,
+        candidate_update: int,
+        successor_update: int,
+        error: str,
+    ) -> Path:
+        if (
+            self.mode != "visual_only_forensic_fork"
+            or isinstance(candidate_update, bool)
+            or not isinstance(candidate_update, int)
+            or candidate_update < 1
+            or isinstance(successor_update, bool)
+            or not isinstance(successor_update, int)
+            or successor_update <= candidate_update
+            or not isinstance(error, str)
+            or not error.strip()
+        ):
+            raise ValueError("visual fork compaction failure evidence is invalid")
+        payload = {
+            "run_identity": self.run_identity,
+            "mode": self.mode,
+            "candidate_update": candidate_update,
+            "successor_update": successor_update,
+            "error": error,
+            "successor_remains_authoritative": True,
+            "training_checkpoint_not_rolled_back": True,
+        }
+        filename = f"compaction_failed_{candidate_update:08d}_{successor_update:08d}.json"
+        run_root = self.run_root / "compaction_failures"
+        controller_root = self.controller_root / "compaction_failures"
+        run_root.mkdir(exist_ok=True)
+        controller_root.mkdir(exist_ok=True)
+        path = _atomic_json(run_root / filename, payload)
+        _atomic_json(controller_root / filename, payload)
+        return path
+
+    def record_visual_retention_block(
+        self,
+        *,
+        update: int,
+        checkpoint: str,
+        reason: str,
+    ) -> Path:
+        if (
+            self.mode != "visual_only_forensic_fork"
+            or isinstance(update, bool)
+            or not isinstance(update, int)
+            or update <= 1605
+            or not isinstance(checkpoint, str)
+            or not checkpoint
+            or not isinstance(reason, str)
+            or not reason.strip()
+        ):
+            raise ValueError("visual fork retention block evidence is invalid")
+        payload = {
+            "run_identity": self.run_identity,
+            "mode": self.mode,
+            "status": "retention_blocked",
+            "update": update,
+            "checkpoint": checkpoint,
+            "reason": reason,
+            "checkpoint_remains_authoritative": True,
+            "exact_restart_requires_new_process_approval": True,
+            "terminal_primary": False,
+            "automatic_sft2_authorization": False,
+            "automatic_export": False,
+        }
+        filename = f"retention_blocked_update_{update:08d}.json"
+        run_root = self.run_root / "retention_blocks"
+        controller_root = self.controller_root / "retention_blocks"
+        run_root.mkdir(exist_ok=True)
+        controller_root.mkdir(exist_ok=True)
+        path = _atomic_json(run_root / filename, payload)
+        _atomic_json(controller_root / filename, payload)
+        return path
+
+    def record_visual_fixed_budget_completion(
+        self,
+        *,
+        update: int,
+        details: Mapping[str, Any],
+    ) -> Path:
+        """Publish non-primary fixed-budget diagnostic completion only for P17."""
+
+        if self.mode != "visual_only_forensic_fork":
+            raise ValueError("visual fixed-budget completion is visual-fork-only")
+        if not self.run_root.is_dir() or not self.controller_root.is_dir():
+            raise RuntimeError("Query-State run must be claimed before completion publication")
+        required_detail_fields = {
+            "final_update",
+            "checkpoint",
+            "terminal_primary",
+            "actor_policy",
+            "generation_policy",
+            "observed_actor_safety_passed",
+            "observed_generation_format_passed",
+            "observed_actor_generation",
+            "terminal_safety_passed",
+            "sft1_control_authorization",
+            "holdout_controls_selection",
+            "best_checkpoint",
+        }
+        if (
+            not required_detail_fields <= set(details)
+            or isinstance(update, bool)
+            or update != 8025
+            or details.get("final_update") != 8025
+            or details.get("terminal_primary") is not False
+            or details.get("actor_policy") != "report_only"
+            or details.get("generation_policy") != "report_only"
+            or not isinstance(details.get("observed_actor_safety_passed"), bool)
+            or not isinstance(details.get("observed_generation_format_passed"), bool)
+            or not isinstance(details.get("observed_actor_generation"), Mapping)
+            or details.get("terminal_safety_passed") is not None
+            or details.get("sft1_control_authorization") is not False
+            or details.get("holdout_controls_selection", False) is not False
+            or details.get("best_checkpoint") is not None
+            or not isinstance(details.get("checkpoint"), str)
+            or not details.get("checkpoint")
+        ):
+            raise ValueError("visual fixed-budget completion evidence is invalid")
+        if any(
+            (root / name).exists()
+            for root in (self.run_root, self.controller_root)
+            for name in (*_TERMINAL_FILES.values(), _VISUAL_COMPLETION_FILE)
+        ):
+            raise RuntimeError("Query-State completion/terminal status is already immutable")
+        payload = {
+            "run_identity": self.run_identity,
+            "mode": self.mode,
+            "kind": "visual_fixed_budget_diagnostic_complete",
+            "update": update,
+            "details": dict(details),
+            "terminal_primary": False,
+            "actor_policy": "report_only",
+            "generation_policy": "report_only",
+            "observed_actor_safety_passed": details["observed_actor_safety_passed"],
+            "observed_generation_format_passed": details[
+                "observed_generation_format_passed"
+            ],
+            "terminal_safety_passed": None,
+            "sft1_control_authorization": False,
+            "holdout_controls_selection": False,
+            "best_checkpoint": None,
+            "automatic_formal_extension": False,
+            "automatic_sft2_authorization": False,
+            "automatic_export": False,
+        }
+        path = _atomic_json(self.run_root / _VISUAL_COMPLETION_FILE, payload)
+        _atomic_json(self.controller_root / _VISUAL_COMPLETION_FILE, payload)
+        return path
+
     def record_terminal(
         self,
         *,
@@ -228,9 +382,17 @@ class QueryStateTrainingController:
     ) -> Path:
         if status not in _TERMINAL_FILES:
             raise ValueError("unknown Query-State terminal status")
+        if self.mode == "visual_only_forensic_fork" and status == "completed":
+            raise ValueError(
+                "visual fork completion must use the non-primary fixed-budget transaction"
+            )
         if not self.run_root.is_dir() or not self.controller_root.is_dir():
             raise RuntimeError("Query-State run must be claimed before terminal publication")
-        existing = [name for name in _TERMINAL_FILES.values() if (self.run_root / name).exists()]
+        existing = [
+            name
+            for name in (*_TERMINAL_FILES.values(), _VISUAL_COMPLETION_FILE)
+            if (self.run_root / name).exists()
+        ]
         if existing:
             raise RuntimeError("Query-State terminal status is already immutable")
         next_stage = details.get("next_stage")
@@ -238,6 +400,14 @@ class QueryStateTrainingController:
             if str(next_stage).lower().startswith("sft2"):
                 raise ValueError("automatic SFT2 next stage is forbidden")
             raise ValueError("automatic formal next stage is forbidden; a new gate is required")
+        if self.mode == "visual_only_forensic_fork" and (
+            details.get("terminal_primary") is not False
+            or details.get("actor_policy") != "report_only"
+            or details.get("generation_policy") != "report_only"
+        ):
+            raise ValueError(
+                "visual forensic fork terminal must remain diagnostic/report-only"
+            )
         payload = {
             "run_identity": self.run_identity,
             "mode": self.mode,
