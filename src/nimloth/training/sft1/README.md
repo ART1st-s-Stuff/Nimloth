@@ -85,8 +85,8 @@ The formal Query-State owner is also schema-distinct from both paths above:
   non-resumable and never executes actions, persists rollout, or exports.
 - `query_state_visual_forensic_fork.py` is consumed only by the production
   training config/preflight/backend owner; it has no alternate launch schema or
-  entry point. It binds the current runtime checkout commit separately from the
-  immutable Formal38 ancestor source commit, authenticates that ancestor's
+  entry point. It binds the current runtime checkout commit/source-manifest separately from the
+  immutable Formal38 ancestor source commit/source-manifest, authenticates that ancestor's
   update-1605 forensic control and eight rank shards, loads model/direct-head tensors only, and proves fresh
   optimizer/scheduler/RNG/data/W&B ownership remains untouched on the fresh fork;
   later exact resume accepts only fork-owned payload-present checkpoints. Its fixed event

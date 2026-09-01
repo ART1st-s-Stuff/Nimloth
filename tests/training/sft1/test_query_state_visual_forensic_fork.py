@@ -303,9 +303,10 @@ def test_visual_fork_model_initialization_loads_only_model_and_keeps_fresh_state
     fresh_optimizer = torch.optim.AdamW(root.parameters(), lr=1e-4)
     fresh_scheduler = torch.optim.lr_scheduler.LambdaLR(fresh_optimizer, lambda _: 1.0)
     config_raw = _training_raw(mode="visual_only_forensic_fork")
-    config_raw["source"]["source_manifest_identity"] = identity.source_manifest_identity
+    assert config_raw["source"]["source_manifest_identity"] != identity.source_manifest_identity
     config_raw["forensic_fork"].update(
         ancestor_source_commit=identity.source_commit,
+        ancestor_source_manifest_identity=identity.source_manifest_identity,
         ancestor_checkpoint_path=str(checkpoint.resolve()),
         ancestor_failure_manifest_path=str(failure.resolve()),
         ancestor_control_sha256=hashlib.sha256(

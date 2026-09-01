@@ -44,7 +44,7 @@ _SECTION_FIELDS: Mapping[str, frozenset[str]] = {
     "initialization": frozenset({"actor_checkpoint", "actor_checkpoint_identity", "direct_head_initialization", "resume_checkpoint", "resume_mode"}),
     "tracking": frozenset({"enabled", "entity", "project", "group", "run_name", "run_id", "resume"}),
     "environment": frozenset({"python_executable", "hf_home", "hf_hub_cache", "offline", "dont_write_bytecode", "pycache_prefix", "python_hash_seed", "python_version", "torch_version", "transformers_version", "nccl_socket_ifname", "nccl_ib_disable"}),
-    "forensic_fork": frozenset({"enabled", "ancestor_checkpoint_path", "ancestor_failure_manifest_path", "id176_actor_baseline_path", "id176_actor_baseline_sha256", "ancestor_control_sha256", "ancestor_source_commit", "ancestor_run_identity", "ancestor_source_config_identity", "ancestor_update", "initialization_kind", "actor_policy", "generation_policy", "retention_policy", "ancestor_protected", "parity_relative_tolerance", "parity_absolute_tolerance"}),
+    "forensic_fork": frozenset({"enabled", "ancestor_checkpoint_path", "ancestor_failure_manifest_path", "id176_actor_baseline_path", "id176_actor_baseline_sha256", "ancestor_control_sha256", "ancestor_source_commit", "ancestor_source_manifest_identity", "ancestor_run_identity", "ancestor_source_config_identity", "ancestor_update", "initialization_kind", "actor_policy", "generation_policy", "retention_policy", "ancestor_protected", "parity_relative_tolerance", "parity_absolute_tolerance"}),
     "command": frozenset({"argv", "identity"}),
     "artifacts": frozenset({"file_sha256"}),
 }
@@ -803,6 +803,9 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
             or not _is_sha256(forensic["ancestor_control_sha256"])
             or not _is_git_sha(forensic["ancestor_source_commit"])
             or forensic["ancestor_source_commit"] == source["commit"]
+            or not _is_sha256(forensic["ancestor_source_manifest_identity"])
+            or forensic["ancestor_source_manifest_identity"]
+            == source["source_manifest_identity"]
             or not _is_sha256(forensic["ancestor_run_identity"])
             or not _is_sha256(forensic["ancestor_source_config_identity"])
             or forensic["ancestor_update"] != 1605
@@ -828,6 +831,12 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
                 raise ValueError(
                     "visual forensic fork ancestor source commit must differ from current source.commit"
                 )
+            if forensic.get("ancestor_source_manifest_identity") == source[
+                "source_manifest_identity"
+            ]:
+                raise ValueError(
+                    "visual forensic fork ancestor source manifest must differ from current source manifest"
+                )
             raise ValueError("visual forensic fork ancestor/fresh-runtime contract changed")
     elif forensic != {
         "enabled": False,
@@ -837,6 +846,7 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         "id176_actor_baseline_sha256": "disabled",
         "ancestor_control_sha256": "disabled",
         "ancestor_source_commit": "disabled",
+        "ancestor_source_manifest_identity": "disabled",
         "ancestor_run_identity": "disabled",
         "ancestor_source_config_identity": "disabled",
         "ancestor_update": 0,

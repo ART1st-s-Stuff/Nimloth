@@ -100,10 +100,23 @@ def test_visual_fork_identity_binds_distinct_ancestor_source_and_is_fresh_from_f
         parse_query_state_training_config(changed)
     ) != query_state_training_run_identity(visual)
 
+    changed_manifest = _visual_raw()
+    changed_manifest["forensic_fork"]["ancestor_source_manifest_identity"] = "9" * 64
+    assert query_state_training_run_identity(
+        parse_query_state_training_config(changed_manifest)
+    ) != query_state_training_run_identity(visual)
+
     equal_source = _visual_raw()
     equal_source["forensic_fork"]["ancestor_source_commit"] = equal_source["source"]["commit"]
     with pytest.raises(ValueError, match="ancestor source commit.*current"):
         parse_query_state_training_config(equal_source)
+
+    equal_manifest = _visual_raw()
+    equal_manifest["forensic_fork"]["ancestor_source_manifest_identity"] = (
+        equal_manifest["source"]["source_manifest_identity"]
+    )
+    with pytest.raises(ValueError, match="ancestor source manifest.*current"):
+        parse_query_state_training_config(equal_manifest)
 
 
 @pytest.mark.parametrize("output_field", ["run_root", "controller_root"])
@@ -165,9 +178,10 @@ def test_production_visual_fork_authenticates_formal38_control_and_all_rank_shar
     root.objective.projector = DirectSlotProjector()
     checkpoint, failure, identity = _write_forensic_checkpoint(tmp_path, root)
     raw = _visual_raw()
-    raw["source"]["source_manifest_identity"] = identity.source_manifest_identity
+    assert raw["source"]["source_manifest_identity"] != identity.source_manifest_identity
     raw["forensic_fork"].update(
         ancestor_source_commit=identity.source_commit,
+        ancestor_source_manifest_identity=identity.source_manifest_identity,
         ancestor_checkpoint_path=str(checkpoint.resolve()),
         ancestor_failure_manifest_path=str(failure.resolve()),
         ancestor_control_sha256=__import__("hashlib").sha256(
@@ -199,6 +213,15 @@ def test_production_visual_fork_authenticates_formal38_control_and_all_rank_shar
     with pytest.raises(ValueError, match="control/failure identity mismatch"):
         authenticate_visual_fork_ancestor(
             parse_query_state_training_config(mismatch)
+        )
+
+    manifest_mismatch = deepcopy(raw)
+    manifest_mismatch["forensic_fork"]["ancestor_source_manifest_identity"] = (
+        "9" * 64
+    )
+    with pytest.raises(ValueError, match="control/failure identity mismatch"):
+        authenticate_visual_fork_ancestor(
+            parse_query_state_training_config(manifest_mismatch)
         )
 
     (checkpoint / "rank_00007_of_00008.pt").write_bytes(b"tampered")

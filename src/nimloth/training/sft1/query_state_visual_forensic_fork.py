@@ -68,7 +68,7 @@ def _ancestor_fields(config: Any) -> Mapping[str, Any]:
         "control_sha256": forensic["ancestor_control_sha256"],
         "source_commit": forensic["ancestor_source_commit"],
         "current_source_commit": source["commit"],
-        "source_manifest_identity": source["source_manifest_identity"],
+        "source_manifest_identity": forensic["ancestor_source_manifest_identity"],
         "source_config_identity": forensic["ancestor_source_config_identity"],
         "run_identity": forensic["ancestor_run_identity"],
         "world_size": resources["world_size"],
