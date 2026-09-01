@@ -104,13 +104,15 @@ def _checkpoint(tmp_path: Path) -> ForensicCheckpointIdentity:
         "generation_format_due": True,
     }
     validation = {
-        "diagnostics": {
-            "metrics": {
-                "actor/kl_baseline_to_current": 1.057509,
-                "actor/top1_agreement": 0.675,
-            }
-        },
-        "safety": safety,
+        "calibration": {
+            "diagnostics": {
+                "metrics": {
+                    "actor/kl_baseline_to_current": 1.057509,
+                    "actor/top1_agreement": 0.675,
+                }
+            },
+            "safety": safety,
+        }
     }
     global_safety = {
         "actor_baseline_identity": "a" * 64,
@@ -237,7 +239,10 @@ def test_actor_failure_parser_requires_global_calibration_safety_wrapper(
         forensic.actor_failure_evidence_from_manifest(failure_path)
 
     raw["safety"]["scope"] = "global_id176_actor_generation_safety"
-    raw["validation"]["safety"] = {**raw["validation"]["safety"], "passed": True}
+    raw["validation"]["calibration"]["safety"] = {
+        **raw["validation"]["calibration"]["safety"],
+        "passed": True,
+    }
     failure_path.write_text(json.dumps(raw, sort_keys=True) + "\n")
     with pytest.raises(ValueError, match="actor-safety evidence"):
         forensic.actor_failure_evidence_from_manifest(failure_path)

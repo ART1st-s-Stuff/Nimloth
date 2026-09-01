@@ -227,9 +227,16 @@ def _require_gate(statuses: Sequence[Mapping[str, Any]], *, phase: str, world_si
 def _actor_failure_from_manifest(failure: Mapping[str, Any]) -> dict[str, Any]:
     validation = failure.get("validation")
     global_safety = failure.get("safety")
-    diagnostics = validation.get("diagnostics") if isinstance(validation, Mapping) else None
+    calibration = (
+        validation.get("calibration") if isinstance(validation, Mapping) else None
+    )
+    diagnostics = (
+        calibration.get("diagnostics") if isinstance(calibration, Mapping) else None
+    )
     metrics = diagnostics.get("metrics") if isinstance(diagnostics, Mapping) else None
-    validation_safety = validation.get("safety") if isinstance(validation, Mapping) else None
+    validation_safety = (
+        calibration.get("safety") if isinstance(calibration, Mapping) else None
+    )
     calibration_safety = (
         global_safety.get("calibration")
         if isinstance(global_safety, Mapping)
@@ -244,6 +251,7 @@ def _actor_failure_from_manifest(failure: Mapping[str, Any]) -> dict[str, Any]:
     top1 = metrics.get("actor/top1_agreement") if isinstance(metrics, Mapping) else None
     if (
         not isinstance(validation, Mapping)
+        or not isinstance(calibration, Mapping)
         or not isinstance(global_safety, Mapping)
         or global_safety.get("scope") != "global_id176_actor_generation_safety"
         or global_safety.get("passed") is not False
