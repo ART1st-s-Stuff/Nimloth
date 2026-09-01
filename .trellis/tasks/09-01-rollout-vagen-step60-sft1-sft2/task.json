@@ -1,0 +1,28 @@
+{
+  "id": "rollout-vagen-step60-sft1-sft2",
+  "name": "rollout-vagen-step60-sft1-sft2",
+  "title": "基于 VAGEN step 60 rollout 生成 SFT1/SFT2 数据集",
+  "description": "使用远程 VAGEN global_step_60 checkpoint 执行 rollout，并生成新的 SFT1/SFT2 数据集。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-09-01",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "dev",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "kind": "experiment"
+  }
+}

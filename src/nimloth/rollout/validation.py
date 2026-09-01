@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
+import re
 
 from nimloth.agent import create_prompt_template, validate_action_log_probs
 from nimloth.environment import get_action_space
@@ -12,6 +15,33 @@ from nimloth.rollout.record_format import (
     TRAJECTORY_REWARD_PROVENANCE,
 )
 from nimloth.rollout.schema import RolloutTrajectory
+
+_OFFLINE_SOURCE_CONVERSION_FORMAT = "vagen_step60_dual_view_conversion_v1"
+_SHA256_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def _canonical_sha256(value: object) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _is_verified_offline_source_conversion(
+    trajectory: RolloutTrajectory,
+) -> bool:
+    return (
+        trajectory.policy_credit_assignment == "none"
+        and not trajectory.policy_messages
+        and not trajectory.action_log_probs
+        and trajectory.conversion_provenance.get("format")
+        == _OFFLINE_SOURCE_CONVERSION_FORMAT
+        and bool(trajectory.source_identity)
+        and bool(trajectory.source_audit)
+    )
 
 
 def validate_rollout_trajectory(trajectory: RolloutTrajectory) -> None:
@@ -44,13 +74,20 @@ def validate_rollout_trajectory(trajectory: RolloutTrajectory) -> None:
     ]
     if trajectory.action_names != expected_names:
         raise ValueError(f"{prefix}: action names do not match action indices")
+    _validate_audit_contract(trajectory)
     _validate_behavior_probabilities(trajectory, action_count=len(action_space))
     _validate_token_provenance(trajectory, action_count=len(action_space))
     _validate_state_latent_hiddens(trajectory)
     _validate_world_model_states(trajectory)
     _validate_planner_segments(trajectory)
 
-    if len(trajectory.policy_messages) != trajectory.num_steps:
+    policy_messages_unavailable = _is_verified_offline_source_conversion(
+        trajectory
+    )
+    if (
+        not policy_messages_unavailable
+        and len(trajectory.policy_messages) != trajectory.num_steps
+    ):
         raise ValueError(
             f"{prefix}: policy_messages={len(trajectory.policy_messages)} "
             f"but actions={trajectory.num_steps}"
@@ -71,6 +108,10 @@ def _validate_reward_provenance(trajectory: RolloutTrajectory) -> None:
     """校验 fresh rollout 的逐步 reward 与 episode 结束语义。"""
 
     prefix = f"trajectory {trajectory.record_id}"
+    if not math.isfinite(trajectory.reward):
+        raise ValueError(f"{prefix} aggregate reward is non-finite")
+    if not all(math.isfinite(value) for value in trajectory.rewards):
+        raise ValueError(f"{prefix} step rewards contain non-finite values")
     if trajectory.reward_provenance == STEP_REWARD_PROVENANCE:
         if len(trajectory.rewards) != trajectory.num_steps:
             raise ValueError(
@@ -226,6 +267,11 @@ def _validate_behavior_probabilities(
     action_count: int,
 ) -> None:
     prefix = f"trajectory {trajectory.record_id}"
+    if (
+        _is_verified_offline_source_conversion(trajectory)
+        and not trajectory.planner_policy_traces
+    ):
+        return
     if len(trajectory.action_log_probs) != trajectory.num_steps:
         raise ValueError(
             f"{prefix}: action_log_probs={len(trajectory.action_log_probs)} "
@@ -408,6 +454,88 @@ def _validate_token_provenance(
                 )
 
 
+def _validate_audit_contract(trajectory: RolloutTrajectory) -> None:
+    prefix = f"trajectory {trajectory.record_id}"
+    for field_name, value in (
+        ("source_identity", trajectory.source_identity),
+        ("source_audit", trajectory.source_audit),
+        ("terminal_generation_audit", trajectory.terminal_generation_audit),
+        ("conversion_provenance", trajectory.conversion_provenance),
+    ):
+        if not isinstance(value, dict):
+            raise TypeError(f"{prefix} {field_name} must be a mapping")
+    offline_requested = (
+        trajectory.policy_credit_assignment == "none"
+        and not trajectory.policy_messages
+        and not trajectory.action_log_probs
+    )
+    if offline_requested:
+        if not _is_verified_offline_source_conversion(trajectory):
+            raise ValueError(
+                f"{prefix} unavailable behavior provenance requires a verified "
+                "offline source conversion contract"
+            )
+        required_identity = {
+            "source_index",
+            "source_key",
+            "eval_set",
+            "seed",
+            "batch",
+            "split",
+        }
+        if set(trajectory.source_identity) != required_identity:
+            raise ValueError(f"{prefix} source identity fields are incomplete")
+        if trajectory.source_identity["split"] != trajectory.split:
+            raise ValueError(f"{prefix} source identity split mismatch")
+        source_audit = trajectory.source_audit
+        if source_audit.get("source_identity") != trajectory.source_identity:
+            raise ValueError(f"{prefix} source audit identity mismatch")
+        raw_hash = source_audit.get("raw_record_sha256")
+        if not isinstance(raw_hash, str) or not _SHA256_RE.fullmatch(raw_hash):
+            raise ValueError(f"{prefix} source audit has no raw record hash")
+        if source_audit.get("source_sha256") != raw_hash:
+            raise ValueError(f"{prefix} source audit hash linkage mismatch")
+        audit_payload = {
+            key: value
+            for key, value in source_audit.items()
+            if key
+            not in {"raw_record_sha256", "audit_payload_sha256", "source_sha256"}
+        }
+        if source_audit.get("audit_payload_sha256") != _canonical_sha256(
+            audit_payload
+        ):
+            raise ValueError(f"{prefix} source audit payload hash mismatch")
+        provenance = trajectory.conversion_provenance
+        if provenance.get("source_sha256") != raw_hash:
+            raise ValueError(f"{prefix} conversion/source hash mismatch")
+        if int(provenance.get("latent_token_count", -1)) != 16:
+            raise ValueError(f"{prefix} offline source conversion must be K16")
+        converted_hash = provenance.get("converted_sha256")
+        converted_record = trajectory.to_record()
+        converted_payload = {
+            key: value
+            for key, value in converted_record.items()
+            if key != "conversion_provenance"
+        }
+        if converted_hash != _canonical_sha256(converted_payload):
+            raise ValueError(f"{prefix} converted trajectory hash mismatch")
+
+    audit = trajectory.terminal_generation_audit
+    if not audit:
+        return
+    if audit.get("executed") is not False:
+        raise ValueError(f"{prefix} terminal draft action must be unexecuted")
+    if audit.get("environment_step_after_generation") is not False:
+        raise ValueError(
+            f"{prefix} terminal generation must not have a following environment step"
+        )
+    draft_index = audit.get("draft_action_index")
+    if draft_index is not None and (
+        isinstance(draft_index, bool) or not isinstance(draft_index, int)
+    ):
+        raise TypeError(f"{prefix} terminal draft action index must be int or null")
+
+
 def _validate_prompt_contract(
     trajectory: RolloutTrajectory,
     *,
@@ -418,6 +546,14 @@ def _validate_prompt_contract(
     # 创建模板本身会验证 identifier、version 与 config。
     create_prompt_template(prompt_spec, action_count=action_count)
     trajectory.resolved_latent_token_count()
+    if _is_verified_offline_source_conversion(trajectory):
+        # Offline source conversion has no replayable behavior-policy prompt or
+        # categorical action distribution. State prompts still reconstruct from
+        # the persisted real CoT below and in transition expansion.
+        trajectory.build_completed_prompt()
+        for step in range(trajectory.num_steps + 1):
+            trajectory.build_state_prompt(step)
+        return
     for step, policy_messages in enumerate(trajectory.policy_messages):
         expected_messages = trajectory.build_policy_messages(step, bind_images=False)
         if policy_messages != expected_messages:

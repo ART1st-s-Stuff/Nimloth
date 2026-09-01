@@ -54,7 +54,12 @@ Backbone hidden；planner trajectory额外携带每个step的rollout Qwen latent
 `nimloth.environment.navigation.collector`，不属于本包。
 
 turn/token-credit trajectory 的 behavior replay prompt 从 `<think>` 开始并保留实际采样
-CoT。terminal observation额外生成并持久化真实CoT，不执行其draft action。planner
+CoT。只有版本为`vagen_step60_dual_view_conversion_v1`且通过source/audit/converted hash
+校验的离线source-policy记录，才能把`policy_credit_assignment=none`与空
+`action_log_probs`/`policy_messages`记录为unavailable；其`source_identity`会经标准
+`RolloutTrajectory` roundtrip保留，source audit绑定原始identity/chat/action/reward/image/
+checkpoint/runtime证据。其他记录不能借该字段绕过behavior prompt或概率校验，也不能用
+one-hot behavior分布冒充缺失概率。terminal observation额外生成并持久化真实CoT，不执行其draft action。planner
 trajectory若缺少任一`T + 1` state hidden会在读取/训练前失败，不能退回固定thought。
 planner训练逐真实transition重算一次完整prefix并立即backward，不同时保留多个step的
 Qwen graph。窗口模块只负责保持顺序，不计算

@@ -180,6 +180,10 @@ class RolloutTrajectory:
     policy_finish_reasons: list[str | None] = field(default_factory=list)
     policy_reasoning_truncated: list[bool] = field(default_factory=list)
     planner_policy_traces: list[PlannerPolicyTrace] = field(default_factory=list)
+    source_identity: dict[str, Any] = field(default_factory=dict)
+    source_audit: dict[str, Any] = field(default_factory=dict)
+    terminal_generation_audit: dict[str, Any] = field(default_factory=dict)
+    conversion_provenance: dict[str, Any] = field(default_factory=dict)
     prompt_template_spec: PromptTemplateSpec | None = None
     sampling_temperature: float = 1.0
     sampling_top_p: float = 1.0
@@ -442,6 +446,10 @@ class RolloutTrajectory:
             "policy_reasoning_texts": self.policy_reasoning_texts,
             "policy_finish_reasons": self.policy_finish_reasons,
             "policy_reasoning_truncated": self.policy_reasoning_truncated,
+            "source_identity": self.source_identity,
+            "source_audit": self.source_audit,
+            "terminal_generation_audit": self.terminal_generation_audit,
+            "conversion_provenance": self.conversion_provenance,
             "planner_policy_traces": [
                 {
                     "candidate_sequences": [
@@ -484,7 +492,7 @@ class RolloutTrajectory:
         }
 
     @classmethod
-    def from_record(cls, record: dict[str, Any]) -> "RolloutTrajectory":
+    def from_record(cls, record: dict[str, Any]) -> RolloutTrajectory:
         required_fields = STRUCTURED_TRAJECTORY_FIELDS | frozenset(
             {
                 "action_names",
@@ -597,6 +605,12 @@ class RolloutTrajectory:
                 _planner_trace_from_record(raw)
                 for raw in record["planner_policy_traces"]
             ],
+            source_identity=dict(record.get("source_identity", {})),
+            source_audit=dict(record.get("source_audit", {})),
+            terminal_generation_audit=dict(
+                record.get("terminal_generation_audit", {})
+            ),
+            conversion_provenance=dict(record.get("conversion_provenance", {})),
             prompt_template_spec=prompt_template_spec,
             sampling_temperature=float(record["sampling_temperature"]),
             sampling_top_p=float(record["sampling_top_p"]),

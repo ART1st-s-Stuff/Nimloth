@@ -9,6 +9,10 @@ Canonical location for SFT1 per `ai_tasks/sft1_exp.md`.
 | `build_preprocess_cache.slurm` | CPU-only BF16 preprocess-cache build |
 | `submit_cache_then_train_8gpu.sh` | Submit cache, then dependency-gated training |
 | `convert_rollouts.py` | VAGEN rollout JSONL → Nimloth SFT records |
+| `vagen_step60_data.py` | Pinned step60 source partition, overlap, conversion and complete-shard contracts |
+| `vagen_step60_checkpoint.py` | Non-overwriting step60 shard audit, legacy FSDP merge plan and HF load validation |
+| `vagen_step60_collect.py` | Exact-source legacy service client, frozen-policy rollout, terminal generation and atomic raw shards |
+| `vagen_step60_convert.py` | Complete batch1 shards → linked K16 SFT1/SFT2 views, rejections and hash manifest |
 | `derive_rollout_images_255.py` | Preserve sources and derive RGB 255×255 images with rewritten JSONLs |
 | `derive_rollout_images_255.slurm` | CPU wrapper for the non-destructive image derivation |
 | `merge_lora_ckpt.py` | LoRA adapter → `hf_merged` for VAGEN eval / SFT2 init |

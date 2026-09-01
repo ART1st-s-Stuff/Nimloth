@@ -1,0 +1,15 @@
+{"file":".trellis/spec/governance/authority-and-safety.md","reason":"Check scope, claims, authorization and protected actions."}
+{"file":".trellis/spec/governance/cot-and-state.md","reason":"Verify observation-to-real-CoT-to-state flow and no terminal action execution."}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"Verify branch/worktree, dirty-file preservation, protected outputs and review gates."}
+{"file":".trellis/spec/experiments/task-contract.md","reason":"Audit every required experiment field before launch."}
+{"file":".trellis/spec/experiments/data-and-splits.md","reason":"Audit source hashes, batch union/disjointness and overlap claims."}
+{"file":".trellis/spec/experiments/launch-and-lifecycle.md","reason":"Audit exact commit/command/resources/monitoring/end lifecycle."}
+{"file":".trellis/spec/experiments/outputs-checkpoints-and-evidence.md","reason":"Audit unique outputs, checkpoint mapping, resume and claim boundaries."}
+{"file":".trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2/research/initial-source-audit-2026-09-01.md","reason":"Compare implementation with verified source checkpoint/run evidence."}
+{"file":".trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2/research/runtime-path-audit-2026-09-01.md","reason":"Check the selected runtime path and prior-evaluation limitations."}
+{"file":"ai_rules/known_errors/E0005_validate_rollout_dump_schema_before_conversion.md","reason":"Check raw and converted schema/transcript/image/action alignment."}
+{"file":"ai_rules/known_errors/E0014_verify_rollout_environment_parity.md","reason":"Check source prompt, parser, dynamics, rewards and sampling parity."}
+{"file":"ai_rules/known_errors/E0016_separate_train_rollout_and_validation_sampling.md","reason":"Check the approved source sampling fields are not inferred from split names."}
+{"file":"ai_rules/known_errors/E0030_async_validation_metadata_zip_mispairs.md","reason":"Check stable result/source identity under async or batched collection."}
+{"file":"ai_rules/known_errors/E0071_parallel_collectors_need_unique_environment_ids.md","reason":"Check global environment ID uniqueness."}
+{"file":"ai_rules/known_errors/E0074_vagen_navigation_batch_create_needs_service_timeout.md","reason":"Check production-safe service timeout and completion evidence."}
