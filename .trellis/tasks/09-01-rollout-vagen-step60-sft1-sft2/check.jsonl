@@ -7,6 +7,7 @@
 {"file":".trellis/spec/experiments/outputs-checkpoints-and-evidence.md","reason":"Audit unique outputs, checkpoint mapping, resume and claim boundaries."}
 {"file":".trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2/research/initial-source-audit-2026-09-01.md","reason":"Compare implementation with verified source checkpoint/run evidence."}
 {"file":".trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2/research/runtime-path-audit-2026-09-01.md","reason":"Check the selected runtime path and prior-evaluation limitations."}
+{"file":".trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2/research/reconstruction-evidence-2026-09-01.md","reason":"Check prompt/reward/sampling/EOS evidence and source-versus-reconstruction claim limits."}
 {"file":"ai_rules/known_errors/E0005_validate_rollout_dump_schema_before_conversion.md","reason":"Check raw and converted schema/transcript/image/action alignment."}
 {"file":"ai_rules/known_errors/E0014_verify_rollout_environment_parity.md","reason":"Check source prompt, parser, dynamics, rewards and sampling parity."}
 {"file":"ai_rules/known_errors/E0016_separate_train_rollout_and_validation_sampling.md","reason":"Check the approved source sampling fields are not inferred from split names."}

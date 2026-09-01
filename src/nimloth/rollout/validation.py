@@ -16,7 +16,8 @@ from nimloth.rollout.record_format import (
 )
 from nimloth.rollout.schema import RolloutTrajectory
 
-_OFFLINE_SOURCE_CONVERSION_FORMAT = "vagen_step60_dual_view_conversion_v1"
+_OFFLINE_SOURCE_CONVERSION_FORMAT = "vagen_step60_dual_view_conversion_v2"
+_OFFLINE_SOURCE_AUDIT_VERSION = "vagen_step60_reconstruction_audit_v2"
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
@@ -40,7 +41,8 @@ def _is_verified_offline_source_conversion(
         and trajectory.conversion_provenance.get("format")
         == _OFFLINE_SOURCE_CONVERSION_FORMAT
         and bool(trajectory.source_identity)
-        and bool(trajectory.source_audit)
+        and trajectory.source_audit.get("contract_version")
+        == _OFFLINE_SOURCE_AUDIT_VERSION
     )
 
 

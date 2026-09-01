@@ -51,11 +51,11 @@ def _source_record() -> dict[str, object]:
         "<think>...</think><answer>one_action</answer>"
     )
     ordinary_responses = [
-        "<think>inspect the hallway</think><answer>moveahead</answer>",
-        "<think>turn toward the doorway</think><answer>rotateright</answer>",
+        "<think><observation>hallway</observation><reasoning>inspect the hallway</reasoning><prediction>closer view</prediction></think><answer>moveahead</answer>",
+        "<think><observation>doorway</observation><reasoning>turn toward the doorway</reasoning><prediction>new view</prediction></think><answer>rotateright</answer>",
     ]
     terminal_response = (
-        "<think>the target is now visible</think><answer>moveleft</answer>"
+        "<think><observation>target visible</observation><reasoning>the target is now visible</reasoning><prediction>closer target</prediction></think><answer>moveleft</answer>"
     )
     messages = [
         {"role": "system", "content": source_prompt},
@@ -72,8 +72,32 @@ def _source_record() -> dict[str, object]:
         {"role": "user", "content": "terminal observation <image>"},
         {"role": "assistant", "content": terminal_response},
     ]
+
+    def policy_request(
+        kind: str,
+        response: str,
+        token_ids: list[int],
+        message_window: list[dict[str, str]],
+    ) -> dict[str, object]:
+        rendered_prompt = f"rendered-{kind}-{token_ids[0]}"
+        return {
+            "kind": kind,
+            "message_window": message_window,
+            "first_observation_index": 0,
+            "rendered_prompt": rendered_prompt,
+            "rendered_prompt_sha256": hashlib.sha256(
+                rendered_prompt.encode()
+            ).hexdigest(),
+            "response": response,
+            "response_sha256": hashlib.sha256(response.encode()).hexdigest(),
+            "finish_reason": "stop",
+            "stop_reason": None,
+            "token_ids": token_ids,
+            "eos_token_id": token_ids[-1],
+        }
+
     record = {
-        "record_format": "vagen_step60_source_trajectory_v1",
+        "record_format": "vagen_step60_source_trajectory_v2",
         "id": "batch1/base/000000",
         "batch": 1,
         "split": "train",
@@ -101,37 +125,57 @@ def _source_record() -> dict[str, object]:
         "turns": [
             {
                 "response": response,
+                "parsed_response": vagen_step60_data.parse_source_response(response),
+                "environment_extracted_actions": [
+                    vagen_step60_data.parse_source_response(response)["action_name"]
+                ],
                 "reward": reward,
                 "done": done,
-                "info": ({"episode_reward": 1.0} if done else {}),
+                "info": {"task_success": done},
+                "generation_exclusion_reason": None,
             }
             for response, reward, done in zip(
                 ordinary_responses,
-                (0.0, 1.0),
+                (0.02, 10.02),
                 (False, True),
                 strict=True,
             )
         ],
-        "rewards": [],
-        "environment_reward_events": [0.0, 1.0],
+        "rewards": [0.02, 10.02],
+        "environment_reward_events": [0.02, 10.02],
         "success": True,
-        "reward": 1.0,
-        "reward_provenance": "trajectory_terminal_reward",
+        "reward": 10.04,
+        "reward_provenance": "step_rewards",
         "environment_done": True,
-        "source_runtime_commit": "fee3ffac036a599b0ae979a6dd1ce2b21f7dec49",
+        "terminated": True,
+        "truncated": False,
+        "unavailable_source_commit": "fee3ffac036a599b0ae979a6dd1ce2b21f7dec49",
+        "reconstruction_identity": {"runtime_head": "a" * 40},
         "source_runtime_contract": {
-            "format": "fixture",
-            "reward_provenance": "trajectory_terminal_reward",
-            "trajectory_reward_info_key": "episode_reward",
+            "format": "vagen_step60_reconstruction_runtime_contract_v2",
+            "reconstruction_identity": {"runtime_head": "a" * 40},
+            "reward_provenance": "step_rewards",
+            "trajectory_reward_info_key": None,
         },
         "policy_artifact": {"artifact_manifest_sha256": "a" * 64},
         "policy_runtime_contract": {"backend": "fixture"},
-        "policy_requests": [],
+        "policy_requests": [
+            policy_request("ordinary", ordinary_responses[0], [101, 102], messages[:2]),
+            policy_request("ordinary", ordinary_responses[1], [111, 112], messages[:4]),
+            policy_request("terminal", terminal_response, [201, 202], messages[:-1]),
+        ],
+        "conversion_eligible": True,
+        "exclusion_reasons": [],
         "terminal_generation": {
             "assistant_response": terminal_response,
-            "draft_action_name": "moveleft",
-            "format_valid": True,
+            "parsed": vagen_step60_data.parse_source_response(terminal_response),
+            "finish_reason": "stop",
+            "stop_reason": None,
+            "token_ids": [201, 202],
+            "eos_token_id": 202,
+            "generation_exclusion_reason": None,
             "executed": False,
+            "environment_step_after_generation": False,
         },
     }
     record["raw_record_sha256"] = hashlib.sha256(
@@ -328,7 +372,10 @@ def test_conversion_is_k16_compatible_and_preserves_verbatim_source_chat() -> No
         "batch": 1,
         "split": "train",
     }
-    assert audit["reward_provenance"] == "trajectory_terminal_reward"
+    assert audit["contract_version"] == (
+        "vagen_step60_reconstruction_audit_v2"
+    )
+    assert audit["reward_provenance"] == "step_rewards"
     assert audit["policy_artifact"] == source["policy_artifact"]
     assert converted["sft1"]["source_audit"] == audit
     assert converted["sft2"]["source_audit"] == audit
@@ -388,21 +435,18 @@ def test_conversion_rejects_identity_or_step_reward_drift() -> None:
         vagen_step60_data.convert_source_record(source, latent_token_count=16)
 
     source = _source_record()
-    source["reward_provenance"] = "step_rewards"
-    source["source_runtime_contract"]["reward_provenance"] = "step_rewards"
-    source["source_runtime_contract"]["trajectory_reward_info_key"] = None
-    source["rewards"] = [0.0, 1.0]
     source["reward"] = 99.0
-    source["terminated"] = True
-    source["truncated"] = False
     _rehash_source_record(source)
     with pytest.raises(ValueError, match="aggregate reward does not equal step rewards"):
         vagen_step60_data.convert_source_record(source, latent_token_count=16)
 
     source = _source_record()
-    source["rewards"] = [1.0]
+    source["reward_provenance"] = "trajectory_terminal_reward"
+    source["source_runtime_contract"]["reward_provenance"] = (
+        "trajectory_terminal_reward"
+    )
     _rehash_source_record(source)
-    with pytest.raises(ValueError, match="cannot expose values as step rewards"):
+    with pytest.raises(ValueError, match="must be step_rewards"):
         vagen_step60_data.convert_source_record(source, latent_token_count=16)
 
     source = _source_record()
@@ -420,19 +464,13 @@ def test_conversion_rejects_identity_or_step_reward_drift() -> None:
     source = _source_record()
     source["turns"][0]["reward"] = 2.0
     _rehash_source_record(source)
-    with pytest.raises(ValueError, match="turn rewards and environment events"):
+    with pytest.raises(ValueError, match="parser/success class"):
         vagen_step60_data.convert_source_record(source, latent_token_count=16)
 
     source = _source_record()
-    source["source_runtime_contract"]["reward_provenance"] = "step_rewards"
+    source["source_runtime_contract"]["reward_provenance"] = "invalid"
     _rehash_source_record(source)
     with pytest.raises(ValueError, match="row/runtime reward provenance"):
-        vagen_step60_data.convert_source_record(source, latent_token_count=16)
-
-    source = _source_record()
-    source["turns"][-1]["info"]["episode_reward"] = 2.0
-    _rehash_source_record(source)
-    with pytest.raises(ValueError, match="differs from terminal info"):
         vagen_step60_data.convert_source_record(source, latent_token_count=16)
 
 

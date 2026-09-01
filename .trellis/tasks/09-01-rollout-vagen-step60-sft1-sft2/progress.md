@@ -197,6 +197,42 @@ This review is not a regression pass and no completion/commit/launch claim is ma
 - Added orchestrator tests for exact 2,000-row accounting, 1,800/200 outputs, rejection sidecar, paired SFT1/SFT2 counts, no-replace publication, duplicate shard indices and missing coverage. The new test exposed and fixed a tuple/source reward-provenance counting bug.
 - Current focused full result: Ruff passed and 52 tests passed across all step60 tests, `tests/rollout` and `tests/test_wm_transition_dataset.py`.
 
+### W-007 source runtime evidence refinement
+
+- Read-only checkpoint inspection confirmed that `data.pt` and actor extra-state record training/sampler/scheduler state but do not encode the navigation dynamics contract.
+- The archived source W&B generation table preserves exact prompts and per-turn rewards; its system prompt states success reward `10.0`, while ordinary valid turns visibly record reward `0.02`.
+- Human confirmed the source run used the VAGEN default movement distance with no override and fixed that source value as `step_length=0.5` metres.
+- These values are now pinned in the task and prelaunch draft. They still require resolved-runtime and trajectory smoke verification; this confirmation does not authorize checkpoint merge, GPU, Slurm or rollout.
+- After the human requested start, the on-experiment-start read-only preflight revalidated the checkpoint shard counts, pinned parquet hash and output-group nonexistence. It also confirmed that exact `fee3ffac...` remains unavailable, the committed collector rejects any substitute runtime, and current `normal` availability has no healthy responsive four-free-GPU node. No remote worktree, merge, GPU allocation, Slurm job or rollout was started; W-007 is waiting for the exact-runtime versus evidence-backed-reconstruction decision.
+- Continued read-only lineage inspection found that `44be18c` supplies the matching legacy batch API, compact actions, 0.5 m dynamics and 10.0 success reward, but not this run's exact strict prompt or invalid-action-penalty field. Existing compatibility commits target other archived runs and have different golden hashes.
+- Human explicitly selected the evidence-backed reconstruction route. Planning now fixes `3003c2e5e4ad84565627e6aa7f6ad5ca731dad1a` as the VAGEN base, requires an isolated named patch mode/commit and a Nimloth ancestry/diff/evidence contract, and forbids any exact-source-code parity claim. PRD/design/plan returned to review; no reconstruction code or experiment was started.
+
+### Reconstruction replan and W-007 RED
+
+- Four planning-review rounds resolved runtime-status, reward semantics, sampling invocation, identity, worktree, EOS, persisted-format and extractor-boundary findings. The human approved deletion of the stale untracked Pi TaskTree; its three files were precisely removed and Trellis remains the only task authority.
+- Fresh implementation approval was hash-bound to the reviewed reconstruction scope and explicitly excludes commits, pushes, remote worktrees, checkpoint merge, GPU, Slurm and rollout. `task.py start` then returned the task to `in_progress`.
+- Created and verified isolated VAGEN worktree `/workspace/remote2/nimloth/.worktree/vagen-step60-runtime-reconstruction-vagen` on branch `task/step60-runtime-reconstruction` at exact base `3003c2e5e4ad84565627e6aa7f6ad5ca731dad1a`; common Git dir is the measured Nimloth submodule common dir and the live detached checkout remains clean/unmodified.
+- Added VAGEN RED tests for archived prompt hashes, strict compact parsing, four reward classes, physical failure, action/config/mode and preserved batch routes. Local dependency-light RED result is `1 passed, 4 errors`, all four errors being the intentionally missing `step60_reconstruction.py`.
+- Added Nimloth RED tests for v2 surfaces/v1 rejection controls, computed Git identity and dirty-runtime rejection, EOS/finish evidence, and the non-overwriting no-CoT evidence extractor. RED result is `13 failed`, all at the intended missing v2 constants/functions/module or old-v1 behavior boundaries.
+- No GREEN implementation, commit, push, remote mutation or experiment launch occurred in W-007.
+
+### W-008 evidence-backed reconstruction GREEN
+
+- Added a deterministic, non-overwriting W&B extractor and canonical no-CoT evidence artifact. The Nimloth and isolated VAGEN copies are byte-identical, SHA256 `e9e1ebc4f61b07e5b3b77b165cf72fdfa525d7d840f54296ce5873c5e68463c8`; the artifact binds the exact prompt fixture and all 12 reviewed table hashes and counts 7,351 turns. CLI rejects alternate prompt fixtures, altered/missing/extra reward hashes and duplicate reward-table paths.
+- Added isolated VAGEN `step60_source_reconstruction` prompt/parser/reward mode, exact source hash rendering, strict structured grammar, 0.5 m/1.5 m/10.0/0.02/-0.2 semantics, too-many `0.0`, compact action order, asset hashes/counts/instruction samples and exact incoming environment config validation. Replaying all 7,351 archived turns produced zero parser/reward mismatches.
+- Added a service identity endpoint that recomputes clean Git HEAD/parent/tree/diff, evidence, dataset hashes/counts and actual Flask routes; Nimloth compares it to independently approved runtime-contract literals before environment creation. Mixed concurrent environment creation failure now observes all futures, closes late successes, releases GPU assignments and rolls back server ownership; a delayed-success/immediate-failure regression covers the prior leak.
+- Migrated reconstruction-consumed persistence to explicit v2 runtime/raw/shard/COMPLETE/conversion/rejection/source-audit contracts while retaining partition/HF-merge v1 intentionally. Complete-shard and conversion validators recompute strict parser/action/reward/EOS/eligibility/chat/window/hash semantics and reject coordinated resealing tamper.
+- Added source-vLLM EOS evidence (`finish_reason=stop`, null custom stop, final EOS ID), package versions and model config/tokenizer hashes. Ordinary non-EOS generations fail before environment step; terminal non-EOS/parser failures exclude the linked SFT1/SFT2 record and never execute a draft action.
+- Added deterministic runtime-contract producer, independent payload-hash CLI, one-row smoke source-index selector and independent published-conversion validator with partition-bound exact 2,000 identity coverage, SFT1/SFT2 linkage, transitions, stats, rejection and seed-overlap checks.
+- Final validation evidence: Nimloth affected suite `101 passed`; VAGEN reconstruction suite `13 passed`; unchanged VAGEN compatibility suites `5 passed`; targeted Ruff passed; compileall, both repository diff checks and Trellis task validation passed. Final read-only `trellis-check` reported no blocker/high.
+- No commit, push, remote worktree, checkpoint merge, GPU, Slurm, environment service or rollout was started. W-009 remains separately gated.
+
+### W-009 VAGEN commit identity
+
+- After exact Trellis commit approval, the isolated VAGEN branch created one non-merge commit `170a673d1bf5855fc0ea6fbed0744b3d7168f8f0` (`feat(navigation): add audited step60 runtime reconstruction`) with sole parent `3003c2e5e4ad84565627e6aa7f6ad5ca731dad1a`.
+- Reviewed identity literals: tree `58ef0eb66ad0bef7587c253c5c643af572c1d3a7`; canonical binary/full-index diff SHA256 `7f025476657de1289cf84b61d7702de26d248cd196412e9374a15e6de62730e9`; evidence SHA256 `e9e1ebc4f61b07e5b3b77b165cf72fdfa525d7d840f54296ce5873c5e68463c8`; commit count and parent count both one; worktree clean.
+- These literals are now bound in Nimloth code. After separate exact push approval, `origin/task/step60-runtime-reconstruction` was created and read back at exact `170a673d1bf5855fc0ea6fbed0744b3d7168f8f0` without force or other ref updates. The subsequent Nimloth commit/push remain separately gated. No server/GPU/experiment action occurred.
+
 ### Second W-006 review remediation
 
 A second read-only check found three residual blockers. They were fixed before resuming W-006:

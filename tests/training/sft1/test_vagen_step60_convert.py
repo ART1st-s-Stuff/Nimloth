@@ -128,7 +128,8 @@ def test_verified_shard_loader_rejects_duplicate_and_missing_coverage(
         return {
             "raw_jsonl": {"sha256": "a" * 64},
             "source_indices": sorted(expected_source_indices),
-            "source_runtime_commit": "f" * 40,
+            "unavailable_source_commit": "f" * 40,
+            "reconstruction_identity": {"runtime_head": "e" * 40},
             "source_runtime_contract": {"format": "runtime"},
             "policy_artifact": {"artifact": Path(path).name},
             "policy_runtime_contract": {"backend": "vllm"},
@@ -158,17 +159,43 @@ def test_batch1_orchestrator_enforces_exact_coverage_and_publishes_all_views(
             "eval_set": row["eval_set"],
             "seed": row["seed"],
             "split": row["dataset_split"],
-            "reward_provenance": "trajectory_terminal_reward",
+            "reward_provenance": "step_rewards",
+            "raw_record_sha256": f"{int(row['source_index']):064x}",
         }
         for row in batch1
     ]
+    verified_shard = tmp_path / "verified-shard"
+    verified_shard.mkdir()
+    (verified_shard / "shard_manifest.json").write_text("{}", encoding="utf-8")
+    (verified_shard / "raw.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in source_records),
+        encoding="utf-8",
+    )
+    source_indices = sorted(int(row["source_index"]) for row in batch1)
     monkeypatch.setattr(
         convert_module,
         "_load_verified_records",
         lambda _shards, *, expected_by_index: (
             [(row, tmp_path) for row in source_records],
-            [{"path": "/verified/shard", "source_indices": sorted(expected_by_index)}],
+            [
+                {
+                    "path": str(verified_shard),
+                    "manifest_sha256": convert_module._file_sha256(
+                        verified_shard / "shard_manifest.json"
+                    ),
+                    "raw_jsonl_sha256": "f" * 64,
+                    "source_indices": source_indices,
+                }
+            ],
         ),
+    )
+    monkeypatch.setattr(
+        convert_module,
+        "validate_complete_shard",
+        lambda _path, *, expected_source_indices: {
+            "raw_jsonl": {"sha256": "f" * 64},
+            "source_indices": sorted(expected_source_indices),
+        },
     )
 
     latent_tokens = "<|latent_state|>" + "".join(
@@ -177,6 +204,30 @@ def test_batch1_orchestrator_enforces_exact_coverage_and_publishes_all_views(
     response = (
         f"<think>real</think>{latent_tokens}"
         "<|action_start|><|action_0|><|action_end|>"
+    )
+
+    image_path = tmp_path / "image.png"
+    terminal_path = tmp_path / "terminal.png"
+    image_path.write_bytes(b"image")
+    terminal_path.write_bytes(b"terminal")
+    monkeypatch.setattr(
+        convert_module,
+        "build_source_audit",
+        lambda row: {
+            "raw_record_sha256": row["raw_record_sha256"],
+            "image_artifacts": [
+                {
+                    "path": image_path.name,
+                    "size_bytes": image_path.stat().st_size,
+                    "sha256": convert_module._file_sha256(image_path),
+                },
+                {
+                    "path": terminal_path.name,
+                    "size_bytes": terminal_path.stat().st_size,
+                    "sha256": convert_module._file_sha256(terminal_path),
+                },
+            ],
+        },
     )
 
     def fake_convert(source, *, latent_token_count, source_root):
@@ -191,30 +242,56 @@ def test_batch1_orchestrator_enforces_exact_coverage_and_publishes_all_views(
             "batch": 1,
             "split": str(source["split"]),
         }
+        source_audit = {
+            "raw_record_sha256": source["raw_record_sha256"],
+            "image_artifacts": [
+                {
+                    "path": image_path.name,
+                    "size_bytes": image_path.stat().st_size,
+                    "sha256": convert_module._file_sha256(image_path),
+                },
+                {
+                    "path": terminal_path.name,
+                    "size_bytes": terminal_path.stat().st_size,
+                    "sha256": convert_module._file_sha256(terminal_path),
+                },
+            ],
+        }
         sft1 = {
             "id": source["id"],
             **identity,
             "success": True,
+            "source_identity": identity,
             "messages": [
                 {"role": "system", "content": "k16 system"},
                 {"role": "user", "content": "observation <image>"},
                 {"role": "assistant", "content": response},
             ],
-            "image_paths": ["image.png"],
+            "image_paths": [str(image_path)],
             "action_indices": [0],
             "assistant_responses": [response],
-            "source_audit": {"raw_record_sha256": "a" * 64},
+            "source_audit": source_audit,
             "conversion_provenance": {"format": data_module.CONVERSION_FORMAT},
         }
+        sft1["conversion_provenance"]["converted_sha256"] = (
+            convert_module._canonical_sha256(
+                {
+                    key: value
+                    for key, value in sft1.items()
+                    if key != "conversion_provenance"
+                }
+            )
+        )
         sft2 = {
             "id": source["id"],
             "split": source["split"],
             "success": True,
             "reward_provenance": source["reward_provenance"],
             "source_identity": identity,
-            "image_paths": ["image.png", "terminal.png"],
+            "image_paths": [str(image_path), str(terminal_path)],
             "action_indices": [0],
             "assistant_responses": [response],
+            "source_audit": sft1["source_audit"],
         }
         assert latent_token_count == 16
         return {"source_audit": sft1["source_audit"], "sft1": sft1, "sft2": sft2}
@@ -255,6 +332,13 @@ def test_batch1_orchestrator_enforces_exact_coverage_and_publishes_all_views(
     assert result["outputs"]["sft2_heldout.jsonl"]["count"] == 200
     assert result["outputs"]["rejections.jsonl"]["count"] == 1
     assert (output / "conversion_manifest.json").is_file()
+    rejection = json.loads((output / "rejections.jsonl").read_text(encoding="utf-8"))
+    assert rejection["format"] == data_module.REJECTION_FORMAT
+    convert_module.validate_conversion_output(output)
+    with (output / "sft2_train.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write("{}\n")
+    with pytest.raises(ValueError, match="size mismatch"):
+        convert_module.validate_conversion_output(output)
     with pytest.raises(FileExistsError):
         convert_module.convert_complete_batch1(
             partition_manifest=partition_path,

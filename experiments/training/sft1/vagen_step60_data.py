@@ -26,6 +26,7 @@ from typing import Any
 SOURCE_TRAIN_SHA256 = (
     "3c8161bd45adc4cde5d67157cf4db225753ed3925cb9a52e3a57d1dd11dbe9d6"
 )
+UNAVAILABLE_SOURCE_COMMIT = "fee3ffac036a599b0ae979a6dd1ce2b21f7dec49"
 SOURCE_ROW_COUNT = 20_000
 ROWS_PER_CATEGORY = 10_000
 ROWS_PER_CATEGORY_PER_BATCH = 1_000
@@ -41,7 +42,28 @@ SOURCE_ENV_CONFIG = {
     "success_threshold": 1.5,
 }
 PARTITION_FORMAT = "vagen_step60_partition_v1"
-CONVERSION_FORMAT = "vagen_step60_dual_view_conversion_v1"
+CONVERSION_FORMAT = "vagen_step60_dual_view_conversion_v2"
+REJECTION_FORMAT = "vagen_step60_rejections_v2"
+SOURCE_AUDIT_CONTRACT_VERSION = "vagen_step60_reconstruction_audit_v2"
+RECONSTRUCTION_FORMATS = {
+    "runtime_contract": "vagen_step60_reconstruction_runtime_contract_v2",
+    "raw_row": "vagen_step60_source_trajectory_v2",
+    "shard_manifest": "vagen_step60_complete_shard_v2",
+    "complete_marker": "vagen_step60_complete_shard_v2",
+    "conversion_manifest": CONVERSION_FORMAT,
+    "rejection_envelope": REJECTION_FORMAT,
+    "source_audit": SOURCE_AUDIT_CONTRACT_VERSION,
+    "partition_manifest": PARTITION_FORMAT,
+    "hf_merge_manifest": "nimloth_vagen_step60_hf_export_v1",
+}
+
+
+def validate_reconstruction_format(surface: str, value: str) -> None:
+    expected = RECONSTRUCTION_FORMATS.get(surface)
+    if expected is None or value != expected:
+        raise ValueError(
+            f"unsupported reconstruction format for {surface}: {value!r}"
+        )
 SOURCE_ACTION_NAMES = (
     "moveahead",
     "moveback",
@@ -54,8 +76,17 @@ SOURCE_ACTION_NAMES = (
 )
 _HEX_SHA256_RE = re.compile(r"[0-9a-f]{64}")
 _SOURCE_RESPONSE_RE = re.compile(
-    r"\s*<think>(?P<thought>.*?)</think>\s*"
-    r"<answer>\s*(?P<action>[a-z_]+)\s*</answer>\s*",
+    r"<think><observation>(?P<observation>.*?)</observation>"
+    r"<reasoning>(?P<reasoning>.*?)</reasoning>"
+    r"<prediction>(?P<prediction>.*?)</prediction></think>"
+    r"<answer>(?P<action>[a-z_]+)</answer>",
+    re.DOTALL,
+)
+_SOURCE_ENVELOPE_RE = re.compile(
+    r"<think><observation>(.*?)</observation>"
+    r"<reasoning>(.*?)</reasoning>"
+    r"<prediction>(.*?)</prediction></think>"
+    r"<answer>(.*?)</answer>",
     re.DOTALL,
 )
 _SOURCE_ANSWER_RE = re.compile(r"<answer>\s*([^<]+?)\s*</answer>", re.DOTALL)
@@ -172,9 +203,18 @@ def parse_source_response(response: str) -> dict[str, Any]:
             "action_name": None,
             "action_index": None,
         }
-    thought = match.group("thought")
+    observation = match.group("observation")
+    reasoning = match.group("reasoning")
+    prediction = match.group("prediction")
+    thought = (
+        f"<observation>{observation}</observation>"
+        f"<reasoning>{reasoning}</reasoning>"
+        f"<prediction>{prediction}</prediction>"
+    )
     action = match.group("action")
-    if not thought.strip() or action not in SOURCE_ACTION_NAMES:
+    if not all(value.strip() for value in (observation, reasoning, prediction)) or (
+        action not in SOURCE_ACTION_NAMES
+    ):
         return {
             "format_valid": False,
             "thought": thought,
@@ -560,7 +600,211 @@ def convert_source_assistant_response(
     )
 
 
-def _source_audit(source: Mapping[str, Any]) -> dict[str, Any]:
+def _source_response_error_kind(response: str) -> str:
+    if parse_source_response(response)["format_valid"]:
+        return "ok"
+    match = _SOURCE_ENVELOPE_RE.fullmatch(response)
+    if match is None:
+        return "missing_or_malformed_tags"
+    answer = match.group(4)
+    raw_actions = answer.split(",")
+    if any(not item.strip() for item in raw_actions):
+        return "missing_or_malformed_tags"
+    actions = [item.strip() for item in raw_actions]
+    if len(actions) > 1 and all(action in SOURCE_ACTION_NAMES for action in actions):
+        return "too_many_actions"
+    return "invalid_action_name"
+
+
+def _generation_audit_reason(audit: Mapping[str, Any]) -> str | None:
+    finish_reason = audit.get("finish_reason")
+    stop_reason = audit.get("stop_reason")
+    token_ids = audit.get("token_ids")
+    eos_token_id = audit.get("eos_token_id")
+    if finish_reason == "length":
+        return "generation_length_truncated"
+    if finish_reason != "stop":
+        return "generation_finish_reason_invalid"
+    if stop_reason is not None:
+        return "generation_custom_stop"
+    if (
+        not isinstance(token_ids, list)
+        or not token_ids
+        or any(isinstance(value, bool) or not isinstance(value, int) for value in token_ids)
+        or isinstance(eos_token_id, bool)
+        or not isinstance(eos_token_id, int)
+    ):
+        return "generation_token_evidence_missing"
+    if token_ids[-1] != eos_token_id:
+        return "generation_eos_token_missing"
+    return None
+
+
+def _windowed_audit_messages(
+    messages: list[dict[str, str]],
+    *,
+    window_size: int = 5,
+) -> tuple[list[dict[str, str]], int]:
+    if len(messages) < 2 or messages[0].get("role") != "system":
+        raise ValueError("raw chat has no system/current observation")
+    turns = (len(messages) - 2) // 2
+    first_turn = max(0, turns - window_size)
+    start = 1 + 2 * first_turn
+    return [dict(messages[0]), *map(dict, messages[start:])], first_turn
+
+
+def _validate_policy_request_audit(
+    request: Mapping[str, Any],
+    *,
+    expected_response: str,
+    expected_messages: list[dict[str, str]],
+) -> None:
+    if request.get("response") != expected_response:
+        raise ValueError("policy request response does not match raw chat")
+    if request.get("response_sha256") != hashlib.sha256(
+        expected_response.encode("utf-8")
+    ).hexdigest():
+        raise ValueError("policy request response hash mismatch")
+    expected_window, expected_first = _windowed_audit_messages(expected_messages)
+    if request.get("message_window") != expected_window or request.get(
+        "first_observation_index"
+    ) != expected_first:
+        raise ValueError("policy request message window mismatch")
+    rendered_prompt = request.get("rendered_prompt")
+    if not isinstance(rendered_prompt, str) or request.get(
+        "rendered_prompt_sha256"
+    ) != hashlib.sha256(rendered_prompt.encode("utf-8")).hexdigest():
+        raise ValueError("policy request rendered prompt hash mismatch")
+
+
+def validate_raw_reconstruction_semantics(source: Mapping[str, Any]) -> None:
+    responses = source.get("assistant_responses")
+    turns = source.get("turns")
+    requests = source.get("policy_requests")
+    terminal = source.get("terminal_generation")
+    if not isinstance(responses, list) or not isinstance(turns, list):
+        raise TypeError("raw reconstruction responses/turns must be lists")
+    if not isinstance(requests, list) or not isinstance(terminal, Mapping):
+        raise TypeError("raw reconstruction generation audit is incomplete")
+    if len(responses) != len(turns):
+        raise ValueError("raw reconstruction turns do not align with responses")
+    system_prompt = source.get("system_prompt")
+    observations = source.get("observation_texts")
+    messages = source.get("messages")
+    if not isinstance(system_prompt, str) or not isinstance(observations, list) or (
+        not isinstance(messages, list)
+    ):
+        raise TypeError("raw source chat components are incomplete")
+    if len(observations) != len(responses) + 1:
+        raise ValueError("raw observations do not match ordinary responses")
+    if any(not isinstance(row, Mapping) for row in requests):
+        raise TypeError("raw policy request audit must contain mappings")
+    ordinary_requests = [row for row in requests if row.get("kind") == "ordinary"]
+    terminal_requests = [row for row in requests if row.get("kind") == "terminal"]
+    if len(ordinary_requests) != len(responses) or len(terminal_requests) != 1:
+        raise ValueError("raw reconstruction policy request counts drift")
+    ordinary_format_valid = True
+    for index, (response, turn, request) in enumerate(
+        zip(responses, turns, ordinary_requests, strict=True)
+    ):
+        _validate_policy_request_audit(
+            request,
+            expected_response=str(response),
+            expected_messages=messages[: 2 + 2 * index],
+        )
+        if turn.get("response") != response:
+            raise ValueError("raw turn response does not match assistant responses")
+        parsed = parse_source_response(str(response))
+        ordinary_format_valid = ordinary_format_valid and bool(
+            parsed["format_valid"]
+        )
+        if _generation_audit_reason(request) is not None:
+            raise ValueError("completed raw row contains invalid ordinary boundary")
+        extracted = turn.get("environment_extracted_actions")
+        expected_extracted = (
+            [parsed["action_name"]] if parsed["format_valid"] else []
+        )
+        if extracted != expected_extracted:
+            raise ValueError("raw ordinary response/action extraction mismatch")
+        if turn.get("parsed_response") != parsed:
+            raise ValueError("raw ordinary parsed response mismatch")
+        info = turn.get("info")
+        if not isinstance(info, Mapping):
+            raise TypeError("raw ordinary turn info must be a mapping")
+        error_kind = _source_response_error_kind(str(response))
+        if error_kind == "ok":
+            expected_reward = 10.02 if bool(info.get("task_success")) else 0.02
+        elif error_kind == "too_many_actions":
+            expected_reward = 0.0
+        else:
+            expected_reward = -0.2
+        actual_reward = float(turn.get("reward", float("nan")))
+        if not math.isclose(
+            actual_reward,
+            expected_reward,
+            rel_tol=1e-6,
+            abs_tol=1e-7,
+        ):
+            raise ValueError("raw turn reward does not match parser/success class")
+    flattened_actions = [
+        action
+        for turn in turns
+        for action in turn.get("environment_extracted_actions", [])
+    ]
+    if source.get("executed_action_names") != flattened_actions:
+        raise ValueError("raw executed action list does not match turns")
+    terminal_response = terminal.get("assistant_response")
+    _validate_policy_request_audit(
+        terminal_requests[0],
+        expected_response=str(terminal_response),
+        expected_messages=messages[:-1],
+    )
+    terminal_parsed = parse_source_response(str(terminal_response))
+    terminal_reason = _generation_audit_reason(terminal_requests[0])
+    for field_name in ("finish_reason", "stop_reason", "token_ids", "eos_token_id"):
+        if terminal.get(field_name) != terminal_requests[0].get(field_name):
+            raise ValueError("raw terminal generation/request evidence mismatch")
+    if terminal.get("generation_exclusion_reason") != terminal_reason:
+        raise ValueError("raw terminal generation exclusion reason mismatch")
+    if terminal.get("parsed") != terminal_parsed:
+        raise ValueError("raw terminal parsed response mismatch")
+    if terminal.get("executed") is not False or terminal.get(
+        "environment_step_after_generation"
+    ) is not False:
+        raise ValueError("raw terminal draft action execution semantics drift")
+    expected_eligible = bool(
+        ordinary_format_valid
+        and terminal_parsed["format_valid"]
+        and terminal_reason is None
+    )
+    expected_reasons = []
+    if not ordinary_format_valid or not terminal_parsed["format_valid"]:
+        expected_reasons.append("source_response_format_invalid")
+    if terminal_reason is not None:
+        expected_reasons.append(terminal_reason)
+    expected_messages: list[dict[str, str]] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": str(observations[0])},
+    ]
+    for index, response in enumerate(responses):
+        expected_messages.extend(
+            [
+                {"role": "assistant", "content": str(response)},
+                {"role": "user", "content": str(observations[index + 1])},
+            ]
+        )
+    expected_messages.append(
+        {"role": "assistant", "content": str(terminal_response)}
+    )
+    if messages != expected_messages:
+        raise ValueError("raw full chat does not match observations/responses")
+    if source.get("conversion_eligible") is not expected_eligible:
+        raise ValueError("raw conversion eligibility does not match semantics")
+    if source.get("exclusion_reasons") != sorted(set(expected_reasons)):
+        raise ValueError("raw exclusion reasons do not match semantics")
+
+
+def build_source_audit(source: Mapping[str, Any]) -> dict[str, Any]:
     raw_hash = source.get("raw_record_sha256")
     raw_payload = {
         key: value for key, value in source.items() if key != "raw_record_sha256"
@@ -577,6 +821,7 @@ def _source_audit(source: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(messages, list):
         raise TypeError("source record messages must be a list")
     audit_payload = {
+        "contract_version": SOURCE_AUDIT_CONTRACT_VERSION,
         "record_format": source.get("record_format"),
         "record_id": source.get("id"),
         "source_identity": {
@@ -587,7 +832,8 @@ def _source_audit(source: Mapping[str, Any]) -> dict[str, Any]:
             "batch": source.get("batch"),
             "split": source.get("split"),
         },
-        "source_runtime_commit": source.get("source_runtime_commit"),
+        "unavailable_source_commit": source.get("unavailable_source_commit"),
+        "reconstruction_identity": source.get("reconstruction_identity"),
         "source_runtime_contract": source.get("source_runtime_contract"),
         "policy_artifact": source.get("policy_artifact"),
         "policy_runtime_contract": source.get("policy_runtime_contract"),
@@ -643,8 +889,8 @@ def _validate_source_reward_evidence(
     reward_provenance = source.get("reward_provenance")
     if reward_provenance != runtime_contract.get("reward_provenance"):
         raise ValueError("source row/runtime reward provenance mismatch")
-    if reward_provenance not in {"step_rewards", "trajectory_terminal_reward"}:
-        raise ValueError("source reward provenance is unsupported")
+    if reward_provenance != "step_rewards":
+        raise ValueError("reconstruction reward provenance must be step_rewards")
 
     turns = source.get("turns")
     events = source.get("environment_reward_events")
@@ -673,46 +919,19 @@ def _validate_source_reward_evidence(
     source_rewards = [float(value) for value in source.get("rewards", [])]
     if not all(math.isfinite(value) for value in source_rewards):
         raise ValueError("source rewards contain non-finite values")
-    if reward_provenance == "step_rewards":
-        if len(source_rewards) != len(event_rewards) or any(
-            not math.isclose(step, event, rel_tol=1e-6, abs_tol=1e-7)
-            for step, event in zip(source_rewards, event_rewards, strict=True)
-        ):
-            raise ValueError("source step rewards and environment events disagree")
-        step_aggregate = sum(source_rewards)
-        if not math.isfinite(step_aggregate) or not math.isclose(
-            raw_aggregate_reward,
-            step_aggregate,
-            rel_tol=1e-6,
-            abs_tol=1e-7,
-        ):
-            raise ValueError("source aggregate reward does not equal step rewards")
-    else:
-        if source_rewards:
-            raise ValueError(
-                "trajectory reward record cannot expose values as step rewards"
-            )
-        reward_key = runtime_contract.get("trajectory_reward_info_key")
-        if not isinstance(reward_key, str) or not reward_key:
-            raise ValueError("trajectory reward contract has no terminal info key")
-        terminal_turns = [turn for turn in turns if bool(turn.get("done"))]
-        if len(terminal_turns) != 1 or terminal_turns[0] is not turns[-1]:
-            raise ValueError("trajectory reward requires one final done turn")
-        terminal_info = terminal_turns[0].get("info")
-        if not isinstance(terminal_info, Mapping):
-            raise TypeError("terminal reward turn has no info mapping")
-        explicit_reward = terminal_info.get(reward_key)
-        if isinstance(explicit_reward, bool) or not isinstance(
-            explicit_reward, (int, float)
-        ):
-            raise ValueError("terminal info has no explicit aggregate reward")
-        if not math.isfinite(float(explicit_reward)) or not math.isclose(
-            raw_aggregate_reward,
-            float(explicit_reward),
-            rel_tol=1e-6,
-            abs_tol=1e-7,
-        ):
-            raise ValueError("source aggregate reward differs from terminal info")
+    if len(source_rewards) != len(event_rewards) or any(
+        not math.isclose(step, event, rel_tol=1e-6, abs_tol=1e-7)
+        for step, event in zip(source_rewards, event_rewards, strict=True)
+    ):
+        raise ValueError("source step rewards and environment events disagree")
+    step_aggregate = sum(source_rewards)
+    if not math.isfinite(step_aggregate) or not math.isclose(
+        raw_aggregate_reward,
+        step_aggregate,
+        rel_tol=1e-6,
+        abs_tol=1e-7,
+    ):
+        raise ValueError("source aggregate reward does not equal step rewards")
     return str(reward_provenance), source_rewards, raw_aggregate_reward
 
 
@@ -728,13 +947,26 @@ def convert_source_record(
     from nimloth.rollout.record_format import (
         STEP_REWARD_PROVENANCE,
         TRAJECTORY_RECORD_FORMAT,
-        TRAJECTORY_REWARD_PROVENANCE,
     )
 
     if latent_token_count != 16:
         raise ValueError("step60 SFT1/SFT2 conversion requires K16")
-    if source.get("record_format") != "vagen_step60_source_trajectory_v1":
+    if source.get("record_format") != RECONSTRUCTION_FORMATS["raw_row"]:
         raise ValueError("unsupported step60 source trajectory format")
+    runtime_contract = source.get("source_runtime_contract")
+    if not isinstance(runtime_contract, Mapping):
+        raise TypeError("source record has no reconstruction runtime contract")
+    validate_reconstruction_format(
+        "runtime_contract",
+        str(runtime_contract.get("format", "")),
+    )
+    if source.get("unavailable_source_commit") != UNAVAILABLE_SOURCE_COMMIT:
+        raise ValueError("source unavailable commit provenance mismatch")
+    if runtime_contract.get("reconstruction_identity") != source.get(
+        "reconstruction_identity"
+    ):
+        raise ValueError("source reconstruction identity mismatch")
+    validate_raw_reconstruction_semantics(source)
     if source.get("conversion_eligible") is False:
         raise ValueError(
             "source record is conversion-ineligible: "
@@ -820,7 +1052,7 @@ def convert_source_record(
     if len(image_paths) != len(observations):
         raise ValueError("source image/observation counts do not align")
 
-    audit = _source_audit(source)
+    audit = build_source_audit(source)
     provenance = {
         "format": CONVERSION_FORMAT,
         "source_sha256": audit["source_sha256"],
@@ -879,33 +1111,24 @@ def convert_source_record(
         source_rewards,
         raw_aggregate_reward,
     ) = _validate_source_reward_evidence(source)
-    if resolved_reward_provenance not in {
-        STEP_REWARD_PROVENANCE,
-        TRAJECTORY_REWARD_PROVENANCE,
-    }:
-        raise ValueError("reward provenance must be explicit before conversion")
-    if resolved_reward_provenance == STEP_REWARD_PROVENANCE:
-        if len(source_rewards) != len(action_indices):
-            raise ValueError("source step rewards do not align with actions")
-        rewards = source_rewards
-        terminated = bool(source.get("terminated", False))
-        truncated = bool(source.get("truncated", False))
-        if terminated == truncated:
-            raise ValueError("source step-reward status must be terminal xor truncated")
-        aggregate_reward = sum(rewards)
-        if not math.isclose(
-            raw_aggregate_reward,
-            aggregate_reward,
-            rel_tol=1e-6,
-            abs_tol=1e-7,
-        ):
-            raise ValueError("source aggregate reward does not equal step rewards")
-        aggregate_reward = raw_aggregate_reward
-    else:
-        rewards = []
-        terminated = False
-        truncated = False
-        aggregate_reward = raw_aggregate_reward
+    if resolved_reward_provenance != STEP_REWARD_PROVENANCE:
+        raise ValueError("reconstruction reward provenance must be step_rewards")
+    if len(source_rewards) != len(action_indices):
+        raise ValueError("source step rewards do not align with actions")
+    rewards = source_rewards
+    terminated = bool(source.get("terminated", False))
+    truncated = bool(source.get("truncated", False))
+    if terminated == truncated:
+        raise ValueError("source step-reward status must be terminal xor truncated")
+    aggregate_reward = sum(rewards)
+    if not math.isclose(
+        raw_aggregate_reward,
+        aggregate_reward,
+        rel_tol=1e-6,
+        abs_tol=1e-7,
+    ):
+        raise ValueError("source aggregate reward does not equal step rewards")
+    aggregate_reward = raw_aggregate_reward
 
     instruction_match = re.search(
         r"Human Instruction:\s*(.+?)(?:\n|$)",
@@ -1033,6 +1256,70 @@ def require_nonoverlapping_heldout(
     return evidence
 
 
+def _validate_shard_runtime_policy_contract(manifest: Mapping[str, Any]) -> None:
+    from experiments.training.sft1 import vagen_step60_collect as collect_contract
+
+    runtime_contract = manifest["source_runtime_contract"]
+    identity = manifest["reconstruction_identity"]
+    expected_identity = {
+        **identity,
+        "base_commit": collect_contract.RECONSTRUCTION_BASE_COMMIT,
+        "runtime_parent": collect_contract.RECONSTRUCTION_BASE_COMMIT,
+        "runtime_head": collect_contract.APPROVED_RECONSTRUCTION_HEAD,
+        "runtime_tree": collect_contract.APPROVED_RECONSTRUCTION_TREE,
+        "diff_sha256": collect_contract.APPROVED_RECONSTRUCTION_DIFF_SHA256,
+        "commit_count": 1,
+        "parent_count": 1,
+    }
+    collect_contract.validate_reconstruction_git_identity(
+        dict(identity),
+        expected=expected_identity,
+    )
+    collect_contract.validate_source_runtime_contract(
+        dict(runtime_contract),
+        expected_reconstruction_identity=expected_identity,
+    )
+    policy_artifact = manifest.get("policy_artifact")
+    policy_runtime = manifest.get("policy_runtime_contract")
+    if not isinstance(policy_artifact, Mapping) or not isinstance(
+        policy_runtime, Mapping
+    ):
+        raise TypeError("shard policy provenance must be mappings")
+    if policy_runtime.get("backend") != "vllm":
+        raise ValueError("shard policy backend mismatch")
+    for key, expected in collect_contract.SOURCE_SAMPLING_CONTRACT.items():
+        if policy_runtime.get(key) != expected:
+            raise ValueError(f"shard policy sampling/package drift: {key}")
+    expected_packages = {
+        "vllm": collect_contract.SOURCE_SAMPLING_CONTRACT[
+            "required_vllm_version"
+        ],
+        "transformers": collect_contract.SOURCE_SAMPLING_CONTRACT[
+            "required_transformers_version"
+        ],
+        "torch": collect_contract.SOURCE_SAMPLING_CONTRACT[
+            "required_torch_version"
+        ],
+    }
+    if policy_runtime.get("package_versions") != expected_packages:
+        raise ValueError("shard policy package versions mismatch")
+    if policy_runtime.get("model_config_artifacts") != policy_artifact.get(
+        "model_config_artifacts"
+    ):
+        raise ValueError("shard policy model/tokenizer identity mismatch")
+    for key in (
+        "merge_manifest_file_sha256",
+        "merge_manifest_payload_sha256",
+        "artifact_manifest_sha256",
+    ):
+        value = policy_artifact.get(key)
+        if not isinstance(value, str) or _HEX_SHA256_RE.fullmatch(value) is None:
+            raise ValueError(f"shard policy artifact identity invalid: {key}")
+    eos_token_id = policy_runtime.get("tokenizer_eos_token_id")
+    if isinstance(eos_token_id, bool) or not isinstance(eos_token_id, int):
+        raise TypeError("shard policy tokenizer EOS identity is invalid")
+
+
 def validate_complete_shard(
     shard_dir: Path,
     *,
@@ -1049,14 +1336,34 @@ def validate_complete_shard(
     if not manifest_path.is_file() or not raw_path.is_file():
         raise ValueError("complete shard is missing its manifest or raw JSONL")
     marker = json.loads(complete_path.read_text(encoding="utf-8"))
+    if marker.get("format") != RECONSTRUCTION_FORMATS["complete_marker"]:
+        raise ValueError("unsupported COMPLETE marker reconstruction format")
     manifest_bytes_sha256 = _file_sha256(manifest_path)
     if marker.get("manifest_sha256") != manifest_bytes_sha256:
         raise ValueError("COMPLETE marker does not match shard manifest bytes")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("format") != "vagen_step60_complete_shard_v1":
+    if manifest.get("format") != RECONSTRUCTION_FORMATS["shard_manifest"]:
         raise ValueError(f"unsupported shard manifest format: {manifest.get('format')!r}")
     if manifest.get("status") != "complete":
         raise ValueError("shard manifest status is not complete")
+    runtime_contract = manifest.get("source_runtime_contract")
+    if not isinstance(runtime_contract, Mapping):
+        raise TypeError("shard manifest has no reconstruction runtime contract")
+    validate_reconstruction_format(
+        "runtime_contract",
+        str(runtime_contract.get("format", "")),
+    )
+    if runtime_contract.get("reward_provenance") != "step_rewards":
+        raise ValueError("shard reconstruction reward provenance must be step_rewards")
+    if manifest.get("unavailable_source_commit") != UNAVAILABLE_SOURCE_COMMIT:
+        raise ValueError("shard unavailable source provenance mismatch")
+    reconstruction_identity = manifest.get("reconstruction_identity")
+    if not isinstance(reconstruction_identity, Mapping) or (
+        runtime_contract.get("reconstruction_identity")
+        != reconstruction_identity
+    ):
+        raise ValueError("shard reconstruction identity mismatch")
+    _validate_shard_runtime_policy_contract(manifest)
     source_indices = [int(value) for value in manifest.get("source_indices", [])]
     if len(source_indices) != len(set(source_indices)):
         raise ValueError("shard manifest contains duplicate source indices")
@@ -1082,7 +1389,7 @@ def validate_complete_shard(
             row = json.loads(line)
             if not isinstance(row, dict):
                 raise TypeError(f"raw JSONL line {line_number} is not an object")
-            if row.get("record_format") != "vagen_step60_source_trajectory_v1":
+            if row.get("record_format") != RECONSTRUCTION_FORMATS["raw_row"]:
                 raise ValueError(f"raw JSONL line {line_number} format drift")
             raw_hash = row.get("raw_record_sha256")
             raw_payload = {
@@ -1110,8 +1417,10 @@ def validate_complete_shard(
         ) != runtime_contract.get("reward_provenance"):
             raise ValueError("raw record reward provenance does not match runtime")
         _validate_source_reward_evidence(row)
+        validate_raw_reconstruction_semantics(row)
         for field_name in (
-            "source_runtime_commit",
+            "unavailable_source_commit",
+            "reconstruction_identity",
             "source_runtime_contract",
             "policy_artifact",
             "policy_runtime_contract",

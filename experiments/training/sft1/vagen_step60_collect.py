@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Collect source-faithful VAGEN step60 trajectories into atomic raw shards.
 
-This entrypoint talks to the legacy batch environment service from the exact
-source runtime, renders the source Qwen chat contract, saves every observation,
+This entrypoint talks to the legacy batch environment service from the reviewed
+evidence-backed reconstruction, renders the source Qwen chat contract, saves every observation,
 and generates one terminal response without stepping it.  It never converts or
 trains on the collected records.
 """
@@ -13,6 +13,7 @@ import argparse
 import ast
 import base64
 import hashlib
+import importlib.metadata
 import io
 import json
 import math
@@ -40,9 +41,48 @@ from experiments.training.sft1.vagen_step60_data import (
     validate_partition_manifest,
 )
 
-RAW_RECORD_FORMAT = "vagen_step60_source_trajectory_v1"
-SHARD_MANIFEST_FORMAT = "vagen_step60_complete_shard_v1"
-SOURCE_RUNTIME_CONTRACT_FORMAT = "vagen_step60_source_runtime_contract_v1"
+RAW_RECORD_FORMAT = "vagen_step60_source_trajectory_v2"
+SHARD_MANIFEST_FORMAT = "vagen_step60_complete_shard_v2"
+COMPLETE_MARKER_FORMAT = SHARD_MANIFEST_FORMAT
+SOURCE_RUNTIME_CONTRACT_FORMAT = "vagen_step60_reconstruction_runtime_contract_v2"
+RECONSTRUCTION_BASE_COMMIT = "3003c2e5e4ad84565627e6aa7f6ad5ca731dad1a"
+APPROVED_RECONSTRUCTION_HEAD = "170a673d1bf5855fc0ea6fbed0744b3d7168f8f0"
+APPROVED_RECONSTRUCTION_TREE = "58ef0eb66ad0bef7587c253c5c643af572c1d3a7"
+APPROVED_RECONSTRUCTION_DIFF_SHA256 = (
+    "7f025476657de1289cf84b61d7702de26d248cd196412e9374a15e6de62730e9"
+)
+RECONSTRUCTION_MODE = "step60_source_reconstruction"
+RECONSTRUCTION_EVIDENCE_FILE_SHA256 = (
+    "e9e1ebc4f61b07e5b3b77b165cf72fdfa525d7d840f54296ce5873c5e68463c8"
+)
+RECONSTRUCTION_EVIDENCE_MANIFEST_SHA256 = (
+    "4057111319be7131032ff08d0b87409c9dfadc841812532c9fe6c6242193f450"
+)
+RECONSTRUCTION_SERVICE_ROUTES = [
+    "/batch/close",
+    "/batch/reset",
+    "/batch/reward",
+    "/batch/step",
+    "/batch/system_prompt",
+    "/close/<env_id>",
+    "/environments",
+    "/health",
+    "/reconstruction/identity",
+    "/reset/<env_id>",
+    "/reward/<env_id>",
+    "/step/<env_id>",
+    "/system_prompt/<env_id>",
+]
+RECONSTRUCTION_ENVIRONMENT_ASSETS = {
+    "base": {
+        "rows": 60,
+        "sha256": "6b575621a6b15e90e1040dd86d661a5e1ee70134f42fd7f3d61706347449c55a",
+    },
+    "common_sense": {
+        "rows": 60,
+        "sha256": "3e7d2cb4246b6e2edaeaabd318dba93e4dbbff114c8368ed0c862e64f417afcf",
+    },
+}
 SOURCE_SYSTEM_PROMPT_SHA256 = (
     "d691e077a5a4204386d3958a81d08f4322d6618dbee0f740b2c4848ddf2bc99a"
 )
@@ -54,7 +94,8 @@ SOURCE_STEP_PROMPT_NORMALIZED_SHA256 = (
 )
 SOURCE_ENV_BASE_CONFIG = {
     "render_mode": "vision",
-    "prompt_format": "grounding_worldmodeling",
+    "prompt_format": RECONSTRUCTION_MODE,
+    "source_prompt_format": "grounding_worldmodeling",
     "use_state_reward": False,
     "max_actions_per_step": 1,
     "format_reward": 0.02,
@@ -71,6 +112,12 @@ SOURCE_SAMPLING_CONTRACT = {
     "max_model_len": 6144,
     "window_size": 5,
     "max_images_per_prompt": 6,
+    "ignore_eos": False,
+    "custom_stop_strings": [],
+    "custom_stop_token_ids": [],
+    "required_vllm_version": "0.8.5.post1",
+    "required_transformers_version": "4.49.0",
+    "required_torch_version": "2.6.0",
 }
 _EXTRACTED_ACTION_RE = re.compile(
     r"After your answer, the extracted valid action is (\[[^\n]*\])\."
@@ -240,8 +287,25 @@ class GeneratedTurn:
     response: str
     rendered_prompt: str
     finish_reason: str | None
+    stop_reason: int | str | None = None
+    token_ids: tuple[int, ...] = ()
+    eos_token_id: int | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+
+
+def generation_exclusion_reason(turn: GeneratedTurn) -> str | None:
+    if turn.finish_reason == "length":
+        return "generation_length_truncated"
+    if turn.finish_reason != "stop":
+        return "generation_finish_reason_invalid"
+    if turn.stop_reason is not None:
+        return "generation_custom_stop"
+    if not turn.token_ids or turn.eos_token_id is None:
+        return "generation_token_evidence_missing"
+    if turn.token_ids[-1] != turn.eos_token_id:
+        return "generation_eos_token_missing"
+    return None
 
 
 class SourcePolicy(Protocol):
@@ -262,7 +326,7 @@ class SourceEnvironmentClient(Protocol):
 
 
 class LegacyVAGENBatchClient:
-    """Minimal exact client for the source VAGEN batch-service endpoints."""
+    """Minimal client for the evidence-verified legacy batch endpoints."""
 
     def __init__(self, base_url: str, *, timeout: float = 500.0) -> None:
         if not base_url.strip():
@@ -290,6 +354,12 @@ class LegacyVAGENBatchClient:
         value = self._request("health", method="GET")
         if not isinstance(value, dict):
             raise TypeError("source server health response is not a mapping")
+        return value
+
+    def get_reconstruction_identity(self) -> dict[str, Any]:
+        value = self._request("reconstruction/identity", method="GET")
+        if not isinstance(value, dict):
+            raise TypeError("reconstruction service identity is not a mapping")
         return value
 
     def create_environments_batch(self, ids2configs: dict[str, dict[str, Any]]) -> None:
@@ -383,6 +453,29 @@ def _renderable_messages(
     return rendered
 
 
+_MODEL_IDENTITY_FILES = (
+    "config.json",
+    "tokenizer_config.json",
+    "tokenizer.json",
+    "preprocessor_config.json",
+)
+
+
+def _model_config_artifacts(model_path: Path) -> dict[str, dict[str, Any]]:
+    artifacts: dict[str, dict[str, Any]] = {}
+    for filename in _MODEL_IDENTITY_FILES:
+        path = model_path / filename
+        if path.is_file():
+            artifacts[filename] = {
+                "size_bytes": path.stat().st_size,
+                "sha256": _file_sha256(path),
+            }
+    for required in ("config.json", "tokenizer_config.json"):
+        if required not in artifacts:
+            raise ValueError(f"merged policy lacks required identity file: {required}")
+    return artifacts
+
+
 class VLLMSourcePolicy:
     """Frozen source policy with explicit step60 sampling and history window."""
 
@@ -417,12 +510,30 @@ class VLLMSourcePolicy:
             enable_chunked_prefill=False,
             seed=int(engine_seed),
         )
+        package_versions = {
+            "vllm": importlib.metadata.version("vllm"),
+            "transformers": importlib.metadata.version("transformers"),
+            "torch": importlib.metadata.version("torch").split("+")[0],
+        }
+        expected_versions = {
+            "vllm": SOURCE_SAMPLING_CONTRACT["required_vllm_version"],
+            "transformers": SOURCE_SAMPLING_CONTRACT["required_transformers_version"],
+            "torch": SOURCE_SAMPLING_CONTRACT["required_torch_version"],
+        }
+        if package_versions != expected_versions:
+            raise ValueError(
+                f"source generation package versions mismatch: "
+                f"{package_versions} != {expected_versions}"
+            )
         self.sampling_params = SamplingParams(
             max_tokens=SOURCE_SAMPLING_CONTRACT["max_response_tokens"],
             temperature=SOURCE_SAMPLING_CONTRACT["temperature"],
             top_p=SOURCE_SAMPLING_CONTRACT["top_p"],
             top_k=SOURCE_SAMPLING_CONTRACT["top_k"],
             n=SOURCE_SAMPLING_CONTRACT["n"],
+            ignore_eos=False,
+            stop=[],
+            stop_token_ids=[],
         )
         self.runtime_contract = {
             "backend": "vllm",
@@ -430,6 +541,9 @@ class VLLMSourcePolicy:
             "tensor_parallel_size": int(tensor_parallel_size),
             "gpu_memory_utilization": float(gpu_memory_utilization),
             "engine_seed": int(engine_seed),
+            "package_versions": package_versions,
+            "tokenizer_eos_token_id": self.processor.tokenizer.eos_token_id,
+            "model_config_artifacts": _model_config_artifacts(model_path),
             **SOURCE_SAMPLING_CONTRACT,
         }
 
@@ -473,6 +587,9 @@ class VLLMSourcePolicy:
                     response=completion.text,
                     rendered_prompt=prompt,
                     finish_reason=completion.finish_reason,
+                    stop_reason=completion.stop_reason,
+                    token_ids=tuple(int(token_id) for token_id in completion.token_ids),
+                    eos_token_id=int(self.processor.tokenizer.eos_token_id),
                     prompt_tokens=len(output.prompt_token_ids),
                     completion_tokens=len(completion.token_ids),
                 )
@@ -492,7 +609,6 @@ class _EpisodeState:
     turns: list[dict[str, Any]] = field(default_factory=list)
     policy_requests: list[dict[str, Any]] = field(default_factory=list)
     rewards: list[float] = field(default_factory=list)
-    trajectory_terminal_reward: float | None = None
     success: bool = False
     done: bool = False
 
@@ -505,7 +621,7 @@ class SourceShardCollector:
         policy: SourcePolicy,
         run_id: str,
         shard_index: int,
-        source_runtime_commit: str,
+        reconstruction_identity: dict[str, Any],
         source_runtime_evidence: dict[str, Any],
         policy_artifact_evidence: dict[str, Any],
         format_failure_policy: str,
@@ -513,20 +629,16 @@ class SourceShardCollector:
     ) -> None:
         if not _RUN_ID_RE.fullmatch(run_id):
             raise ValueError(f"invalid run_id: {run_id!r}")
-        if source_runtime_commit != SOURCE_VAGEN_COMMIT:
-            raise ValueError(
-                "source environment runtime commit mismatch: "
-                f"{source_runtime_commit} != {SOURCE_VAGEN_COMMIT}"
-            )
         validate_source_runtime_contract(
             source_runtime_evidence,
-            expected_runtime_commit=source_runtime_commit,
+            expected_reconstruction_identity=reconstruction_identity,
         )
         required_policy_evidence = {
             "merge_manifest_path",
             "merge_manifest_file_sha256",
             "merge_manifest_payload_sha256",
             "artifact_manifest_sha256",
+            "model_config_artifacts",
             "source_actor_dir",
         }
         if set(policy_artifact_evidence) != required_policy_evidence:
@@ -539,8 +651,12 @@ class SourceShardCollector:
         self.policy = policy
         self.run_id = run_id
         self.shard_index = int(shard_index)
-        self.source_runtime_commit = source_runtime_commit
+        self.reconstruction_identity = dict(reconstruction_identity)
         self.source_runtime_evidence = dict(source_runtime_evidence)
+        if policy.runtime_contract.get("model_config_artifacts") != (
+            policy_artifact_evidence["model_config_artifacts"]
+        ):
+            raise ValueError("policy runtime model/tokenizer identity mismatch")
         self.policy_artifact_evidence = dict(policy_artifact_evidence)
         self.format_failure_policy = format_failure_policy
         self.concurrency = int(concurrency)
@@ -553,7 +669,20 @@ class SourceShardCollector:
 
     @staticmethod
     def _environment_config(spec: EpisodeSpec) -> dict[str, Any]:
-        return {**SOURCE_ENV_BASE_CONFIG, "eval_set": spec.eval_set}
+        runtime_config = {
+            key: value
+            for key, value in SOURCE_ENV_BASE_CONFIG.items()
+            if key != "source_prompt_format"
+        }
+        return {
+            "env_name": "navigation",
+            "env_config": {
+                **runtime_config,
+                "eval_set": spec.eval_set,
+                "step_length": 0.5,
+                "success_reward": 10.0,
+            },
+        }
 
     @staticmethod
     def _save_image(
@@ -587,6 +716,9 @@ class SourceShardCollector:
             "response": generated.response,
             "response_sha256": _sha256_text(generated.response),
             "finish_reason": generated.finish_reason,
+            "stop_reason": generated.stop_reason,
+            "token_ids": list(generated.token_ids),
+            "eos_token_id": generated.eos_token_id,
             "prompt_tokens": generated.prompt_tokens,
             "completion_tokens": generated.completion_tokens,
         }
@@ -602,23 +734,26 @@ class SourceShardCollector:
         state.policy_requests.append(terminal_audit)
         state.messages.append({"role": "assistant", "content": terminal.response})
         ordinary_valid = all(turn["parsed_response"]["format_valid"] for turn in state.turns)
-        eligible = ordinary_valid and terminal_parse["format_valid"]
+        generation_reasons = [
+            str(turn["generation_exclusion_reason"])
+            for turn in state.turns
+            if turn.get("generation_exclusion_reason") is not None
+        ]
+        terminal_generation_reason = generation_exclusion_reason(terminal)
+        if terminal_generation_reason is not None:
+            generation_reasons.append(terminal_generation_reason)
+        eligible = (
+            ordinary_valid
+            and terminal_parse["format_valid"]
+            and not generation_reasons
+        )
         if not eligible and self.format_failure_policy == "fail_shard":
             raise ValueError(f"source response format failure for {state.env_id}")
-        reward_provenance = self.source_runtime_evidence["reward_provenance"]
-        if reward_provenance == "step_rewards":
-            aggregate_reward = sum(state.rewards)
-            if not math.isfinite(aggregate_reward):
-                raise ValueError("source step reward aggregate is non-finite")
-            persisted_rewards = list(state.rewards)
-        else:
-            if state.trajectory_terminal_reward is None:
-                raise ValueError(
-                    f"source runtime did not provide an explicit terminal aggregate "
-                    f"reward for {state.env_id}"
-                )
-            aggregate_reward = state.trajectory_terminal_reward
-            persisted_rewards = []
+        reward_provenance = "step_rewards"
+        aggregate_reward = sum(state.rewards)
+        if not math.isfinite(aggregate_reward):
+            raise ValueError("source step reward aggregate is non-finite")
+        persisted_rewards = list(state.rewards)
         image_paths = [
             self._save_image(root, state.env_id, index, image)
             for index, image in enumerate(state.images)
@@ -645,7 +780,8 @@ class SourceShardCollector:
             "seed": state.spec.seed,
             "batch": 1,
             "split": state.spec.dataset_split,
-            "source_runtime_commit": self.source_runtime_commit,
+            "unavailable_source_commit": SOURCE_VAGEN_COMMIT,
+            "reconstruction_identity": self.reconstruction_identity,
             "source_runtime_contract": self.source_runtime_evidence,
             "policy_artifact": self.policy_artifact_evidence,
             "system_prompt": state.system_prompt,
@@ -667,6 +803,11 @@ class SourceShardCollector:
             "terminal_generation": {
                 "assistant_response": terminal.response,
                 "parsed": terminal_parse,
+                "finish_reason": terminal.finish_reason,
+                "stop_reason": terminal.stop_reason,
+                "token_ids": list(terminal.token_ids),
+                "eos_token_id": terminal.eos_token_id,
+                "generation_exclusion_reason": terminal_generation_reason,
                 "executed": False,
                 "environment_step_after_generation": False,
             },
@@ -674,7 +815,20 @@ class SourceShardCollector:
             "policy_runtime_contract": self.policy.runtime_contract,
             "format_failure_policy": self.format_failure_policy,
             "conversion_eligible": eligible,
-            "exclusion_reasons": ([] if eligible else ["source_response_format_invalid"]),
+            "exclusion_reasons": (
+                []
+                if eligible
+                else sorted(
+                    set(
+                        generation_reasons
+                        + (
+                            []
+                            if ordinary_valid and terminal_parse["format_valid"]
+                            else ["source_response_format_invalid"]
+                        )
+                    )
+                )
+            ),
         }
         record["raw_record_sha256"] = _canonical_sha256(record)
         return record
@@ -737,6 +891,12 @@ class SourceShardCollector:
                     raise RuntimeError("ordinary source policy output count mismatch")
                 action_payload: dict[str, str] = {}
                 for state, turn in zip(active, generated, strict=True):
+                    boundary_reason = generation_exclusion_reason(turn)
+                    if boundary_reason is not None:
+                        raise ValueError(
+                            f"ordinary source generation cannot be stepped: "
+                            f"{boundary_reason} for {state.env_id}"
+                        )
                     state.policy_requests.append(
                         self._request_audit(state, turn, kind="ordinary")
                     )
@@ -762,26 +922,6 @@ class SourceShardCollector:
                     reward_value = float(reward)
                     if not math.isfinite(reward_value):
                         raise ValueError("source environment returned a non-finite reward")
-                    if (
-                        self.source_runtime_evidence["reward_provenance"]
-                        == "trajectory_terminal_reward"
-                        and bool(done)
-                    ):
-                        reward_key = self.source_runtime_evidence[
-                            "trajectory_reward_info_key"
-                        ]
-                        terminal_reward = info_dict.get(reward_key)
-                        if isinstance(terminal_reward, bool) or not isinstance(
-                            terminal_reward, (int, float)
-                        ):
-                            raise ValueError(
-                                "source terminal info has no explicit aggregate reward"
-                            )
-                        if not math.isfinite(float(terminal_reward)):
-                            raise ValueError(
-                                "source terminal aggregate reward is non-finite"
-                            )
-                        state.trajectory_terminal_reward = float(terminal_reward)
                     state.turns.append(
                         {
                             "response": generated_turn.response,
@@ -790,6 +930,9 @@ class SourceShardCollector:
                             "reward": reward_value,
                             "done": bool(done),
                             "info": info_dict,
+                            "generation_exclusion_reason": (
+                                generation_exclusion_reason(generated_turn)
+                            ),
                         }
                     )
                     state.rewards.append(reward_value)
@@ -885,7 +1028,8 @@ class SourceShardCollector:
                 "status": "complete",
                 "run_id": self.run_id,
                 "shard_index": self.shard_index,
-                "source_runtime_commit": self.source_runtime_commit,
+                "unavailable_source_commit": SOURCE_VAGEN_COMMIT,
+                "reconstruction_identity": self.reconstruction_identity,
                 "source_runtime_contract": self.source_runtime_evidence,
                 "policy_artifact": self.policy_artifact_evidence,
                 "source_indices": source_indices,
@@ -913,7 +1057,8 @@ class SourceShardCollector:
             }
             _write_json_atomic(partial / "shard_manifest.json", manifest)
             marker = {
-                "manifest_sha256": _file_sha256(partial / "shard_manifest.json")
+                "format": COMPLETE_MARKER_FORMAT,
+                "manifest_sha256": _file_sha256(partial / "shard_manifest.json"),
             }
             _write_json_atomic(partial / "COMPLETE", marker)
             validate_complete_shard(
@@ -983,6 +1128,30 @@ def load_batch1_shard_specs(
     ]
 
 
+def load_batch1_smoke_spec(
+    partition_manifest: Path,
+    *,
+    source_index: int,
+) -> EpisodeSpec:
+    manifest = json.loads(partition_manifest.read_text(encoding="utf-8"))
+    validate_partition_manifest(manifest, require_published=True)
+    matches = [
+        row
+        for row in manifest.get("rows", [])
+        if int(row["batch"]) == 1 and int(row["source_index"]) == source_index
+    ]
+    if len(matches) != 1:
+        raise ValueError("smoke source_index must identify one batch1 row")
+    row = matches[0]
+    return EpisodeSpec(
+        source_index=int(row["source_index"]),
+        eval_set=str(row["eval_set"]),
+        seed=int(row["seed"]),
+        dataset_split=str(row["dataset_split"]),
+        source_key=str(row["source_key"]),
+    )
+
+
 def validate_policy_artifact(model_path: Path) -> dict[str, Any]:
     model_path = model_path.resolve()
     manifest_path = model_path / MERGE_MANIFEST
@@ -994,8 +1163,75 @@ def validate_policy_artifact(model_path: Path) -> dict[str, Any]:
         "artifact_manifest_sha256": manifest["validation"][
             "artifact_manifest_sha256"
         ],
+        "model_config_artifacts": _model_config_artifacts(model_path),
         "source_actor_dir": manifest["source"]["source_actor_dir"],
     }
+
+
+def expected_service_runtime_identity(
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    selected = {
+        key: contract[key]
+        for key in (
+            "reconstruction_identity",
+            "evidence_artifact",
+            "environment_assets",
+            "environment_config",
+            "service_api_contract",
+            "service_routes",
+        )
+    }
+    return json.loads(json.dumps(selected))
+
+
+def validate_service_runtime_identity(
+    actual: dict[str, Any],
+    *,
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    expected = expected_service_runtime_identity(contract)
+    if actual != expected:
+        raise ValueError("environment service reconstruction identity mismatch")
+    return dict(actual)
+
+
+def build_source_runtime_contract(
+    *,
+    runtime_root: Path,
+    reconstruction_identity: dict[str, Any],
+) -> dict[str, Any]:
+    contract: dict[str, Any] = {
+        "format": SOURCE_RUNTIME_CONTRACT_FORMAT,
+        "runtime_root": str(runtime_root.resolve()),
+        "unavailable_source_commit": SOURCE_VAGEN_COMMIT,
+        "reconstruction_identity": dict(reconstruction_identity),
+        "evidence_artifact": {
+            "sha256": RECONSTRUCTION_EVIDENCE_FILE_SHA256,
+            "manifest_sha256": RECONSTRUCTION_EVIDENCE_MANIFEST_SHA256,
+        },
+        "environment_assets": RECONSTRUCTION_ENVIRONMENT_ASSETS,
+        "service_api_contract": "legacy_batch_environment_v1",
+        "service_routes": RECONSTRUCTION_SERVICE_ROUTES,
+        "reward_provenance": "step_rewards",
+        "trajectory_reward_info_key": None,
+        "http_timeout_seconds": 500,
+        "prompt_hashes": {
+            "system_prompt_sha256": SOURCE_SYSTEM_PROMPT_SHA256,
+            "initial_prompt_normalized_sha256": SOURCE_INITIAL_PROMPT_NORMALIZED_SHA256,
+            "step_prompt_normalized_sha256": SOURCE_STEP_PROMPT_NORMALIZED_SHA256,
+        },
+        "environment_config": {
+            **SOURCE_ENV_BASE_CONFIG,
+            "step_length": 0.5,
+            "success_reward": 10.0,
+            "action_names": list(SOURCE_ACTION_NAMES),
+        },
+    }
+    contract["contract_payload_sha256"] = source_runtime_contract_payload_sha256(
+        contract
+    )
+    return contract
 
 
 def source_runtime_contract_payload_sha256(contract: dict[str, Any]) -> str:
@@ -1010,10 +1246,10 @@ def source_runtime_contract_payload_sha256(contract: dict[str, Any]) -> str:
 def validate_source_runtime_contract(
     contract: dict[str, Any],
     *,
-    expected_runtime_commit: str,
+    expected_reconstruction_identity: dict[str, Any],
     expected_runtime_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Require a hash-bound exact-source runtime/dynamics preflight contract."""
+    """Require a hash-bound reconstruction runtime/dynamics contract."""
 
     if contract.get("format") != SOURCE_RUNTIME_CONTRACT_FORMAT:
         raise ValueError("source runtime contract format mismatch")
@@ -1021,27 +1257,37 @@ def validate_source_runtime_contract(
         source_runtime_contract_payload_sha256(contract)
     ):
         raise ValueError("source runtime contract payload hash mismatch")
-    if contract.get("runtime_commit") != expected_runtime_commit:
-        raise ValueError("source runtime contract commit mismatch")
+    if contract.get("unavailable_source_commit") != SOURCE_VAGEN_COMMIT:
+        raise ValueError("unavailable source provenance mismatch")
+    identity = contract.get("reconstruction_identity")
+    if not isinstance(identity, dict):
+        raise TypeError("reconstruction identity must be a mapping")
+    validate_reconstruction_git_identity(
+        identity,
+        expected=expected_reconstruction_identity,
+    )
     runtime_root = Path(str(contract.get("runtime_root", ""))).resolve()
     if expected_runtime_root is not None and runtime_root != expected_runtime_root.resolve():
         raise ValueError("source runtime contract root mismatch")
+    evidence = contract.get("evidence_artifact")
+    if not isinstance(evidence, dict):
+        raise TypeError("reconstruction evidence artifact must be a mapping")
+    expected_evidence = {
+        "sha256": RECONSTRUCTION_EVIDENCE_FILE_SHA256,
+        "manifest_sha256": RECONSTRUCTION_EVIDENCE_MANIFEST_SHA256,
+    }
+    if evidence != expected_evidence:
+        raise ValueError("reconstruction evidence artifact identity mismatch")
+    if contract.get("environment_assets") != RECONSTRUCTION_ENVIRONMENT_ASSETS:
+        raise ValueError("reconstruction environment asset identity mismatch")
     if contract.get("service_api_contract") != "legacy_batch_environment_v1":
         raise ValueError("source runtime service API contract mismatch")
-    reward_provenance = contract.get("reward_provenance")
-    if reward_provenance not in {
-        "step_rewards",
-        "trajectory_terminal_reward",
-    }:
-        raise ValueError("source runtime reward provenance must be smoke-verified")
-    reward_info_key = contract.get("trajectory_reward_info_key")
-    if reward_provenance == "step_rewards":
-        if reward_info_key is not None:
-            raise ValueError("step reward contract cannot declare an aggregate info key")
-    elif not isinstance(reward_info_key, str) or not reward_info_key:
-        raise ValueError(
-            "trajectory reward contract requires an explicit terminal info key"
-        )
+    if contract.get("service_routes") != RECONSTRUCTION_SERVICE_ROUTES:
+        raise ValueError("source runtime service route contract mismatch")
+    if contract.get("reward_provenance") != "step_rewards":
+        raise ValueError("reconstruction reward provenance must be step_rewards")
+    if contract.get("trajectory_reward_info_key") is not None:
+        raise ValueError("step reward contract cannot declare an aggregate info key")
     if int(contract.get("http_timeout_seconds", -1)) != 500:
         raise ValueError("source runtime service timeout must be 500 seconds")
     prompt_hashes = contract.get("prompt_hashes")
@@ -1054,52 +1300,133 @@ def validate_source_runtime_contract(
     environment = contract.get("environment_config")
     if not isinstance(environment, dict):
         raise TypeError("source runtime environment_config must be a mapping")
+    expected_environment_fields = {
+        *SOURCE_ENV_BASE_CONFIG,
+        "step_length",
+        "success_reward",
+        "action_names",
+    }
+    if set(environment) != expected_environment_fields:
+        raise ValueError("source runtime environment config fields drift")
     for key, expected in SOURCE_ENV_BASE_CONFIG.items():
         if environment.get(key) != expected:
             raise ValueError(f"source runtime environment config drift: {key}")
-    for key in ("step_length", "success_reward"):
-        value = environment.get(key)
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            raise TypeError(f"source runtime {key} must be numeric")
-        if not math.isfinite(float(value)) or float(value) <= 0:
-            raise ValueError(f"source runtime {key} must be positive and finite")
+    if float(environment.get("step_length", float("nan"))) != 0.5:
+        raise ValueError("source runtime step_length must equal 0.5")
+    if float(environment.get("success_reward", float("nan"))) != 10.0:
+        raise ValueError("source runtime success_reward must equal 10.0")
     if environment.get("action_names") != list(SOURCE_ACTION_NAMES):
         raise ValueError("source runtime action vocabulary/order mismatch")
     return dict(contract)
 
 
-def source_runtime_commit(runtime_root: Path) -> str:
+def reconstruction_git_identity(
+    runtime_root: Path,
+    *,
+    base_commit: str,
+) -> dict[str, Any]:
     runtime_root = runtime_root.resolve()
     if not runtime_root.is_dir():
-        raise FileNotFoundError(f"source runtime root does not exist: {runtime_root}")
-    commit = subprocess.check_output(
+        raise FileNotFoundError(f"reconstruction runtime root does not exist: {runtime_root}")
+    status = subprocess.check_output(
+        [
+            "git",
+            "-C",
+            str(runtime_root),
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        ],
+        text=True,
+    )
+    if status:
+        raise ValueError("reconstruction runtime worktree is dirty")
+    head = subprocess.check_output(
         ["git", "-C", str(runtime_root), "rev-parse", "HEAD"],
         text=True,
     ).strip()
-    if commit != SOURCE_VAGEN_COMMIT:
-        raise ValueError(
-            f"source runtime commit mismatch: {commit} != {SOURCE_VAGEN_COMMIT}"
-        )
-    status = subprocess.check_output(
-        ["git", "-C", str(runtime_root), "status", "--short"],
+    parent_line = subprocess.check_output(
+        ["git", "-C", str(runtime_root), "rev-list", "--parents", "-n", "1", "HEAD"],
         text=True,
+    ).split()
+    if len(parent_line) != 2:
+        raise ValueError("reconstruction runtime must be one non-merge commit")
+    parent = parent_line[1]
+    if parent != base_commit:
+        raise ValueError("reconstruction runtime parent mismatch")
+    commit_count = int(
+        subprocess.check_output(
+            ["git", "-C", str(runtime_root), "rev-list", "--count", f"{base_commit}..HEAD"],
+            text=True,
+        ).strip()
     )
-    if status.strip():
-        raise ValueError("source runtime worktree is dirty")
-    return commit
+    if commit_count != 1:
+        raise ValueError("reconstruction runtime must contain exactly one patch commit")
+    tree = subprocess.check_output(
+        ["git", "-C", str(runtime_root), "rev-parse", "HEAD^{tree}"],
+        text=True,
+    ).strip()
+    diff = subprocess.check_output(
+        [
+            "git",
+            "-C",
+            str(runtime_root),
+            "--no-pager",
+            "diff",
+            "--binary",
+            "--full-index",
+            "--no-ext-diff",
+            f"{base_commit}..HEAD",
+            "--",
+        ]
+    )
+    return {
+        "base_commit": base_commit,
+        "runtime_head": head,
+        "runtime_parent": parent,
+        "runtime_tree": tree,
+        "commit_count": commit_count,
+        "parent_count": 1,
+        "diff_sha256": hashlib.sha256(diff).hexdigest(),
+        "git_version": subprocess.check_output(["git", "--version"], text=True).strip(),
+    }
+
+
+def validate_reconstruction_git_identity(
+    actual: dict[str, Any],
+    *,
+    expected: dict[str, Any],
+) -> dict[str, Any]:
+    for key in (
+        "base_commit",
+        "runtime_head",
+        "runtime_parent",
+        "runtime_tree",
+        "commit_count",
+        "parent_count",
+        "diff_sha256",
+    ):
+        if actual.get(key) != expected.get(key):
+            raise ValueError(f"reconstruction {key} mismatch")
+    return dict(actual)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-path", type=Path, required=True)
     parser.add_argument("--partition-manifest", type=Path, required=True)
-    parser.add_argument("--shard-index", type=int, required=True)
+    parser.add_argument("--shard-index", type=int, default=0)
+    parser.add_argument("--source-index", type=int)
     parser.add_argument("--shard-size", type=int, default=100)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--env-url", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--source-runtime-root", type=Path, required=True)
     parser.add_argument("--source-runtime-contract", type=Path, required=True)
+    parser.add_argument("--expected-reconstruction-head", required=True)
+    parser.add_argument("--expected-reconstruction-tree", required=True)
+    parser.add_argument("--expected-reconstruction-diff-sha256", required=True)
+    parser.add_argument("--expected-runtime-contract-payload-sha256", required=True)
     parser.add_argument("--format-failure-policy", required=True, choices=["exclude_trajectory", "fail_shard"])
     parser.add_argument("--concurrency", type=int, required=True)
     parser.add_argument("--tensor-parallel-size", type=int, required=True)
@@ -1108,28 +1435,72 @@ def main() -> int:
     args = parser.parse_args()
 
     policy_artifact_evidence = validate_policy_artifact(args.model_path)
-    specs = load_batch1_shard_specs(
-        args.partition_manifest,
-        shard_index=args.shard_index,
-        shard_size=args.shard_size,
+    specs = (
+        [
+            load_batch1_smoke_spec(
+                args.partition_manifest,
+                source_index=args.source_index,
+            )
+        ]
+        if args.source_index is not None
+        else load_batch1_shard_specs(
+            args.partition_manifest,
+            shard_index=args.shard_index,
+            shard_size=args.shard_size,
+        )
     )
     client = LegacyVAGENBatchClient(args.env_url, timeout=500)
     health = client.check_server_health()
     if health.get("status") != "ok":
         raise RuntimeError(f"source environment server is unhealthy: {health!r}")
+    source_runtime_evidence = json.loads(
+        args.source_runtime_contract.read_text(encoding="utf-8")
+    )
+    if source_runtime_contract_payload_sha256(source_runtime_evidence) != (
+        args.expected_runtime_contract_payload_sha256
+    ):
+        raise ValueError("runtime contract differs from approved payload hash")
+    validate_service_runtime_identity(
+        client.get_reconstruction_identity(),
+        contract=source_runtime_evidence,
+    )
     policy = VLLMSourcePolicy(
         model_path=args.model_path,
         tensor_parallel_size=args.tensor_parallel_size,
         gpu_memory_utilization=args.gpu_memory_utilization,
         engine_seed=args.engine_seed,
     )
-    runtime_commit = source_runtime_commit(args.source_runtime_root)
-    source_runtime_evidence = json.loads(
-        args.source_runtime_contract.read_text(encoding="utf-8")
+    reconstruction_identity = reconstruction_git_identity(
+        args.source_runtime_root,
+        base_commit=RECONSTRUCTION_BASE_COMMIT,
+    )
+    approved_literals = {
+        "runtime_head": APPROVED_RECONSTRUCTION_HEAD,
+        "runtime_tree": APPROVED_RECONSTRUCTION_TREE,
+        "diff_sha256": APPROVED_RECONSTRUCTION_DIFF_SHA256,
+    }
+    supplied_literals = {
+        "runtime_head": args.expected_reconstruction_head,
+        "runtime_tree": args.expected_reconstruction_tree,
+        "diff_sha256": args.expected_reconstruction_diff_sha256,
+    }
+    if supplied_literals != approved_literals:
+        raise ValueError("CLI reconstruction literals differ from approved values")
+    expected_identity = {
+        **reconstruction_identity,
+        "base_commit": RECONSTRUCTION_BASE_COMMIT,
+        "runtime_parent": RECONSTRUCTION_BASE_COMMIT,
+        **approved_literals,
+        "commit_count": 1,
+        "parent_count": 1,
+    }
+    validate_reconstruction_git_identity(
+        reconstruction_identity,
+        expected=expected_identity,
     )
     validate_source_runtime_contract(
         source_runtime_evidence,
-        expected_runtime_commit=runtime_commit,
+        expected_reconstruction_identity=expected_identity,
         expected_runtime_root=args.source_runtime_root,
     )
     collector = SourceShardCollector(
@@ -1137,7 +1508,7 @@ def main() -> int:
         policy=policy,
         run_id=args.run_id,
         shard_index=args.shard_index,
-        source_runtime_commit=runtime_commit,
+        reconstruction_identity=reconstruction_identity,
         source_runtime_evidence=source_runtime_evidence,
         policy_artifact_evidence=policy_artifact_evidence,
         format_failure_policy=args.format_failure_policy,

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import uuid
 from collections import Counter
 from collections.abc import Iterable, Sequence
@@ -14,7 +15,9 @@ from typing import Any
 
 from experiments.training.sft1.vagen_step60_data import (
     CONVERSION_FORMAT,
+    REJECTION_FORMAT,
     atomic_publish_directory,
+    build_source_audit,
     convert_source_record,
     validate_complete_shard,
     validate_partition_manifest,
@@ -122,7 +125,8 @@ def _load_verified_records(
         shard_contract = {
             field_name: manifest.get(field_name)
             for field_name in (
-                "source_runtime_commit",
+                "unavailable_source_commit",
+                "reconstruction_identity",
                 "source_runtime_contract",
                 "policy_artifact",
                 "policy_runtime_contract",
@@ -196,6 +200,303 @@ def _dataset_stats(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def validate_conversion_output(output_dir: Path) -> dict[str, Any]:
+    output_dir = output_dir.resolve()
+    manifest_path = output_dir / "conversion_manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError("conversion output has no manifest")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("format") != CONVERSION_FORMAT:
+        raise ValueError("conversion manifest format mismatch")
+    claimed = manifest.get("manifest_payload_sha256")
+    payload = {
+        key: value
+        for key, value in manifest.items()
+        if key != "manifest_payload_sha256"
+    }
+    if claimed != _canonical_sha256(payload):
+        raise ValueError("conversion manifest payload hash mismatch")
+    source_shards = manifest.get("source_shards")
+    if not isinstance(source_shards, list) or not source_shards:
+        raise ValueError("conversion manifest has no source shard evidence")
+    source_shard_indices: set[int] = set()
+    raw_source_by_index: dict[int, dict[str, Any]] = {}
+    for evidence in source_shards:
+        if not isinstance(evidence, dict):
+            raise TypeError("conversion source shard evidence must be a mapping")
+        shard_dir = Path(str(evidence.get("path", ""))).resolve()
+        manifest_path = shard_dir / "shard_manifest.json"
+        if not manifest_path.is_file() or _file_sha256(manifest_path) != evidence.get(
+            "manifest_sha256"
+        ):
+            raise ValueError("conversion source shard manifest hash/path mismatch")
+        expected_indices = {int(value) for value in evidence.get("source_indices", [])}
+        verified = validate_complete_shard(
+            shard_dir,
+            expected_source_indices=expected_indices,
+        )
+        if verified["raw_jsonl"]["sha256"] != evidence.get("raw_jsonl_sha256"):
+            raise ValueError("conversion source shard raw hash mismatch")
+        if source_shard_indices & expected_indices:
+            raise ValueError("conversion source shard indices overlap")
+        raw_rows = _read_jsonl(shard_dir / "raw.jsonl")
+        for raw_row in raw_rows:
+            source_index = int(raw_row["source_index"])
+            if source_index in raw_source_by_index:
+                raise ValueError("conversion source raw identity duplicates")
+            raw_source_by_index[source_index] = {
+                "id": raw_row["id"],
+                "raw_record_sha256": raw_row["raw_record_sha256"],
+                "source_audit": build_source_audit(raw_row),
+                "source_key": raw_row["source_key"],
+                "eval_set": raw_row["eval_set"],
+                "seed": int(raw_row["seed"]),
+                "split": raw_row["split"],
+            }
+        if set(raw_source_by_index) - (source_shard_indices | expected_indices):
+            raise ValueError("conversion source raw identities drift from shard")
+        source_shard_indices.update(expected_indices)
+    outputs = manifest.get("outputs")
+    expected_output_files = {
+        "sft1_train_all.jsonl",
+        "sft1_train_success.jsonl",
+        "sft1_heldout_all.jsonl",
+        "sft2_train.jsonl",
+        "sft2_heldout.jsonl",
+        "rejections.jsonl",
+    }
+    if not isinstance(outputs, dict) or set(outputs) != expected_output_files:
+        raise ValueError("conversion manifest output set mismatch")
+    counts: dict[str, int] = {}
+    rows_by_file: dict[str, list[dict[str, Any]]] = {}
+    for filename, evidence in outputs.items():
+        if Path(filename).name != filename or not isinstance(evidence, dict):
+            raise ValueError("invalid conversion output evidence")
+        path = output_dir / filename
+        if not path.is_file():
+            raise ValueError(f"conversion output is missing: {filename}")
+        if path.stat().st_size != int(evidence.get("size_bytes", -1)):
+            raise ValueError(f"conversion output size mismatch: {filename}")
+        if _file_sha256(path) != evidence.get("sha256"):
+            raise ValueError(f"conversion output hash mismatch: {filename}")
+        rows = _read_jsonl(path)
+        rows_by_file[filename] = rows
+        counts[filename] = len(rows)
+        if len(rows) != int(evidence.get("count", -1)):
+            raise ValueError(f"conversion output count mismatch: {filename}")
+        if filename == "rejections.jsonl":
+            required_rejection_fields = {
+                "format",
+                "id",
+                "source_index",
+                "source_key",
+                "eval_set",
+                "seed",
+                "split",
+                "source_record_sha256",
+                "error_type",
+                "reason",
+            }
+            for row in rows:
+                if set(row) != required_rejection_fields or row.get(
+                    "format"
+                ) != REJECTION_FORMAT:
+                    raise ValueError("conversion rejection envelope format mismatch")
+                if not isinstance(row.get("source_index"), int) or not isinstance(
+                    row.get("seed"), int
+                ):
+                    raise TypeError("conversion rejection identity type mismatch")
+                if not re.fullmatch(
+                    r"[0-9a-f]{64}", str(row.get("source_record_sha256", ""))
+                ):
+                    raise ValueError("conversion rejection source hash mismatch")
+                if any(
+                    not isinstance(row.get(key), str) or not row[key]
+                    for key in (
+                        "id",
+                        "source_key",
+                        "eval_set",
+                        "split",
+                        "error_type",
+                        "reason",
+                    )
+                ):
+                    raise ValueError("conversion rejection text field mismatch")
+        if filename != "rejections.jsonl" and evidence.get("stats") != (
+            _dataset_stats(rows)
+        ):
+            raise ValueError(f"conversion output statistics mismatch: {filename}")
+    valid = counts.get("sft1_train_all.jsonl", 0) + counts.get(
+        "sft1_heldout_all.jsonl", 0
+    )
+    if valid != int(manifest.get("result", {}).get("valid", -1)):
+        raise ValueError("conversion valid output count mismatch")
+    if counts.get("rejections.jsonl", 0) != int(
+        manifest.get("result", {}).get("excluded", -1)
+    ):
+        raise ValueError("conversion rejection count mismatch")
+    if counts.get("sft2_train.jsonl", 0) + counts.get(
+        "sft2_heldout.jsonl", 0
+    ) != valid:
+        raise ValueError("conversion SFT1/SFT2 valid counts disagree")
+
+    from nimloth.rollout import RolloutTrajectory, validate_rollout_trajectory
+    from nimloth.rollout.transitions import expand_record_transitions
+
+    sft1_rows = [
+        *rows_by_file.get("sft1_train_all.jsonl", []),
+        *rows_by_file.get("sft1_heldout_all.jsonl", []),
+    ]
+    sft2_rows = [
+        *rows_by_file.get("sft2_train.jsonl", []),
+        *rows_by_file.get("sft2_heldout.jsonl", []),
+    ]
+    for row in sft1_rows:
+        _validate_sft1_record(row, latent_token_count=16)
+        provenance = row.get("conversion_provenance")
+        if not isinstance(provenance, dict) or provenance.get(
+            "converted_sha256"
+        ) != _canonical_sha256(
+            {
+                key: value
+                for key, value in row.items()
+                if key != "conversion_provenance"
+            }
+        ):
+            raise ValueError("published SFT1 converted hash mismatch")
+    for row in sft2_rows:
+        trajectory = RolloutTrajectory.from_record(row)
+        validate_rollout_trajectory(trajectory)
+        if len(expand_record_transitions(row)) != len(row.get("action_indices", [])):
+            raise ValueError("published SFT2 transition count mismatch")
+    sft1_by_id = {str(row.get("id")): row for row in sft1_rows}
+    sft2_by_id = {str(row.get("id")): row for row in sft2_rows}
+    if len(sft1_by_id) != len(sft1_rows) or len(sft2_by_id) != len(sft2_rows):
+        raise ValueError("published conversion contains duplicate IDs")
+    if set(sft1_by_id) != set(sft2_by_id):
+        raise ValueError("published SFT1/SFT2 IDs disagree")
+    for record_id, left in sft1_by_id.items():
+        right = sft2_by_id[record_id]
+        if left.get("source_identity") != right.get("source_identity") or left.get(
+            "source_audit"
+        ) != right.get("source_audit"):
+            raise ValueError("published SFT1/SFT2 source linkage mismatch")
+        source_audit = right.get("source_audit")
+        source_identity = right.get("source_identity")
+        if not isinstance(source_identity, dict) or not isinstance(
+            source_audit, dict
+        ):
+            raise TypeError("published source identity/audit must be mappings")
+        source_index = int(source_identity["source_index"])
+        raw_source = raw_source_by_index.get(source_index)
+        if raw_source is None or source_audit != raw_source["source_audit"]:
+            raise ValueError("published source audit does not match raw row")
+        if record_id != str(raw_source["id"]):
+            raise ValueError("published record ID does not match raw row")
+        for key in ("source_key", "eval_set", "seed", "split"):
+            if source_identity.get(key) != raw_source[key]:
+                raise ValueError("published source identity does not match raw row")
+        artifacts = source_audit.get("image_artifacts") if isinstance(
+            source_audit, dict
+        ) else None
+        image_paths = right.get("image_paths")
+        if not isinstance(artifacts, list) or not isinstance(image_paths, list) or (
+            len(artifacts) != len(image_paths)
+        ):
+            raise ValueError("published source image audit alignment mismatch")
+        for image_path_text, artifact in zip(image_paths, artifacts, strict=True):
+            if not isinstance(artifact, dict):
+                raise TypeError("published source image artifact must be a mapping")
+            image_path = Path(str(image_path_text)).resolve()
+            if not image_path.is_file() or image_path.stat().st_size != int(
+                artifact.get("size_bytes", -1)
+            ):
+                raise ValueError("published source image size/path mismatch")
+            if _file_sha256(image_path) != artifact.get("sha256"):
+                raise ValueError("published source image hash mismatch")
+            if not image_path.as_posix().endswith(str(artifact.get("path", ""))):
+                raise ValueError("published source image relative path mismatch")
+    expected_success = {
+        str(row["id"]): row
+        for row in rows_by_file.get("sft1_train_all.jsonl", [])
+        if bool(row.get("success"))
+    }
+    actual_success = {
+        str(row.get("id")): row
+        for row in rows_by_file.get("sft1_train_success.jsonl", [])
+    }
+    if actual_success != expected_success:
+        raise ValueError("published SFT1 success subset mismatch")
+    train_seeds = {
+        int(row["source_identity"]["seed"])
+        for row in rows_by_file.get("sft2_train.jsonl", [])
+    }
+    heldout_seeds = {
+        int(row["source_identity"]["seed"])
+        for row in rows_by_file.get("sft2_heldout.jsonl", [])
+    }
+    if train_seeds & heldout_seeds:
+        raise ValueError("published train/heldout seeds overlap")
+
+    partition_contract = manifest.get("partition_manifest")
+    if not isinstance(partition_contract, dict):
+        raise TypeError("conversion manifest has no partition contract")
+    partition_path = Path(str(partition_contract.get("path", ""))).resolve()
+    if not partition_path.is_file() or _file_sha256(partition_path) != (
+        partition_contract.get("sha256")
+    ):
+        raise ValueError("published conversion partition hash/path mismatch")
+    partition = json.loads(partition_path.read_text(encoding="utf-8"))
+    validate_partition_manifest(partition, require_published=True)
+    expected_by_index = {
+        int(row["source_index"]): row
+        for row in partition.get("rows", [])
+        if int(row.get("batch", -1)) == 1
+    }
+    if len(expected_by_index) != 2_000:
+        raise ValueError("published partition does not contain exact batch1")
+    observed: dict[int, dict[str, Any]] = {}
+    for row in sft2_rows:
+        identity = row.get("source_identity")
+        if not isinstance(identity, dict):
+            raise TypeError("published SFT2 row has no source identity")
+        source_index = int(identity["source_index"])
+        if source_index in observed:
+            raise ValueError("published conversion duplicates a source index")
+        observed[source_index] = identity
+    for row in rows_by_file.get("rejections.jsonl", []):
+        source_index = int(row["source_index"])
+        if source_index in observed:
+            raise ValueError("published conversion duplicates a source index")
+        raw_source = raw_source_by_index.get(source_index)
+        if raw_source is None or row.get("source_record_sha256") != raw_source.get(
+            "raw_record_sha256"
+        ):
+            raise ValueError("published rejection does not match raw source row")
+        if row.get("id") != raw_source["id"] or row.get("source_key") != raw_source[
+            "source_key"
+        ]:
+            raise ValueError("published rejection identity does not match raw row")
+        observed[source_index] = {
+            "source_index": source_index,
+            "eval_set": str(row["eval_set"]),
+            "seed": int(row["seed"]),
+            "split": str(row["split"]),
+        }
+    if set(observed) != set(expected_by_index):
+        raise ValueError("published conversion does not cover exact batch1 identities")
+    for source_index, expected in expected_by_index.items():
+        actual = observed[source_index]
+        for key in ("eval_set", "seed", "split"):
+            if actual.get(key) != expected.get(
+                "dataset_split" if key == "split" else key
+            ):
+                raise ValueError(
+                    f"published source identity drift at {source_index}: {key}"
+                )
+    return manifest
+
+
 def convert_complete_batch1(
     *,
     partition_manifest: Path,
@@ -262,12 +563,14 @@ def convert_complete_batch1(
             except (ValueError, TypeError, KeyError, IndexError, OSError) as error:
                 rejections.append(
                     {
+                        "format": REJECTION_FORMAT,
                         "id": source.get("id"),
                         "source_index": source.get("source_index"),
+                        "source_key": source.get("source_key"),
                         "eval_set": source.get("eval_set"),
                         "seed": source.get("seed"),
                         "split": source.get("split"),
-                        "source_record_sha256": _canonical_sha256(source),
+                        "source_record_sha256": source.get("raw_record_sha256"),
                         "error_type": type(error).__name__,
                         "reason": str(error),
                     }
@@ -356,7 +659,7 @@ def convert_complete_batch1(
         manifest["manifest_payload_sha256"] = _canonical_sha256(manifest)
         _write_json(temporary / "conversion_manifest.json", manifest)
         atomic_publish_directory(temporary, output_dir)
-        return manifest
+        return validate_conversion_output(output_dir)
     except Exception:
         # Conversion has no partial-resume semantics. Preserve the unique failed
         # temp directory and add an explicit failure marker for end recording.

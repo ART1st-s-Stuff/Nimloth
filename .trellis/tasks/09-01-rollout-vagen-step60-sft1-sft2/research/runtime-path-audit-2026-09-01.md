@@ -49,6 +49,15 @@ Read-only inspection of the same-run step50 evaluator and raw result established
 
 The exact source checkout `/home/hligb/test_lu/VAGEN-navigation-repro-vagen1-train2x4-ffaf505` remains permission-denied, and commit `fee3ffac...` is absent from the accessible Nimloth VAGEN object databases. Accessible commits `f7aefd...` and `44be18c...` do not reproduce the archived strict prompt/config exactly and are therefore not accepted as silent substitutes. The collector now requires a clean runtime at the exact `fee3ffac...` commit and a hash-bound source-runtime contract that records the resolved step length, success reward, action order, three archived prompt hashes, legacy batch API and 500-second service timeout. It fails closed until that object/worktree and evidence become accessible. This is a launch-preflight blocker, not permission to approximate the environment.
 
+A subsequent read-only lineage audit established what an evidence-backed reconstruction could and could not reuse:
+
+- accessible legacy commit `44be18c` implements the expected Flask batch routes (`/health`, `/environments`, `/batch/reset`, `/batch/step`, `/batch/reward`, `/batch/system_prompt`, `/batch/close`), compact action dispatch, `step_length=0.5`, `success_threshold=1.5`, success reward `10.0`, and per-step format reward;
+- its default format reward is `0.5`, while the source parquet/runtime config pins `0.02`; its code does not expose the source run's `invalid_action_penalty=-0.2` field, so it is not exact without reviewed adaptation;
+- later accessible commits `db59a11`, `dda9239`, and `3003c2e` are prior evidence-driven compatibility reconstructions for other archived VAGEN runs. They demonstrate that isolated prompt/parser modes are feasible, but their golden prompt hashes do not equal this task's archived step60 hashes;
+- the committed Nimloth collector independently checks this task's exact three prompt hashes and exact clean `fee3ffac...` HEAD, so none of those accessible commits can pass by relabeling metadata.
+
+The human subsequently approved replanning to this bounded reconstruction route. The reviewed base is now exact `3003c2e5e4ad84565627e6aa7f6ad5ca731dad1a` (a descendant of `44be18c` with isolated compatibility-mode scaffolding). Implementation still requires a fresh gate and must produce a separately named VAGEN patch commit plus a Nimloth contract that reports reconstruction honestly; this planning approval does not authorize code changes, commits, GPU or launch.
+
 ## Terminal CoT decision
 
 Human decision:

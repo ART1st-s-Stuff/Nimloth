@@ -43,21 +43,38 @@
   - Record exact code commit/worktree, commands, output paths, W&B identity if used, resume and cancellation procedures.
   - Stop for implementation/commit approvals required by workflow; do not launch from dirty or uncommitted code.
 
-- [ ] [W-007] **Execute remote preflights and request exact experiment launch approval**
-  - Recheck source paths/hashes, remote clean worktree/commit, Python/runtime, checkpoint merge/load and output nonexistence.
-  - Recheck the selected `normal`, one-node/four-GPU topology and present exact TP2 policy + two-environment GPU binding, CPU/memory/walltime and final commands.
-  - Obtain a separate explicit approval for the exact merge/smoke/batch1 launch contract.
+- [x] [W-007] **Add RED tests for the evidence-backed reconstructed runtime contract**
+  - In an isolated VAGEN worktree based on exact `3003c2e5e4ad84565627e6aa7f6ad5ca731dad1a`, add failing golden tests for the three archived prompt hashes, compact strict parser/action order, legacy batch API, 0.5 m dynamics, 1.5 m threshold, 10.0 success reward, 0.02 format reward and -0.2 invalid-action penalty.
+  - Add a deterministic Nimloth evidence extractor test/fixture contract for hash-pinned W&B JSON: exact UTF-8 JSON decoding, `columns`→row mapping, Qwen role-boundary regex, first-field normalization patterns, newline/`rstrip()` rules and prompt/reward output hashes. The extractor persists no assistant CoT.
+  - Add failing Nimloth tests requiring reconstruction base/patch/diff/tree/manifest identity, one non-merge commit, clean actual runtime HEAD and independently approved literals; prove that `fee3ffac...`, `44be18c` or arbitrary metadata relabeling cannot bypass validation.
+  - VAGEN tests cover valid, invalid-format/action, too-many-action, physical-action-failure and success behavior. Nimloth tests own ordinary/terminal finish reasons, EOS/length/parser failure, whole-linked-trajectory exclusion and proof that no terminal environment step occurs; no test generates fixed CoT.
+  - Add separate RED cases rejecting every v1 reconstruction-consumed surface: runtime contract, raw row, shard manifest, COMPLETE marker, conversion manifest, rejection envelope and SFT1/SFT2 `source_audit.contract_version`. Add positive controls proving partition manifest v1 and HF merge manifest v1 remain intentionally supported.
 
-- [ ] [W-008] **Launch and monitor checkpoint merge, smoke and production-concurrency gate**
+- [x] [W-008] **Implement and verify the isolated VAGEN step60 reconstruction**
+  - Add one isolated `step60_source_reconstruction` prompt/parser/environment mode on the VAGEN reconstruction branch; preserve every existing mode and the legacy Flask batch API.
+  - Implement `experiments/training/sft1/extract_vagen_step60_evidence.py` and schema `vagen_step60_reconstruction_evidence_v1`; atomically fail on an existing output, extract only source prompt/config/reward-class evidence from the hash-pinned archived W&B/log assets, persist golden input/output hashes and provenance, and implement no behavior absent from reviewed evidence. Write the reviewed Nimloth fixture path, then copy it byte-identically with no-overwrite/SHA checks into the isolated VAGEN evidence path; no runtime depends on the private W&B path.
+  - Update the Nimloth checkpoint constants, collector, raw/shard format versions, conversion/source-audit fields, validators, tests and README to identify the unavailable source commit separately from reconstruction base, approved patch HEAD/tree/diff and manifest hash. Remove the overloaded `source_runtime_commit` meaning through an explicit versioned migration; no legacy record is silently reinterpreted.
+  - Validate clean actual Git state, exact single-parent patch (`HEAD^=3003c2e...`), approved HEAD/tree literals and SHA256 of the canonical binary/full-index diff. Manifest values are recomputed and compared against independently approved literals.
+  - Fix reconstruction reward provenance to `step_rewards`; persist and validate generated token IDs plus `finish_reason`/`stop_reason`, package/tokenizer/config identities and the source-vLLM EOS contract. Any terminal-aggregate fallback or generation-boundary change returns to planning.
+  - Run VAGEN and Nimloth focused tests, then full affected tests; stop and replan if a runtime semantic remains unverified.
+
+- [ ] [W-009] **Complete dual-repository review, commit gates and remote preflight**
+  - Run `trellis-check` across the Nimloth diff and isolated VAGEN patch, including source prompt/reward/API evidence and all selected known errors.
+  - Present the VAGEN diff first and obtain commit approval; create exactly one non-merge commit on `task/step60-runtime-reconstruction`; compute/review HEAD/tree/diff/manifest literals; then obtain separate approval to push exact refspec `HEAD:refs/heads/task/step60-runtime-reconstruction`. Bind those literals in Nimloth, present its complete diff and separately obtain Nimloth commit approval followed by exact push approval for `HEAD:refs/heads/task/rollout-vagen-step60-sft1-sft2`. Do not change `origin/dev`, live server checkouts or the Nimloth gitlink.
+  - Create clean remote worktrees `/project/peilab/atst/nimloth/.worktree/vagen-step60-runtime-reconstruction-vagen` and `/project/peilab/atst/nimloth/.worktree/rollout-vagen-step60-sft1-sft2` at the approved commits. Assert each top-level/branch/HEAD, VAGEN common dir `/project/peilab/atst/nimloth/.git/modules/external/VAGEN`, Nimloth common dir `/project/peilab/atst/nimloth/.git`, and controller `worktree list` registration; then recheck source hashes, Python/import provenance, reconstruction manifest, checkpoint merge/load and output nonexistence. Cleanup, if later requested, uses reviewed non-force exact-path removal only.
+  - Recheck `normal` one-node/four-GPU availability and present exact TP2 policy + two-environment GPU binding, CPU/memory/walltime, paths, commands, resume/cancel and monitoring contract.
+  - Obtain a separate explicit experiment launch approval for the exact merge/smoke/concurrency/batch1 commands.
+
+- [ ] [W-010] **Launch and monitor checkpoint merge, smoke and production-concurrency gate**
   - Run the approved merge/load preflight.
-  - Run one-trajectory smoke and validate prompt/transcript/image/terminal semantics.
+  - Run one-trajectory smoke and validate prompt hashes, parser/reward/runtime contract, transcript/image alignment and terminal non-execution.
   - Run one production-size shard; inspect scheduler/log/GPU/resource/output evidence until healthy or terminal.
   - On any terminal event, run `on-experiment-end`; retry only after root-cause review and fresh approval if the contract changes.
 
-- [ ] [W-009] **Launch, monitor and finalize batch1**
+- [ ] [W-011] **Launch, monitor and finalize batch1**
   - Launch only remaining approved batch1 shards.
   - Monitor to terminal completion; validate exact 2,000-row coverage and every complete-shard manifest.
-  - Convert and validate SFT1/SFT2 datasets, prove the 1,800/200 split and zero seed overlap, and record hashes/counts/rejections/limitations and exact resume state.
+  - Convert and validate SFT1/SFT2 datasets, prove the 1,800/200 split and zero seed overlap, and record hashes/counts/rejections/reconstruction limitations and exact resume state.
   - Do not launch batches2–10.
 
 ## Planned validation commands
@@ -68,7 +85,27 @@ Exact filenames may be refined during implementation without changing semantics;
 pytest -q tests/training/sft1 tests/rollout tests/test_wm_transition_dataset.py
 python3 -m compileall -q experiments/training/sft1 src/nimloth/environment/navigation src/nimloth/rollout
 bash -n experiments/training/sft1/*.sh experiments/training/sft1/*.slurm
+PYTHONPATH=<VAGEN_RECONSTRUCTION_WORKTREE> pytest -q \
+  <VAGEN_RECONSTRUCTION_WORKTREE>/tests/test_navigation_step60_reconstruction.py \
+  <VAGEN_RECONSTRUCTION_WORKTREE>/tests/test_navigation_hligb_single_action_compat.py \
+  <VAGEN_RECONSTRUCTION_WORKTREE>/tests/test_navigation_source_eval_compat.py
+python3 -m compileall -q \
+  <VAGEN_RECONSTRUCTION_WORKTREE>/vagen/env/navigation \
+  <VAGEN_RECONSTRUCTION_WORKTREE>/vagen/env/utils \
+  <VAGEN_RECONSTRUCTION_WORKTREE>/tests/test_navigation_step60_reconstruction.py
 python3 ./.trellis/scripts/task.py validate .trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2
+test "$(git -C <VAGEN_RECONSTRUCTION_WORKTREE> rev-parse --show-toplevel)" = <VAGEN_RECONSTRUCTION_WORKTREE>
+test "$(git -C <VAGEN_RECONSTRUCTION_WORKTREE> branch --show-current)" = task/step60-runtime-reconstruction
+test "$(git -C <VAGEN_RECONSTRUCTION_WORKTREE> rev-parse --path-format=absolute --git-common-dir)" = /workspace/remote2/nimloth/.git/modules/external/VAGEN
+git -C /workspace/remote2/nimloth/external/VAGEN worktree list --porcelain | grep -Fqx "worktree <VAGEN_RECONSTRUCTION_WORKTREE>"
+test "$(git -C <VAGEN_RECONSTRUCTION_WORKTREE> rev-list --count 3003c2e5e4ad84565627e6aa7f6ad5ca731dad1a..HEAD)" = 1
+test "$(git -C <VAGEN_RECONSTRUCTION_WORKTREE> rev-list --parents -n 1 HEAD | awk '{print NF}')" = 2
+test "$(git -C <VAGEN_RECONSTRUCTION_WORKTREE> rev-parse HEAD^)" = 3003c2e5e4ad84565627e6aa7f6ad5ca731dad1a
+git -C <VAGEN_RECONSTRUCTION_WORKTREE> rev-parse HEAD
+git -C <VAGEN_RECONSTRUCTION_WORKTREE> rev-parse 'HEAD^{tree}'
+test -z "$(git -C <VAGEN_RECONSTRUCTION_WORKTREE> status --porcelain=v1 --untracked-files=all)"
+LC_ALL=C git -C <VAGEN_RECONSTRUCTION_WORKTREE> --no-pager diff --binary --full-index --no-ext-diff 3003c2e5e4ad84565627e6aa7f6ad5ca731dad1a..HEAD -- | sha256sum
+git -C <VAGEN_RECONSTRUCTION_WORKTREE> diff --check 3003c2e5e4ad84565627e6aa7f6ad5ca731dad1a..HEAD --
 git diff --check
 ```
 
@@ -77,7 +114,8 @@ Remote preflight/launch commands will be written verbatim into the task research
 ## Risk and rollback points
 
 - Checkpoint merger incompatibility → stop before GPU rollout; do not substitute checkpoint.
-- Prompt/runtime mismatch → stop after one-row smoke; preserve evidence and replan.
+- Reconstruction prompt/parser/reward/API evidence mismatch → stop before commit or GPU; do not weaken golden hashes or relabel another runtime.
+- Prompt/runtime/image mismatch → stop after one-row smoke; preserve evidence and replan.
 - Missing terminal image/response or accidental terminal step → invalidate attempt; no conversion.
 - Partial shard → retain but exclude; only valid completion manifest is resumable.
 - Source parquet/hash drift → stop; do not regenerate partition silently.
@@ -86,7 +124,7 @@ Remote preflight/launch commands will be written verbatim into the task research
 
 ## Approval gates
 
-1. Final planning review and **implementation approval** before `task.py start`.
-2. Complete-diff review and **commit approval** before committing task code.
-3. Exact **experiment launch approval** after committed code, remote preflights, partition and total GPU allocation are presented.
+1. Fresh planning review and **implementation approval** for the material reconstruction scope before W-007 code changes.
+2. Complete-diff review and exact **commit/push approvals** for both the Nimloth task ref and isolated VAGEN reconstruction ref.
+3. Exact **experiment launch approval** after both committed refs, clean remote worktrees, reconstruction evidence, partition and total GPU allocation are presented.
 4. Separate approvals for any batch after batch1.

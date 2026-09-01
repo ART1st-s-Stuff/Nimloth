@@ -11,8 +11,12 @@ Canonical location for SFT1 per `ai_tasks/sft1_exp.md`.
 | `convert_rollouts.py` | VAGEN rollout JSONL → Nimloth SFT records |
 | `vagen_step60_data.py` | Pinned step60 source partition, overlap, conversion and complete-shard contracts |
 | `vagen_step60_checkpoint.py` | Non-overwriting step60 shard audit, legacy FSDP merge plan and HF load validation |
-| `vagen_step60_collect.py` | Exact-source legacy service client, frozen-policy rollout, terminal generation and atomic raw shards |
-| `vagen_step60_convert.py` | Complete batch1 shards → linked K16 SFT1/SFT2 views, rejections and hash manifest |
+| `extract_vagen_step60_evidence.py` | Non-overwriting W&B prompt/reward extractor that excludes assistant CoT and emits the hash-bound reconstruction fixture |
+| `vagen_step60_runtime_contract.py` | Non-overwriting Git-computed reconstruction contract producer; prints the payload hash for approval |
+| `hash_vagen_step60_runtime_contract.py` | Independent runtime-contract payload hash recomputation/check CLI |
+| `vagen_step60_collect.py` | Evidence-backed reconstructed legacy service client, frozen-policy rollout, EOS/terminal audit and atomic v2 raw shards; unavailable exact source commit remains provenance only |
+| `vagen_step60_convert.py` | Complete batch1 shards → linked K16 SFT1/SFT2 views, v2 rejections and hash manifest; validates after atomic publication |
+| `validate_vagen_step60_conversion.py` | Independent published-conversion hash/count/envelope validator |
 | `derive_rollout_images_255.py` | Preserve sources and derive RGB 255×255 images with rewritten JSONLs |
 | `derive_rollout_images_255.slurm` | CPU wrapper for the non-destructive image derivation |
 | `merge_lora_ckpt.py` | LoRA adapter → `hf_merged` for VAGEN eval / SFT2 init |

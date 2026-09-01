@@ -1,0 +1,110 @@
+{
+  "format": "vagen_step60_reconstruction_evidence_v1",
+  "extraction": {
+    "version": 1,
+    "json_encoding": "utf-8",
+    "chat_boundary": "<\\|im_start\\|>(system|user|assistant)\\n(.*?)<\\|im_end\\|>",
+    "initial_substitutions": [
+      [
+        "(?m)^Human Instruction: .+$",
+        "Human Instruction: <INSTRUCTION>"
+      ]
+    ],
+    "step_substitutions": [
+      [
+        "(?m)^After your answer, the extracted valid action is .+$",
+        "After your answer, the extracted valid action is <ACTIONS>."
+      ],
+      [
+        "(?m)^The environment feedback is: .+$",
+        "The environment feedback is: <FEEDBACK>"
+      ],
+      [
+        "(?m)^reward: .+$",
+        "reward: <REWARD>"
+      ],
+      [
+        "(?m)^done: .+$",
+        "done: <DONE>"
+      ],
+      [
+        "(?m)^Human Instruction: .+$",
+        "Human Instruction: <INSTRUCTION>"
+      ]
+    ],
+    "post_step_rstrip": true
+  },
+  "fixture_source": {
+    "path": "/project/peilab/hligb/vagen-navigation/wandb/wandb/run-20260813_092455-2q620nss/files/media/table/val/generations_14_6bc61d7bb480498be805.table.json",
+    "sha256": "6bc61d7bb480498be80547a45ff8932415c50e3de5943a1f159d0a5f47580c27",
+    "row_index": 0,
+    "transcript_column": "output_1"
+  },
+  "reward_sources": [
+    {
+      "path": "/project/peilab/hligb/vagen-navigation/wandb/wandb/run-20260813_092455-2q620nss/files/media/table/val/generations_14_6bc61d7bb480498be805.table.json",
+      "sha256": "6bc61d7bb480498be80547a45ff8932415c50e3de5943a1f159d0a5f47580c27"
+    },
+    {
+      "path": "/project/peilab/hligb/vagen-navigation/wandb/wandb/run-20260813_092455-2q620nss/files/media/table/val/generations_19_57cb2071e521b5e0aca3.table.json",
+      "sha256": "57cb2071e521b5e0aca304a2d8ff393f1f8952bb3f67bdf56d5f8a707cb77a7a"
+    },
+    {
+      "path": "/project/peilab/hligb/vagen-navigation/wandb/wandb/run-20260813_092455-2q620nss/files/media/table/val/generations_24_358f6d39e724356dabaf.table.json",
+      "sha256": "358f6d39e724356dabaf0a7acad8aa6097e9ce4bfd965c7c5e0bf37b704773b6"
+    },
+    {
+      "path": "/project/peilab/hligb/vagen-navigation/wandb/wandb/run-20260813_092455-2q620nss/files/media/table/val/generations_29_2f1898c987fc3d33d116.table.json",
+      "sha256": "2f1898c987fc3d33d1166025fee7f58a57bf62e9155eb5a58a639d60bad8df60"
+    },
+    {
+      "path": "/project/peilab/hligb/vagen-navigation/wandb/wandb/run-20260813_092455-2q620nss/files/media/table/val/generations_34_f0d12f044caa084fc5ae.table.json",
+      "sha256": "f0d12f044caa084fc5ae895892b5848bb794eba508ba60c42994f418b50d106a"
+    },
+    {
+      "path": "/project/peilab/hligb/vagen-navigation/wandb/wandb/run-20260813_092455-2q620nss/files/media/table/val/generations_39_07a1a55e2afabcdcc049.table.json",
+      "sha256": "07a1a55e2afabcdcc049b584b46dacf2637fb50e483dca2a0dff037ad50636f2"
+    },
+    {
+      "path": "/project/peilab/hligb/vagen-navigation/wandb/wandb/run-20260813_092455-2q620nss/files/media/table/val/generations_44_c3fd3e5f26c73295561c.table.json",
+      "sha256": "c3fd3e5f26c73295561c0d3b57d485bfa2fb0eafeb22b7ab4436a44adbb287ec"
+    },
+    {
+      "path": "/project/peilab/hligb/vagen-navigation/wandb/wandb/run-20260813_092455-2q620nss/files/media/table/val/generations_49_0b36ddcc1d33bee81902.table.json",
+      "sha256": "0b36ddcc1d33bee819025ca588f63dd43605a8a4f41d776e552ad5103057e26c"
+    },
+    {
+      "path": "/project/peilab/hligb/vagen-navigation/wandb/wandb/run-20260813_092455-2q620nss/files/media/table/val/generations_4_0e9c7d1067f8a88a6b54.table.json",
+      "sha256": "0e9c7d1067f8a88a6b547fba4770944c56b37e3a3028839e48f51d293cba0141"
+    },
+    {
+      "path": "/project/peilab/hligb/vagen-navigation/wandb/wandb/run-20260813_092455-2q620nss/files/media/table/val/generations_54_45fe19745969bd89965c.table.json",
+      "sha256": "45fe19745969bd89965c473b8113e1bb519e05449603cc9a19470918d3186b7d"
+    },
+    {
+      "path": "/project/peilab/hligb/vagen-navigation/wandb/wandb/run-20260813_092455-2q620nss/files/media/table/val/generations_59_d9077fc141d30e11b84a.table.json",
+      "sha256": "d9077fc141d30e11b84a52b0d0805f8720f89150e8ff1ba0b1863ac5243d46ea"
+    },
+    {
+      "path": "/project/peilab/hligb/vagen-navigation/wandb/wandb/run-20260813_092455-2q620nss/files/media/table/val/generations_9_e30aca9565917a134d65.table.json",
+      "sha256": "e30aca9565917a134d65dc4c3210544bf6547bd27c7b5fc937da147262fcda04"
+    }
+  ],
+  "prompt_templates": {
+    "system": "You are a home robot and perform navigation tasks according to instructions.\nActions you can take: moveahead, moveback, moveright, moveleft, rotateright, rotateleft, lookup, lookdown.\nmoveahead: Move forward by some distance\nmoveback: Move backward by some distance\nmoveright: Move rightward by some distance\nmoveleft: Move leftward by some distance\nrotateright: Rotate to the right by 90 degrees\nrotateleft: Rotate to the left by 90 degrees\nlookup: Tilt the camera upward by 30 degrees\nlookdown: Tilt the camera downward by 30 degrees\nRewards:\nFormat correct only when the answer is exactly one valid action name.\nAchieve the human instruction: +10.0\nInvalid action names receive negative feedback.\nThe instruction will be provided with each observation. Look at the image carefully and navigate to complete the instruction.\nHints:\n1. You must take exactly one action in each response.\n2. Your whole response must strictly match this format and nothing else:\n<think><observation>...</observation><reasoning>...</reasoning><prediction>...</prediction></think><answer>one_action</answer>\n3. Do not write anything before <think> or after </answer>.\n4. The answer must be exactly one of these lowercase action names: moveahead, moveback, moveright, moveleft, rotateright, rotateleft, lookup, lookdown.\nFor example:\n<think><observation>The target area is ahead.</observation><reasoning>I should move one step closer.</reasoning><prediction>The target should appear closer.</prediction></think><answer>moveahead</answer>\n5. Do not use commas, numbering, bullet points, or natural-language action names inside <answer>.\n6. There is no stay, stop, end, done, terminate, wait, noop action. Never output those words.\n7. If you believe you are close to the target or the target is visible, do not stop or declare completion; still choose exactly one listed movement or camera action.\n9. The words stay, stop, end, done, terminate, wait, noop, finish, complete, and success are invalid answers even when the target is visible.\n8. If you seem to be stuck, you can lookdown to see if there is any object above or below you, or rotate to inspect what is behind you.\nYou must take exactly one action at a time.\nThe action must be exactly one of these lowercase action names: moveahead, moveback, moveright, moveleft, rotateright, rotateleft, lookup, lookdown.\nThere is no stay, stop, end, done, terminate, wait, noop action. Never output those words.\nIf you believe you are close to the target or the target is visible, do not stop or declare completion; still choose exactly one listed movement or camera action.\nThe words stay, stop, end, done, terminate, wait, noop, finish, complete, and success are invalid answers even when the target is visible.\nDo not output more than one action or separate actions with ','.\nYou should first give your thought process with the your observation, reasoning, and prediction of next state, then your answer.\nBoth the observation and prediction should describe what you see or expect to see in the environment.\nYour response should be in the format of:\n<think><observation>...</observation><reasoning>...</reasoning><prediction>...</prediction></think><answer>...</answer>\ne.g. <think><observation>The target object is ahead but slightly off center.</observation><reasoning>I should take one forward step to reduce the distance.</reasoning><prediction>After moving forward, the target should appear larger and closer.</prediction></think><answer>moveahead</answer>",
+    "initial": "[Initial Observation]:\n<image>\nHuman Instruction: <INSTRUCTION>\nDecide your next action.\nYou must take exactly one action at a time.\nThe action must be exactly one of these lowercase action names: moveahead, moveback, moveright, moveleft, rotateright, rotateleft, lookup, lookdown.\nThere is no stay, stop, end, done, terminate, wait, noop action. Never output those words.\nIf you believe you are close to the target or the target is visible, do not stop or declare completion; still choose exactly one listed movement or camera action.\nThe words stay, stop, end, done, terminate, wait, noop, finish, complete, and success are invalid answers even when the target is visible.\nDo not output more than one action or separate actions with ','.\nYou should first give your thought process with the your observation, reasoning, and prediction of next state, then your answer.\nBoth the observation and prediction should describe what you see or expect to see in the environment.\nYour response should be in the format of:\n<think><observation>...</observation><reasoning>...</reasoning><prediction>...</prediction></think><answer>...</answer>",
+    "post_step": "After your answer, the extracted valid action is <ACTIONS>.\nThe environment feedback is: <FEEDBACK>\nreward: <REWARD>\ndone: <DONE>\nAfter that, the observation is:\n<image>\nHuman Instruction: <INSTRUCTION>\nDecide your next action.\nYou must take exactly one action at a time.\nThe action must be exactly one of these lowercase action names: moveahead, moveback, moveright, moveleft, rotateright, rotateleft, lookup, lookdown.\nThere is no stay, stop, end, done, terminate, wait, noop action. Never output those words.\nIf you believe you are close to the target or the target is visible, do not stop or declare completion; still choose exactly one listed movement or camera action.\nThe words stay, stop, end, done, terminate, wait, noop, finish, complete, and success are invalid answers even when the target is visible.\nDo not output more than one action or separate actions with ','.\nYou should first give your thought process with the your observation, reasoning, and prediction of next state, then your answer.\nBoth the observation and prediction should describe what you see or expect to see in the environment.\nYour response should be in the format of:\n<think><observation>...</observation><reasoning>...</reasoning><prediction>...</prediction></think><answer>...</answer>"
+  },
+  "prompt_hashes": {
+    "system_prompt_sha256": "d691e077a5a4204386d3958a81d08f4322d6618dbee0f740b2c4848ddf2bc99a",
+    "initial_prompt_normalized_sha256": "95d3469f8d076ab788b3d100407d0200541fcb33fe006af941f224f69a7757e2",
+    "step_prompt_normalized_sha256": "c0d89b9a3949ef747676ba00d10b488a91b03fa80c2beb90d488d7de316824e7"
+  },
+  "reward_counts": {
+    "-0.2": 596,
+    "0": 35,
+    "0.02": 6361,
+    "10.02": 359
+  },
+  "manifest_sha256": "4057111319be7131032ff08d0b87409c9dfadc841812532c9fe6c6242193f450"
+}

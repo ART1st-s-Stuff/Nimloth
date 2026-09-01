@@ -1,13 +1,16 @@
 {"file":".trellis/spec/governance/authority-and-safety.md","reason":"Implementation authorization, honesty and protected-action boundaries."}
 {"file":".trellis/spec/governance/cot-and-state.md","reason":"Real observation-aligned terminal CoT and non-executed draft-action semantics."}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"Isolated dual-repository worktrees, exact commits, protected files and non-force cleanup boundaries."}
 {"file":".trellis/spec/experiments/task-contract.md","reason":"Required checkpoint/data/output/resource/resume/approval launch fields."}
 {"file":".trellis/spec/experiments/data-and-splits.md","reason":"Pinned parquet lineage, deterministic batches and overlap evidence."}
 {"file":".trellis/spec/experiments/launch-and-lifecycle.md","reason":"Committed source, unique launch identity, monitoring and end-event gates."}
 {"file":".trellis/spec/experiments/outputs-checkpoints-and-evidence.md","reason":"Non-overwriting outputs, checkpoint ownership and evidence limits."}
 {"file":".trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2/research/initial-source-audit-2026-09-01.md","reason":"Verified source checkpoint/run/data facts and initial unknowns."}
 {"file":".trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2/research/runtime-path-audit-2026-09-01.md","reason":"Selected runtime architecture, prior-eval limitations, terminal decision and resource observation."}
+{"file":".trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2/research/reconstruction-evidence-2026-09-01.md","reason":"Hash-pinned prompt extraction, reward classes, sampling invocation and vLLM EOS evidence for reconstruction."}
 {"file":"ai_rules/known_errors/E0005_validate_rollout_dump_schema_before_conversion.md","reason":"Requires raw schema/transcript validation before dataset conversion."}
 {"file":"ai_rules/known_errors/E0014_verify_rollout_environment_parity.md","reason":"Requires actual source prompt/environment parity rather than profile-name assumptions."}
+{"file":"ai_rules/known_errors/E0016_separate_train_rollout_and_validation_sampling.md","reason":"Requires explicit source sampling invocation fields and train/eval kwargs distinction."}
 {"file":"ai_rules/known_errors/E0030_async_validation_metadata_zip_mispairs.md","reason":"Requires stable source-row identity rather than positional async result pairing."}
 {"file":"ai_rules/known_errors/E0071_parallel_collectors_need_unique_environment_ids.md","reason":"Requires globally unique environment identities under parallel collection."}
 {"file":"ai_rules/known_errors/E0074_vagen_navigation_batch_create_needs_service_timeout.md","reason":"Requires a safe environment-service timeout for batched creation."}

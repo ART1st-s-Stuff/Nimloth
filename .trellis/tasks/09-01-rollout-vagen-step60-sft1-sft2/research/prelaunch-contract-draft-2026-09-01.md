@@ -1,7 +1,7 @@
 # Pre-launch contract draft — VAGEN step60 batch1
 
 Date: 2026-09-01
-Status: **not launch approval**; W-007 must replace every pending field with read-only preflight evidence and obtain a separate `experiment_launch` approval.
+Status: **not launch approval**; after the approved reconstruction replan, W-009 must replace every pending field with reviewed dual-repository commits and read-only preflight evidence, then obtain a separate `experiment_launch` approval.
 
 ## Purpose and validity boundary
 
@@ -14,7 +14,9 @@ Trainable modules/objectives: none. Actor, vision encoder, environment and all N
 - actor checkpoint: `/project/peilab/hligb/vagen-navigation/checkpoints/vagen_navigation_repro/navigation_vagen1_native_8gpu_rmb4_ppo16_val5_save5_lightckpt_48h_20260813T011326Z/global_step_60/actor`
 - source train parquet: `/project/peilab/hligb/vagen-navigation/data/navigation_vagen1_native_8gpu_rmb4_ppo16_val5_save5_lightckpt_48h_20260813T011326Z/train.parquet`
 - parquet SHA256: `3c8161bd45adc4cde5d67157cf4db225753ed3925cb9a52e3a57d1dd11dbe9d6`
-- source runtime commit: `fee3ffac036a599b0ae979a6dd1ce2b21f7dec49`
+- unavailable source runtime commit (provenance only): `fee3ffac036a599b0ae979a6dd1ce2b21f7dec49`
+- approved reconstruction base: `3003c2e5e4ad84565627e6aa7f6ad5ca731dad1a`
+- approved and pushed VAGEN patch ref: `origin/task/step60-runtime-reconstruction` at `170a673d1bf5855fc0ea6fbed0744b3d7168f8f0`; tree `58ef0eb66ad0bef7587c253c5c643af572c1d3a7`; canonical diff SHA256 `7f025476657de1289cf84b61d7702de26d248cd196412e9374a15e6de62730e9`
 - model architecture/tokenizer lineage: `Qwen/Qwen2.5-VL-3B-Instruct`, source world size 8
 - batch1 rule: category ordinals 0–999 from `base` and `common_sense`; internal held-out when `category_ordinal % 10 == 9`; expected 1,800 train + 200 held-out and zero bare-seed overlap
 
@@ -22,7 +24,8 @@ The source test parquet is excluded because all 128 `(eval_set, seed)` identitie
 
 ## Frozen generation/environment contract
 
-- `do_sample=true`, temperature `0.7`, top-p `0.95`, top-k `-1`, `n=1`
+- source log field `actor_rollout_ref.rollout`: `do_sample=true`, temperature `0.7`, top-p `0.95`, top-k `-1`, `n=1`, `ignore_eos=false`; no separate `actor_rollout_ref.rollout.val_kwargs` exists in this run
+- source W&B requirements: vLLM `0.8.5.post1`, Transformers `4.49.0`, PyTorch `2.6.0`; exact approved remote interpreter/environment remains pending preflight
 - max response tokens `256`, max model length `6144`, max turns `20`
 - history window `5`, at most six images per request
 - strict source response: `<think>...</think><answer>one_action</answer>`
@@ -31,19 +34,35 @@ The source test parquet is excluded because all 128 `(eval_set, seed)` identitie
   - normalized initial user: `95d3469f8d076ab788b3d100407d0200541fcb33fe006af941f224f69a7757e2`
   - normalized post-step user: `c0d89b9a3949ef747676ba00d10b488a91b03fa80c2beb90d488d7de316824e7`
 - pinned row config: `grounding_worldmodeling`, one action, format reward `0.02`, invalid-action penalty `-0.2`, success threshold `1.5`, no state reward
+- source `step_length=0.5` metres: human-confirmed as the source VAGEN default, with no source-run override
+- source `success_reward=10.0`: archived source W&B generation-table system prompt
 - service timeout: 500 seconds
 
-Pending exact-source evidence before approval:
+Reconstruction evidence status before launch approval:
 
-- readable clean runtime at exact commit `fee3ffac...`;
-- resolved source step length and success reward;
-- exact legacy batch HTTP request/response contract;
-- reward provenance: either aligned finite `step_rewards`, or `trajectory_terminal_reward` with one explicit terminal `info` key. No conversion flag may relabel this decision;
-- terminal stop/finish boundary and format-failure behavior confirmed by one-row smoke.
+- completed locally and pushed: reviewed VAGEN patch `170a673...` on exact base `3003c2e...`, with clean worktree, ancestry/tree/diff/evidence hashes and golden prompt/parser/reward/API tests; remote clean-worktree/import/service recheck remains pending;
+- pending: reviewed Nimloth collector commit that distinguishes unavailable source provenance from actual reconstruction runtime identity and rejects metadata relabeling;
+- exact legacy batch HTTP request/response contract under the patched mode;
+- aligned finite `step_rewards` through the actual batch API, including golden `0.02`, `10.02`, `-0.2` and too-many-action `0.0` cases; any aggregate-reward fallback requires replanning;
+- tokenizer EOS is the only generation stop: `ignore_eos=false`, empty custom stop strings/token IDs, and source-vLLM EOS tuple `(finish_reason="stop", stop_reason=null)` is required. Package/tokenizer/config hashes, EOS ID and generated token IDs are persisted. Length/custom/other finish or parser failure is audited but excludes the linked record from both SFT1 and SFT2; smoke uses `fail_shard`, formal collection uses `exclude_trajectory`.
+
+## 2026-09-01 start-request preflight snapshot
+
+Read-only rechecks after the human said to start established:
+
+- checkpoint actor still contains exactly eight model and eight extra-state shards;
+- pinned train parquet SHA256 still equals `3c8161bd45adc4cde5d67157cf4db225753ed3925cb9a52e3a57d1dd11dbe9d6`;
+- stable output group `outputs/experiments/training/sft1-vagen-step60/` is still absent;
+- approved Nimloth commit `696ee904e820636eb971e05ea09e43cffbe0b2a0` remains published at `origin/task/rollout-vagen-step60-sft1-sft2`, but the server canonical object store has not fetched it and no task worktree has been created;
+- source commit `fee3ffac036a599b0ae979a6dd1ce2b21f7dec49` remains absent from both accessible VAGEN object stores and is not advertised by the configured VAGEN origin;
+- the committed collector intentionally calls `source_runtime_commit()` and rejects any runtime whose clean Git HEAD is not exact `fee3ffac...`;
+- current `normal` free-GPU snapshot has no healthy responsive node with four free GPUs: responsive mixed nodes expose only 1 or 2 each; nodes advertising eight free are `DOWN+NOT_RESPONDING` and are not launch candidates.
+
+Therefore no merge, GPU allocation, Slurm submission or rollout was started. The human subsequently approved replanning to an evidence-backed reconstructed runtime. Launch remains blocked on fresh implementation approval, reviewed dual-repository commits, clean remote worktrees, complete literals and exact experiment launch approval.
 
 ## Staged commands
 
-The exact approved commit, clean remote worktree and unique output identities are intentionally pending until commit approval. W-007 must render these commands verbatim with literal paths before launch approval.
+The exact approved Nimloth/VAGEN commits, clean remote worktrees and unique output identities are intentionally pending until dual-repository commit approval. W-009 must render these commands verbatim with literal paths before launch approval.
 
 1. Partition (CPU, non-overwriting):
 
@@ -66,18 +85,36 @@ python3 experiments/training/sft1/vagen_step60_checkpoint.py merge \
   --hash-shards --execute
 ```
 
-3. Collection entrypoint (GPU; first one-row smoke, then one 100-row concurrency shard, then only remaining batch1 shards after gates):
+3. Reconstruction runtime contract (CPU, clean approved VAGEN patch worktree; exact literals pending commit review):
+
+```bash
+python3 experiments/training/sft1/vagen_step60_runtime_contract.py \
+  --runtime-root <CLEAN_APPROVED_RECONSTRUCTION_RUNTIME> \
+  --expected-head <APPROVED_VAGEN_HEAD> \
+  --expected-tree <APPROVED_VAGEN_TREE> \
+  --expected-diff-sha256 <APPROVED_VAGEN_DIFF_SHA256> \
+  --output <UNUSED_RUNTIME_CONTRACT_JSON>
+python3 experiments/training/sft1/hash_vagen_step60_runtime_contract.py \
+  --contract <UNUSED_RUNTIME_CONTRACT_JSON>
+```
+
+4. Collection entrypoint (GPU; first one-row smoke, then one 100-row concurrency shard, then only remaining batch1 shards after gates):
 
 ```bash
 python3 experiments/training/sft1/vagen_step60_collect.py \
   --model-path <VERIFIED_MERGED_HF_OUTPUT> \
   --partition-manifest <PARTITION_MANIFEST> \
-  --shard-index <LITERAL_INDEX> --shard-size 100 \
+  --source-index <LITERAL_BATCH1_SMOKE_SOURCE_INDEX> \
+  --shard-index 0 --shard-size 100 \
   --output-dir <UNUSED_UNIQUE_SHARD_OUTPUT> \
   --env-url <APPROVED_LEGACY_SERVICE_URL> \
   --run-id <UNIQUE_RUN_ID> \
-  --source-runtime-root <CLEAN_EXACT_SOURCE_RUNTIME> \
+  --source-runtime-root <CLEAN_APPROVED_RECONSTRUCTION_RUNTIME> \
   --source-runtime-contract <HASH_BOUND_RUNTIME_CONTRACT_JSON> \
+  --expected-reconstruction-head <APPROVED_VAGEN_HEAD> \
+  --expected-reconstruction-tree <APPROVED_VAGEN_TREE> \
+  --expected-reconstruction-diff-sha256 <APPROVED_VAGEN_DIFF_SHA256> \
+  --expected-runtime-contract-payload-sha256 <APPROVED_RUNTIME_CONTRACT_SHA256> \
   --format-failure-policy <APPROVED_LITERAL_POLICY> \
   --concurrency <APPROVED_LITERAL_CONCURRENCY> \
   --tensor-parallel-size 2 \
@@ -85,7 +122,7 @@ python3 experiments/training/sft1/vagen_step60_collect.py \
   --engine-seed <APPROVED_LITERAL_ENGINE_SEED>
 ```
 
-4. Conversion (CPU, after all 2,000 identities are present in verified COMPLETE shards):
+5. Conversion and independent validation (CPU, after all 2,000 identities are present in verified COMPLETE shards):
 
 ```bash
 python3 experiments/training/sft1/vagen_step60_convert.py \
@@ -93,6 +130,8 @@ python3 experiments/training/sft1/vagen_step60_convert.py \
   <TWENTY_LITERAL_--shard-dir_ARGUMENTS> \
   --output-dir <UNUSED_UNIQUE_DATASET_OUTPUT> \
   --latent-token-count 16
+python3 experiments/training/sft1/validate_vagen_step60_conversion.py \
+  --output-dir <UNUSED_UNIQUE_DATASET_OUTPUT>
 ```
 
 ## Output, resume and monitoring
@@ -105,11 +144,12 @@ Monitor scheduler state, process/log errors, service health, GPU utilization, re
 
 ## Resource direction and pending literals
 
-Human-selected direction: `normal`, one node, four GPUs total: policy TP2 on two GPUs plus two environment GPUs. W-007 must re-query availability immediately before submission and fill exact CPUs, memory, walltime, device binding, hold-allocation/srun commands, job identity, expected duration and cancellation command.
+Human-selected direction: `normal`, one node, four GPUs total: policy TP2 on two GPUs plus two environment GPUs. W-009 must re-query availability immediately before submission and fill exact CPUs, memory, walltime, device binding, hold-allocation/srun commands, job identity, expected duration and cancellation command.
 
 ## Current blockers
 
-1. Exact source commit object/worktree is still inaccessible; accessible VAGEN lineages are not substitutes.
-2. Task code is uncommitted; no approved commit or clean remote worktree exists yet.
+1. VAGEN reconstruction commit/ref is approved and pushed; Nimloth reconstruction/task changes remain uncommitted and unapproved for commit/push, and no clean remote task worktrees exist yet.
+2. VAGEN base compatibility tests and actual Flask/AI2-THOR service behavior remain pending the clean remote CPU/GPU smoke gates because the local dependency install could not complete within user-cache space.
 3. Merge/load and real service smoke are launch-gated and have not run.
-4. Literal output paths, resource values and commands are incomplete, so this draft cannot authorize submission.
+4. Current `normal` availability has no healthy responsive node with four free GPUs; availability is transient and must be rechecked.
+5. Literal output paths, resource values and commands are incomplete, so this draft cannot authorize submission.
