@@ -102,11 +102,11 @@ test -z "$(git -C "$VWT" status --porcelain=v1 --untracked-files=all)"
 test "$(sha256sum "$NWT/external/VAGEN/verl/scripts/legacy_model_merger.py" | awk '{print $1}')" = 3e2794e1e9e566a4aeb0d709dad7d2b8864c8b91e4f72cf0d265ecb62c311044
 test "$(sha256sum "$ROOT/.venv/lib/python3.10/site-packages/vllm/outputs.py" | awk '{print $1}')" = 047d469792ba4b332fd6bc6837af03340135cb49798e1ddfd2ffa730ead436f8
 test "$(sha256sum "$ROOT/.venv/lib/python3.10/site-packages/vllm/engine/output_processor/stop_checker.py" | awk '{print $1}')" = 5ed39ad2df9912b7a4b9ff52168c50bfe9d937675d3f1122148c0824450afa28
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$VWT:$NWT/src:$NWT" timeout 120s "$PY" - <<'PY'
+for code in 'import torch' 'import transformers' 'import vllm' 'import vagen.server.server' 'from experiments.training.sft1 import vagen_step60_collect'; do
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$VWT:$NWT/src:$NWT" timeout 60s "$PY" -c "$code; print('IMPORT_OK')"
+done
+PYTHONDONTWRITEBYTECODE=1 "$PY" - <<'PY'
 import importlib.metadata as m
-import torch, transformers, vllm
-import vagen.server.server
-from experiments.training.sft1 import vagen_step60_collect
 assert {k: m.version(k) for k in ("vllm", "transformers", "torch")} == {"vllm":"0.8.2", "transformers":"4.49.0", "torch":"2.6.0"}
 PY
 test "$(sha256sum "$SOURCE" | awk '{print $1}')" = 3c8161bd45adc4cde5d67157cf4db225753ed3925cb9a52e3a57d1dd11dbe9d6
