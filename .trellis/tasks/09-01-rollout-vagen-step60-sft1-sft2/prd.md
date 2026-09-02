@@ -107,5 +107,5 @@
 ## Deferred downstream decision and staged launch details
 
 1. SFT1 训练集最终采用 `train_all` 还是 `train_success`；本任务将两者都产出并分别标注，后续训练选择可以延后决定。
-2. [`research/exact-merge-smoke-launch-contract-2026-09-02.md`](research/exact-merge-smoke-launch-contract-2026-09-02.md) 是已终止的 pre-submit 失败证据，绑定的 run root 永不复用。W-013 只完成本地实现/测试/审查；W-009 随后独占 commit/push、clean remote refresh 和三类 marker 的 NFSv3 CPU proof，并创建全新 run identity 与全新精确 merge/smoke contract，再取得单独 launch approval。旧 approval 不授权重试。
+2. [`research/exact-merge-smoke-launch-contract-2026-09-02.md`](research/exact-merge-smoke-launch-contract-2026-09-02.md) 是已终止的 pre-submit 失败证据，绑定的 run root 永不复用。Post-W-013 code 已提交为 `32bcc045...`，远程 NFSv3 三类 marker proof 与真实 partition publication 已通过；新的 source-index-0 candidate 是 [`research/exact-merge-smoke-launch-contract-nfs-2026-09-02.md`](research/exact-merge-smoke-launch-contract-nfs-2026-09-02.md)。它仍须 commit/push 并取得单独 launch approval；旧 approval 不授权重试。
 3. 100-row concurrency gate 与剩余 batch1 的资源、时限、输出和完整命令仍须根据真实 smoke 证据另行固定并分别取得新 launch approval；batches2–10 继续不在本任务启动范围内。
