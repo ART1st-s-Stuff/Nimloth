@@ -54,9 +54,6 @@ from nimloth.training.reconstruction.cfm_forensic_oracle_ladder import (
 )
 from nimloth.training.reconstruction.cfm_forensic_posthoc_inspection import (
     FINAL_CHECKPOINT_SHA256,
-    STAGE_B_INITIAL_NOISE_SHA256,
-    STAGE_B_SAMPLE_INDICES,
-    STAGE_B_SAMPLE_INDICES_SHA256,
 )
 from nimloth.training.reconstruction.cfm_forensic_query_state import (
     FORENSIC_CFM_CHECKPOINT_SCHEMA,
@@ -95,6 +92,26 @@ CELL_ORDER = (
 BOOTSTRAP_SEED = 20260951
 BOOTSTRAP_RESAMPLES = 10_000
 CONTACT_SAMPLE_SEED = 20260921
+ID198_SAMPLE_INDICES = (
+    741,
+    919,
+    199,
+    492,
+    150,
+    920,
+    911,
+    24,
+    638,
+    598,
+    424,
+    1271,
+    1297,
+    675,
+    669,
+    356,
+)
+ID198_SAMPLE_INDICES_SHA256 = "cf9916243abca79342dbcbe71b52bef16ea03c4d1680e838873dce403309f410"
+ID198_INITIAL_NOISE_SHA256 = "7390e403b9d92922fa94fd53b0e6b1fd09df3da002c397a89bca03e68d718575"
 ID198_SUMMARY_SHA256 = "a2f30b1c67556e6b37b36ae115d1430be5fa61a218c52c7be4b8f551a579c717"
 ID198_EXTERNAL_REPORT_SHA256 = "ed07caa67115576fe036aee4c8a0f1d379243670632c9c7bba82d4506e435de0"
 ID198_ROW_IMAGE_PAIR_IDENTITY = "b8eaddac0c595f26525cf60e6de98312d41bd32271e243deb1a4c61aabe40c86"
@@ -1152,7 +1169,7 @@ def _load_id198_visual_reference(
         or not isinstance(roles, Mapping)
         or roles.get("external_validation", {}).get("visual_count") != 16
         or not isinstance(visual, Mapping)
-        or visual.get("indices") != list(STAGE_B_SAMPLE_INDICES)
+        or visual.get("indices") != list(ID198_SAMPLE_INDICES)
         or visual.get("seed") != CONTACT_SAMPLE_SEED
         or not isinstance(rows, list)
         or len(rows) != 16
@@ -1199,18 +1216,18 @@ def _contact_samples(
     dict[str, list[Image.Image]],
     str,
 ]:
-    indices = torch.tensor(STAGE_B_SAMPLE_INDICES, dtype=torch.long)
-    if _sha256_tensor_bytes(indices) != STAGE_B_SAMPLE_INDICES_SHA256:
+    indices = torch.tensor(ID198_SAMPLE_INDICES, dtype=torch.long)
+    if _sha256_tensor_bytes(indices) != ID198_SAMPLE_INDICES_SHA256:
         raise ValueError("oracle-ladder contact-sheet index contract drift")
     generator = torch.Generator(device="cpu").manual_seed(CONTACT_SAMPLE_SEED)
     noise = torch.randn((16, 3, IMAGE_SIZE, IMAGE_SIZE), generator=generator)
-    rows = tuple(splits["state"].rows[index] for index in STAGE_B_SAMPLE_INDICES)
+    rows = tuple(splits["state"].rows[index] for index in ID198_SAMPLE_INDICES)
     originals = [
         Image.fromarray(
             splits["state"].images_uint8[index].permute(1, 2, 0).numpy(),
             mode="RGB",
         )
-        for index in STAGE_B_SAMPLE_INDICES
+        for index in ID198_SAMPLE_INDICES
     ]
     samples: dict[str, list[Image.Image]] = {}
     for cell in CELL_ORDER:
@@ -1226,7 +1243,7 @@ def _contact_samples(
         )
         samples[cell] = [_tensor_to_pil(image) for image in output]
     noise_sha256 = _sha256_tensor_bytes(noise)
-    if noise_sha256 != STAGE_B_INITIAL_NOISE_SHA256:
+    if noise_sha256 != ID198_INITIAL_NOISE_SHA256:
         raise ValueError("oracle-ladder contact-sheet initial noise contract drift")
     return rows, originals, samples, noise_sha256
 
@@ -1527,8 +1544,8 @@ def evaluate_oracle_ladder(args: argparse.Namespace) -> Mapping[str, Any]:
             originals=originals,
             correct_samples=contact_samples,
             sample_seed=CONTACT_SAMPLE_SEED,
-            sample_indices=STAGE_B_SAMPLE_INDICES,
-            sample_indices_sha256=STAGE_B_SAMPLE_INDICES_SHA256,
+            sample_indices=ID198_SAMPLE_INDICES,
+            sample_indices_sha256=ID198_SAMPLE_INDICES_SHA256,
             initial_noise_sha256=contact_noise_sha256,
         )
         report: dict[str, Any] = {
@@ -2462,10 +2479,10 @@ def validate_oracle_ladder_report(root: str | Path) -> Mapping[str, Any]:
         contact.get("human_inspection_only") is not True
         or contact.get("controls_scientific_result") is not False
         or contact.get("columns") != ["original", *CELL_ORDER]
-        or contact.get("indices") != list(STAGE_B_SAMPLE_INDICES)
-        or contact.get("indices_sha256") != STAGE_B_SAMPLE_INDICES_SHA256
+        or contact.get("indices") != list(ID198_SAMPLE_INDICES)
+        or contact.get("indices_sha256") != ID198_SAMPLE_INDICES_SHA256
         or contact.get("sample_seed") != CONTACT_SAMPLE_SEED
-        or contact.get("initial_noise_sha256") != STAGE_B_INITIAL_NOISE_SHA256
+        or contact.get("initial_noise_sha256") != ID198_INITIAL_NOISE_SHA256
         or contact.get("ode_solver") != "midpoint_euler"
         or contact.get("ode_steps") != SAMPLE_ODE_STEPS
         or len(contact_rows or ()) != 16

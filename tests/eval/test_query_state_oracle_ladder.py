@@ -9,6 +9,9 @@ import torch
 from PIL import Image
 
 from nimloth.eval import query_state_oracle_ladder as oracle_eval
+from nimloth.training.reconstruction.cfm_forensic_posthoc_inspection import (
+    STAGE_B_SAMPLE_INDICES,
+)
 
 
 def _sha(value: str) -> str:
@@ -324,6 +327,15 @@ def test_four_cell_comparison_requires_matched_rows_and_reports_factor_effects()
         )
 
 
+def test_id198_visual_indices_are_not_the_id194_posthoc_randperm() -> None:
+    assert oracle_eval.ID198_SAMPLE_INDICES != STAGE_B_SAMPLE_INDICES
+    selected = torch.tensor(oracle_eval.ID198_SAMPLE_INDICES, dtype=torch.long)
+    assert (
+        oracle_eval._sha256_tensor_bytes(selected)
+        == oracle_eval.ID198_SAMPLE_INDICES_SHA256
+    )
+
+
 def test_id198_visual_reference_is_byte_and_pair_bound(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -363,7 +375,7 @@ def test_id198_visual_reference_is_byte_and_pair_bound(
         }
         for row in rows
     ]
-    monkeypatch.setattr(oracle_eval, "STAGE_B_SAMPLE_INDICES", indices)
+    monkeypatch.setattr(oracle_eval, "ID198_SAMPLE_INDICES", indices)
     monkeypatch.setattr(
         oracle_eval,
         "ID198_SUMMARY_SHA256",
