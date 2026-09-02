@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+from dataclasses import replace
 
 import pytest
 import torch
@@ -120,6 +122,122 @@ def test_complete_root_has_detached_generation_dispatch_without_objective_inputs
             generation_inputs={"input_ids": torch.tensor([[1, 2]])},
             generation_logits_to_keep=1,
         )
+
+
+def _extracted_state(output: object) -> torch.Tensor:
+    state = getattr(output, "state", output)
+    assert isinstance(state, torch.Tensor)
+    return state
+
+
+def test_extraction_only_forward_requires_frozen_eval_inference_and_preserves_keys() -> None:
+    root = SFT1QueryStateTrainingRoot(
+        _FakeSameForwardBackbone(),
+        SFT1QueryStateObjective(projector=DirectSlotProjector()),
+    )
+    parameter_keys = tuple(root.state_dict())
+    root.eval().requires_grad_(False)
+
+    with torch.inference_mode():
+        state = _extracted_state(root(_batch(), extract_state=True))
+
+    assert tuple(root.state_dict()) == parameter_keys
+    assert state.shape == (2, 16, 1024)
+    assert state.is_floating_point()
+    assert torch.isfinite(state).all()
+    assert not state.requires_grad
+    assert state.grad_fn is None
+    assert root.backbone.calls == 1
+
+
+@pytest.mark.parametrize(
+    "runtime", ["training", "trainable", "no_grad", "grad_enabled"]
+)
+def test_extraction_only_forward_rejects_unsafe_runtime(runtime: str) -> None:
+    root = SFT1QueryStateTrainingRoot(
+        _FakeSameForwardBackbone(),
+        SFT1QueryStateObjective(projector=DirectSlotProjector()),
+    )
+    root.eval().requires_grad_(False)
+    context: contextlib.AbstractContextManager[object] = torch.inference_mode()
+    if runtime == "training":
+        root.train()
+    elif runtime == "trainable":
+        next(root.parameters()).requires_grad_(True)
+    elif runtime == "no_grad":
+        context = torch.no_grad()
+    elif runtime == "grad_enabled":
+        context = contextlib.nullcontext()
+
+    with context, pytest.raises(ValueError, match="extract|inference|no.grad|eval|frozen"):
+        root(_batch(1), extract_state=True)
+
+
+@pytest.mark.parametrize(
+    "invalid", ["missing_labels", "missing_response", "fixed_response"]
+)
+def test_extraction_only_forward_requires_complete_real_archived_batch(
+    invalid: str,
+) -> None:
+    batch = _batch(1)
+    if invalid == "missing_labels":
+        batch = replace(
+            batch,
+            backbone_batch=BackboneBatch(
+                {"input_ids": torch.ones(1, 4, dtype=torch.long)}
+            ),
+        )
+    elif invalid == "missing_response":
+        batch = replace(batch, archived_assistant_responses=(None,))  # type: ignore[arg-type]
+    else:
+        batch = replace(batch, response_sources=("fixed",))
+    root = SFT1QueryStateTrainingRoot(
+        _FakeSameForwardBackbone(),
+        SFT1QueryStateObjective(projector=DirectSlotProjector()),
+    ).eval().requires_grad_(False)
+
+    with torch.inference_mode(), pytest.raises(
+        ValueError, match="labels|archived|CoT|response"
+    ):
+        root(batch, extract_state=True)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {
+            "targets": QueryStateTargets(
+                dino_regions=torch.zeros(1, 16, 1024),
+                sample_valid=torch.tensor([True]),
+            )
+        },
+        {
+            "normalization": QueryStateNormalization(
+                global_state_valid_element_count=16 * 1024,
+                global_lm_valid_token_count=1,
+                gradient_average_world_size=1,
+            )
+        },
+        {
+            "generation_inputs": {"input_ids": torch.ones(1, 2, dtype=torch.long)},
+            "generation_logits_to_keep": 1,
+        },
+        {"diagnostic": True},
+    ],
+)
+def test_extraction_only_forward_is_mutually_exclusive_with_other_modes(
+    extra: dict[str, object],
+) -> None:
+    root = SFT1QueryStateTrainingRoot(
+        _FakeSameForwardBackbone(),
+        SFT1QueryStateObjective(projector=DirectSlotProjector()),
+    ).eval().requires_grad_(False)
+
+    with torch.inference_mode(), pytest.raises(
+        ValueError,
+        match="extract|mutually|training|generation|diagnostic",
+    ):
+        root(_batch(1), extract_state=True, **extra)
 
 
 def test_direct_projector_has_unique_fixed_k16_artifact_contract() -> None:

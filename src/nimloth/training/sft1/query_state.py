@@ -6,8 +6,8 @@ legacy state-interface-v2 projector/readout objective.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Mapping
 
 import torch
 from torch import nn
@@ -23,7 +23,6 @@ from nimloth.wm.grid import (
     DIRECT_SLOT_PROJECTOR_ARTIFACT_SCHEMA,
     DirectSlotProjector,
 )
-
 
 QUERY_STATE_SCHEMA = "nimloth_sft1_query_state_v1"
 QUERY_STATE_OBJECTIVE_VERSION = "direct_query_state_dino_lm_v1"
@@ -74,6 +73,13 @@ class QueryStateValidationForwardOutput:
 
     objective: QueryStateObjectiveOutput
     student: QwenStateTrainingOutput
+
+
+@dataclass(frozen=True)
+class QueryStateExtractionOutput:
+    """Detached canonical state from the frozen extraction-only forward."""
+
+    state: torch.Tensor
 
 
 class SFT1QueryStateObjective(nn.Module):
@@ -200,7 +206,7 @@ def _is_lm_head_param(name: str) -> bool:
 
 
 def query_state_parameter_inventory(
-    root: "SFT1QueryStateTrainingRoot",
+    root: SFT1QueryStateTrainingRoot,
 ) -> QueryStateParameterInventory:
     """Enumerate every parameter and fail on any ownership ambiguity."""
 
@@ -300,7 +306,7 @@ def query_state_parameter_inventory(
 
 
 def query_state_trainable_parameter_groups(
-    root: "SFT1QueryStateTrainingRoot",
+    root: SFT1QueryStateTrainingRoot,
 ) -> tuple[QueryStateTrainableParameterGroup, ...]:
     """Return disjoint pre-FSDP language/direct-state parameter groups."""
 
@@ -362,7 +368,58 @@ class SFT1QueryStateTrainingRoot(nn.Module):
         generation_inputs: Mapping[str, torch.Tensor] | None = None,
         generation_logits_to_keep: int | None = None,
         diagnostic: bool = False,
-    ) -> QueryStateObjectiveOutput | QueryStateValidationForwardOutput | object:
+        extract_state: bool = False,
+    ) -> (
+        QueryStateObjectiveOutput
+        | QueryStateValidationForwardOutput
+        | QueryStateExtractionOutput
+        | object
+    ):
+        if extract_state:
+            if (
+                targets is not None
+                or normalization is not None
+                or generation_inputs is not None
+                or generation_logits_to_keep is not None
+                or diagnostic
+            ):
+                raise ValueError(
+                    "Query-State extraction mode is mutually exclusive with training, "
+                    "generation, and diagnostic inputs"
+                )
+            if batch is None:
+                raise ValueError("Query-State extraction requires an archived-response batch")
+            if self.training or any(module.training for module in self.modules()):
+                raise ValueError("Query-State extraction requires the complete root in eval mode")
+            if any(parameter.requires_grad for parameter in self.parameters()):
+                raise ValueError("Query-State extraction requires a recursively frozen root")
+            if not torch.is_inference_mode_enabled():
+                raise ValueError(
+                    "Query-State extraction requires true torch.inference_mode(), not only no_grad"
+                )
+            if "labels" not in batch.backbone_batch.tensors:
+                raise ValueError("Query-State extraction requires final-assistant LM labels")
+            for response, source in zip(
+                batch.archived_assistant_responses,
+                batch.response_sources,
+                strict=True,
+            ):
+                _require_complete_archived_response(response, source=source)
+            forward = getattr(self.backbone, "forward_state_training", None)
+            if forward is None:
+                raise TypeError("Query-State backbone must implement forward_state_training")
+            student = forward(batch)
+            state = self.objective.projector(student.query_hidden)
+            if state.ndim != 3 or tuple(state.shape[1:]) != (16, 1024):
+                raise ValueError(
+                    "Query-State extracted canonical state must have shape (B,16,1024)"
+                )
+            if not state.is_floating_point() or not torch.isfinite(state).all():
+                raise ValueError(
+                    "Query-State extracted canonical state must be finite floating point"
+                )
+            return QueryStateExtractionOutput(state=state.detach().contiguous())
+
         if generation_inputs is not None:
             if batch is not None or targets is not None or normalization is not None:
                 raise ValueError("Query-State generation probe cannot enter the active objective")
@@ -415,6 +472,7 @@ __all__ = [
     "DIRECT_STATE_ARTIFACT_SCHEMA",
     "QUERY_STATE_OBJECTIVE_VERSION",
     "QUERY_STATE_SCHEMA",
+    "QueryStateExtractionOutput",
     "QueryStateNormalization",
     "QueryStateObjectiveOutput",
     "QueryStateParameterInventory",

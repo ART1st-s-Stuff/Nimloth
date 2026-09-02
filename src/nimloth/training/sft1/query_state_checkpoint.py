@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import hashlib
 import json
 import os
-from pathlib import Path
 import random
 import shutil
+from collections.abc import Callable, Mapping
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any, Callable, Mapping
+from typing import Any
 
 import numpy as np
 import torch
@@ -22,7 +23,6 @@ from nimloth.training.sft1.query_state import (
     SFT1QueryStateTrainingRoot,
 )
 from nimloth.wm.grid import DirectSlotProjector
-
 
 QUERY_STATE_CHECKPOINT_SCHEMA = "nimloth_sft1_query_state_checkpoint_v1"
 QUERY_STATE_RANK_CHECKPOINT_SCHEMA = "nimloth_sft1_query_state_rank_checkpoint_v1"
@@ -1027,6 +1027,12 @@ def load_query_state_forensic_model_for_debug(
     with torch.no_grad():
         for name, parameter in current.items():
             parameter.copy_(state.model[name].to(device=parameter.device))
+    root.eval()
+    root.requires_grad_(False)
+    if any(module.training for module in root.modules()) or any(
+        parameter.requires_grad for parameter in root.parameters()
+    ):
+        raise RuntimeError("Query-State forensic model failed recursive freeze/eval")
     return control
 
 
@@ -1047,6 +1053,26 @@ def export_query_state_deployable_bundle(
     rejects local/zero-sized FSDP shards by exact shape. This function does not
     gather or approximate model shards itself.
     """
+
+    forensic_metadata_fields = {
+        "failure_manifest_sha256",
+        "checkpoint_control_sha256",
+        "unsafe_checkpoint",
+    }
+    if (
+        forensic_metadata_fields & set(metadata)
+        or metadata.get("forensic_only") is True
+        or metadata.get("owner_role") == "unsafe_forensic_query_state"
+        or metadata.get("schema") in {
+            "nimloth_query_state_forensic_reconstruction_cache_v1",
+            "nimloth_update6420_unsafe_query_state_cache_v1",
+            "nimloth_update6420_matched_cfm_invariants_v1",
+            "nimloth_update6420_cfm_posthoc_rgb_inspection_contract_v1",
+        }
+    ):
+        raise ValueError(
+            "Query-State forensic/unsafe checkpoint metadata cannot enter a deployable bundle"
+        )
 
     destination = Path(path)
     if destination.exists():

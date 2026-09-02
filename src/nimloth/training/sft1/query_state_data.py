@@ -7,9 +7,12 @@ complete current assistant response and carries no student hidden/state cache.
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 
 import torch
 
@@ -37,7 +40,6 @@ from nimloth.training.sft1.real_rows import (
     _parse_pre_rl_record,
 )
 
-
 QUERY_STATE_RENDERED_ROW_SCHEMA = "nimloth_sft1_query_state_rendered_row_v1"
 QUERY_STATE_PREPARED_ROW_SCHEMA = "nimloth_sft1_query_state_prepared_row_v1"
 _FORBIDDEN_STUDENT_KEYS = frozenset(
@@ -50,6 +52,55 @@ def _is_sha256(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and set(value) <= _HEX
 
 
+def _identity_json_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _identity_json_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_identity_json_value(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise TypeError(f"unsupported Query-State provenance value: {type(value).__name__}")
+
+
+def _json_identity(value: Any) -> str:
+    payload = json.dumps(
+        _identity_json_value(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _encoded_input_identity(tensors: Mapping[str, torch.Tensor]) -> str:
+    digest = hashlib.sha256()
+    for name in sorted(tensors):
+        tensor = tensors[name]
+        if not isinstance(tensor, torch.Tensor):
+            raise TypeError("Query-State encoded provenance requires tensors")
+        contiguous = tensor.detach().cpu().contiguous()
+        descriptor = json.dumps(
+            {
+                "name": name,
+                "dtype": str(contiguous.dtype),
+                "shape": list(contiguous.shape),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        digest.update(len(descriptor).to_bytes(8, "big"))
+        digest.update(descriptor)
+        raw = contiguous.view(torch.uint8).numpy().tobytes()
+        digest.update(len(raw).to_bytes(8, "big"))
+        digest.update(raw)
+    return digest.hexdigest()
+
+
 @dataclass(frozen=True)
 class QueryStateRenderedRow:
     schema: str
@@ -60,6 +111,12 @@ class QueryStateRenderedRow:
     diagnostic_image_token_indices: tuple[int, ...]
     diagnostic_instruction_token_span: tuple[int, int]
     encoded_tensors: Mapping[str, torch.Tensor]
+    prompt_history_identity: str
+    messages_identity: str
+    renderer_identity: str
+    template_identity: str
+    encoded_input_identity: str
+    response_source: str
 
 
 @dataclass(frozen=True)
@@ -156,6 +213,12 @@ class QueryStatePreparedRow:
     diagnostic_instruction_token_span: tuple[int, int]
     encoded_tensors: Mapping[str, torch.Tensor]
     dino_regions: torch.Tensor
+    prompt_history_identity: str
+    messages_identity: str
+    renderer_identity: str
+    template_identity: str
+    encoded_input_identity: str
+    response_source: str
 
     @property
     def token_count(self) -> int:
@@ -365,6 +428,27 @@ def render_query_state_row(
             squeezed = squeezed.unsqueeze(0)
         tensors[name] = squeezed.contiguous().detach()
     tensors["labels"] = labels.squeeze(0).contiguous().detach()
+    prompt_history_identity = _json_identity(
+        {"schema": QUERY_STATE_RENDERED_ROW_SCHEMA, "messages": messages[:-1]}
+    )
+    messages_identity = _json_identity(
+        {"schema": QUERY_STATE_RENDERED_ROW_SCHEMA, "messages": messages}
+    )
+    renderer_identity = _json_identity(
+        {
+            "schema": QUERY_STATE_RENDERED_ROW_SCHEMA,
+            "latent_token_count": 16,
+            "rendered_text": rendered,
+        }
+    )
+    template_identity = _json_identity(
+        {
+            "complete_render": rendered,
+            "generation_prefix_render": prefix_rendered,
+            "add_generation_prompt": [False, True],
+        }
+    )
+    encoded_input_identity = _encoded_input_identity(tensors)
     return QueryStateRenderedRow(
         schema=QUERY_STATE_RENDERED_ROW_SCHEMA,
         row=row,
@@ -374,6 +458,12 @@ def render_query_state_row(
         diagnostic_image_token_indices=tuple(current_image_indices),
         diagnostic_instruction_token_span=instruction_span,
         encoded_tensors=tensors,
+        prompt_history_identity=prompt_history_identity,
+        messages_identity=messages_identity,
+        renderer_identity=renderer_identity,
+        template_identity=template_identity,
+        encoded_input_identity=encoded_input_identity,
+        response_source="archived",
     )
 
 
@@ -488,17 +578,23 @@ def prepare_query_state_row(
         diagnostic_instruction_token_span=rendered.diagnostic_instruction_token_span,
         encoded_tensors={name: value.detach() for name, value in encoded.items()},
         dino_regions=dino_regions.detach().float(),
+        prompt_history_identity=rendered.prompt_history_identity,
+        messages_identity=rendered.messages_identity,
+        renderer_identity=rendered.renderer_identity,
+        template_identity=rendered.template_identity,
+        encoded_input_identity=rendered.encoded_input_identity,
+        response_source=rendered.response_source,
     )
 
 
 __all__ = [
-    "FreshQueryStateDINOTeacher",
-    "QueryStateTeacherMemoReport",
-    "StrictQueryStateTeacherMemo",
     "QUERY_STATE_PREPARED_ROW_SCHEMA",
     "QUERY_STATE_RENDERED_ROW_SCHEMA",
+    "FreshQueryStateDINOTeacher",
     "QueryStatePreparedRow",
     "QueryStateRenderedRow",
+    "QueryStateTeacherMemoReport",
+    "StrictQueryStateTeacherMemo",
     "prepare_query_state_row",
     "render_query_state_row",
 ]
