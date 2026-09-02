@@ -1,18 +1,19 @@
 """Conditional flow matching for post-hoc latent-state visualization."""
 
 from .flow import (
-    conditional_flow_matching_loss,
     condition_sensitivity,
+    conditional_flow_matching_loss,
     sample_euler,
     sample_euler_cfg,
 )
-from .model import CFMConfig, TokenConditionedFlowUNet
+from .model import CFMConfig, SpatialConditionedFlowUNet, TokenConditionedFlowUNet
 
 __all__ = [
     "CFMConfig",
+    "SpatialConditionedFlowUNet",
     "TokenConditionedFlowUNet",
-    "conditional_flow_matching_loss",
     "condition_sensitivity",
+    "conditional_flow_matching_loss",
     "sample_euler",
     "sample_euler_cfg",
 ]

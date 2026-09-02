@@ -7,6 +7,7 @@
 | `reconstruction.py` | WM reconstruction diagnostic：oracle / predicted / copy / shuffled-action 对比 |
 | `query_state_features.py` | Deployable Direct Query-State 与 frozen DINO target 的 train-fit shared-basis feature 可视化、全 split metrics 和 shuffled-row baseline；这是 Nimloth 可复现方法，不是 DeepSight 未公开的 exact colorization |
 | `forensic_query_state_features.py` | 仅接受 Formal38 unsafe update1605 forensic cache 的 typed Stage A/B direct-feature adapter；Stage A 保持 mechanics 48/16，Stage B 在完整 `all_train` fit shared PCA/global scale、`external_validation` 只 transform、全量算 metrics 且仅保留确定性 16-row visuals；始终强制 unsafe/nondeployable watermark |
+| `query_state_oracle_ladder.py` | Formal38 Stage B 的只读 2×2 forensic evaluator：immutable token/state baseline 对比 fresh token/oracle、spatial/state、spatial/oracle；计算 full external random/fixed-t sensitivity、256×3 pure-noise RGB/DINO metrics、paired row bootstrap 与固定 16-row contact sheet |
 | `rcdm_reconstruction.py` | 从 SFT2 true / WM-predicted latent state 采样 RCDM 可视化 |
 | `rollout_browser/` | 将 VAGEN/SFT behavior-time rollout 证据原子归档为可筛选的离线 HTML |
 | `sft_checkpoint_state_matrix.py` | 在pre-RL validation上只读交叉比较SFT1/ID74 backbone、projector与vision EMA，并审计冻结ID74 WM/ValueHead兼容性 |
@@ -47,5 +48,21 @@ checkpoint选择。Stage A通过且人类继续决定后，Stage B code owner �
 cache/checkpoint identity。Stage B direct metrics覆盖全部rows，basis只fit all_train，external只
 transform；map/contact sheet固定为external-validation identity-bound 16-row sample。实现不自动启动、不复用Stage A
 decoder，也不产生SFT2授权；真实提取仍须独立launch contract与批准。
+
+Oracle ladder只回答representation decodability的归因问题。四个cell共享同一Stage B ordered
+row/image split、final-step budget、seed、noise和Euler计划，只改变condition family
+（Formal38 state或exact DINO oracle）与decoder family（legacy token-set或显式4×4 spatial-grid）。
+Oracle cache必须从original archived observation进入固定revision的exact SFT1 DINO teacher
+preprocessing；禁止先缩放为128px。source-target DINO直接读取该cache；generated-image DINO在
+128px sRGB decoder输出上重新计算并单独标注，不能冒充canonical teacher target。
+
+比较先在每个external-validation row内平均全部固定noise seeds，再以row为统计单位做paired
+bootstrap 95% CI；不允许挑seed、挑图、挑intermediate/best checkpoint或因结果差增加step。
+固定16-row visual还必须strict-read ID198 summary/external report的预注册SHA与ordered
+row/image pairs；只有indices一致不够。
+fixed-t flow结果同时记录interpolated input已有的target-RGB比例，pure-noise Euler50才是主要生成
+证据；16-row original+four-cell contact sheet只供人类检查，不控制科学结论。所有report强制
+forensic-only、unsafe-actor、nondeployable边界，不改变Formal38 actor failure，不选择SFT1，
+也不产生SFT2授权。真实oracle-cache、训练和evaluation均需各自完整launch contract与明确批准。
 
 静态数据集统计位于 `nimloth.wm.statistics`，不能作为模型 checkpoint 指标。

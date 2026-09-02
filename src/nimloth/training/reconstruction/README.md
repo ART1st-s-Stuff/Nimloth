@@ -130,6 +130,50 @@ pre-manifest output; post-manifest durability failure remains a typed committed
 but unconfirmed terminal state. This inspection never changes the failed
 publication verdict or any byte in the original Job543457 output.
 
+### Formal38 oracle-ladder owners
+
+`forensic_query_state_oracle_cache.py` creates a separate immutable typed cache
+for the exact SFT1 DINOv2-large 4×4 teacher target. It reuses the already audited
+Stage B ordered rows and roles but reads each matching **original archived
+observation** directly; it must not read the 128px CFM target tensor or a decoder
+PNG. The owner records the pinned model/revision/processor/grid identity,
+source-state-cache fingerprint, selection and ordered row/image identities,
+finite float32 `[N,16,1024]` shards, and per-shard plus total hashes. Publication
+is non-overwriting and commits `manifest.json` last. It never accepts a supplied
+tensor, alternate teacher, grid size, resize or synthetic/fixed CoT path.
+
+`cfm_forensic_oracle_ladder.py` trains exactly one of three fresh cells:
+`token_oracle`, `spatial_state`, or `spatial_oracle`. The fourth cell,
+`token_state`, is the immutable Stage B final-step4000 baseline and is rejected
+by the trainer. Every fresh cell is decoder-only and shares the exact
+12,836/1,413 rows, batch32, LR/WD 1e-4, clip1, seed20260921, eval/save1000 and
+final-step4000 budget. Checkpoints bind the cell, condition/decoder family,
+cache/selection/row identities, architecture, optimizer, RNG, fixed times,
+noise seeds, sample selection and Euler50 contract; cross-cell/family resume and
+best/intermediate checkpoint selection fail closed. The authoritative runner
+requires explicit `WANDB mode=online`, project `nimloth-recon`, and exact run
+ID/name; environment-selected offline/disabled tracking is rejected.
+
+`nimloth.eval.query_state_oracle_ladder` then read-only evaluates the complete
+2×2 matrix. It requires the immutable baseline SHA plus three complete matching
+final4000 checkpoints; computes full external random-time and fixed-time
+correct-vs-global-shuffled flow evidence; samples a deterministic identity-only
+256-row plan under all three registered noise seeds; scores RGB L1/RMSE and
+source-versus-generated DINO cosine/MSE; averages seeds inside each row before
+paired row bootstrap; and emits the fixed 16-row original-plus-four-cell contact
+sheet. That visual set is strict-read byte-for-byte from ID198's immutable
+summary/external report hashes and ordered row/image pairs, not reconstructed
+from indices alone. Source DINO is the oracle-cache tensor from canonical original-image
+preprocessing. DINO rescoring of generated 128px sRGB is explicitly secondary
+and is never relabelled as the teacher target. Reports are manifest-last,
+hash-bound, forensic-only and nondeployable.
+
+No oracle-ladder implementation, cache, checkpoint or visual result changes the
+Formal38 actor failure, establishes SFT1 quality, authorizes SFT2, or proves that
+DINO 4×4 is pixel-invertible. Building the oracle cache, training any cell, or
+running the evaluator remains an experiment requiring a complete exact launch
+contract and separate explicit launch approval.
+
 The Stage B cache is rebuilt from the live audit without a caller row mask,
 requires zero train/external image overlap, uses the same WS8 padded collective
 schedule, and publishes fixed bounded 2,048-record shards with manifest-last NFS

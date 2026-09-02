@@ -148,6 +148,8 @@ class TokenConditionedFlowUNet(nn.Module):
     the previously validated direct-latent CFM diagnostic.
     """
 
+    decoder_family = "token_set_v1"
+
     def __init__(self, config: CFMConfig) -> None:
         super().__init__()
         self.config = config
@@ -234,4 +236,159 @@ class TokenConditionedFlowUNet(nn.Module):
         hidden = self.up_block2(torch.cat([hidden, hidden2], dim=1), time_emb)
         hidden = self.up1(hidden)
         hidden = self.up_block1(torch.cat([hidden, hidden1], dim=1), time_emb)
+        return self.out_conv(torch.nn.functional.silu(self.out_norm(hidden)))
+
+
+class SpatialConditionedFlowUNet(nn.Module):
+    """UNet with explicit row-major K16 spatial conditioning.
+
+    Unlike :class:`TokenConditionedFlowUNet`, this family does not normalize
+    each condition token independently or treat K16 as an unordered set.  The
+    raw 4×4 feature map and fixed coordinates are injected at every UNet scale.
+    """
+
+    decoder_family = "spatial_grid_v1"
+
+    def __init__(self, config: CFMConfig) -> None:
+        super().__init__()
+        if config.token_count != 16:
+            raise ValueError("spatial-grid CFM requires exact K16 token_count")
+        self.config = config
+        base = config.base_channels
+        self.register_buffer(
+            "condition_coordinates",
+            self._coordinate_grid(),
+            persistent=True,
+        )
+        self.condition_projection = nn.Sequential(
+            nn.Conv2d(config.token_dim + 2, config.condition_dim, 1),
+            nn.SiLU(),
+            nn.Conv2d(config.condition_dim, config.condition_dim, 1),
+        )
+        self.condition_mlp = nn.Sequential(
+            nn.Linear(config.condition_dim, config.time_dim),
+            nn.SiLU(),
+            nn.Linear(config.time_dim, config.time_dim),
+        )
+        self.time_mlp = nn.Sequential(
+            nn.Linear(config.time_dim, config.time_dim),
+            nn.SiLU(),
+            nn.Linear(config.time_dim, config.time_dim),
+        )
+        self.in_conv = nn.Conv2d(config.input_channels, base, 3, padding=1)
+        self.condition_adapters = nn.ModuleDict(
+            {
+                "hidden0": nn.Conv2d(config.condition_dim, base, 1),
+                "down1": nn.Conv2d(config.condition_dim, base, 1),
+                "down2": nn.Conv2d(config.condition_dim, base * 2, 1),
+                "down3": nn.Conv2d(config.condition_dim, base * 4, 1),
+                "middle": nn.Conv2d(config.condition_dim, base * 6, 1),
+                "up3": nn.Conv2d(config.condition_dim, base * 10, 1),
+                "up2": nn.Conv2d(config.condition_dim, base * 6, 1),
+                "up1": nn.Conv2d(config.condition_dim, base * 3, 1),
+            }
+        )
+        self.block1 = _ResBlock(base, base, config.time_dim)
+        self.down1 = _Downsample(base)
+        self.block2 = _ResBlock(base, base * 2, config.time_dim)
+        self.down2 = _Downsample(base * 2)
+        self.block3 = _ResBlock(base * 2, base * 4, config.time_dim)
+        self.down3 = _Downsample(base * 4)
+        self.block4 = _ResBlock(base * 4, base * 6, config.time_dim)
+        self.middle1 = _ResBlock(base * 6, base * 6, config.time_dim)
+        self.middle2 = _ResBlock(base * 6, base * 6, config.time_dim)
+        self.up3 = _Upsample(base * 6)
+        self.up_block3 = _ResBlock(base * 10, base * 4, config.time_dim)
+        self.up2 = _Upsample(base * 4)
+        self.up_block2 = _ResBlock(base * 6, base * 2, config.time_dim)
+        self.up1 = _Upsample(base * 2)
+        self.up_block1 = _ResBlock(base * 3, base, config.time_dim)
+        self.out_norm = nn.GroupNorm(_choose_groups(base), base)
+        self.out_conv = nn.Conv2d(base, config.output_channels, 3, padding=1)
+
+    @staticmethod
+    def _coordinate_grid() -> torch.Tensor:
+        axis = torch.linspace(-1.0, 1.0, 4, dtype=torch.float32)
+        vertical, horizontal = torch.meshgrid(axis, axis, indexing="ij")
+        return torch.stack((horizontal, vertical), dim=0).unsqueeze(0)
+
+    def reshape_condition(self, condition: torch.Tensor) -> torch.Tensor:
+        expected = self.config.flat_condition_dim
+        if condition.ndim != 2 or condition.shape[1] != expected:
+            raise ValueError(
+                f"expected condition shape (B, {expected}), got {tuple(condition.shape)}"
+            )
+        return (
+            condition.view(condition.shape[0], 4, 4, self.config.token_dim)
+            .permute(0, 3, 1, 2)
+            .contiguous()
+            .float()
+        )
+
+    def encode_condition(
+        self, condition: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        grid = self.reshape_condition(condition)
+        coordinates = self.condition_coordinates.expand(grid.shape[0], -1, -1, -1)
+        projection_dtype = self.condition_projection[0].weight.dtype
+        spatial = self.condition_projection(
+            torch.cat((grid, coordinates), dim=1).to(dtype=projection_dtype)
+        )
+        global_condition = self.condition_mlp(spatial.mean(dim=(2, 3)))
+        return spatial, global_condition
+
+    @staticmethod
+    def _resize_condition(condition: torch.Tensor, hidden: torch.Tensor) -> torch.Tensor:
+        if condition.shape[-2:] == hidden.shape[-2:]:
+            return condition
+        return torch.nn.functional.interpolate(
+            condition,
+            size=hidden.shape[-2:],
+            mode="bilinear",
+            align_corners=False,
+        )
+
+    def _inject(
+        self,
+        hidden: torch.Tensor,
+        condition: torch.Tensor,
+        adapter: str,
+    ) -> torch.Tensor:
+        spatial = self._resize_condition(condition, hidden)
+        return hidden + self.condition_adapters[adapter](spatial).to(dtype=hidden.dtype)
+
+    def forward(
+        self,
+        image: torch.Tensor,
+        time: torch.Tensor,
+        condition: torch.Tensor,
+    ) -> torch.Tensor:
+        spatial, condition_emb = self.encode_condition(condition)
+        time_emb = self.time_mlp(
+            timestep_embedding(time, self.config.time_dim).to(dtype=image.dtype)
+        ) + condition_emb.to(dtype=image.dtype)
+        spatial = spatial.to(dtype=image.dtype)
+
+        hidden0 = self._inject(self.in_conv(image), spatial, "hidden0")
+        hidden1 = self.block1(hidden0, time_emb)
+        down1 = self._inject(self.down1(hidden1), spatial, "down1")
+        hidden2 = self.block2(down1, time_emb)
+        down2 = self._inject(self.down2(hidden2), spatial, "down2")
+        hidden3 = self.block3(down2, time_emb)
+        down3 = self._inject(self.down3(hidden3), spatial, "down3")
+        hidden4 = self.block4(down3, time_emb)
+        hidden = self._inject(hidden4, spatial, "middle")
+        hidden = self.middle2(self.middle1(hidden, time_emb), time_emb)
+        hidden = self.up3(hidden)
+        hidden = torch.cat((hidden, hidden3), dim=1)
+        hidden = self._inject(hidden, spatial, "up3")
+        hidden = self.up_block3(hidden, time_emb)
+        hidden = self.up2(hidden)
+        hidden = torch.cat((hidden, hidden2), dim=1)
+        hidden = self._inject(hidden, spatial, "up2")
+        hidden = self.up_block2(hidden, time_emb)
+        hidden = self.up1(hidden)
+        hidden = torch.cat((hidden, hidden1), dim=1)
+        hidden = self._inject(hidden, spatial, "up1")
+        hidden = self.up_block1(hidden, time_emb)
         return self.out_conv(torch.nn.functional.silu(self.out_norm(hidden)))

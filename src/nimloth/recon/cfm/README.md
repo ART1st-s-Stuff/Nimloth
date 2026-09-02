@@ -3,7 +3,7 @@
 This package implements the post-hoc conditional flow-matching (CFM) image
 visualizer used by Nimloth reconstruction diagnostics.
 
-- `model.py`: token-conditioned UNet velocity field.
+- `model.py`: schema-distinct token-set and spatial-grid conditioned UNet velocity fields.
 - `flow.py`: straight-path flow loss, shuffled-condition diagnostics, and Euler
   ODE sampling.
 
@@ -68,11 +68,32 @@ performs no update/resume or shuffled publication, writes a fresh manifest-last
 non-publication schema, and binds the exact failed-gate/checkpoint/cache/summary
 identities without modifying the original run.
 
+The forensic oracle ladder keeps the legacy `TokenConditionedFlowUNet`
+(`decoder_family=token_set_v1`) byte-compatible and adds a separate
+`SpatialConditionedFlowUNet` (`decoder_family=spatial_grid_v1`). The legacy
+family normalizes and cross-attends an unordered token set. The spatial family
+requires exactly 16 row-major slots, reshapes them to 4×4, adds fixed normalized
+coordinates, and injects resized spatial condition maps at every UNet resolution.
+Token and spatial checkpoints are schema-bound and cannot initialize or resume
+each other.
+
+The preregistered matrix is immutable `token_state` plus fresh `token_oracle`,
+`spatial_state`, and `spatial_oracle`. `state` always means the matching
+Formal38 K16 canonical state; `oracle` means the frozen DINOv2-large 4×4 target
+computed from the original archived observation through exact SFT1 teacher
+preprocessing. It never means DINO computed from an already resized decoder
+image. All fresh cells train decoder-only with the same Stage B rows, optimizer,
+step budget, seed and evaluation schedule. Fixed-time flow diagnostics report how
+much target RGB is already present in the interpolated model input, while
+pure-noise Euler50 samples are the generation evidence.
+
 Formal38's actor failure remains above all reconstruction evidence. Direct DINO
 metrics are primary, condition sensitivity is secondary, and three-channel sRGB
 strips/contact sheets are visual inspection aids that can also fail because of
-the decoder/domain. They cannot promote update1605, select or resume SFT1,
-establish deployability, or authorize SFT2.
+the decoder/domain. Oracle-ladder results are forensic representation-
+decodability evidence only: they cannot promote update1605, select or resume
+SFT1, establish deployability, authorize SFT2, or reconstruct information absent
+from the 4×4 teacher.
 
 Building either real cache, training either decoder, or generating formal or
 forensic color images is an experiment requiring its own reviewed contract and
