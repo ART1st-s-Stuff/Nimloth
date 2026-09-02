@@ -538,6 +538,7 @@ def test_exact_restart_authority_authenticates_marker_control_and_index(
         "identity": {
             "config_identity": run_identity,
             "source_commit": config.source["commit"],
+            "source_manifest_identity": config.source["source_manifest_identity"],
             "world_size": 8,
             "experiment_mode": "formal",
             "run_identity": run_identity,

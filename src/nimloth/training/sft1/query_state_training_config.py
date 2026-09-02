@@ -45,6 +45,7 @@ _SECTION_FIELDS: Mapping[str, frozenset[str]] = {
     "tracking": frozenset({"enabled", "entity", "project", "group", "run_name", "run_id", "resume"}),
     "environment": frozenset({"python_executable", "hf_home", "hf_hub_cache", "offline", "dont_write_bytecode", "pycache_prefix", "python_hash_seed", "python_version", "torch_version", "transformers_version", "nccl_socket_ifname", "nccl_ib_disable"}),
     "forensic_fork": frozenset({"enabled", "ancestor_checkpoint_path", "ancestor_failure_manifest_path", "id176_actor_baseline_path", "id176_actor_baseline_sha256", "ancestor_control_sha256", "ancestor_source_commit", "ancestor_source_manifest_identity", "ancestor_run_identity", "ancestor_source_config_identity", "ancestor_update", "initialization_kind", "actor_policy", "generation_policy", "retention_policy", "ancestor_protected", "parity_relative_tolerance", "parity_absolute_tolerance"}),
+    "execution_migration": frozenset({"enabled", "anchor_run_identity", "anchor_source_commit", "anchor_source_manifest_path", "anchor_source_manifest_identity", "anchor_partition", "prior_process_path", "prior_process_sha256", "anchor_checkpoint_path", "anchor_control_sha256", "anchor_index_path", "anchor_index_sha256", "execution_source_commit", "execution_source_manifest_path", "execution_source_manifest_identity", "execution_partition", "approval_sha256"}),
     "command": frozenset({"argv", "identity"}),
     "artifacts": frozenset({"file_sha256"}),
 }
@@ -168,6 +169,7 @@ class QueryStateTrainingConfig:
     tracking: QueryStateTrackingConfig
     environment: Mapping[str, Any]
     forensic_fork: Mapping[str, Any]
+    execution_migration: Mapping[str, Any]
     command: Mapping[str, Any]
     artifacts: Mapping[str, Any]
     identity: str
@@ -204,7 +206,7 @@ def _plain_identity_value(value: Any) -> Any:
 
 
 def query_state_training_run_identity(config: QueryStateTrainingConfig) -> str:
-    """Bind resume-critical semantics while excluding process approval horizons."""
+    """Compute the native identity; partition and source remain strictly bound."""
 
     schedule_identity = dict(config.schedule)
     schedule_identity.pop("approved_pause_update", None)
@@ -244,6 +246,15 @@ def query_state_training_run_identity(config: QueryStateTrainingConfig) -> str:
         ),
     }
     return _canonical_identity(payload)
+
+
+def query_state_training_lineage_identity(config: QueryStateTrainingConfig) -> str:
+    """Return the authenticated anchor only for the explicit restart migration."""
+
+    migration = config.execution_migration
+    if migration["enabled"] is True:
+        return str(migration["anchor_run_identity"])
+    return query_state_training_run_identity(config)
 
 
 def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrainingConfig:
@@ -351,6 +362,7 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
             tracking=tracking,
             environment=_frozen_mapping(sections["environment"]),
             forensic_fork=_frozen_mapping(sections["forensic_fork"]),
+            execution_migration=_frozen_mapping(sections["execution_migration"]),
             command=_frozen_mapping(sections["command"]),
             artifacts=_frozen_mapping(sections["artifacts"]),
             identity=_canonical_identity(canonical),
@@ -927,6 +939,62 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
                     f"visual fork output.{field} overlaps the protected Formal38 ancestor tree"
                 )
 
+    migration = sections["execution_migration"]
+    disabled_migration = {
+        "enabled": False,
+        "anchor_run_identity": "disabled",
+        "anchor_source_commit": "disabled",
+        "anchor_source_manifest_path": "disabled",
+        "anchor_source_manifest_identity": "disabled",
+        "anchor_partition": "disabled",
+        "prior_process_path": "disabled",
+        "prior_process_sha256": "disabled",
+        "anchor_checkpoint_path": "disabled",
+        "anchor_control_sha256": "disabled",
+        "anchor_index_path": "disabled",
+        "anchor_index_sha256": "disabled",
+        "execution_source_commit": "disabled",
+        "execution_source_manifest_path": "disabled",
+        "execution_source_manifest_identity": "disabled",
+        "execution_partition": "disabled",
+        "approval_sha256": "disabled",
+    }
+    migration_enabled = _bool(migration["enabled"], "execution_migration.enabled")
+    if migration_enabled:
+        for field in (
+            "prior_process_path", "anchor_checkpoint_path", "anchor_index_path",
+            "anchor_source_manifest_path", "execution_source_manifest_path",
+        ):
+            _absolute(migration[field], f"execution_migration.{field}")
+        for field in (
+            "anchor_run_identity", "anchor_source_manifest_identity",
+            "prior_process_sha256", "anchor_control_sha256", "anchor_index_sha256",
+            "execution_source_manifest_identity", "approval_sha256",
+        ):
+            if not _is_sha256(migration[field]):
+                raise ValueError(f"execution_migration.{field} must be SHA256")
+        for field in ("anchor_source_commit", "execution_source_commit"):
+            if not _is_git_sha(migration[field]):
+                raise ValueError(f"execution_migration.{field} must be a Git SHA")
+        if (
+            not visual_fork
+            or sections["initialization"]["resume_mode"] != "exact_restart"
+            or migration["anchor_partition"] != "preempt"
+            or migration["execution_partition"] != "normal"
+            or migration["execution_source_commit"] != source["commit"]
+            or Path(str(migration["execution_source_manifest_path"])).resolve()
+            != Path(str(source["source_manifest_path"])).resolve()
+            or migration["execution_source_manifest_identity"]
+            != source["source_manifest_identity"]
+            or migration["approval_sha256"]
+            != sections["authorization"]["approval_sha256"]
+        ):
+            raise ValueError(
+                "execution migration is limited to visual exact-restart preempt-to-normal"
+            )
+    elif migration != disabled_migration:
+        raise ValueError("disabled execution migration must use the canonical sentinel")
+
     resources = sections["resources"]
     world = _int(resources["world_size"], "resources.world_size")
     nodes = _int(resources["nodes"], "resources.nodes")
@@ -946,6 +1014,8 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
     _int(resources["memory_gib"], "resources.memory_gib")
     _text(resources["walltime"], "resources.walltime")
     _text(resources["partition"], "resources.partition")
+    if migration_enabled and resources["partition"] != migration["execution_partition"]:
+        raise ValueError("execution migration resource partition mismatch")
     if resources["backend"] != "nccl":
         raise ValueError("Query-State production backend must be nccl")
     allowlist = resources["gpu_model_allowlist"]
@@ -1084,6 +1154,13 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         validation["generation_format_manifest_path"],
         output["command_manifest_path"],
     }
+    if migration_enabled:
+        required_hashed_paths.update({
+            str(migration["anchor_source_manifest_path"]),
+            str(migration["prior_process_path"]),
+            str(Path(str(migration["anchor_checkpoint_path"])) / "control.json"),
+            str(migration["anchor_index_path"]),
+        })
     if visual_fork:
         ancestor_checkpoint_path = Path(
             str(forensic["ancestor_checkpoint_path"])
@@ -1116,6 +1193,7 @@ def parse_query_state_training_config(raw: Mapping[str, Any]) -> QueryStateTrain
         authorization=_frozen_mapping(authorization), initialization=_frozen_mapping(initialization),
         tracking=tracking, environment=_frozen_mapping(environment),
         forensic_fork=_frozen_mapping(sections["forensic_fork"]),
+        execution_migration=_frozen_mapping(migration),
         command=_frozen_mapping(command),
         artifacts=_frozen_mapping(sections["artifacts"]),
         identity=_canonical_identity(canonical),
@@ -1191,6 +1269,8 @@ __all__ = [
     "QueryStateWandbStart",
     "coordinate_tracking_init",
     "parse_query_state_training_config",
+    "query_state_training_lineage_identity",
+    "query_state_training_run_identity",
     "reapply_locked_wandb_environment",
     "resolve_wandb_start",
 ]

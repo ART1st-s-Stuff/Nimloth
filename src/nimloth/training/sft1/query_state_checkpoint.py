@@ -30,11 +30,16 @@ QUERY_STATE_DEPLOYABLE_SCHEMA = "nimloth_sft1_query_state_deployable_v1"
 QUERY_STATE_DEPLOYABLE_BUNDLE_SCHEMA = "nimloth_sft1_query_state_bundle_v1"
 _COMPLETE_MARKER = "COMPLETED"
 _QUERY_STATE_SEGMENT_SCHEMA = "nimloth_sft1_query_state_segment_v1"
+_QUERY_STATE_EXECUTION_PROVENANCE_SCHEMA = "nimloth_query_state_execution_provenance_v1"
 _HEX = frozenset("0123456789abcdef")
 
 
 def _is_sha256(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and set(value) <= _HEX
+
+
+def _is_git_sha(value: object) -> bool:
+    return isinstance(value, str) and len(value) == 40 and set(value) <= _HEX
 
 
 def _atomic_torch_save(value: Any, path: Path) -> None:
@@ -343,6 +348,51 @@ def load_query_state_resume_checkpoint(
     return control, scheduler
 
 
+def _validate_execution_provenance(value: Mapping[str, Any] | None) -> None:
+    if value is None:
+        return
+    expected = {"schema", "anchor", "execution_chain"}
+    anchor_fields = {
+        "run_identity", "source_commit", "source_manifest_path",
+        "source_manifest_identity", "partition",
+    }
+    execution_fields = {
+        "config_identity", "source_commit", "source_manifest_path", "source_manifest_identity",
+        "partition", "approval_sha256",
+    }
+    anchor = value.get("anchor") if isinstance(value, Mapping) else None
+    chain = value.get("execution_chain") if isinstance(value, Mapping) else None
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != expected
+        or value.get("schema") != _QUERY_STATE_EXECUTION_PROVENANCE_SCHEMA
+        or not isinstance(anchor, Mapping)
+        or set(anchor) != anchor_fields
+        or not _is_sha256(anchor.get("run_identity"))
+        or not _is_git_sha(anchor.get("source_commit"))
+        or not isinstance(anchor.get("source_manifest_path"), str)
+        or not Path(anchor["source_manifest_path"]).is_absolute()
+        or not _is_sha256(anchor.get("source_manifest_identity"))
+        or anchor.get("partition") != "preempt"
+        or not isinstance(chain, (list, tuple))
+        or not chain
+    ):
+        raise ValueError("Query-State execution provenance is invalid")
+    for entry in chain:
+        if (
+            not isinstance(entry, Mapping)
+            or set(entry) != execution_fields
+            or not _is_sha256(entry.get("config_identity"))
+            or not _is_git_sha(entry.get("source_commit"))
+            or not isinstance(entry.get("source_manifest_path"), str)
+            or not Path(entry["source_manifest_path"]).is_absolute()
+            or not _is_sha256(entry.get("source_manifest_identity"))
+            or entry.get("partition") != "normal"
+            or not _is_sha256(entry.get("approval_sha256"))
+        ):
+            raise ValueError("Query-State execution provenance chain is invalid")
+
+
 @dataclass(frozen=True)
 class QueryStateDistributedControl:
     """Rank-checkpoint control state including both data and metric cursors."""
@@ -353,8 +403,10 @@ class QueryStateDistributedControl:
     metric_cursor: Mapping[str, Any]
     terminal_primary: bool = False
     forensic_only: bool = False
+    execution_provenance: Mapping[str, Any] | None = None
 
     def __post_init__(self) -> None:
+        _validate_execution_provenance(self.execution_provenance)
         if (
             isinstance(self.global_step, bool)
             or not isinstance(self.global_step, int)
@@ -639,6 +691,10 @@ def finalize_query_state_rank_checkpoint(
         "forensic_only": control.forensic_only,
         "data_cursor": dict(control.data_cursor),
         "metric_cursor": dict(control.metric_cursor),
+        "execution_provenance": (
+            dict(control.execution_provenance)
+            if control.execution_provenance is not None else None
+        ),
         "rank_shard_sha256": shard_hashes,
     }
     checkpoint_identity = hashlib.sha256(
@@ -699,7 +755,8 @@ def validate_query_state_rank_checkpoint_metadata(
         "terminal_primary", "forensic_only", "data_cursor", "metric_cursor",
         "rank_shard_sha256", "checkpoint_identity", "control_hash",
     }
-    if set(raw) != expected_keys:
+    allowed_keys = expected_keys | {"execution_provenance"}
+    if set(raw) != expected_keys and set(raw) != allowed_keys:
         raise ValueError("Query-State checkpoint control contract is invalid")
     canonical_with_checkpoint = {
         key: value for key, value in raw.items() if key != "control_hash"
@@ -768,6 +825,7 @@ def validate_query_state_rank_checkpoint_metadata(
         metric_cursor=raw["metric_cursor"],
         terminal_primary=expected_terminal_primary,
         forensic_only=expected_forensic_only,
+        execution_provenance=raw.get("execution_provenance"),
     )
 
 
@@ -872,6 +930,7 @@ def load_query_state_rank_state(
         metric_cursor=raw.pop("metric_cursor", None),
         terminal_primary=raw.pop("terminal_primary", None),
         forensic_only=raw.pop("forensic_only", False),
+        execution_provenance=raw.pop("execution_provenance", None),
     )
     if raw:
         raise ValueError("Query-State rank checkpoint control has unknown fields")

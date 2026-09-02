@@ -171,6 +171,7 @@ def main(argv: list[str] | None = None) -> int:
         repo_root=Path(str(config.source["repo_root"])),
         current_argv=canonical_run,
         environ=os.environ,
+        require_runtime_partition=args.phase == "run",
     )
     if args.phase == "preflight":
         print(json.dumps({

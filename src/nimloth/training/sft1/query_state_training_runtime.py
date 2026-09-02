@@ -359,6 +359,7 @@ class QueryStateAuthoritativeEntry:
     resumable: bool = True
     compaction_manifest_path: str | None = None
     compaction_manifest_hash: str | None = None
+    execution_provenance: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -445,6 +446,20 @@ class QueryStateSegment:
                 "unsafe validation preserved a forensic checkpoint; it is non-resumable "
                 "and cannot advance the authoritative index"
             )
+        control_raw = _read_json(control)
+        execution_provenance = control_raw.get("execution_provenance")
+        if execution_provenance is not None:
+            anchor = (
+                execution_provenance.get("anchor")
+                if isinstance(execution_provenance, Mapping) else None
+            )
+            if (
+                not isinstance(anchor, Mapping)
+                or anchor.get("run_identity") != self.store.run_identity
+                or not isinstance(execution_provenance.get("execution_chain"), list)
+                or not execution_provenance["execution_chain"]
+            ):
+                raise ValueError("checkpoint execution provenance does not preserve lineage")
         mirror = tuple(dict(record) for record in mirror_records)
         mirror_updates = tuple(record.get("update") for record in mirror)
         expected_updates = tuple(range(self.start_update + 1, self.end_update + 1))
@@ -457,6 +472,7 @@ class QueryStateSegment:
             "wandb_run_id": self.store.wandb_run_id,
             "start_update": self.start_update,
             "end_update": self.end_update,
+            "execution_provenance": execution_provenance,
             "records": list(mirror),
         }
         _atomic_json(self.path / "mirror_batch.json", mirror_payload, overwrite=False)
@@ -557,6 +573,10 @@ class QueryStateSegment:
             epoch_final=(
                 self.store.epoch_updates is not None
                 and self.end_update % self.store.epoch_updates == 0
+            ),
+            execution_provenance=(
+                dict(execution_provenance)
+                if execution_provenance is not None else None
             ),
         )
         _atomic_json(committed_path / "commit.json", asdict(entry), overwrite=False)

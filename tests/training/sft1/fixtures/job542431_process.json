@@ -1,0 +1,321 @@
+{
+  "approved_pause_update": 0,
+  "command_identity": "f0f09393049942f27dde16a6067392bd042115d76e6c7235408b13fde181675a",
+  "command_manifest_text": "{\n  \"child_argv\": [\n    \"/project/peilab/atst/nimloth/.local/python/cpython-3.12.13-linux-x86_64-gnu/bin/python3.12\",\n    \"/project/peilab/atst/nimloth/.worktree/exp-sft1-query-state-frequent-checkpoint/experiments/training/sft1/query_state_train.py\",\n    \"--config\",\n    \"/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/contracts/39_visual_forensic_fork_qstate_k16_ep2to5_ckpt321_ws8_2x4_preempt6h_f65ed859/final/fresh_launch.json\",\n    \"--phase\",\n    \"run\"\n  ],\n  \"schema\": \"nimloth_sft1_query_state_training_command_v1\",\n  \"topology\": {\n    \"backend\": \"nccl\",\n    \"gpus_per_node\": 4,\n    \"nccl_ib_disable\": \"1\",\n    \"nccl_socket_ifname\": \"ibp24s0\",\n    \"nodes\": 2,\n    \"world_size\": 8\n  }\n}\n",
+  "config_identity": "58ef701a49899b1f9c3fe48d70816c3c7b2ad4fc23da3c1665643cf68829ddb0",
+  "mode": "visual_only_forensic_fork",
+  "process_identity": "810abe9793e40d6c5ca5a175bc83b15b2f06c218096d430fd92bc8c0efa20887",
+  "resolved_config": {
+    "artifacts": {
+      "file_sha256": {
+        "/home/csejzhang/.cache/huggingface/hub/models--facebook--dinov2-large/snapshots/47b73eefe95e8d44ec3623f8890bd894b6ea2d6c/config.json": "12df51c069a2dc1305e34ba71ef58bc2407ea553b75f4722a1715c1bce3bbed0",
+        "/home/csejzhang/.cache/huggingface/hub/models--facebook--dinov2-large/snapshots/47b73eefe95e8d44ec3623f8890bd894b6ea2d6c/model.safetensors": "399fba97a95f22c36834418bc69373364a99af3a1153da1c0fb31db567c92e23",
+        "/home/csejzhang/.cache/huggingface/hub/models--facebook--dinov2-large/snapshots/47b73eefe95e8d44ec3623f8890bd894b6ea2d6c/preprocessor_config.json": "14e780d86fa1861f8751f868d7f45425b5feb55c38ca26f152ca5097ab30f828",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/actor_baseline_id176.json": "72e7aacca3bd4c15a64eae72cfbc8777b5e5249a6f60f59e60521ad72ebef236",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/durable/failures/unsafe_00001284_00001605.json": "1b9c74ed400da5e3180f04a4402ff36773f6329c7b8fcbc4e4feaeee6bc71340",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/forensics/unsafe_update_00001605/control.json": "414daefe2b501a22805691aa101d76fcc0f5b28447a1332d81b19b3434e838af",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/forensics/unsafe_update_00001605/rank_00000_of_00008.json": "2f90572182a8d1934b116be9ca14646ccf12a7c52ee8935496f2e452efbd201d",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/forensics/unsafe_update_00001605/rank_00000_of_00008.pt": "fd76ce1f11a6948ad03bfe2367aad9ad4db3008bb6d864fa884bc20004294570",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/forensics/unsafe_update_00001605/rank_00001_of_00008.json": "6bd5370f2b8675bc67696b73bc0d3ec864e9c4f12a07ef281063de64d3ff14d1",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/forensics/unsafe_update_00001605/rank_00001_of_00008.pt": "de770fdee7a2082c59c29c0328792d4893788f32ee7734a4d4338aa4dfb4545c",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/forensics/unsafe_update_00001605/rank_00002_of_00008.json": "452d74498b22fc81138ed3c959ccaafe104f5cc06929b2d83b7146f7897eda01",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/forensics/unsafe_update_00001605/rank_00002_of_00008.pt": "41633a469b012832a69d8cbf55a599f411a11eb09ee5831f070778923564b1e5",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/forensics/unsafe_update_00001605/rank_00003_of_00008.json": "c14742a4814e7bdcd0914c79ae7e68a629fd580817dff08dbe26071f1e0bd0d9",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/forensics/unsafe_update_00001605/rank_00003_of_00008.pt": "906f43f4c133cb6ae5e7d6611da328d201e651689392e0f3a94214d03f4220e2",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/forensics/unsafe_update_00001605/rank_00004_of_00008.json": "ed2a37e7fcc5d010ce0cc44b2816c35170f8d70e657fe1bb771bebd4ed33b2d9",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/forensics/unsafe_update_00001605/rank_00004_of_00008.pt": "e492cdd5b58c0eeedb56cdb447db8ee89558bc67a124c2613ce9afb20966e01a",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/forensics/unsafe_update_00001605/rank_00005_of_00008.json": "f3f2c17d01b1b7490f17e3b0d19a045d02f626fe6e1d39567a7eda1d92cd5f1c",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/forensics/unsafe_update_00001605/rank_00005_of_00008.pt": "4158d227b0c189e6ff32824accb2ab8d129baaed4c8a7ab45f842b0f68ce373f",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/forensics/unsafe_update_00001605/rank_00006_of_00008.json": "569ad2b50a91f5b0d7c80887f6317d2e79d12e79e08a3cace0eea2c63dd4fc41",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/forensics/unsafe_update_00001605/rank_00006_of_00008.pt": "153cdbd5c9d2af40f2e71986c6c11505f63457bcd50ae809e0ee110703e62b3c",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/forensics/unsafe_update_00001605/rank_00007_of_00008.json": "ad42073df1da117353a23cc8a8ebbb4d042a714fc6d1e55d7ccffa2df464139d",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/forensics/unsafe_update_00001605/rank_00007_of_00008.pt": "e4d08b07cd81990062f940744e16dc4b82a7ed5faee19755932dee30a04544d2",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/contracts/24_formal_qstate_k16_full_lang_dino2l_max10_es1pct_b8_ws8_2x4_preempt_immediate6h_retry3_a376be9e/train_manifest.json": "04b81d6d1530b7d5f4a3a5d065d5f9b4e4fe550bf4c820a768d4839a0a399a01",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/contracts/24_formal_qstate_k16_full_lang_dino2l_max10_es1pct_b8_ws8_2x4_preempt_immediate6h_retry3_a376be9e/validation_split.json": "2ac06e9582b1e0ebef29d5c32e916a41d9cb5f8465b5f29e2b34de75bc46a768",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/contracts/39_visual_forensic_fork_qstate_k16_ep2to5_ckpt321_ws8_2x4_preempt6h_f65ed859/final/human_storage_override_approval.json": "4654cc09b9b2d5bab42b7c66edaaa31a7aa02eaa510fb4d50d8abbd7f1020537",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/contracts/39_visual_forensic_fork_qstate_k16_ep2to5_ckpt321_ws8_2x4_preempt6h_f65ed859/final/launch_command.json": "f0f09393049942f27dde16a6067392bd042115d76e6c7235408b13fde181675a",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/contracts/39_visual_forensic_fork_qstate_k16_ep2to5_ckpt321_ws8_2x4_preempt6h_f65ed859/fresh_command.json": "57578ff2992e7ad8bea039a62410f10f5579499a101ed87aef20305ec87e80ea",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/contracts/39_visual_forensic_fork_qstate_k16_ep2to5_ckpt321_ws8_2x4_preempt6h_f65ed859/generation_format.json": "140812197c8609685519272c25edfab9e9559a9915165434ec52dd9ea2789e46",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/contracts/39_visual_forensic_fork_qstate_k16_ep2to5_ckpt321_ws8_2x4_preempt6h_f65ed859/source_manifest.json": "9d589fe14e1707f7279d7a02a95149ebc2b364bf2900ab643e59643d3154d2d2",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/contracts/39_visual_forensic_fork_qstate_k16_ep2to5_ckpt321_ws8_2x4_preempt6h_f65ed859/wandb_preflight.json": "16635919d4c1308cb449f2f2c672706146707cfbf3bbd1265de0f744825a641d",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint/action_head_repair.pt": "a3c33ca3fda81896249bdcadd2d54289bc19e92d1591ba08a91a1b1e8de90e6f",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint/added_tokens.json": "6d2136d169e01c07d22b1b91824bcdb6caebbaedad1eac1659deea8fb64358ae",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint/chat_template.jinja": "a0bc6f6fc7a29a80017a433e8f03a1cc1236e838a944a2d034295a60c4f2fddb",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint/config.json": "f0fbb6c34bb4ce9056f83ad5e92c72084bfe66bb64fee757bf1b91c6831932f2",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint/merges.txt": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint/model-00001-of-00002.safetensors": "63c933b6ebadae3ee64a4663b5bd1ec71676f64629faf2cda6c15393e534e563",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint/model-00002-of-00002.safetensors": "fcfec9497bc08d1faeb91c07e954b8a9638a1dfa7882f7c3f8b6824d269e2d51",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint/model.safetensors.index.json": "32acf7bf413e8b87f295e816fe3d68c965e0ab196fbf30b32858b52df41cc97e",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint/preprocessor_config.json": "f6dfa7d36906154a914003eade7545150219573e94f5cd7ad3c9fec7bda53ff2",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint/special_tokens_map.json": "7e8b951372269ffe78fac95cf5d20fea2dd12e943fd51e15c38a79224070691c",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint/tokenizer.json": "be27f6714980c2cf8f63e9f119a7fd3b055709e7f67c9523da108595f143eca3",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint/tokenizer_config.json": "adbb9a0b96d6029a6c5884fc134ddcedcd7a53714c49ccc0f7dedb031f4578e1",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint/video_preprocessor_config.json": "9b7003dd088dd6cd924a7ba9c5fcfea865063adad5dcdc4080ac9c7264e1fe78",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint/vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/complete.marker": "37a40f08d8548dba289b9b0bb35bcf63b359f6d37ee86044ebc6b6da080b9ec1",
+        "/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-28/sft2/52_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga8_ws8_px100352/data/train_terminal_cot_migrated.jsonl": "d43ada06d66c0b5cafa50e9da8ecc354445ca3b9686d1639b18050a981247b97",
+        "/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-28/sft2/52_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga8_ws8_px100352/data/val_terminal_cot_migrated.jsonl": "4c092fb4069fb71ad92bca73566d5f20f572569a093bf4712467ca137615212e"
+      }
+    },
+    "authorization": {
+      "approval_id": "human-direct-ignore-reserve-and-start-2026-09-02",
+      "approval_sha256": "4654cc09b9b2d5bab42b7c66edaaa31a7aa02eaa510fb4d50d8abbd7f1020537",
+      "launch_authorized": true
+    },
+    "command": {
+      "argv": [
+        "/project/peilab/atst/nimloth/.local/python/cpython-3.12.13-linux-x86_64-gnu/bin/python3.12",
+        "/project/peilab/atst/nimloth/.worktree/exp-sft1-query-state-frequent-checkpoint/experiments/training/sft1/query_state_train.py",
+        "--config",
+        "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/contracts/39_visual_forensic_fork_qstate_k16_ep2to5_ckpt321_ws8_2x4_preempt6h_f65ed859/final/fresh_launch.json",
+        "--phase",
+        "run"
+      ],
+      "identity": "f0f09393049942f27dde16a6067392bd042115d76e6c7235408b13fde181675a"
+    },
+    "data": {
+      "external_rows": 1413,
+      "train_manifest_identity": "d61c1aa680a3e716c5bfddda14dc87fef04bf157645d7cf1237f9be21994fe8c",
+      "train_manifest_path": "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/contracts/24_formal_qstate_k16_full_lang_dino2l_max10_es1pct_b8_ws8_2x4_preempt_immediate6h_retry3_a376be9e/train_manifest.json",
+      "train_rows": 12836,
+      "train_source_path": "/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-28/sft2/52_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga8_ws8_px100352/data/train_terminal_cot_migrated.jsonl",
+      "validation_manifest_identity": "e06d28e621d69107102d5b5f3608933f63dbfa6d1b2e3d74b579b34fba6dce8e",
+      "validation_manifest_path": "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/contracts/24_formal_qstate_k16_full_lang_dino2l_max10_es1pct_b8_ws8_2x4_preempt_immediate6h_retry3_a376be9e/validation_split.json",
+      "validation_source_path": "/project/peilab/atst/nimloth/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-28/sft2/52_terminalcot_dinogrid_k16_h1_t4_ep2_b1_ga8_ws8_px100352/data/val_terminal_cot_migrated.jsonl"
+    },
+    "early_stopping": {
+      "actual_terminal_primary": false,
+      "calibration_split": "calibration",
+      "enabled": false,
+      "holdout_controls_early_stop": false,
+      "max_epochs": 4,
+      "metric": "disabled",
+      "min_epochs": 1,
+      "min_relative_improvement": 0.0,
+      "patience_epochs": 0
+    },
+    "environment": {
+      "dont_write_bytecode": true,
+      "hf_home": "/home/csejzhang/.cache/huggingface",
+      "hf_hub_cache": "/home/csejzhang/.cache/huggingface/hub",
+      "nccl_ib_disable": "1",
+      "nccl_socket_ifname": "ibp24s0",
+      "offline": true,
+      "pycache_prefix": "/tmp/nimloth-query-state-visual-fork-39-pycache",
+      "python_executable": "/project/peilab/atst/nimloth/.local/python/cpython-3.12.13-linux-x86_64-gnu/bin/python3.12",
+      "python_hash_seed": "3335631237",
+      "python_version": "3.12.13",
+      "torch_version": "2.8.0+cu128",
+      "transformers_version": "4.55.4"
+    },
+    "forensic_fork": {
+      "actor_policy": "report_only",
+      "ancestor_checkpoint_path": "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/forensics/unsafe_update_00001605",
+      "ancestor_control_sha256": "414daefe2b501a22805691aa101d76fcc0f5b28447a1332d81b19b3434e838af",
+      "ancestor_failure_manifest_path": "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/durable/failures/unsafe_00001284_00001605.json",
+      "ancestor_protected": true,
+      "ancestor_run_identity": "0f82a37c9e191e543d29f8e66857ca1d12a1e2941c2962fc24203666c4f5bcf1",
+      "ancestor_source_commit": "4838e5fdb469dffb78909e307cf11a808cb2d29e",
+      "ancestor_source_config_identity": "0f82a37c9e191e543d29f8e66857ca1d12a1e2941c2962fc24203666c4f5bcf1",
+      "ancestor_source_manifest_identity": "b36e45fc9d50b5d88dfc446a91ed4357e7f4b71a2effc82a9fd3cf0ab7fee4b3",
+      "ancestor_update": 1605,
+      "enabled": true,
+      "generation_policy": "report_only",
+      "id176_actor_baseline_path": "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/27_formal_qstate_k16_full_lang_dino2l_pause1_ckpt321_ws8_2x4_preempt6h_retry1_4838e5fd/actor_baseline_id176.json",
+      "id176_actor_baseline_sha256": "72e7aacca3bd4c15a64eae72cfbc8777b5e5249a6f60f59e60521ad72ebef236",
+      "initialization_kind": "forensic_model_only_fresh_optimizer",
+      "parity_absolute_tolerance": 1e-08,
+      "parity_relative_tolerance": 1e-06,
+      "retention_policy": "successor_first_non_epoch_final_payload_v1"
+    },
+    "initialization": {
+      "actor_checkpoint": "/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint",
+      "actor_checkpoint_identity": "75d9bccfe9c9f49052631658b20ad981ffb722b67e7754566c07bde5a3b89f64",
+      "direct_head_initialization": "forensic_model_only",
+      "resume_checkpoint": "none",
+      "resume_mode": "fresh"
+    },
+    "lifecycle": {
+      "launch_locked": true,
+      "preflight_locked": true
+    },
+    "mode": "visual_only_forensic_fork",
+    "model": {
+      "action_token_ids": [
+        151683,
+        151684,
+        151685,
+        151686,
+        151687,
+        151688,
+        151689,
+        151690
+      ],
+      "dino_identity": "facebook/dinov2-large@47b73eefe95e8d44ec3623f8890bd894b6ea2d6c:7d65a7de8788e87d:1024:grid4",
+      "dino_snapshot_path": "/home/csejzhang/.cache/huggingface/hub/models--facebook--dinov2-large/snapshots/47b73eefe95e8d44ec3623f8890bd894b6ea2d6c",
+      "direct_head_bias": false,
+      "hidden_size": 2048,
+      "initialization_identity": "formal38_forensic_model_only:414daefe2b501a22805691aa101d76fcc0f5b28447a1332d81b19b3434e838af",
+      "llm_tune": "full",
+      "objective_version": "direct_query_state_dino_lm_v1",
+      "processor_identity": "21034d2ab5277a3153d04115ee2ff0d3f7705e38b1384798e76a0d8715b4e464",
+      "processor_path": "/project/peilab/atst/nimloth/outputs/experiments/training/sft2/2026-08-15/176_id74_action_head_repair_balanced271x8_val40x8/checkpoint",
+      "query_count": 16,
+      "query_tune": "freeze",
+      "state_dim": 1024,
+      "state_schema": "nimloth_direct_k16_state_v1",
+      "template_identity": "a0bc6f6fc7a29a80017a433e8f03a1cc1236e838a944a2d034295a60c4f2fddb",
+      "token_table_identity": "0b42c4fe449d2f584ab0bc358e9ed8a31a71cb7865185da09dfa7ad177eb78e9",
+      "tokenizer_identity": "f8d712d8a9f5be5139e5fa91038cb7ee14dec9d31fef0fc168dcd8b1f79924a8",
+      "vision_tune": "freeze"
+    },
+    "objective": {
+      "lm_target": "real_final_current_assistant",
+      "lm_weight": 1.0,
+      "state_target": "online_original_observation_dino",
+      "state_weight": 2.0
+    },
+    "optimizer": {
+      "betas": [
+        0.9,
+        0.95
+      ],
+      "direct_state_learning_rate": 0.0001,
+      "epsilon": 1e-08,
+      "language_learning_rate": 1e-06,
+      "name": "adamw",
+      "scheduler": "constant",
+      "warmup_updates": 0,
+      "weight_decay": 0.0
+    },
+    "output": {
+      "checkpoint_budget_bytes": 116850000000,
+      "checkpoint_estimated_bytes": 23370000000,
+      "command_manifest_path": "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/contracts/39_visual_forensic_fork_qstate_k16_ep2to5_ckpt321_ws8_2x4_preempt6h_f65ed859/final/launch_command.json",
+      "controller_root": "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/.controller-39_visual_forensic_fork_qstate_k16_ep2to5_ckpt321_ws8_2x4_preempt6h_f65ed859",
+      "minimum_free_bytes": 0,
+      "overwrite": false,
+      "resolved_config_path": "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/contracts/39_visual_forensic_fork_qstate_k16_ep2to5_ckpt321_ws8_2x4_preempt6h_f65ed859/final/fresh_launch.json",
+      "run_root": "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/39_visual_forensic_fork_qstate_k16_ep2to5_ckpt321_ws8_2x4_preempt6h_f65ed859"
+    },
+    "resources": {
+      "backend": "nccl",
+      "cpus_per_task": 32,
+      "gpu_model_allowlist": [
+        "NVIDIA H800"
+      ],
+      "gpus_per_node": 4,
+      "memory_gib": 128,
+      "nodes": 2,
+      "partition": "preempt",
+      "walltime": "06:00:00",
+      "world_size": 8
+    },
+    "runtime": {
+      "attention_implementation": "flash_attention_2",
+      "dino_batch_size": 1,
+      "dino_dtype": "bfloat16",
+      "fsdp_sharding": "full_shard",
+      "fsdp_use_orig_params": true,
+      "fsdp_wrap_policy": {
+        "transformer_layer_cls_to_wrap": [
+          "Qwen2_5_VLDecoderLayer"
+        ]
+      },
+      "gradient_checkpointing": true,
+      "max_grad_norm": 1.0,
+      "max_padded_tokens": 24000,
+      "max_pixels": 100352,
+      "max_rows_per_micro_batch": 1,
+      "max_sequence_length": 12000,
+      "min_pixels": 3136,
+      "model_dtype": "bfloat16"
+    },
+    "schedule": {
+      "approved_pause_update": 0,
+      "checkpoint_cadence_updates": 321,
+      "epoch_updates": 1605,
+      "epochs": 4,
+      "forced_restart_update": 0,
+      "max_updates": 8025,
+      "rows_per_rank_update": 1,
+      "schedule_start_update": 1605,
+      "seed": 3335631237,
+      "validation_updates": [
+        1605,
+        3210,
+        4815,
+        6420,
+        8025
+      ]
+    },
+    "schema": "nimloth_sft1_query_state_training_v4",
+    "source": {
+      "branch": "exp/sft1-query-state-frequent-checkpoint",
+      "commit": "f65ed859f9377584af7e1bb450e7e9de99e02b95",
+      "repo_root": "/project/peilab/atst/nimloth/.worktree/exp-sft1-query-state-frequent-checkpoint",
+      "source_manifest_identity": "d680f1d3c71f33177d2d4a9bdd1242ce3229b6514f03d2779a81e1a125cdd4ca",
+      "source_manifest_path": "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/contracts/39_visual_forensic_fork_qstate_k16_ep2to5_ckpt321_ws8_2x4_preempt6h_f65ed859/source_manifest.json",
+      "submodule_commits": {
+        "external/RCDM": "71daaf10a73bb2012864f0827c68d209fc92b0a5",
+        "external/VAGEN": "9f1e89eb8c9839a406b6e62aa75703494a79e5b5",
+        "external/VAGEN/verl": "494f264494b2525f2c13595f63ac4912963e6d2f",
+        "external/le-wm": "8edfeb336732b5f3ce7b8b210d0ba370a09e2cac"
+      }
+    },
+    "tracking": {
+      "enabled": true,
+      "entity": "art2nd-hong-kong-university-of-science-and-technology",
+      "group": "sft1_query_state_visual_forensic_fork",
+      "project": "nimloth-sft1",
+      "resume": "never",
+      "run_id": "qs39k16vf4e",
+      "run_name": "39_visual_forensic_fork_query_state_k16_full_language_dino2l_ep2to5_ckpt321_b8_ws8_2x4_preempt6h"
+    },
+    "validation": {
+      "actor_tolerances": {
+        "kl_max": 0.2,
+        "logit_rms_ratio_max": 2.0,
+        "logit_rms_ratio_min": 0.5,
+        "top1_min": 0.8
+      },
+      "baseline_update": 1605,
+      "bootstrap_resamples": 2000,
+      "bootstrap_seed": 3335631237,
+      "calibration_cadence_updates": 1605,
+      "effective_rank_collapse_threshold": 1.5,
+      "effective_rank_formula": "entropy_rank_rows_slots_centered_float64_eps1e-12",
+      "generation_format_at_actual_terminal": false,
+      "generation_format_manifest_identity": "41fb498cdbedbc6a685f65c42f0708eb40ef617b13a54ef8d5c89aeee0ad25c2",
+      "generation_format_manifest_path": "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/contracts/39_visual_forensic_fork_qstate_k16_ep2to5_ckpt321_ws8_2x4_preempt6h_f65ed859/generation_format.json",
+      "generation_format_updates": [
+        1605,
+        3210,
+        4815,
+        6420,
+        8025
+      ],
+      "holdout_at_actual_terminal": false,
+      "holdout_updates": [
+        8025
+      ],
+      "natural_pair_formula": "equal_group_mean_percentile_95_group_bootstrap_v1",
+      "natural_pair_unit": "natural_group_mean",
+      "ordinary_bootstrap_formula": "record_cluster_percentile_95_row_weighted_mean_v1",
+      "ordinary_cluster_unit": "record_id",
+      "split": "visual_fork_calibration_trend_final_holdout",
+      "terminal_state_gates": {
+        "canonical_effective_rank_min": 1.5,
+        "dino_cosine_min_increase_from_update0": 0.15,
+        "dino_mse_max_fraction_of_update0": 0.7,
+        "instruction_relation_max_decrease_from_update0": 0.05,
+        "raw_query_effective_rank_min": 1.5,
+        "terminal_primary_only": true
+      },
+      "terminal_update": 8025
+    }
+  },
+  "resume_checkpoint": "none",
+  "resume_mode": "fresh",
+  "run_identity": "ca1003f306f0337a33dee11790ce983788c0522f5e4022776a1655a9aeb41487"
+}

@@ -60,7 +60,11 @@ from nimloth.training.sft1.query_state_runtime import (
 )
 from nimloth.training.sft1.query_state_training_config import (
     QueryStateTrainingConfig,
+    query_state_training_lineage_identity,
     query_state_training_run_identity,
+)
+from nimloth.training.sft1.query_state_training_migration import (
+    query_state_execution_provenance,
 )
 from nimloth.training.sft1.query_state_training_manifest import (
     QueryStateGenerationFormatManifest,
@@ -474,11 +478,43 @@ def _initial_durable_cursor(*, schedule_start_update: int) -> int:
     return schedule_start_update
 
 
+def _process_execution_provenance(
+    config: QueryStateTrainingConfig,
+) -> Mapping[str, Any] | None:
+    migration = config.execution_migration
+    if migration["enabled"] is not True:
+        return query_state_execution_provenance(config)
+    control_path = (
+        Path(str(config.initialization["resume_checkpoint"])) / "control.json"
+    )
+    try:
+        control = json.loads(control_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(
+            "execution migration cannot read the authenticated resume control"
+        ) from error
+    if not isinstance(control, Mapping):
+        raise ValueError("execution migration resume control must be a mapping")
+    previous = control.get("execution_provenance")
+    if previous is not None and not isinstance(previous, Mapping):
+        raise ValueError("execution migration prior provenance is invalid")
+    return query_state_execution_provenance(config, previous=previous)
+
+
 def _resume_identity(config: QueryStateTrainingConfig) -> QueryStateResumeIdentity:
-    run_identity = query_state_training_run_identity(config)
+    run_identity = query_state_training_lineage_identity(config)
+    migration = config.execution_migration
+    source_commit = (
+        migration["anchor_source_commit"]
+        if migration["enabled"] is True else config.source["commit"]
+    )
+    source_manifest_identity = (
+        migration["anchor_source_manifest_identity"]
+        if migration["enabled"] is True else config.source["source_manifest_identity"]
+    )
     return QueryStateResumeIdentity(
-        source_commit=str(config.source["commit"]),
-        source_manifest_identity=str(config.source["source_manifest_identity"]),
+        source_commit=str(source_commit),
+        source_manifest_identity=str(source_manifest_identity),
         config_identity=run_identity,
         run_identity=run_identity,
         world_size=int(config.resources["world_size"]),
@@ -739,7 +775,7 @@ def _run_generation_format_probe(
 ) -> Mapping[str, Any]:
     manifest = assembly.generation_format_manifest
     snapshot_identity = hashlib.sha256(
-        f"{query_state_training_run_identity(config)}:{update}:current-fsdp-logits".encode()
+        f"{query_state_training_lineage_identity(config)}:{update}:current-fsdp-logits".encode()
     ).hexdigest()
     records: list[Mapping[str, Any]] = []
     failure: Mapping[str, Any] | None = None
@@ -1403,7 +1439,8 @@ def run_query_state_training(
         ),
     )
     run_root = Path(str(config.output["run_root"]))
-    run_identity = query_state_training_run_identity(config)
+    run_identity = query_state_training_lineage_identity(config)
+    process_execution_provenance = _process_execution_provenance(config)
     controller = QueryStateTrainingController(
         run_root=run_root,
         controller_root=Path(str(config.output["controller_root"])),
@@ -1452,6 +1489,7 @@ def run_query_state_training(
                     ],
                     "resolved_config": resolved_config,
                     "command_manifest_text": command_manifest_text,
+                    "execution_provenance": process_execution_provenance,
                 },
             )
         except BaseException as error:
@@ -1511,6 +1549,7 @@ def run_query_state_training(
         schedule_start_update=schedule_start_update
     )
     restart_mirror_entries: tuple[QueryStateAuthoritativeEntry, ...] = ()
+    execution_provenance = process_execution_provenance
     if resume_mode == "exact_restart":
         if config.mode == "pilot":
             restart_path = run_root / "FORCED_RESTART_REQUIRED.json"
@@ -1533,6 +1572,16 @@ def run_query_state_training(
             rank=rank,
         )
         assembly.scheduler.load_state_dict(dict(scheduler_state))
+        if config.execution_migration["enabled"] is True:
+            restored_execution_provenance = query_state_execution_provenance(
+                config,
+                previous=control.execution_provenance,
+            )
+            if restored_execution_provenance != process_execution_provenance:
+                raise ValueError(
+                    "execution migration process/checkpoint provenance mismatch"
+                )
+            execution_provenance = restored_execution_provenance
         start_update = control.global_step
         data_cursor = dict(control.data_cursor)
         metric_cursor = dict(control.metric_cursor)
@@ -1812,6 +1861,7 @@ def run_query_state_training(
                 metric_cursor=baseline_metric_cursor,
                 terminal_primary=False,
                 forensic_only=True,
+                execution_provenance=execution_provenance,
             )
             baseline_save_error: BaseException | None = None
             try:
@@ -2249,6 +2299,7 @@ def run_query_state_training(
                 forensic_only=True,
                 data_cursor=data_cursor,
                 metric_cursor=forensic_metric_cursor,
+                execution_provenance=execution_provenance,
             )
             forensic_save_error: BaseException | None = None
             try:
@@ -2392,6 +2443,7 @@ def run_query_state_training(
             terminal_primary=(config.mode == "formal" and actual_terminal is not None),
             data_cursor=data_cursor,
             metric_cursor=metric_cursor,
+            execution_provenance=execution_provenance,
         )
         save_query_state_distributed_checkpoint(
             checkpoint,

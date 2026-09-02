@@ -27,7 +27,12 @@ from nimloth.training.sft1.identity import audit_id176_processor_identity
 from nimloth.training.sft1.query_state_training_config import (
     QueryStateTrainingConfig,
     parse_query_state_training_config,
+    query_state_training_lineage_identity,
     query_state_training_run_identity,
+)
+from nimloth.training.sft1.query_state_training_migration import (
+    parse_legacy_prior_process_config,
+    validate_query_state_execution_migration_contract,
 )
 from nimloth.training.sft1.query_state_training_manifest import (
     deserialize_generation_format_manifest,
@@ -136,7 +141,12 @@ def _prior_process_requires_pause_receipt(
             payload.get("command_manifest_text") if isinstance(payload, dict) else None
         )
         try:
-            prior_config = parse_query_state_training_config(resolved_config)
+            prior_config = (
+                parse_query_state_training_config(resolved_config)
+                if isinstance(resolved_config, Mapping)
+                and "execution_migration" in resolved_config
+                else parse_legacy_prior_process_config(resolved_config)
+            )
             if not isinstance(command_manifest_text, str):
                 raise ValueError("command manifest text is absent")
             command_manifest = json.loads(command_manifest_text)
@@ -289,7 +299,17 @@ def _authenticated_exact_restart_update(
     ):
         raise ValueError("Query-State exact restart control identity mismatch")
     identity = control.get("identity")
-    expected_run_identity = query_state_training_run_identity(config)
+    expected_run_identity = query_state_training_lineage_identity(config)
+    expected_source_commit = (
+        config.execution_migration["anchor_source_commit"]
+        if config.execution_migration["enabled"] is True
+        else config.source["commit"]
+    )
+    expected_source_manifest = (
+        config.execution_migration["anchor_source_manifest_identity"]
+        if config.execution_migration["enabled"] is True
+        else config.source["source_manifest_identity"]
+    )
     update = control.get("global_step")
     data_cursor = control.get("data_cursor")
     entries = index.get("entries") if isinstance(index, dict) else None
@@ -298,11 +318,12 @@ def _authenticated_exact_restart_update(
         not isinstance(identity, dict)
         or identity.get("config_identity") != expected_run_identity
         or identity.get("run_identity") != expected_run_identity
-        or identity.get("source_commit") != config.source["commit"]
+        or identity.get("source_commit") != expected_source_commit
+        or identity.get("source_manifest_identity") != expected_source_manifest
         or identity.get("world_size") != config.resources["world_size"]
         or identity.get("experiment_mode") != config.mode
         or control.get("config_identity") != expected_run_identity
-        or control.get("source_commit") != config.source["commit"]
+        or control.get("source_commit") != expected_source_commit
         or not isinstance(update, int)
         or isinstance(update, bool)
         or not isinstance(data_cursor, dict)
@@ -321,7 +342,117 @@ def _authenticated_exact_restart_update(
         raise ValueError(
             "Query-State exact restart checkpoint/index identity mismatch"
         )
+    provenance = control.get("execution_provenance")
+    anchor_checkpoint = Path(
+        str(config.execution_migration["anchor_checkpoint_path"])
+    ).resolve() if config.execution_migration["enabled"] is True else None
+    if config.execution_migration["enabled"] is True:
+        if checkpoint.resolve() == anchor_checkpoint:
+            if provenance is not None:
+                raise ValueError("migration anchor checkpoint unexpectedly has execution provenance")
+        elif not isinstance(provenance, Mapping):
+            raise ValueError("future restart lost execution migration provenance")
+        else:
+            anchor = provenance.get("anchor")
+            chain = provenance.get("execution_chain")
+            if (
+                not isinstance(anchor, Mapping)
+                or anchor.get("run_identity") != expected_run_identity
+                or anchor.get("source_commit") != expected_source_commit
+                or anchor.get("source_manifest_path")
+                != config.execution_migration["anchor_source_manifest_path"]
+                or anchor.get("source_manifest_identity") != expected_source_manifest
+                or anchor.get("partition") != "preempt"
+                or not isinstance(chain, list)
+                or not chain
+                or not isinstance(chain[-1], Mapping)
+                or chain[-1].get("source_commit")
+                != config.execution_migration["execution_source_commit"]
+                or chain[-1].get("source_manifest_path")
+                != config.execution_migration["execution_source_manifest_path"]
+                or chain[-1].get("source_manifest_identity")
+                != config.execution_migration["execution_source_manifest_identity"]
+                or chain[-1].get("partition")
+                != config.execution_migration["execution_partition"]
+            ):
+                raise ValueError("future restart execution migration chain is invalid")
     return update
+
+
+def _authenticate_execution_migration(
+    config: QueryStateTrainingConfig,
+    *,
+    checkpoint: Path,
+    run_root: Path,
+    environ: Mapping[str, str],
+    require_actual_partition: bool = True,
+) -> None:
+    migration = config.execution_migration
+    if migration["enabled"] is not True:
+        return
+    process_path = Path(str(migration["prior_process_path"])).resolve()
+    anchor_checkpoint = Path(str(migration["anchor_checkpoint_path"])).resolve()
+    anchor_control_path = anchor_checkpoint / "control.json"
+    index_path = Path(str(migration["anchor_index_path"])).resolve()
+    live_index_path = (Path(run_root) / "durable" / "authoritative_index.json").resolve()
+    if (
+        process_path.is_symlink()
+        or not process_path.is_file()
+        or _sha256_file(process_path) != migration["prior_process_sha256"]
+        or anchor_checkpoint.parent
+        != (Path(run_root).resolve() / "checkpoints")
+        or anchor_checkpoint.name != "update_00004815"
+        or not (anchor_checkpoint / "COMPLETED").is_file()
+        or (anchor_checkpoint / "COMPLETED").read_text(encoding="utf-8")
+        != f"control_sha256={migration['anchor_control_sha256']}\n"
+        or _sha256_file(anchor_control_path) != migration["anchor_control_sha256"]
+        or index_path == live_index_path
+        or index_path.is_symlink()
+        or not index_path.is_file()
+        or _sha256_file(index_path) != migration["anchor_index_sha256"]
+    ):
+        raise ValueError("execution migration immutable anchor evidence mismatch")
+    try:
+        process = json.loads(process_path.read_text(encoding="utf-8"))
+        anchor_index = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("execution migration prior evidence is invalid") from error
+    anchor_entries = (
+        anchor_index.get("entries") if isinstance(anchor_index, Mapping) else None
+    )
+    anchor_latest = (
+        anchor_entries[-1] if isinstance(anchor_entries, list) and anchor_entries else None
+    )
+    if (
+        not isinstance(anchor_index, Mapping)
+        or anchor_index.get("mode") != "visual_only_forensic_fork"
+        or anchor_index.get("run_identity") != migration["anchor_run_identity"]
+        or not isinstance(anchor_latest, Mapping)
+        or anchor_latest.get("run_identity") != migration["anchor_run_identity"]
+        or anchor_latest.get("end_update") != 4815
+        or Path(str(anchor_latest.get("checkpoint_path"))).resolve()
+        != anchor_checkpoint
+        or anchor_latest.get("checkpoint_control_hash")
+        != migration["anchor_control_sha256"]
+        or anchor_latest.get("checkpoint_payload_present", True) is not True
+        or anchor_latest.get("resumable", True) is not True
+    ):
+        raise ValueError("execution migration anchor index snapshot is invalid")
+    prior_raw = process.get("resolved_config") if isinstance(process, Mapping) else None
+    actual_partition = environ.get("SLURM_JOB_PARTITION")
+    if require_actual_partition and actual_partition != migration["execution_partition"]:
+        raise ValueError("actual Slurm partition does not match execution migration")
+    prior = validate_query_state_execution_migration_contract(
+        config,
+        prior_raw,
+        actual_partition=actual_partition if require_actual_partition else None,
+    )
+    if (
+        process.get("run_identity") != migration["anchor_run_identity"]
+        or process.get("mode") != "visual_only_forensic_fork"
+        or process.get("config_identity") != prior.identity
+    ):
+        raise ValueError("execution migration prior process provenance mismatch")
 
 
 def _reject_visual_fixed_budget_completion_restart(
@@ -652,6 +783,7 @@ def verify_query_state_training_preflight(
     repo_root: Path,
     current_argv: Sequence[str],
     environ: Mapping[str, str] | None = None,
+    require_runtime_partition: bool = False,
 ) -> QueryStateTrainingPreflightEvidence:
     """Verify exact source/assets/command/output/resources without entering CUDA."""
 
@@ -782,6 +914,13 @@ def verify_query_state_training_preflight(
             control_path = checkpoint / "control.json"
             if not (checkpoint / "COMPLETED").is_file() or not control_path.is_file():
                 raise FileNotFoundError("Query-State exact restart checkpoint is incomplete")
+            _authenticate_execution_migration(
+                config,
+                checkpoint=checkpoint,
+                run_root=run_root,
+                environ=environ or os.environ,
+                require_actual_partition=require_runtime_partition,
+            )
             completed_checkpoint_update = _authenticated_exact_restart_update(
                 config,
                 checkpoint=checkpoint,

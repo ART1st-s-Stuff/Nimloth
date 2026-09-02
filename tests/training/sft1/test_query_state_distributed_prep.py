@@ -547,6 +547,67 @@ def test_rank_sharded_checkpoint_transaction_binds_metric_and_data_cursor(
         finalize_query_state_rank_checkpoint(mixed, control=control)
 
 
+def test_rank_checkpoint_round_trip_preserves_execution_migration_provenance(
+    tmp_path: Path,
+) -> None:
+    identity = _resume_identity(
+        world_size=1,
+        experiment_mode="visual_only_forensic_fork",
+    )
+    checkpoint = tmp_path / "migrated-checkpoint"
+    save_query_state_rank_state(
+        checkpoint,
+        rank=0,
+        world_size=1,
+        state=_rank_state(0, identity),
+    )
+    provenance = {
+        "schema": "nimloth_query_state_execution_provenance_v1",
+        "anchor": {
+            "run_identity": identity.run_identity,
+            "source_commit": identity.source_commit,
+            "source_manifest_path": "/contracts/c39-source.json",
+            "source_manifest_identity": identity.source_manifest_identity,
+            "partition": "preempt",
+        },
+        "execution_chain": [{
+            "config_identity": "5" * 64,
+            "source_commit": "6" * 40,
+            "source_manifest_path": "/contracts/restart43-source.json",
+            "source_manifest_identity": "7" * 64,
+            "partition": "normal",
+            "approval_sha256": "8" * 64,
+        }],
+    }
+    control = QueryStateDistributedControl(
+        identity=identity,
+        global_step=5136,
+        data_cursor={"next_update": 5137},
+        metric_cursor={"wandb": 5136},
+        execution_provenance=provenance,
+    )
+    finalize_query_state_rank_checkpoint(checkpoint, control=control)
+    state, restored = load_query_state_rank_state(
+        checkpoint,
+        rank=0,
+        expected_identity=identity,
+    )
+    assert state.optimizer == {"step": 1}
+    assert restored == control
+    assert restored.execution_provenance == provenance
+
+    lost = dict(provenance)
+    lost["execution_chain"] = []
+    with pytest.raises(ValueError, match="execution provenance"):
+        QueryStateDistributedControl(
+            identity=identity,
+            global_step=5136,
+            data_cursor={"next_update": 5137},
+            metric_cursor={"wandb": 5136},
+            execution_provenance=lost,
+        )
+
+
 def test_rank_checkpoint_restore_rejects_dtype_before_mutating_any_parameter() -> None:
     root = nn.Module()
     root.language = nn.Linear(1, 1, bias=False)
