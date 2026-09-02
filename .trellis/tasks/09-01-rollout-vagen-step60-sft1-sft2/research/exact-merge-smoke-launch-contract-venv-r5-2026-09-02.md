@@ -1,9 +1,9 @@
-# Exact venv-safe R4 launch contract — step60 actor merge + one-row GPU smoke
+# Exact venv-safe R5 launch contract — step60 actor merge + one-row GPU smoke
 
 Date: 2026-09-02
-Status: **terminal failed before smoke step start; never reuse**
+Status: **candidate exact contract; not launch authorization**
 
-This contract replaces terminal failed job `543910` with W-014 code commit `7dac687b733cccffaf0a211ef0a602ec001749dd` and a new run identity. Remote inert planning retained `/project/peilab/atst/nimloth/.venv/bin/python3` in both provenance and `command[0]`; that interpreter loaded Torch `2.6.0+cu124`, `torch.utils`, Accelerate `1.14.0` and the full legacy merger module. The plan SHA256 is `00198dc3116da488129a6b3cb88391de6a5d588e79ce8459e1be00b5ae748700`. The approved R3 contract passed the inert merge preflight but one isolated `vagen.server.server` import exited before `IMPORT_OK`; audit proved no run root or matching Slurm job, while three immediate identical reproductions all returned `IMPORT_OK`/0. R4 therefore adds only a bounded three-attempt policy to each already reviewed side-effect-free import gate and uses a distinct run root, preflight target, port and job name. All real merge/smoke semantics remain unchanged. It authorizes nothing until exact commit/push and separate launch approval. Scope remains actor merge/load plus source-index-0 smoke only; the 100-row gate and all later stages are excluded.
+This contract replaces terminal failed job `544130` with the same reviewed code/runtime identities and a new run identity. R4 passed every pre-GPU gate and completed actor merge/load validation, but its following smoke `srun` returned nonzero before a second accounting step or any smoke artifact; the inline heredoc invocation did not persist scheduler/client stderr, so the refusal could not be diagnosed. R5 changes only execution observability: it writes the exact inner smoke shell to the fresh run's control directory, invokes that file through `srun`, tees combined scheduler/step output to `logs/smoke-step.log`, records the pipeline's `srun` exit code, and still fails closed without retry. It also uses fresh run/preflight/port/job identities. Import/source/resource/merge/service/collector/terminal-CoT semantics are unchanged. It authorizes nothing until exact review/commit/push and separate launch approval; the 100-row gate and all later stages remain excluded.
 
 Remote CPU evidence before this draft: affected suite `125 passed`; all three readiness-marker variants passed NFSv3 success, existing-target preservation, concurrent single-winner, final-marker ordering and both interruption rejection gates at `/project/peilab/atst/nimloth/.local/tmp/step60-nfs-publication-probe-20260902T121624Z-32bcc045` (summary SHA256 `aa63a9a8851a6e2df0960b896fad0d08c98d167155d82d3119eedcb051db1d5f`). A real pinned-source partition was published and all ten sibling parquets rehashed at `/project/peilab/atst/nimloth/.local/tmp/step60-cpu-preflight-20260902T122133Z-32bcc045/partition`; manifest SHA256 `be7db7ea975927bc176186bcb51a202b3be191196ced26e043a57add5f99b87c`. Regenerated continuation evidence under `/project/peilab/atst/nimloth/.local/tmp/step60-cpu-preflight-cont-20260902T122241Z-32bcc045` is runtime-contract file SHA256 `7b9184b8e33d76c0d410b141d4cff9ea993bef43708f5f9d16e7b2972718e9e8` (payload `cbb30382ffa5170daba37458f182d472e63b46c97f9fe588c6ce565214e6fcbf`), checkpoint inspection SHA256 `a819cbef1fafd5b9b9ef391b546ec092fa7a2193cd656d461ec258afe17ab500`, and inert merge-plan SHA256 `5e9472705ac54bbe75bbe6c1688c26fc8ef530291ae268565f78db0495732c05`.
 
@@ -30,7 +30,7 @@ No module is trainable; no optimizer or objective exists. Actor, vision encoder,
 
 Unique run root, absent at 2026-09-02 preflight:
 
-`/project/peilab/atst/nimloth/outputs/experiments/training/sft1-vagen-step60/20260902T160000Z_step60_batch1_v3_venv_r4_7dac687b`
+`/project/peilab/atst/nimloth/outputs/experiments/training/sft1-vagen-step60/20260902T163000Z_step60_batch1_v3_venv_r5_7dac687b`
 
 Allowed children: `partition/`, `runtime_contract.json`, `merge/hf_actor/`, `smoke/source-index-00000/`, failed `smoke/source-index-00000.partial-<12 hex>/`, `logs/`, `control/`, `metadata.json`, `LAUNCH_CONTRACT.md`, `RESOLVED_LAUNCH_CONTRACT.md`, `README.md`, and `END.json`. Existing paths are never reused or removed. W&B is disabled.
 
@@ -52,11 +52,11 @@ ROOT=/project/peilab/atst/nimloth
 NWT=$ROOT/.worktree/rollout-vagen-step60-sft1-sft2
 VWT=$ROOT/.worktree/vagen-step60-runtime-reconstruction-vagen
 PY=$ROOT/.venv/bin/python3
-RUN=$ROOT/outputs/experiments/training/sft1-vagen-step60/20260902T160000Z_step60_batch1_v3_venv_r4_7dac687b
+RUN=$ROOT/outputs/experiments/training/sft1-vagen-step60/20260902T163000Z_step60_batch1_v3_venv_r5_7dac687b
 ACTOR=/project/peilab/hligb/vagen-navigation/checkpoints/vagen_navigation_repro/navigation_vagen1_native_8gpu_rmb4_ppo16_val5_save5_lightckpt_48h_20260813T011326Z/global_step_60/actor
 SOURCE=/project/peilab/hligb/vagen-navigation/data/navigation_vagen1_native_8gpu_rmb4_ppo16_val5_save5_lightckpt_48h_20260813T011326Z/train.parquet
 TASK_REF=refs/remotes/origin/task/rollout-vagen-step60-sft1-sft2
-TASK_DOC=.trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2/research/exact-merge-smoke-launch-contract-venv-r4-2026-09-02.md
+TASK_DOC=.trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2/research/exact-merge-smoke-launch-contract-venv-r5-2026-09-02.md
 APPROVED_DOCS_COMMIT=${1:?missing-approved-docs-commit}
 HOLD=
 NODE=
@@ -113,7 +113,7 @@ for module, expected in ((vagen,root/'external/VAGEN'),(verl,root/'external/VAGE
     actual=Path(module.__file__).resolve()
     assert actual.is_relative_to(expected), (module.__name__,actual,expected)
 PY
-PREFLIGHT_TARGET=$ROOT/.local/tmp/step60-r4-inert-target-20260902T160000Z-7dac687b
+PREFLIGHT_TARGET=$ROOT/.local/tmp/step60-r5-inert-target-20260902T163000Z-7dac687b
 test -d "$ROOT/.local/tmp"
 test ! -e "$PREFLIGHT_TARGET" && test ! -L "$PREFLIGHT_TARGET"
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT/external/VAGEN/verl:$NWT/external/VAGEN:$NWT/src:$NWT" "$PY" - "$ACTOR" "$PREFLIGHT_TARGET" "$PY" "$NWT/external/VAGEN/verl/scripts/legacy_model_merger.py" <<'PY'
@@ -192,7 +192,7 @@ PY
 )
 test -n "$ELIGIBLE_NODE"
 printf '%s\n' "$ELIGIBLE_NODE" > "$RUN/control/eligible-node"
-HOLD=$(sbatch --parsable --account=peilab --partition=normal --nodelist="$ELIGIBLE_NODE" --nodes=1 --ntasks=1 --cpus-per-task=112 --gres=gpu:4 --mem=256G --time=03:00:00 --job-name=step60-b1-v3venv4-smoke --output="$RUN/logs/hold_%j.out" --error="$RUN/logs/hold_%j.err" --wrap='sleep infinity')
+HOLD=$(sbatch --parsable --account=peilab --partition=normal --nodelist="$ELIGIBLE_NODE" --nodes=1 --ntasks=1 --cpus-per-task=112 --gres=gpu:4 --mem=256G --time=03:00:00 --job-name=step60-b1-v3venv5-smoke --output="$RUN/logs/hold_%j.out" --error="$RUN/logs/hold_%j.err" --wrap='sleep infinity')
 printf '%s\n' "$HOLD" > "$RUN/control/hold_job_id"
 for _ in $(seq 1 180); do
   state=$(squeue -h -j "$HOLD" -o '%T')
@@ -209,14 +209,14 @@ scontrol show job -dd "$HOLD" > "$RUN/control/scontrol-job.txt"
 # Merge wrapper re-hashes source by design and validates HF architecture/tokenizer/finite weights/artifact manifest.
 srun --jobid="$HOLD" --overlap --nodes=1 --ntasks=1 -w "$NODE" bash -lc "set -euo pipefail; cd '$NWT'; PYTHONDONTWRITEBYTECODE=1 PYTHONPATH='$NWT/src:$NWT' '$PY' experiments/training/sft1/vagen_step60_checkpoint.py merge --actor-dir '$ACTOR' --target-dir '$RUN/merge/hf_actor' --python '$PY' --merger-script '$NWT/external/VAGEN/verl/scripts/legacy_model_merger.py' --hash-shards --execute" 2>&1 | tee "$RUN/logs/merge.log"
 
-srun --jobid="$HOLD" --overlap --nodes=1 --ntasks=1 -w "$NODE" bash -s <<'SMOKE'
+cat > "$RUN/control/smoke-step.sh" <<'SMOKE'
 set -euo pipefail
 ROOT=/project/peilab/atst/nimloth
 NWT=$ROOT/.worktree/rollout-vagen-step60-sft1-sft2
 VWT=$ROOT/.worktree/vagen-step60-runtime-reconstruction-vagen
 PY=$ROOT/.venv/bin/python3
-RUN=$ROOT/outputs/experiments/training/sft1-vagen-step60/20260902T160000Z_step60_batch1_v3_venv_r4_7dac687b
-PORT=18560
+RUN=$ROOT/outputs/experiments/training/sft1-vagen-step60/20260902T163000Z_step60_batch1_v3_venv_r5_7dac687b
+PORT=18570
 IFS=',' read -r -a ALLOCATED_GPUS <<< "${CUDA_VISIBLE_DEVICES:-}"
 test "${#ALLOCATED_GPUS[@]}" -eq 4
 test "$(printf '%s\n' "${ALLOCATED_GPUS[@]}" | sort -u | wc -l)" -eq 4
@@ -237,8 +237,15 @@ ready=0
 for _ in $(seq 1 167); do if curl -fsS "http://127.0.0.1:$PORT/health" > "$RUN/control/smoke-health.json"; then ready=1; break; fi; if ! kill -0 "$SERVER_PID" 2>/dev/null; then break; fi; sleep 3; done
 test "$ready" -eq 1
 cd "$NWT"
-CUDA_VISIBLE_DEVICES="$POLICY_GPUS" "$PY" experiments/training/sft1/vagen_step60_collect.py --model-path "$RUN/merge/hf_actor" --partition-manifest "$RUN/partition/partition_manifest.json" --source-index 0 --shard-index 0 --shard-size 100 --output-dir "$RUN/smoke/source-index-00000" --env-url "http://127.0.0.1:$PORT" --run-id step60-b1-v3venv4-smoke-source-00000 --source-runtime-root "$VWT" --source-runtime-contract "$RUN/runtime_contract.json" --expected-reconstruction-head 170a673d1bf5855fc0ea6fbed0744b3d7168f8f0 --expected-reconstruction-tree 58ef0eb66ad0bef7587c253c5c643af572c1d3a7 --expected-reconstruction-diff-sha256 7f025476657de1289cf84b61d7702de26d248cd196412e9374a15e6de62730e9 --expected-runtime-contract-payload-sha256 cbb30382ffa5170daba37458f182d472e63b46c97f9fe588c6ce565214e6fcbf --format-failure-policy fail_shard --concurrency 1 --tensor-parallel-size 2 --gpu-memory-utilization 0.35 --engine-seed 0 2>&1 | tee "$RUN/logs/smoke.log"
+CUDA_VISIBLE_DEVICES="$POLICY_GPUS" "$PY" experiments/training/sft1/vagen_step60_collect.py --model-path "$RUN/merge/hf_actor" --partition-manifest "$RUN/partition/partition_manifest.json" --source-index 0 --shard-index 0 --shard-size 100 --output-dir "$RUN/smoke/source-index-00000" --env-url "http://127.0.0.1:$PORT" --run-id step60-b1-v3venv5-smoke-source-00000 --source-runtime-root "$VWT" --source-runtime-contract "$RUN/runtime_contract.json" --expected-reconstruction-head 170a673d1bf5855fc0ea6fbed0744b3d7168f8f0 --expected-reconstruction-tree 58ef0eb66ad0bef7587c253c5c643af572c1d3a7 --expected-reconstruction-diff-sha256 7f025476657de1289cf84b61d7702de26d248cd196412e9374a15e6de62730e9 --expected-runtime-contract-payload-sha256 cbb30382ffa5170daba37458f182d472e63b46c97f9fe588c6ce565214e6fcbf --format-failure-policy fail_shard --concurrency 1 --tensor-parallel-size 2 --gpu-memory-utilization 0.35 --engine-seed 0 2>&1 | tee "$RUN/logs/smoke.log"
 SMOKE
+chmod 0555 "$RUN/control/smoke-step.sh"
+set +e
+srun --jobid="$HOLD" --overlap --nodes=1 --ntasks=1 -w "$NODE" bash "$RUN/control/smoke-step.sh" 2>&1 | tee "$RUN/logs/smoke-step.log"
+SMOKE_RC=${PIPESTATUS[0]}
+set -e
+printf '%s\n' "$SMOKE_RC" > "$RUN/control/smoke-step-exit-code"
+test "$SMOKE_RC" -eq 0
 
 cd "$NWT"
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT/src:$NWT" "$PY" - "$RUN/smoke/source-index-00000" <<'PY'
