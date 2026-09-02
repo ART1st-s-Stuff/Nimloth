@@ -66,7 +66,7 @@ cleanup_hold() {
     terminal=0
     state=
     for _ in $(seq 1 60); do
-      state=$(sacct -n -X -j "$HOLD" --format=State -P | head -n1 | cut -d'|' -f1)
+      state=$(sacct -n -X -j "$HOLD" --format=State -P | awk -F'|' 'NR==1 {value=$1} END {print value}')
       case "$state" in COMPLETED|FAILED|CANCELLED*|TIMEOUT|OUT_OF_MEMORY|NODE_FAIL|PREEMPTED) terminal=1; break;; esac
       sleep 2
     done
@@ -83,14 +83,16 @@ test "$(git -C "$NWT" rev-parse --show-toplevel)" = "$NWT"
 test "$(git -C "$NWT" rev-parse HEAD)" = 187fe112038944a3ba7dd913fb4e87e15a33937e
 test "$(git -C "$NWT" rev-parse --git-common-dir)" = "$ROOT/.git"
 test -z "$(git -C "$NWT" status --porcelain=v1 --untracked-files=all)"
-git -C "$ROOT" worktree list --porcelain | grep -Fqx "worktree $NWT"
+NIMLOTH_WORKTREES=$(git -C "$ROOT" worktree list --porcelain)
+grep -Fqx "worktree $NWT" <<< "$NIMLOTH_WORKTREES"
 test "$(git -C "$NWT/external/VAGEN" rev-parse HEAD)" = 9f1e89eb8c9839a406b6e62aa75703494a79e5b5
 test "$(git -C "$NWT/external/VAGEN/verl" rev-parse HEAD)" = 494f264494b2525f2c13595f63ac4912963e6d2f
 test "$(git -C "$NWT/external/le-wm" rev-parse HEAD)" = 8edfeb336732b5f3ce7b8b210d0ba370a09e2cac
 for d in "$NWT/external/VAGEN" "$NWT/external/VAGEN/verl" "$NWT/external/le-wm"; do test -z "$(git -C "$d" status --porcelain=v1 --untracked-files=all)"; done
 test "$(git -C "$VWT" rev-parse --show-toplevel)" = "$VWT"
 test "$(git -C "$VWT" rev-parse --git-common-dir)" = "$ROOT/.git/modules/external/VAGEN"
-git -C "$ROOT/external/VAGEN" worktree list --porcelain | grep -Fqx "worktree $VWT"
+VAGEN_WORKTREES=$(git -C "$ROOT/external/VAGEN" worktree list --porcelain)
+grep -Fqx "worktree $VWT" <<< "$VAGEN_WORKTREES"
 test "$(git -C "$VWT" rev-parse HEAD)" = 170a673d1bf5855fc0ea6fbed0744b3d7168f8f0
 test "$(git -C "$VWT" rev-parse HEAD^)" = 3003c2e5e4ad84565627e6aa7f6ad5ca731dad1a
 test "$(git -C "$VWT" rev-list --count 3003c2e5e4ad84565627e6aa7f6ad5ca731dad1a..HEAD)" = 1
