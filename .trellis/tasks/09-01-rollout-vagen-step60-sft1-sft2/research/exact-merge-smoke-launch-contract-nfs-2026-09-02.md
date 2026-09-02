@@ -34,7 +34,7 @@ Unique run root, absent at 2026-09-02 preflight:
 
 Allowed children: `partition/`, `runtime_contract.json`, `merge/hf_actor/`, `smoke/source-index-00000/`, failed `smoke/source-index-00000.partial-<12 hex>/`, `logs/`, `control/`, `metadata.json`, `LAUNCH_CONTRACT.md`, and `RESOLVED_LAUNCH_CONTRACT.md`. Existing paths are never reused or removed. W&B is disabled.
 
-Slurm: account `peilab`, partition `normal`, any healthy single node, one task, four GPUs, 112 CPUs, 256 GiB scheduler memory, walltime `03:00:00`. The one smoke step receives all four GPUs and fails unless its initial `CUDA_VISIBLE_DEVICES` resolves to four distinct entries. Policy is restricted to logical `0,1` with TP2; service is restricted to logical `2,3`, exposing its two devices internally as `[0,1]`, `max_workers=2`. The 2026-09-02 pre-contract snapshot found `dgx-14` and `dgx-35` satisfying the four-GPU/112-CPU/256-GiB gates; this is transient evidence only. Availability and requested CPU/memory must be rechecked immediately before submission. Expected duration is under two hours, including repeated source hashing, merge and startup margin.
+Slurm: account `peilab`, partition `normal`, any healthy single node, one task, four GPUs, 112 CPUs, 256 GiB scheduler memory, walltime `03:00:00`. The one smoke step receives all four GPUs and fails unless its initial `CUDA_VISIBLE_DEVICES` resolves to four distinct entries. Policy is restricted to logical `0,1` with TP2; service is restricted to logical `2,3`, exposing its two devices internally as `[0,1]`, `max_workers=2`. The 2026-09-02 pre-contract snapshot found `dgx-14` and `dgx-35` satisfying the four-GPU/112-CPU/256-GiB gates; this is transient evidence only. `dgx-51` is excluded because two prior navigation runs passed HTTP health but timed out the first real AI2-THOR prewarm, and it has not been requalified. Availability and requested CPU/memory must be rechecked immediately before submission. Expected duration is under two hours, including repeated source hashing, merge and startup margin.
 
 ## Exact execution script
 
@@ -104,6 +104,15 @@ test -z "$(git -C "$VWT" status --porcelain=v1 --untracked-files=all)"
 test "$(sha256sum "$NWT/external/VAGEN/verl/scripts/legacy_model_merger.py" | awk '{print $1}')" = 3e2794e1e9e566a4aeb0d709dad7d2b8864c8b91e4f72cf0d265ecb62c311044
 test "$(sha256sum "$ROOT/.venv/lib/python3.10/site-packages/vllm/outputs.py" | awk '{print $1}')" = 047d469792ba4b332fd6bc6837af03340135cb49798e1ddfd2ffa730ead436f8
 test "$(sha256sum "$ROOT/.venv/lib/python3.10/site-packages/vllm/engine/output_processor/stop_checker.py" | awk '{print $1}')" = 5ed39ad2df9912b7a4b9ff52168c50bfe9d937675d3f1122148c0824450afa28
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT/external/VAGEN/verl:$NWT/external/VAGEN:$NWT/src:$NWT" "$PY" - "$NWT" <<'PY'
+from pathlib import Path
+import sys, vagen, verl
+import verl.utils.fsdp_utils as fsdp_utils
+root=Path(sys.argv[1]).resolve()
+for module, expected in ((vagen,root/'external/VAGEN'),(verl,root/'external/VAGEN/verl'),(fsdp_utils,root/'external/VAGEN/verl')):
+    actual=Path(module.__file__).resolve()
+    assert actual.is_relative_to(expected), (module.__name__,actual,expected)
+PY
 for code in 'import torch' 'import transformers' 'import vllm' 'import vagen.server.server' 'from experiments.training.sft1 import vagen_step60_collect'; do
   PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$VWT:$NWT/src:$NWT" timeout 60s "$PY" -c "$code; print('IMPORT_OK')"
 done
@@ -142,7 +151,7 @@ from experiments.training.baseline.slurm_gpu_resources import parse_nodes
 eligible=[]
 for row in parse_nodes():
     scheduler_free=(row.real_mem_mb or 0)-(row.alloc_mem_mb or 0)
-    if row.partition=="normal" and row.state in {"IDLE","MIXED"} and row.free_gpu>=4 and row.free_cpu>=112 and scheduler_free>=256*1024 and (row.free_mem_mb or 0)>=256*1024:
+    if row.partition=="normal" and row.node!="dgx-51" and row.state in {"IDLE","MIXED"} and row.free_gpu>=4 and row.free_cpu>=112 and scheduler_free>=256*1024 and (row.free_mem_mb or 0)>=256*1024:
         eligible.append({"node":row.node,"free_gpu":row.free_gpu,"free_cpu":row.free_cpu,"scheduler_free_mem_mb":scheduler_free,"observed_free_mem_mb":row.free_mem_mb})
 eligible.sort(key=lambda item:(-item["free_gpu"],-item["free_cpu"],-item["observed_free_mem_mb"],item["node"]))
 assert eligible, "no one-node normal topology satisfies 4 GPU / 112 CPU / 256G scheduler+observed memory"
