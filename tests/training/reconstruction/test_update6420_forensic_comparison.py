@@ -7,6 +7,7 @@ import pytest
 
 from nimloth.training.reconstruction.update6420_forensic_comparison import (
     BASELINE_INVARIANTS_SHA256,
+    LOCKED_UPDATE6420_EXPECTED,
     UPDATE6420_CACHE_SCHEMA,
     _epoch1_metric_input,
     build_comparison_artifact,
@@ -92,6 +93,12 @@ def _checkpoint(tmp_path: Path) -> tuple[dict[str, object], dict[str, object]]:
     expected["rank_payload_sha256"] = [item["payload_sha256"] for item in ranks]
     expected["rank_sidecar_sha256"] = [item["sidecar_sha256"] for item in ranks]
     return evidence, expected
+
+
+def test_locked_update6420_segment_paths_match_live_owner_filenames() -> None:
+    segment = LOCKED_UPDATE6420_EXPECTED["evidence_paths"]["segment"]
+    assert Path(segment["mirror"]).name == "mirror_batch.json"
+    assert Path(segment["updates"]).name == "updates.jsonl"
 
 
 def test_checkpoint_rejects_identity_payload_optimizer_and_consumer_confusion(tmp_path: Path) -> None:

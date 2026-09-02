@@ -99,7 +99,15 @@ LOCKED_UPDATE6420_EXPECTED: Mapping[str, Any] = {
         "resolved_config": f"{_UPDATE6420_RUN_ROOT}/resolved_config.json",
         "anchor_manifest": "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/contracts/39_visual_forensic_fork_qstate_k16_ep2to5_ckpt321_ws8_2x4_preempt6h_f65ed859/source_manifest.json",
         "migration_manifest": "/project/peilab/atst/nimloth/outputs/experiments/training/sft1_query_state/contracts/44_visual_forensic_fork_exact_restart_u4815_normal_ws8_2x4_6h_441e7f64/source_manifest.json",
-        "segment": {name: f"{_UPDATE6420_SEGMENT}/{name}.json" for name in ("commit", "cursors", "mirror", "owner", "safety", "updates", "validation")},
+        "segment": {
+            "commit": f"{_UPDATE6420_SEGMENT}/commit.json",
+            "cursors": f"{_UPDATE6420_SEGMENT}/cursors.json",
+            "mirror": f"{_UPDATE6420_SEGMENT}/mirror_batch.json",
+            "owner": f"{_UPDATE6420_SEGMENT}/owner.json",
+            "safety": f"{_UPDATE6420_SEGMENT}/safety.json",
+            "updates": f"{_UPDATE6420_SEGMENT}/updates.jsonl",
+            "validation": f"{_UPDATE6420_SEGMENT}/validation.json",
+        },
     },
     "rank_sidecar_sha256": [
         "177e2dfe4634c02d35f133662b7211d93621c1c2ec9ca71db2eac2576e815fa4", "dffd545bb76be7d176b8776d4163987a8f2fde10e5a03163b8dc83a21a962050",
