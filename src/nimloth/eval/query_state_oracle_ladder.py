@@ -1285,6 +1285,8 @@ def evaluate_oracle_ladder(args: argparse.Namespace) -> Mapping[str, Any]:
     ):
         raise ValueError("oracle-ladder evaluation dtype/batch/chunk config is invalid")
     source_commit = _current_source_commit()
+    if not _is_git_commit(args.train_source_commit):
+        raise ValueError("oracle-ladder train source commit is invalid")
     id198_reference = _load_id198_visual_reference(
         summary_path=args.id198_summary,
         external_report_path=args.id198_external_report,
@@ -1408,7 +1410,7 @@ def evaluate_oracle_ladder(args: argparse.Namespace) -> Mapping[str, Any]:
             ),
             "selection_identity": external_split.selection_identity,
             "sample_selection_identity": plan.identity,
-            "source_commit": source_commit,
+            "source_commit": args.train_source_commit,
             "state_cache_path": str(args.state_cache.resolve()),
             "oracle_cache_path": str(args.oracle_cache.resolve()),
             "final_step": 4_000,
@@ -1499,6 +1501,7 @@ def evaluate_oracle_ladder(args: argparse.Namespace) -> Mapping[str, Any]:
         "token_oracle_checkpoint": str(args.token_oracle_checkpoint.resolve()),
         "spatial_state_checkpoint": str(args.spatial_state_checkpoint.resolve()),
         "spatial_oracle_checkpoint": str(args.spatial_oracle_checkpoint.resolve()),
+        "train_source_commit": args.train_source_commit,
         "id198_summary": str(args.id198_summary.resolve()),
         "id198_external_report": str(args.id198_external_report.resolve()),
         "output": str(destination.resolve()),
@@ -2185,6 +2188,7 @@ def validate_oracle_ladder_report(root: str | Path) -> Mapping[str, Any]:
             "token_oracle_checkpoint",
             "spatial_state_checkpoint",
             "spatial_oracle_checkpoint",
+            "train_source_commit",
             "id198_summary",
             "id198_external_report",
             "output",
@@ -2209,6 +2213,7 @@ def validate_oracle_ladder_report(root: str | Path) -> Mapping[str, Any]:
         or config.get("bootstrap_seed") != BOOTSTRAP_SEED
         or config.get("bootstrap_resamples") != BOOTSTRAP_RESAMPLES
         or config.get("contact_sample_seed") != CONTACT_SAMPLE_SEED
+        or not _is_git_commit(config.get("train_source_commit"))
         or config.get("flow_batch_size") != BATCH_SIZE
         or config.get("sample_chunk_size") != 8
         or config.get("dino_dtype") not in {"float32", "float16", "bfloat16"}
@@ -2280,7 +2285,7 @@ def validate_oracle_ladder_report(root: str | Path) -> Mapping[str, Any]:
         != report["selection_identity"]
         or oracle_reader.manifest.get("dino") != dino_owner
         or oracle_reader.manifest["producer"]["source_commit"]
-        != producer["source_commit"]
+        != config["train_source_commit"]
     ):
         raise ValueError("oracle-ladder strict live cache reader identity drift")
     del state_reader, oracle_reader
@@ -2390,7 +2395,7 @@ def validate_oracle_ladder_report(root: str | Path) -> Mapping[str, Any]:
             validate_oracle_ladder_invariants(invariants, config_value)
             if (
                 invariants.get("cell") != cell
-                or invariants.get("source_commit") != producer["source_commit"]
+                or invariants.get("source_commit") != config["train_source_commit"]
                 or invariants.get("state_cache_path") != config["state_cache"]
                 or invariants.get("oracle_cache_path") != config["oracle_cache"]
                 or invariants.get("output_dir")
@@ -2516,6 +2521,7 @@ def build_cli_parser() -> argparse.ArgumentParser:
     parser.add_argument("--token-oracle-checkpoint", required=True, type=Path)
     parser.add_argument("--spatial-state-checkpoint", required=True, type=Path)
     parser.add_argument("--spatial-oracle-checkpoint", required=True, type=Path)
+    parser.add_argument("--train-source-commit", required=True)
     parser.add_argument("--id198-summary", required=True, type=Path)
     parser.add_argument("--id198-external-report", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
