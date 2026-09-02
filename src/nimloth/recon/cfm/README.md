@@ -60,6 +60,14 @@ velocity-MSE delta 0.01 and their aggregate shuffled/correct ratio must reach
 1.05 before 16 deterministic external Euler50 RGB examples are emitted. Stage A
 cache/checkpoints cannot initialize or resume this owner.
 
+A failed Stage B publication gate remains final scientific evidence. The
+separate forensic post-hoc inspection owner can, only after a new approval,
+replay the original deterministic 16-row correct-condition seed20260921,
+128px/Euler50/chunk8 sample for human viewing. It loads no live optimizer,
+performs no update/resume or shuffled publication, writes a fresh manifest-last
+non-publication schema, and binds the exact failed-gate/checkpoint/cache/summary
+identities without modifying the original run.
+
 Formal38's actor failure remains above all reconstruction evidence. Direct DINO
 metrics are primary, condition sensitivity is secondary, and three-channel sRGB
 strips/contact sheets are visual inspection aids that can also fail because of

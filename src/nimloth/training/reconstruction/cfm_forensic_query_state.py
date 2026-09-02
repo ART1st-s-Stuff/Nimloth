@@ -16,6 +16,7 @@ import os
 import shutil
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,19 @@ _SOURCE_FIELDS = {
 }
 
 
+@dataclass(frozen=True)
+class ForensicStageBSamplePlan:
+    """Exact Stage B row/noise product shared by publication and inspection."""
+
+    indices: tuple[int, ...]
+    rows: tuple[Mapping[str, Any], ...]
+    initial_noise: torch.Tensor
+    indices_sha256: str
+    row_identities_sha256: str
+    original_image_sha256_identity: str
+    initial_noise_sha256: str
+
+
 def _is_sha256(value: object) -> bool:
     return isinstance(value, str) and len(value) == 64 and set(value) <= _HEX
 
@@ -92,6 +106,62 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _sha256_tensor_bytes(value: torch.Tensor) -> str:
+    tensor = value.detach().cpu().contiguous()
+    return hashlib.sha256(tensor.numpy().tobytes()).hexdigest()
+
+
+def build_forensic_stage_b_sample_plan(
+    validation: LoadedQueryStateImageSplit,
+) -> ForensicStageBSamplePlan:
+    """Derive the sole 16-row/initial-noise Stage B sampling plan."""
+
+    if (
+        validation.cache_schema != FORENSIC_QUERY_STATE_CACHE_SCHEMA
+        or validation.split_name != FORENSIC_SELECTION_EXTERNAL_VALIDATION
+        or len(validation) != 1_413
+        or validation.image_preprocessing.get("size") != 128
+        or validation.image_preprocessing.get("color_space") != "sRGB"
+        or len(validation.rows) != 1_413
+    ):
+        raise ValueError("forensic Stage B sample plan requires the exact 1413-row 128px external split")
+    selection_generator = torch.Generator(device="cpu").manual_seed(20260921)
+    selected = torch.randperm(1_413, generator=selection_generator)[:16]
+    indices = tuple(int(value) for value in selected.tolist())
+    rows = tuple(validation.rows[index] for index in indices)
+    row_identities = [row.get("row_identity") for row in rows]
+    image_sha256 = [row.get("original_image_sha256") for row in rows]
+    if (
+        any(not isinstance(value, str) or not value for value in row_identities)
+        or any(not _is_sha256(value) for value in image_sha256)
+    ):
+        raise ValueError("forensic Stage B sample rows require exact row/image identities")
+    noise_generator = torch.Generator(device="cpu").manual_seed(20260921)
+    initial_noise = torch.randn((16, 3, 128, 128), generator=noise_generator)
+    return ForensicStageBSamplePlan(
+        indices=indices,
+        rows=rows,
+        initial_noise=initial_noise,
+        indices_sha256=_sha256_tensor_bytes(selected),
+        row_identities_sha256=_sha256_mapping({"row_identities": row_identities}),
+        original_image_sha256_identity=_sha256_mapping({"original_image_sha256": image_sha256}),
+        initial_noise_sha256=_sha256_tensor_bytes(initial_noise),
+    )
+
+
+def validate_forensic_rgb_publication_metadata(
+    metadata: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Strict schema gate used by consumers of the existing publication owner."""
+
+    if (
+        not isinstance(metadata, Mapping)
+        or metadata.get("schema") != FORENSIC_CFM_RGB_ARTIFACT_SCHEMA
+    ):
+        raise ValueError("forensic RGB publication metadata schema is invalid")
+    return metadata
 
 
 def validate_forensic_manifest(
@@ -643,8 +713,18 @@ def publish_forensic_rgb_artifacts(*, output_dir: str | Path, decoder_checkpoint
         }
     sample_split = validation if stage_b else train
     count = int(invariants["sample_items"]); seed = int(invariants["sample_noise_seed"])
-    indices = torch.randperm(len(sample_split), generator=torch.Generator().manual_seed(seed))[:count]
-    states = sample_split.states[indices].float(); noise = torch.randn((count, 3, config.image_size, config.image_size), generator=torch.Generator().manual_seed(seed))
+    sample_plan = build_forensic_stage_b_sample_plan(validation) if stage_b else None
+    indices = (
+        torch.tensor(sample_plan.indices, dtype=torch.long)
+        if sample_plan is not None
+        else torch.randperm(len(sample_split), generator=torch.Generator().manual_seed(seed))[:count]
+    )
+    states = sample_split.states[indices].float()
+    noise = (
+        sample_plan.initial_noise
+        if sample_plan is not None
+        else torch.randn((count, 3, config.image_size, config.image_size), generator=torch.Generator().manual_seed(seed))
+    )
     reconstructions = sample_euler(decoder, flatten_query_state_condition(states), noise, steps=int(invariants["sample_ode_steps"]), device=device, chunk_size=int(invariants["sample_batch_size"]))
     destination.mkdir(parents=True)
     strips_dir = destination / "strips"; strips_dir.mkdir()
@@ -694,7 +774,18 @@ def publish_forensic_rgb_artifacts(*, output_dir: str | Path, decoder_checkpoint
             "external_validation_controls_checkpoint_selection": False,
             "checkpoint_selection": f"final_step{final_step}_only_no_best_selection",
             "publication_gate": gate, "stage_a_pass": gate if not stage_b else None,
-            "sample_selection": {"role": sample_split.split_name, "algorithm": "torch_randperm_cpu_v1", "seed": seed, "indices": indices.tolist()},
+            "sample_selection": {
+                "role": sample_split.split_name,
+                "algorithm": "torch_randperm_cpu_v1",
+                "seed": seed,
+                "indices": indices.tolist(),
+                **({
+                    "indices_sha256": sample_plan.indices_sha256,
+                    "row_identities_sha256": sample_plan.row_identities_sha256,
+                    "original_image_sha256_identity": sample_plan.original_image_sha256_identity,
+                    "initial_noise_sha256": sample_plan.initial_noise_sha256,
+                } if sample_plan is not None else {}),
+            },
             "rows": rows, "contact_sheet_path": str(contact_path), "contact_sheet_sha256": _sha256_file(contact_path),
         }
         metadata["artifact_identity"] = _sha256_mapping(metadata)
@@ -915,9 +1006,11 @@ __all__ = [
     "FORMAL38_FAILURE_MANIFEST_SHA256",
     "FORMAL38_SOURCE_COMMIT",
     "FORMAL38_UNSAFE_CONTROL_SHA256",
+    "ForensicStageBSamplePlan",
     "build_cli_parser",
     "build_decoder_optimizer",
     "build_forensic_checkpoint_invariants",
+    "build_forensic_stage_b_sample_plan",
     "evaluate_stage_a_pass",
     "evaluate_stage_b_publication_gate",
     "load_forensic_cfm_checkpoint",
@@ -926,6 +1019,7 @@ __all__ = [
     "save_forensic_cfm_checkpoint",
     "train_forensic_query_state_cfm",
     "validate_forensic_manifest",
+    "validate_forensic_rgb_publication_metadata",
     "validate_forensic_split_pair",
     "validate_forensic_stage_a_manifest",
 ]

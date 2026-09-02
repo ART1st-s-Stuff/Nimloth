@@ -113,6 +113,23 @@ seeds 20260931/32/33, per-seed delta >=0.01 and aggregate shuffled/correct ratio
 >=1.05 before producing 16 deterministic Euler50 external RGB examples.
 Stage/cache/checkpoint invariants reject every cross-stage resume or reuse.
 
+When the Stage B final step4000 publication gate fails, the separate
+`cfm_forensic_posthoc_inspection.py` owner may produce only the human-requested
+correct-condition RGB inspection under a new launch approval. It is hard-bound
+to Job543457's exact final checkpoint, failed-gate metadata and summary hashes,
+the exact Stage B cache manifest/fingerprint/selection, and the original fixed
+16-row seed20260921/Euler50/chunk8 plan. The CLI exposes no row, seed, ODE,
+training, resume, gate-override, optimizer, or W&B controls. It deserializes the
+trusted checkpoint but constructs and loads only the frozen/eval decoder; the
+serialized optimizer is validated as evidence and never materialized as a live
+optimizer. Its distinct
+`nimloth_query_state_forensic_cfm_posthoc_rgb_inspection_v1` manifest is committed
+last after a non-overwriting destination claim. Strict readers reject the
+publication schema, undeclared/symlinked/hash-drifted files, and every incomplete
+pre-manifest output; post-manifest durability failure remains a typed committed
+but unconfirmed terminal state. This inspection never changes the failed
+publication verdict or any byte in the original Job543457 output.
+
 The Stage B cache is rebuilt from the live audit without a caller row mask,
 requires zero train/external image overlap, uses the same WS8 padded collective
 schedule, and publishes fixed bounded 2,048-record shards with manifest-last NFS
