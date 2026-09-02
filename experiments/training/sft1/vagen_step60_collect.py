@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect source-faithful VAGEN step60 trajectories into atomic raw shards.
+"""Collect source-faithful VAGEN step60 trajectories into marker-complete shards.
 
 This entrypoint talks to the legacy batch environment service from the reviewed
 evidence-backed reconstruction, renders the source Qwen chat contract, saves every observation,
@@ -35,10 +35,11 @@ from experiments.training.sft1.vagen_step60_checkpoint import (
 )
 from experiments.training.sft1.vagen_step60_data import (
     SOURCE_ACTION_NAMES,
-    atomic_publish_directory,
+    lexical_absolute_path,
+    load_published_partition_manifest,
     parse_source_response,
+    publish_reserved_directory,
     validate_complete_shard,
-    validate_partition_manifest,
 )
 
 RAW_RECORD_FORMAT = "vagen_step60_source_trajectory_v3"
@@ -995,13 +996,13 @@ class SourceShardCollector:
         output_dir: Path,
         max_steps: int = 20,
     ) -> dict[str, Any]:
+        output_dir = lexical_absolute_path(output_dir)
+        if output_dir.exists() or output_dir.is_symlink():
+            raise FileExistsError(f"source shard output already exists: {output_dir}")
         if not specs:
             raise ValueError("source shard requires at least one episode")
         if max_steps != 20:
             raise ValueError("source step60 rollout requires exactly 20 max steps")
-        output_dir = output_dir.resolve()
-        if output_dir.exists():
-            raise FileExistsError(f"source shard output already exists: {output_dir}")
         output_dir.parent.mkdir(parents=True, exist_ok=True)
         partial = output_dir.with_name(
             f"{output_dir.name}.partial-{uuid.uuid4().hex[:12]}"
@@ -1075,15 +1076,21 @@ class SourceShardCollector:
                 partial,
                 expected_source_indices=set(source_indices),
             )
-            atomic_publish_directory(partial, output_dir)
+            publish_reserved_directory(
+                partial,
+                output_dir,
+                readiness_marker="COMPLETE",
+            )
             return validate_complete_shard(
                 output_dir,
                 expected_source_indices=set(source_indices),
             )
         except Exception as error:
-            (partial / "COMPLETE").unlink(missing_ok=True)
-            error_path = partial / "FAILED.json"
-            if not error_path.exists():
+            if partial.exists():
+                error_path = partial / "FAILED.json"
+            else:
+                error_path = output_dir / "FAILED_VALIDATION.json"
+            if error_path.parent.exists() and not error_path.exists():
                 _write_json_atomic(
                     error_path,
                     {"error_type": type(error).__name__, "error": str(error)},
@@ -1099,8 +1106,7 @@ def load_batch1_shard_specs(
 ) -> list[EpisodeSpec]:
     if shard_size < 2 or shard_size % 2:
         raise ValueError("source shard_size must be a positive even number")
-    manifest = json.loads(partition_manifest.read_text(encoding="utf-8"))
-    validate_partition_manifest(manifest, require_published=True)
+    manifest = load_published_partition_manifest(partition_manifest)
     rows = [row for row in manifest.get("rows", []) if int(row["batch"]) == 1]
     by_category = {
         category: sorted(
@@ -1143,8 +1149,7 @@ def load_batch1_smoke_spec(
     *,
     source_index: int,
 ) -> EpisodeSpec:
-    manifest = json.loads(partition_manifest.read_text(encoding="utf-8"))
-    validate_partition_manifest(manifest, require_published=True)
+    manifest = load_published_partition_manifest(partition_manifest)
     matches = [
         row
         for row in manifest.get("rows", [])
@@ -1473,6 +1478,11 @@ def main() -> int:
     parser.add_argument("--gpu-memory-utilization", type=float, required=True)
     parser.add_argument("--engine-seed", type=int, required=True)
     args = parser.parse_args()
+    args.output_dir = lexical_absolute_path(args.output_dir)
+    if args.output_dir.exists() or args.output_dir.is_symlink():
+        raise FileExistsError(
+            f"source shard output already exists: {args.output_dir}"
+        )
 
     policy_artifact_evidence = validate_policy_artifact(args.model_path)
     specs = (

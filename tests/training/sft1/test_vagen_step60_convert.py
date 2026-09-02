@@ -38,6 +38,7 @@ def _source_rows() -> list[dict[str, object]]:
 
 
 def _write_published_partition(path: Path) -> dict[str, object]:
+    path.parent.mkdir()
     manifest = data_module.build_partition_manifest(
         _source_rows(),
         source_path="/source/train.parquet",
@@ -46,8 +47,10 @@ def _write_published_partition(path: Path) -> dict[str, object]:
     manifest["source"]["size_bytes"] = 1
     for batch in manifest["batches"]:
         batch["parquet"] = f"batch_{batch['batch']:02d}.parquet"
-        batch["parquet_sha256"] = f"{int(batch['batch']):064x}"
-        batch["parquet_size_bytes"] = 1
+        parquet = path.parent / batch["parquet"]
+        parquet.write_bytes(bytes([int(batch["batch"])]))
+        batch["parquet_sha256"] = data_module._file_sha256(parquet)
+        batch["parquet_size_bytes"] = parquet.stat().st_size
     manifest["manifest_payload_sha256"] = (
         data_module.partition_manifest_payload_sha256(manifest)
     )
@@ -61,6 +64,7 @@ def _write_shard_stub(path: Path, source_index: int) -> None:
         json.dumps({"source_indices": [source_index]}),
         encoding="utf-8",
     )
+    (path / "COMPLETE").write_text("{}\n", encoding="utf-8")
     (path / "raw.jsonl").write_text(
         json.dumps(
             {
@@ -144,11 +148,24 @@ def test_verified_shard_loader_rejects_duplicate_and_missing_coverage(
         )
 
 
+def test_converter_rejects_dangling_output_before_inputs(tmp_path: Path) -> None:
+    output = tmp_path / "converted"
+    output.symlink_to(tmp_path / "missing")
+    with pytest.raises(FileExistsError):
+        convert_module.convert_complete_batch1(
+            partition_manifest=tmp_path / "absent.json",
+            shard_dirs=[],
+            output_dir=output,
+        )
+    assert output.is_symlink()
+    assert not (tmp_path / "missing").exists()
+
+
 def test_batch1_orchestrator_enforces_exact_coverage_and_publishes_all_views(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    partition_path = tmp_path / "partition.json"
+    partition_path = tmp_path / "partition" / "partition_manifest.json"
     manifest = _write_published_partition(partition_path)
     batch1 = [row for row in manifest["rows"] if row["batch"] == 1]
     source_records = [
@@ -167,6 +184,7 @@ def test_batch1_orchestrator_enforces_exact_coverage_and_publishes_all_views(
     verified_shard = tmp_path / "verified-shard"
     verified_shard.mkdir()
     (verified_shard / "shard_manifest.json").write_text("{}", encoding="utf-8")
+    (verified_shard / "COMPLETE").write_text("{}\n", encoding="utf-8")
     (verified_shard / "raw.jsonl").write_text(
         "".join(json.dumps(row) + "\n" for row in source_records),
         encoding="utf-8",

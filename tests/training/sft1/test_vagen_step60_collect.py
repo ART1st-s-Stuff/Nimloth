@@ -25,6 +25,16 @@ def _image(offset: int) -> Image.Image:
     return image
 
 
+def test_collector_rejects_dangling_output_before_rollout(tmp_path: Path) -> None:
+    output = tmp_path / "shard"
+    output.symlink_to(tmp_path / "missing")
+    collector = object.__new__(SourceShardCollector)
+    with pytest.raises(FileExistsError):
+        collector.collect([], output_dir=output, max_steps=20)
+    assert output.is_symlink()
+    assert not (tmp_path / "missing").exists()
+
+
 def _initial_prompt(instruction: str) -> str:
     return (
         "[Initial Observation]:\n<image>\n"

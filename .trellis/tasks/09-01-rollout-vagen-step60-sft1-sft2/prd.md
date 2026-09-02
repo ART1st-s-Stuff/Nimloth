@@ -79,6 +79,7 @@
 ### R6 — Outputs and safety
 
 - 使用新的 `outputs/experiments/...` experiment group/run directory；启动前验证不存在且不覆盖任何已有 output/dataset/checkpoint。
+- `/project` 已核验为 NFSv3，拒绝 `renameat2(RENAME_NOREPLACE)`。用户选择 NFS-compatible 目录预留发布：原子 `mkdir` 独占最终目录、先发布 payload、最后原子发布该 artifact 类型的 readiness marker；任何中断留下可审计 partial 且消费者因缺少最终 marker fail closed，禁止 check-then-rename 覆盖或自动删除 partial。
 - 远程 Nimloth 与 reconstructed VAGEN runtime 分别只使用绑定到各自已批准 commit 的独立 clean worktree；不得在服务器直接编辑生产代码或静默改变 Nimloth gitlink。
 - 保留现有本地 dirty changes、受保护数据、checkpoint 和 runtime outputs。
 
@@ -92,6 +93,7 @@
 - [ ] SFT2 trajectory 输出通过 `nimloth_trajectory_v1` validation，真实 CoT/action/reward provenance 未被合成或猜测。
 - [ ] 每条有效 trajectory 的 terminal observation 已由 VAGEN step60 生成真实 CoT + draft action；只持久化 state prefix/审计证据，draft action 未执行且未形成 transition，terminal response 未进入 SFT1/SFT2 LLM-backbone supervision；manifest 满足 input = valid + excluded。
 - [ ] train/held-out overlap 按约定 key 测得并记录，所有输出路径唯一且源 checkpoint/旧数据未修改。
+- [ ] partition/shard/conversion 在本地与 remote NFSv3 上均通过 non-overwrite、concurrent reservation、marker-last 和 interrupted-publication rejection gates；已失败 run root 永不复用。
 - [ ] 终止时按实验 end contract 记录 scheduler/runtime、实际命令/commit、产物、限制与精确恢复方式。
 
 ## Out of Scope
@@ -105,5 +107,5 @@
 ## Deferred downstream decision and staged launch details
 
 1. SFT1 训练集最终采用 `train_all` 还是 `train_success`；本任务将两者都产出并分别标注，后续训练选择可以延后决定。
-2. 第一阶段精确合同绑定 [`research/exact-merge-smoke-launch-contract-2026-09-02.md`](research/exact-merge-smoke-launch-contract-2026-09-02.md)：`normal`、任意健康单节点、4 GPU（policy TP2 + 2 environment）、112 CPU、256 GiB、`03:00:00`，只执行 CPU partition/runtime evidence、actor merge/load 与 source-index-0 smoke。它必须取得单独 launch approval，且不授权 100-row gate。
+2. [`research/exact-merge-smoke-launch-contract-2026-09-02.md`](research/exact-merge-smoke-launch-contract-2026-09-02.md) 是已终止的 pre-submit 失败证据，绑定的 run root 永不复用。W-013 只完成本地实现/测试/审查；W-009 随后独占 commit/push、clean remote refresh 和三类 marker 的 NFSv3 CPU proof，并创建全新 run identity 与全新精确 merge/smoke contract，再取得单独 launch approval。旧 approval 不授权重试。
 3. 100-row concurrency gate 与剩余 batch1 的资源、时限、输出和完整命令仍须根据真实 smoke 证据另行固定并分别取得新 launch approval；batches2–10 继续不在本任务启动范围内。

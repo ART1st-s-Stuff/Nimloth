@@ -16,11 +16,13 @@ from typing import Any
 from experiments.training.sft1.vagen_step60_data import (
     CONVERSION_FORMAT,
     REJECTION_FORMAT,
-    atomic_publish_directory,
     build_source_audit,
     convert_source_record,
+    lexical_absolute_path,
+    load_published_partition_manifest,
+    publish_reserved_directory,
     validate_complete_shard,
-    validate_partition_manifest,
+    validate_published_directory,
 )
 
 
@@ -113,7 +115,10 @@ def _load_verified_records(
     seen_indices: set[int] = set()
     common_shard_contract: dict[str, Any] | None = None
     for shard_dir_value in shard_dirs:
-        shard_dir = shard_dir_value.resolve()
+        shard_dir = validate_published_directory(
+            shard_dir_value,
+            readiness_marker="COMPLETE",
+        )
         raw_manifest = json.loads(
             (shard_dir / "shard_manifest.json").read_text(encoding="utf-8")
         )
@@ -201,7 +206,10 @@ def _dataset_stats(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
 
 
 def validate_conversion_output(output_dir: Path) -> dict[str, Any]:
-    output_dir = output_dir.resolve()
+    output_dir = validate_published_directory(
+        output_dir,
+        readiness_marker="conversion_manifest.json",
+    )
     manifest_path = output_dir / "conversion_manifest.json"
     if not manifest_path.is_file():
         raise ValueError("conversion output has no manifest")
@@ -224,7 +232,10 @@ def validate_conversion_output(output_dir: Path) -> dict[str, Any]:
     for evidence in source_shards:
         if not isinstance(evidence, dict):
             raise TypeError("conversion source shard evidence must be a mapping")
-        shard_dir = Path(str(evidence.get("path", ""))).resolve()
+        shard_dir = validate_published_directory(
+            Path(str(evidence.get("path", ""))),
+            readiness_marker="COMPLETE",
+        )
         manifest_path = shard_dir / "shard_manifest.json"
         if not manifest_path.is_file() or _file_sha256(manifest_path) != evidence.get(
             "manifest_sha256"
@@ -441,13 +452,10 @@ def validate_conversion_output(output_dir: Path) -> dict[str, Any]:
     partition_contract = manifest.get("partition_manifest")
     if not isinstance(partition_contract, dict):
         raise TypeError("conversion manifest has no partition contract")
-    partition_path = Path(str(partition_contract.get("path", ""))).resolve()
-    if not partition_path.is_file() or _file_sha256(partition_path) != (
-        partition_contract.get("sha256")
-    ):
+    partition_path = Path(str(partition_contract.get("path", "")))
+    partition = load_published_partition_manifest(partition_path)
+    if _file_sha256(partition_path) != partition_contract.get("sha256"):
         raise ValueError("published conversion partition hash/path mismatch")
-    partition = json.loads(partition_path.read_text(encoding="utf-8"))
-    validate_partition_manifest(partition, require_published=True)
     expected_by_index = {
         int(row["source_index"]): row
         for row in partition.get("rows", [])
@@ -504,16 +512,19 @@ def convert_complete_batch1(
     output_dir: Path,
     latent_token_count: int = 16,
 ) -> dict[str, Any]:
-    """Convert exact complete batch1 once and atomically publish all views."""
+    """Convert exact complete batch1 and publish one readiness marker last."""
+
+    if latent_token_count != 16:
+        raise ValueError("step60 conversion is fixed to K16")
+    output_dir = lexical_absolute_path(output_dir)
+    if output_dir.exists() or output_dir.is_symlink():
+        raise FileExistsError(f"conversion output already exists: {output_dir}")
 
     from nimloth.rollout import RolloutTrajectory, validate_rollout_trajectory
     from nimloth.rollout.transitions import expand_record_transitions
 
-    if latent_token_count != 16:
-        raise ValueError("step60 conversion is fixed to K16")
-    partition_manifest = partition_manifest.resolve()
-    partition = json.loads(partition_manifest.read_text(encoding="utf-8"))
-    validate_partition_manifest(partition, require_published=True)
+    partition_manifest = lexical_absolute_path(partition_manifest)
+    partition = load_published_partition_manifest(partition_manifest)
     batch1_rows = [row for row in partition.get("rows", []) if int(row["batch"]) == 1]
     if len(batch1_rows) != 2_000:
         raise ValueError(f"partition manifest batch1 count drift: {len(batch1_rows)}")
@@ -528,9 +539,6 @@ def convert_complete_batch1(
         expected_by_index=expected_by_index,
     )
 
-    output_dir = output_dir.resolve()
-    if output_dir.exists():
-        raise FileExistsError(f"conversion output already exists: {output_dir}")
     output_dir.parent.mkdir(parents=True, exist_ok=True)
     temporary = output_dir.with_name(
         f".{output_dir.name}.tmp-{uuid.uuid4().hex[:12]}"
@@ -658,13 +666,21 @@ def convert_complete_batch1(
         }
         manifest["manifest_payload_sha256"] = _canonical_sha256(manifest)
         _write_json(temporary / "conversion_manifest.json", manifest)
-        atomic_publish_directory(temporary, output_dir)
+        publish_reserved_directory(
+            temporary,
+            output_dir,
+            readiness_marker="conversion_manifest.json",
+        )
         return validate_conversion_output(output_dir)
     except Exception:
-        # Conversion has no partial-resume semantics. Preserve the unique failed
-        # temp directory and add an explicit failure marker for end recording.
-        failure = temporary / "FAILED"
-        if temporary.exists() and not failure.exists():
+        # Conversion has no partial-resume semantics. Preserve staging/final
+        # evidence and make any post-publication validation failure explicit.
+        failure = (
+            temporary / "FAILED"
+            if temporary.exists()
+            else output_dir / "FAILED_VALIDATION.json"
+        )
+        if failure.parent.exists() and not failure.exists():
             failure.write_text("conversion failed\n", encoding="utf-8")
         raise
 

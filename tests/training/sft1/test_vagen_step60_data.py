@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -349,21 +350,244 @@ def test_partition_consumer_recomputes_contract_and_rejects_tampering() -> None:
         )
 
 
-def test_atomic_directory_publish_never_replaces_existing_target(
+def _publication_source(path: Path, marker: str = "COMPLETE") -> Path:
+    path.mkdir()
+    (path / "payload").write_text("new", encoding="utf-8")
+    (path / marker).write_text("ready\n", encoding="utf-8")
+    return path
+
+
+def test_published_partition_loader_rehashes_sibling_parquets(
     tmp_path: Path,
 ) -> None:
-    source = tmp_path / "source"
-    source.mkdir()
-    (source / "payload").write_text("new", encoding="utf-8")
+    directory = tmp_path / "partition"
+    directory.mkdir()
+    manifest = vagen_step60_data.build_partition_manifest(
+        _source_rows(),
+        source_path="/source/train.parquet",
+        source_sha256=vagen_step60_data.SOURCE_TRAIN_SHA256,
+    )
+    manifest["source"]["size_bytes"] = 1
+    for batch in manifest["batches"]:
+        name = f"batch_{int(batch['batch']):02d}.parquet"
+        parquet = directory / name
+        parquet.write_bytes(bytes([int(batch["batch"])]))
+        batch["parquet"] = name
+        batch["parquet_sha256"] = vagen_step60_data._file_sha256(parquet)
+        batch["parquet_size_bytes"] = parquet.stat().st_size
+    manifest["manifest_payload_sha256"] = (
+        vagen_step60_data.partition_manifest_payload_sha256(manifest)
+    )
+    marker = directory / "partition_manifest.json"
+    marker.write_text(json.dumps(manifest), encoding="utf-8")
+    loaded = vagen_step60_data.load_published_partition_manifest(marker)
+    assert loaded["checks"]["batch1_train_count"] == 1_800
+
+    (directory / "batch_01.parquet").write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="parquet (size|hash) mismatch"):
+        vagen_step60_data.load_published_partition_manifest(marker)
+
+
+def test_reserved_publication_never_replaces_existing_target(
+    tmp_path: Path,
+) -> None:
+    source = _publication_source(tmp_path / "source")
     target = tmp_path / "target"
     target.mkdir()
     (target / "existing").write_text("keep", encoding="utf-8")
 
     with pytest.raises(FileExistsError):
-        vagen_step60_data.atomic_publish_directory(source, target)
+        vagen_step60_data.publish_reserved_directory(
+            source,
+            target,
+            readiness_marker="COMPLETE",
+        )
 
     assert (source / "payload").read_text(encoding="utf-8") == "new"
     assert (target / "existing").read_text(encoding="utf-8") == "keep"
+
+
+@pytest.mark.parametrize("target_kind", ["file", "symlink"])
+def test_reserved_publication_rejects_lexical_existing_targets(
+    tmp_path: Path,
+    target_kind: str,
+) -> None:
+    source = _publication_source(tmp_path / "source")
+    target = tmp_path / "target"
+    if target_kind == "file":
+        target.write_text("keep", encoding="utf-8")
+    else:
+        target.symlink_to(tmp_path / "missing")
+    with pytest.raises(FileExistsError):
+        vagen_step60_data.publish_reserved_directory(
+            source,
+            target,
+            readiness_marker="COMPLETE",
+        )
+    assert target.is_symlink() if target_kind == "symlink" else target.is_file()
+
+
+def test_reserved_publication_requires_real_sibling_staging(tmp_path: Path) -> None:
+    real = _publication_source(tmp_path / "real")
+    staging = tmp_path / "staging"
+    staging.symlink_to(real, target_is_directory=True)
+    with pytest.raises(ValueError, match="staging"):
+        vagen_step60_data.publish_reserved_directory(
+            staging,
+            tmp_path / "target",
+            readiness_marker="COMPLETE",
+        )
+
+
+@pytest.mark.parametrize(
+    "marker_problem", ["missing", "symlink", "directory", "nested", "other"]
+)
+def test_reserved_publication_rejects_invalid_marker_ownership(
+    tmp_path: Path,
+    marker_problem: str,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "payload").write_text("new", encoding="utf-8")
+    if marker_problem == "symlink":
+        (source / "COMPLETE").symlink_to(source / "payload")
+    elif marker_problem == "directory":
+        (source / "COMPLETE").mkdir()
+    elif marker_problem == "nested":
+        nested = source / "nested"
+        nested.mkdir()
+        (nested / "COMPLETE").write_text("ready\n", encoding="utf-8")
+    elif marker_problem == "other":
+        (source / "COMPLETE").write_text("ready\n", encoding="utf-8")
+        (source / "partition_manifest.json").write_text("{}\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="marker"):
+        vagen_step60_data.publish_reserved_directory(
+            source,
+            tmp_path / "target",
+            readiness_marker="COMPLETE",
+        )
+    assert not (tmp_path / "target").exists()
+
+
+def test_reserved_publication_publishes_marker_last(tmp_path: Path) -> None:
+    source = _publication_source(tmp_path / "source")
+    target = tmp_path / "target"
+    vagen_step60_data.publish_reserved_directory(
+        source,
+        target,
+        readiness_marker="COMPLETE",
+    )
+    assert not source.exists()
+    assert (target / "payload").read_text(encoding="utf-8") == "new"
+    vagen_step60_data.validate_published_directory(
+        target,
+        readiness_marker="COMPLETE",
+    )
+
+
+def test_reserved_publication_allows_only_one_concurrent_winner(
+    tmp_path: Path,
+) -> None:
+    sources = [
+        _publication_source(tmp_path / f"source-{index}") for index in range(2)
+    ]
+    target = tmp_path / "target"
+
+    def publish(source: Path) -> str:
+        try:
+            vagen_step60_data.publish_reserved_directory(
+                source,
+                target,
+                readiness_marker="COMPLETE",
+            )
+        except FileExistsError:
+            return "lost"
+        return "won"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(publish, sources))
+    assert sorted(outcomes) == ["lost", "won"]
+    vagen_step60_data.validate_published_directory(
+        target,
+        readiness_marker="COMPLETE",
+    )
+
+
+@pytest.mark.parametrize("failure_point", ["payload", "marker"])
+def test_reserved_publication_retains_interrupted_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_point: str,
+) -> None:
+    source = _publication_source(tmp_path / "source")
+    target = tmp_path / "target"
+    real_rename = vagen_step60_data.os.rename
+
+    def fail_selected(old: Path, new: Path) -> None:
+        is_payload_failure = failure_point == "payload" and Path(old).name == "payload"
+        is_marker_failure = failure_point == "marker" and Path(new).name == "COMPLETE"
+        if is_payload_failure or is_marker_failure:
+            raise OSError("injected publication failure")
+        real_rename(old, new)
+
+    monkeypatch.setattr(vagen_step60_data.os, "rename", fail_selected)
+    with pytest.raises(OSError, match="injected"):
+        vagen_step60_data.publish_reserved_directory(
+            source,
+            target,
+            readiness_marker="COMPLETE",
+        )
+    assert target.is_dir()
+    assert not (target / "COMPLETE").exists()
+    if failure_point == "payload":
+        assert (target / vagen_step60_data.PUBLISHING_SENTINEL).is_file()
+    else:
+        assert not (target / vagen_step60_data.PUBLISHING_SENTINEL).exists()
+    with pytest.raises(ValueError):
+        vagen_step60_data.validate_published_directory(
+            target,
+            readiness_marker="COMPLETE",
+        )
+
+
+def test_readiness_rename_is_the_final_fallible_publication_operation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _publication_source(tmp_path / "source")
+    target = tmp_path / "target"
+    committed = False
+    real_rename = vagen_step60_data.os.rename
+    real_fsync = vagen_step60_data._fsync_directory
+
+    def track_rename(old: Path, new: Path) -> None:
+        nonlocal committed
+        real_rename(old, new)
+        if Path(new).name == "COMPLETE":
+            committed = True
+
+    def reject_post_commit_fsync(path: Path) -> None:
+        if committed:
+            raise AssertionError("fallible operation occurred after readiness commit")
+        real_fsync(path)
+
+    monkeypatch.setattr(vagen_step60_data.os, "rename", track_rename)
+    monkeypatch.setattr(vagen_step60_data, "_fsync_directory", reject_post_commit_fsync)
+    vagen_step60_data.publish_reserved_directory(
+        source,
+        target,
+        readiness_marker="COMPLETE",
+    )
+    assert committed
+
+
+def test_partition_rejects_dangling_output_before_source_read(tmp_path: Path) -> None:
+    output = tmp_path / "partition"
+    output.symlink_to(tmp_path / "missing")
+    with pytest.raises(FileExistsError):
+        vagen_step60_data.partition_source_parquet(tmp_path / "absent.parquet", output)
+    assert output.is_symlink()
+    assert not (tmp_path / "missing").exists()
 
 
 def test_conversion_is_k16_compatible_and_preserves_verbatim_source_chat() -> None:

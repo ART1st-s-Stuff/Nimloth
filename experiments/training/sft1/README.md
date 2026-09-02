@@ -14,8 +14,8 @@ Canonical location for SFT1 per `ai_tasks/sft1_exp.md`.
 | `extract_vagen_step60_evidence.py` | Non-overwriting W&B prompt/reward extractor that excludes assistant CoT and emits the hash-bound reconstruction fixture |
 | `vagen_step60_runtime_contract.py` | Non-overwriting Git-computed reconstruction contract producer; prints the payload hash for approval |
 | `hash_vagen_step60_runtime_contract.py` | Independent runtime-contract payload hash recomputation/check CLI |
-| `vagen_step60_collect.py` | Evidence-backed reconstructed legacy service client, frozen-policy rollout, EOS/terminal audit and atomic v3 raw shards; unavailable exact source commit remains provenance only |
-| `vagen_step60_convert.py` | Complete batch1 shards → linked K16 SFT1/SFT2 views, v3 rejections and hash manifest; validates after atomic publication |
+| `vagen_step60_collect.py` | Evidence-backed reconstructed legacy service client, frozen-policy rollout, EOS/terminal audit and reserved-directory/COMPLETE-last v3 shards; unavailable exact source commit remains provenance only |
+| `vagen_step60_convert.py` | Complete batch1 shards → linked K16 SFT1/SFT2 views, v3 rejections and hash manifest; validates reserved-directory publication only after `conversion_manifest.json` appears last |
 | `validate_vagen_step60_conversion.py` | Independent published-conversion hash/count/envelope validator |
 | `derive_rollout_images_255.py` | Preserve sources and derive RGB 255×255 images with rewritten JSONLs |
 | `derive_rollout_images_255.slurm` | CPU wrapper for the non-destructive image derivation |

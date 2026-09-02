@@ -1,9 +1,9 @@
 # Exact launch contract — step60 actor merge + one-row GPU smoke
 
 Date: 2026-09-02
-Status: **candidate only; not launch authorization**
+Status: **terminal failed contract; never reuse**
 
-This bounded first launch stops after actor merge/load validation and one source-index-0 trajectory. It does not run the 100-row concurrency gate or formal batch1 shards. Those stages require inspected smoke evidence and a new exact launch approval.
+The approved execution created its unique run root but failed before Slurm submission when NFSv3 returned `EINVAL` for partition `renameat2(RENAME_NOREPLACE)`. It produced no partition, runtime contract, merged actor, service or rollout. Evidence is retained in remote `END.json`; every command below is historical and no longer authorizes retry because the run root now exists. W-013 must implement and verify reserved-directory marker-last publication, then a fresh run identity and launch contract require separate approvals.
 
 ## Purpose, boundary and failure condition
 

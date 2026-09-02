@@ -9,14 +9,11 @@ SFT1/SFT2 conversion view without weakening these source contracts.
 from __future__ import annotations
 
 import argparse
-import ctypes
-import errno
 import hashlib
 import json
 import math
 import os
 import re
-import shutil
 import tempfile
 from collections import Counter
 from collections.abc import Mapping, Sequence
@@ -102,40 +99,131 @@ def _canonical_sha256(value: Any) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def atomic_publish_directory(source: Path, target: Path) -> None:
-    """Atomically publish one directory without replacing any existing path."""
+PUBLISHING_SENTINEL = ".NIMLOTH_PUBLISHING.json"
+READINESS_MARKERS = frozenset(
+    {"partition_manifest.json", "COMPLETE", "conversion_manifest.json"}
+)
+PUBLICATION_FAILURE_MARKERS = frozenset(
+    {"FAILED", "FAILED.json", "FAILED_PUBLISH.json", "FAILED_VALIDATION.json"}
+)
+READINESS_STAGING_NAME = ".NIMLOTH_READINESS.tmp"
 
-    source = source.resolve()
-    target = target.resolve()
-    if source.parent != target.parent:
-        raise ValueError("atomic directory publish requires one parent filesystem")
-    libc = ctypes.CDLL(None, use_errno=True)
-    renameat2 = getattr(libc, "renameat2", None)
-    if renameat2 is None:
-        raise RuntimeError("atomic no-replace directory publish requires renameat2")
-    renameat2.argtypes = [
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_uint,
-    ]
-    renameat2.restype = ctypes.c_int
-    at_fdcwd = -100
-    rename_noreplace = 1
-    result = renameat2(
-        at_fdcwd,
-        os.fsencode(source),
-        at_fdcwd,
-        os.fsencode(target),
-        rename_noreplace,
+
+def lexical_absolute_path(path: Path) -> Path:
+    return Path(os.path.abspath(os.fspath(path)))
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def validate_published_directory(path: Path, *, readiness_marker: str) -> Path:
+    """Require one fully published reserved directory and its final marker."""
+
+    if readiness_marker not in READINESS_MARKERS:
+        raise ValueError(f"unsupported readiness marker: {readiness_marker!r}")
+    path = lexical_absolute_path(path)
+    if path.is_symlink() or not path.is_dir():
+        raise ValueError(f"published artifact is not a real directory: {path}")
+    if (path / PUBLISHING_SENTINEL).exists() or (
+        path / PUBLISHING_SENTINEL
+    ).is_symlink():
+        raise ValueError(f"published artifact still has publishing sentinel: {path}")
+    if (path / READINESS_STAGING_NAME).exists() or (
+        path / READINESS_STAGING_NAME
+    ).is_symlink():
+        raise ValueError(f"published artifact has staged readiness: {path}")
+    if any(
+        (path / name).exists() or (path / name).is_symlink()
+        for name in PUBLICATION_FAILURE_MARKERS
+    ):
+        raise ValueError(f"published artifact has a failure marker: {path}")
+    for marker_name in READINESS_MARKERS:
+        occurrences = [entry for entry in path.rglob(marker_name)]
+        expected = path / readiness_marker
+        if marker_name == readiness_marker:
+            if occurrences != [expected]:
+                raise ValueError(f"readiness marker ownership mismatch: {marker_name}")
+            if expected.is_symlink() or not expected.is_file():
+                raise ValueError(f"readiness marker is not a regular file: {expected}")
+        elif occurrences:
+            raise ValueError(f"unexpected readiness marker: {marker_name}")
+    return path
+
+
+def publish_reserved_directory(
+    source: Path,
+    target: Path,
+    *,
+    readiness_marker: str,
+) -> None:
+    """Reserve the final path atomically and publish its readiness marker last."""
+
+    if readiness_marker not in READINESS_MARKERS:
+        raise ValueError(f"unsupported readiness marker: {readiness_marker!r}")
+    source = lexical_absolute_path(source)
+    target = lexical_absolute_path(target)
+    if source == target:
+        raise ValueError("staging and final publication paths must differ")
+    if source.is_symlink() or not source.is_dir():
+        raise ValueError("publication staging path must be a real directory")
+    if source.parent.resolve() != target.parent.resolve():
+        raise ValueError("publication staging and target must be direct siblings")
+    if target.exists() or target.is_symlink():
+        raise FileExistsError(f"publication target already exists: {target}")
+    if any(
+        (source / name).exists() or (source / name).is_symlink()
+        for name in (PUBLISHING_SENTINEL, READINESS_STAGING_NAME)
+    ):
+        raise ValueError("publication staging contains a reserved internal path")
+
+    expected_marker = source / readiness_marker
+    for marker_name in READINESS_MARKERS:
+        occurrences = [entry for entry in source.rglob(marker_name)]
+        if marker_name == readiness_marker:
+            if occurrences != [expected_marker]:
+                raise ValueError(f"readiness marker ownership mismatch: {marker_name}")
+            if expected_marker.is_symlink() or not expected_marker.is_file():
+                raise ValueError("readiness marker must be a root regular file")
+        elif occurrences:
+            raise ValueError(f"unexpected readiness marker: {marker_name}")
+
+    os.mkdir(target)
+    sentinel = target / PUBLISHING_SENTINEL
+    sentinel_payload = {
+        "format": "nimloth_reserved_directory_publication_v1",
+        "readiness_marker": readiness_marker,
+        "staging_name": source.name,
+    }
+    with sentinel.open("x", encoding="utf-8") as handle:
+        json.dump(sentinel_payload, handle, sort_keys=True)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    _fsync_directory(target)
+    _fsync_directory(target.parent)
+
+    payload_entries = sorted(
+        (entry for entry in source.iterdir() if entry.name != readiness_marker),
+        key=lambda entry: entry.name,
     )
-    if result == 0:
-        return
-    error_number = ctypes.get_errno()
-    if error_number == errno.EEXIST:
-        raise FileExistsError(error_number, os.strerror(error_number), str(target))
-    raise OSError(error_number, os.strerror(error_number), str(target))
+    for entry in payload_entries:
+        os.rename(entry, target / entry.name)
+    _fsync_directory(target)
+    staged_readiness = target / READINESS_STAGING_NAME
+    os.rename(expected_marker, staged_readiness)
+    source.rmdir()
+    _fsync_directory(target)
+    _fsync_directory(target.parent)
+    sentinel.unlink()
+    _fsync_directory(target)
+    _fsync_directory(target.parent)
+    # This rename is the commit point and intentionally the final operation.
+    os.rename(staged_readiness, target / readiness_marker)
 
 
 def _file_sha256(path: Path) -> str:
@@ -515,6 +603,32 @@ def validate_partition_manifest(
         if payload_hash != partition_manifest_payload_sha256(manifest):
             raise ValueError("partition manifest payload hash mismatch")
     return dict(manifest)
+
+
+def load_published_partition_manifest(manifest_path: Path) -> dict[str, Any]:
+    """Load one marker-complete partition and rehash every sibling parquet."""
+
+    manifest_path = lexical_absolute_path(manifest_path)
+    published = validate_published_directory(
+        manifest_path.parent,
+        readiness_marker="partition_manifest.json",
+    )
+    if manifest_path != published / "partition_manifest.json":
+        raise ValueError("partition manifest must be the root readiness marker")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    validated = validate_partition_manifest(manifest, require_published=True)
+    for batch in validated["batches"]:
+        relative = Path(str(batch["parquet"]))
+        if relative.is_absolute() or len(relative.parts) != 1:
+            raise ValueError("partition parquet must be a root sibling file")
+        parquet = published / relative
+        if parquet.is_symlink() or not parquet.is_file():
+            raise ValueError(f"partition parquet is not a regular file: {relative}")
+        if parquet.stat().st_size != int(batch["parquet_size_bytes"]):
+            raise ValueError(f"partition parquet size mismatch: {relative}")
+        if _file_sha256(parquet) != batch["parquet_sha256"]:
+            raise ValueError(f"partition parquet hash mismatch: {relative}")
+    return validated
 
 
 def _action_envelope(action_text: str, *, latent_token_count: int) -> str:
@@ -1328,7 +1442,10 @@ def validate_complete_shard(
 ) -> dict[str, Any]:
     """Accept only a hash-bound shard whose COMPLETE marker was published last."""
 
-    shard_dir = shard_dir.resolve()
+    shard_dir = validate_published_directory(
+        shard_dir,
+        readiness_marker="COMPLETE",
+    )
     complete_path = shard_dir / "COMPLETE"
     manifest_path = shard_dir / "shard_manifest.json"
     raw_path = shard_dir / "raw.jsonl"
@@ -1492,8 +1609,10 @@ def partition_source_parquet(
 ) -> dict[str, Any]:
     """Write all ten pinned parquet batches and one atomic manifest."""
 
+    output_dir = lexical_absolute_path(output_dir)
+    if output_dir.exists() or output_dir.is_symlink():
+        raise FileExistsError(f"partition output already exists: {output_dir}")
     source_path = source_path.resolve()
-    output_dir = output_dir.resolve()
     if not source_path.is_file():
         raise FileNotFoundError(f"source parquet does not exist: {source_path}")
     actual_sha256 = _file_sha256(source_path)
@@ -1501,8 +1620,6 @@ def partition_source_parquet(
         raise ValueError(
             f"source parquet SHA256 drift: {actual_sha256} != {expected_sha256}"
         )
-    if output_dir.exists():
-        raise FileExistsError(f"partition output already exists: {output_dir}")
 
     try:
         import pyarrow as pa
@@ -1544,9 +1661,29 @@ def partition_source_parquet(
             json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
-        atomic_publish_directory(temporary, output_dir)
-    except Exception:
-        shutil.rmtree(temporary, ignore_errors=True)
+        publish_reserved_directory(
+            temporary,
+            output_dir,
+            readiness_marker="partition_manifest.json",
+        )
+        manifest = load_published_partition_manifest(
+            output_dir / "partition_manifest.json"
+        )
+    except Exception as error:
+        failure = (
+            temporary / "FAILED_PUBLISH.json"
+            if temporary.exists()
+            else output_dir / "FAILED_VALIDATION.json"
+        )
+        if failure.parent.exists() and not failure.exists():
+            failure.write_text(
+                json.dumps(
+                    {"error_type": type(error).__name__, "error": str(error)},
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
         raise
     return manifest
 
