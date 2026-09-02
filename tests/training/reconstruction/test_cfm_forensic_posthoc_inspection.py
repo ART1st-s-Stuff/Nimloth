@@ -99,6 +99,33 @@ def test_shared_stage_b_plan_locks_indices_rows_images_and_noise() -> None:
     assert plan.initial_noise.shape == (16, 3, 128, 128)
 
 
+def test_original_run_snapshot_binds_symlink_paths_and_targets_without_following(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "job543457"
+    root.mkdir()
+    (root / "payload.json").write_text("{}\n")
+    (root / "wandb").mkdir()
+    (root / "wandb" / "latest-run").symlink_to("run-exact")
+
+    entries, identity = posthoc._snapshot_regular_files(root)
+    assert entries["payload.json"] == {
+        "type": "file",
+        "sha256": _sha256(root / "payload.json"),
+    }
+    assert entries["wandb/latest-run"] == {
+        "type": "symlink",
+        "target": "run-exact",
+    }
+    assert len(identity) == 64
+
+    (root / "wandb" / "latest-run").unlink()
+    (root / "wandb" / "latest-run").symlink_to("run-changed")
+    changed_entries, changed_identity = posthoc._snapshot_regular_files(root)
+    assert changed_entries["wandb/latest-run"]["target"] == "run-changed"
+    assert changed_identity != identity
+
+
 def test_posthoc_cli_surface_has_no_training_resume_gate_or_wandb_controls() -> None:
     parser = posthoc.build_cli_parser()
     options = {option for action in parser._actions for option in action.option_strings}

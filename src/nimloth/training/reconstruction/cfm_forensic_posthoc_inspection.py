@@ -125,18 +125,23 @@ def _write_json_fsynced(value: Mapping[str, Any], path: Path) -> None:
         os.fsync(stream.fileno())
 
 
-def _snapshot_regular_files(root: Path) -> tuple[dict[str, str], str]:
+def _snapshot_regular_files(
+    root: Path,
+) -> tuple[dict[str, Mapping[str, str]], str]:
     if not root.is_dir() or root.is_symlink():
         raise ValueError("original Job543457 output root is invalid")
-    result: dict[str, str] = {}
+    result: dict[str, Mapping[str, str]] = {}
     for path in sorted(root.rglob("*")):
+        relative = str(path.relative_to(root))
         if path.is_symlink():
-            raise ValueError("original Job543457 output must not contain symlinks")
-        if path.is_file():
-            result[str(path.relative_to(root))] = _sha256_file(path)
+            result[relative] = {"type": "symlink", "target": os.readlink(path)}
+        elif path.is_file():
+            result[relative] = {"type": "file", "sha256": _sha256_file(path)}
+        elif not path.is_dir():
+            raise ValueError("original Job543457 output contains an unsupported entry")
     if not result:
         raise ValueError("original Job543457 output is empty")
-    return result, _sha256_mapping({"files": result})
+    return result, _sha256_mapping({"entries": result})
 
 
 def _publish_inspection_noreplace(source: Path, destination: Path) -> None:
