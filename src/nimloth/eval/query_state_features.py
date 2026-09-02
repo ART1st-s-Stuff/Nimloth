@@ -93,9 +93,10 @@ def _validate_identity(identity: SharedFeatureBasisIdentity) -> None:
         raise TypeError("shared basis identity must use SharedFeatureBasisIdentity")
     if identity.method != NIMLOTH_SHARED_BASIS_METHOD:
         raise ValueError("colorization method must be nimloth_shared_basis, not DeepSight exact")
-    if identity.fit_split not in {"train", "mechanics_train"}:
+    if identity.fit_split not in {"train", "mechanics_train", "all_train"}:
         raise ValueError(
-            "shared PCA basis fit split must be train or mechanics_train; validation refit is forbidden"
+            "shared PCA basis fit split must be train, mechanics_train, or all_train; "
+            "validation refit is forbidden"
         )
     for field in (
         "bundle_fingerprint",

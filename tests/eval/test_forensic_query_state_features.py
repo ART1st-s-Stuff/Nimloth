@@ -229,6 +229,98 @@ def test_forensic_basis_fit_uses_only_mechanics_train_and_pinned_dino(
     assert all(row.split == FORENSIC_SELECTION_MECHANICS_TRAIN for row in captured["records"])
 
 
+def test_stage_b_basis_fit_accepts_only_all_train_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest, _rows = _cache(tmp_path)
+    manifest["selection"] = {
+        **manifest["selection"],
+        "stage": "stage_b_diagnostic",
+        "roles": {"all_train": 12836, "external_validation": 1413},
+    }
+    cache_identity = _sha("stage-b-cache-role")
+
+    def records(role: str) -> list[forensic.QueryStateFeatureRecord]:
+        result = []
+        for index in range(4):
+            image = tmp_path / f"{role}-{index}.png"
+            Image.new("RGB", (7, 5), (index + 1, 20, 40)).save(image)
+            dims = torch.arange(1024, dtype=torch.float32)[None, :]
+            slots = torch.arange(16, dtype=torch.float32)[:, None]
+            state = torch.sin(dims / 37.0 + slots / 5.0 + index) + index / 3.0
+            result.append(
+                forensic.QueryStateFeatureRecord(
+                    row_identity=f"{role}-{index}",
+                    split=role,
+                    image_path=str(image.resolve()),
+                    image_sha256=hashlib.sha256(image.read_bytes()).hexdigest(),
+                    archived_response_sha256=_sha(f"real-cot-{role}-{index}"),
+                    bundle_fingerprint=manifest["cache_fingerprint"],
+                    source_jsonl_sha256=manifest["source_jsonl"]["train"]["sha256"],
+                    source_manifest_identity=manifest["source_jsonl"]["source_manifest_identity"],
+                    selection_role=role,
+                    cache_split_identity=cache_identity,
+                    state=state,
+                )
+            )
+        return result
+
+    all_train = records("all_train")
+    external = records("external_validation")
+    monkeypatch.setattr(
+        forensic,
+        "_strict_forensic_records",
+        lambda _cache: (manifest, {"all_train": all_train, "external_validation": external}, {}),
+    )
+    monkeypatch.setattr(
+        forensic, "_build_pinned_dino_teacher", lambda **_kwargs: SimpleNamespace()
+    )
+    monkeypatch.setattr(
+        forensic,
+        "extract_dino_feature_records",
+        lambda values, **_kwargs: [
+            DinoFeatureRecord(
+                row_identity=row.row_identity,
+                split=row.split,
+                image_sha256=row.image_sha256,
+                dino_identity=_sha("dino"),
+                features=row.state + 0.1,
+            )
+            for row in values
+        ],
+    )
+
+    basis = forensic.fit_forensic_shared_feature_basis(
+        tmp_path / "cache",
+        interpolation="nearest",
+        output_path=tmp_path / "stage-b-basis.pt",
+        dino_device=torch.device("cpu"),
+        dino_dtype=torch.float32,
+        dino_batch_size=4,
+    )
+
+    assert basis.identity.fit_split == "all_train"
+    assert basis.identity.fit_split_identity == cache_identity
+    with pytest.raises(ValueError, match="validation|fit split"):
+        forensic._fit_shared_feature_basis_from_records(
+            external,
+            [
+                DinoFeatureRecord(
+                    row_identity=row.row_identity,
+                    split=row.split,
+                    image_sha256=row.image_sha256,
+                    dino_identity=_sha("dino"),
+                    features=row.state + 0.1,
+                )
+                for row in external
+            ],
+            interpolation="nearest",
+            output_path=tmp_path / "external-basis.pt",
+            fit_split="external_validation",
+            expected_selection_role="external_validation",
+        )
+
+
 def test_stage_b_feature_owner_uses_full_metrics_and_deterministic_16_row_visuals(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
