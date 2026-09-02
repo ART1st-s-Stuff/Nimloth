@@ -39,12 +39,10 @@ Slurm: account `peilab`, partition `normal`, any healthy single node, one task, 
 Immediately before the remote script, run and enforce the repository resource query:
 
 ```bash
-RESOURCE_SNAPSHOT=$(mktemp)
-bash /workspace/remote2/nimloth/.local/scripts/query-resources.sh --only-free-gpu | tee "$RESOURCE_SNAPSHOT"
-awk '$1=="normal" && ($3=="IDLE" || $3=="MIXED") {split($4,g,"/"); split($5,c,"/"); m=$6; sub(/G$/,"",m); if (g[1]>=4 && c[1]>=112 && m+0>=256) ok=1} END {exit !ok}' "$RESOURCE_SNAPSHOT"
+bash /workspace/remote2/nimloth/.local/scripts/query-resources.sh --partition normal --min-free-gpu 4
 ```
 
-Then this entire script runs in one remote shell after exact experiment-launch approval. The approval receipt additionally binds the pushed docs commit containing this file. Any error after `HOLD` is assigned triggers cancellation and proves a terminal Slurm state. The metadata copy is read from the hash-checked approved task ref, never from a mutable working tree.
+Then this entire script runs through `ssh superpod-csejzhang bash -l -s` in one login shell after exact experiment-launch approval. The approval receipt additionally binds the pushed docs commit containing this file. Any error after `HOLD` is assigned triggers cancellation and proves a terminal Slurm state. The metadata copy is read from the hash-checked approved task ref, never from a mutable working tree.
 
 ```bash
 set -euo pipefail
@@ -134,9 +132,27 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT/src:$NWT" "$PY" experiments/training/
 
 # Recheck the same repository resource surface again immediately before sbatch.
 module load slurm 2>/dev/null
-python3 "$NWT/experiments/training/baseline/slurm_gpu_resources.py" --only-free-gpu | tee "$RUN/control/resources-immediately-before-sbatch.txt"
-awk '$1=="normal" && ($3=="IDLE" || $3=="MIXED") {split($4,g,"/"); split($5,c,"/"); m=$6; sub(/G$/,"",m); if (g[1]>=4 && c[1]>=112 && m+0>=256) ok=1} END {exit !ok}' "$RUN/control/resources-immediately-before-sbatch.txt"
-HOLD=$(sbatch --parsable --account=peilab --partition=normal --nodes=1 --ntasks=1 --cpus-per-task=112 --gres=gpu:4 --mem=256G --time=03:00:00 --job-name=step60-b1-v3-smoke --output="$RUN/logs/hold_%j.out" --error="$RUN/logs/hold_%j.err" --wrap='sleep infinity')
+python3 "$NWT/experiments/training/baseline/slurm_gpu_resources.py" --partition normal --min-free-gpu 4 | tee "$RUN/control/resources-immediately-before-sbatch.txt"
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT" python3 - <<'PY' > "$RUN/control/eligible-nodes-immediately-before-sbatch.json"
+import json
+from experiments.training.baseline.slurm_gpu_resources import parse_nodes
+eligible=[]
+for row in parse_nodes():
+    scheduler_free=(row.real_mem_mb or 0)-(row.alloc_mem_mb or 0)
+    if row.partition=="normal" and row.state in {"IDLE","MIXED"} and row.free_gpu>=4 and row.free_cpu>=112 and scheduler_free>=256*1024 and (row.free_mem_mb or 0)>=256*1024:
+        eligible.append({"node":row.node,"free_gpu":row.free_gpu,"free_cpu":row.free_cpu,"scheduler_free_mem_mb":scheduler_free,"observed_free_mem_mb":row.free_mem_mb})
+eligible.sort(key=lambda item:item["node"])
+assert eligible, "no one-node normal topology satisfies 4 GPU / 112 CPU / 256G scheduler+observed memory"
+print(json.dumps(eligible,sort_keys=True))
+PY
+ELIGIBLE_NODES=$("$PY" - "$RUN/control/eligible-nodes-immediately-before-sbatch.json" <<'PY'
+import json,sys
+print(",".join(item["node"] for item in json.load(open(sys.argv[1],encoding="utf-8"))))
+PY
+)
+test -n "$ELIGIBLE_NODES"
+printf '%s\n' "$ELIGIBLE_NODES" > "$RUN/control/eligible-nodelist"
+HOLD=$(sbatch --parsable --account=peilab --partition=normal --nodelist="$ELIGIBLE_NODES" --nodes=1 --ntasks=1 --cpus-per-task=112 --gres=gpu:4 --mem=256G --time=03:00:00 --job-name=step60-b1-v3-smoke --output="$RUN/logs/hold_%j.out" --error="$RUN/logs/hold_%j.err" --wrap='sleep infinity')
 printf '%s\n' "$HOLD" > "$RUN/control/hold_job_id"
 for _ in $(seq 1 180); do
   state=$(squeue -h -j "$HOLD" -o '%T')
@@ -146,6 +162,7 @@ done
 test "$(squeue -h -j "$HOLD" -o '%T')" = RUNNING
 NODE=$(squeue -h -j "$HOLD" -o '%N')
 test -n "$NODE" && test "$NODE" != '(null)'
+case ",$ELIGIBLE_NODES," in *",$NODE,"*) ;; *) echo "allocated node was outside approved eligible set" >&2; exit 1;; esac
 printf '%s\n' "$NODE" > "$RUN/control/node"
 scontrol show job -dd "$HOLD" > "$RUN/control/scontrol-job.txt"
 
