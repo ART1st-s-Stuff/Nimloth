@@ -16,8 +16,21 @@ from nimloth.rollout.record_format import (
 )
 from nimloth.rollout.schema import RolloutTrajectory
 
-_OFFLINE_SOURCE_CONVERSION_FORMAT = "vagen_step60_dual_view_conversion_v2"
-_OFFLINE_SOURCE_AUDIT_VERSION = "vagen_step60_reconstruction_audit_v2"
+_OFFLINE_SOURCE_CONVERSION_FORMAT = "vagen_step60_dual_view_conversion_v3"
+_OFFLINE_SOURCE_AUDIT_VERSION = "vagen_step60_reconstruction_audit_v3"
+_SOURCE_GENERATION_PACKAGE_EVIDENCE = {
+    "packages": {
+        "vllm": "0.8.5.post1",
+        "transformers": "4.49.0",
+        "torch": "2.6.0",
+    },
+    "evidence": "source_wandb_requirements_2q620nss",
+}
+_EXECUTABLE_GENERATION_PACKAGES = {
+    "vllm": "0.8.2",
+    "transformers": "4.49.0",
+    "torch": "2.6.0",
+}
 _SHA256_RE = re.compile(r"[0-9a-f]{64}")
 
 
@@ -492,6 +505,30 @@ def _validate_audit_contract(trajectory: RolloutTrajectory) -> None:
         source_audit = trajectory.source_audit
         if source_audit.get("source_identity") != trajectory.source_identity:
             raise ValueError(f"{prefix} source audit identity mismatch")
+        runtime_contract = source_audit.get("source_runtime_contract")
+        policy_runtime = source_audit.get("policy_runtime_contract")
+        if not isinstance(runtime_contract, dict) or not isinstance(
+            policy_runtime, dict
+        ):
+            raise TypeError(f"{prefix} source package provenance must be mappings")
+        if runtime_contract.get("source_generation_package_evidence") != (
+            _SOURCE_GENERATION_PACKAGE_EVIDENCE
+        ):
+            raise ValueError(f"{prefix} source package evidence mismatch")
+        if runtime_contract.get("executable_generation_packages") != (
+            _EXECUTABLE_GENERATION_PACKAGES
+        ):
+            raise ValueError(f"{prefix} executable package contract mismatch")
+        if policy_runtime.get("source_generation_package_evidence") != (
+            _SOURCE_GENERATION_PACKAGE_EVIDENCE
+        ) or policy_runtime.get("executable_generation_packages") != (
+            _EXECUTABLE_GENERATION_PACKAGES
+        ):
+            raise ValueError(f"{prefix} policy package contract mismatch")
+        if policy_runtime.get("package_versions") != (
+            _EXECUTABLE_GENERATION_PACKAGES
+        ):
+            raise ValueError(f"{prefix} actual policy package versions mismatch")
         raw_hash = source_audit.get("raw_record_sha256")
         if not isinstance(raw_hash, str) or not _SHA256_RE.fullmatch(raw_hash):
             raise ValueError(f"{prefix} source audit has no raw record hash")

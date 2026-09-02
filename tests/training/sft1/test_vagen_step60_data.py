@@ -97,7 +97,7 @@ def _source_record() -> dict[str, object]:
         }
 
     record = {
-        "record_format": "vagen_step60_source_trajectory_v2",
+        "record_format": "vagen_step60_source_trajectory_v3",
         "id": "batch1/base/000000",
         "batch": 1,
         "split": "train",
@@ -152,13 +152,46 @@ def _source_record() -> dict[str, object]:
         "unavailable_source_commit": "fee3ffac036a599b0ae979a6dd1ce2b21f7dec49",
         "reconstruction_identity": {"runtime_head": "a" * 40},
         "source_runtime_contract": {
-            "format": "vagen_step60_reconstruction_runtime_contract_v2",
+            "format": "vagen_step60_reconstruction_runtime_contract_v3",
             "reconstruction_identity": {"runtime_head": "a" * 40},
+            "source_generation_package_evidence": {
+                "packages": {
+                    "vllm": "0.8.5.post1",
+                    "transformers": "4.49.0",
+                    "torch": "2.6.0",
+                },
+                "evidence": "source_wandb_requirements_2q620nss",
+            },
+            "executable_generation_packages": {
+                "vllm": "0.8.2",
+                "transformers": "4.49.0",
+                "torch": "2.6.0",
+            },
             "reward_provenance": "step_rewards",
             "trajectory_reward_info_key": None,
         },
         "policy_artifact": {"artifact_manifest_sha256": "a" * 64},
-        "policy_runtime_contract": {"backend": "fixture"},
+        "policy_runtime_contract": {
+            "backend": "fixture",
+            "source_generation_package_evidence": {
+                "packages": {
+                    "vllm": "0.8.5.post1",
+                    "transformers": "4.49.0",
+                    "torch": "2.6.0",
+                },
+                "evidence": "source_wandb_requirements_2q620nss",
+            },
+            "executable_generation_packages": {
+                "vllm": "0.8.2",
+                "transformers": "4.49.0",
+                "torch": "2.6.0",
+            },
+            "package_versions": {
+                "vllm": "0.8.2",
+                "transformers": "4.49.0",
+                "torch": "2.6.0",
+            },
+        },
         "policy_requests": [
             policy_request("ordinary", ordinary_responses[0], [101, 102], messages[:2]),
             policy_request("ordinary", ordinary_responses[1], [111, 112], messages[:4]),
@@ -373,7 +406,7 @@ def test_conversion_is_k16_compatible_and_preserves_verbatim_source_chat() -> No
         "split": "train",
     }
     assert audit["contract_version"] == (
-        "vagen_step60_reconstruction_audit_v2"
+        "vagen_step60_reconstruction_audit_v3"
     )
     assert audit["reward_provenance"] == "step_rewards"
     assert audit["policy_artifact"] == source["policy_artifact"]

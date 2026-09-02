@@ -48,15 +48,15 @@ def _commit(path: Path, message: str) -> str:
 
 def test_reconstruction_persisted_contract_versions_are_explicit() -> None:
     assert collect_module.SOURCE_RUNTIME_CONTRACT_FORMAT == (
-        "vagen_step60_reconstruction_runtime_contract_v2"
+        "vagen_step60_reconstruction_runtime_contract_v3"
     )
-    assert collect_module.RAW_RECORD_FORMAT == "vagen_step60_source_trajectory_v2"
-    assert collect_module.SHARD_MANIFEST_FORMAT == "vagen_step60_complete_shard_v2"
-    assert collect_module.COMPLETE_MARKER_FORMAT == "vagen_step60_complete_shard_v2"
-    assert data_module.CONVERSION_FORMAT == "vagen_step60_dual_view_conversion_v2"
-    assert data_module.REJECTION_FORMAT == "vagen_step60_rejections_v2"
+    assert collect_module.RAW_RECORD_FORMAT == "vagen_step60_source_trajectory_v3"
+    assert collect_module.SHARD_MANIFEST_FORMAT == "vagen_step60_complete_shard_v3"
+    assert collect_module.COMPLETE_MARKER_FORMAT == "vagen_step60_complete_shard_v3"
+    assert data_module.CONVERSION_FORMAT == "vagen_step60_dual_view_conversion_v3"
+    assert data_module.REJECTION_FORMAT == "vagen_step60_rejections_v3"
     assert data_module.SOURCE_AUDIT_CONTRACT_VERSION == (
-        "vagen_step60_reconstruction_audit_v2"
+        "vagen_step60_reconstruction_audit_v3"
     )
     assert data_module.PARTITION_FORMAT == "vagen_step60_partition_v1"
 
@@ -71,9 +71,16 @@ def test_reconstruction_persisted_contract_versions_are_explicit() -> None:
         ("conversion_manifest", "vagen_step60_dual_view_conversion_v1"),
         ("rejection_envelope", "vagen_step60_rejections_v1"),
         ("source_audit", "vagen_step60_source_audit_v1"),
+        ("runtime_contract", "vagen_step60_reconstruction_runtime_contract_v2"),
+        ("raw_row", "vagen_step60_source_trajectory_v2"),
+        ("shard_manifest", "vagen_step60_complete_shard_v2"),
+        ("complete_marker", "vagen_step60_complete_shard_v2"),
+        ("conversion_manifest", "vagen_step60_dual_view_conversion_v2"),
+        ("rejection_envelope", "vagen_step60_rejections_v2"),
+        ("source_audit", "vagen_step60_reconstruction_audit_v2"),
     ],
 )
-def test_reconstruction_rejects_every_consumed_v1_surface(
+def test_reconstruction_rejects_every_consumed_old_surface(
     surface: str,
     old_format: str,
 ) -> None:
@@ -162,6 +169,19 @@ def test_runtime_contract_builder_is_canonical_and_identity_bound(
         runtime_root=tmp_path,
         reconstruction_identity=identity,
     )
+    assert contract["source_generation_package_evidence"] == {
+        "packages": {
+            "vllm": "0.8.5.post1",
+            "transformers": "4.49.0",
+            "torch": "2.6.0",
+        },
+        "evidence": "source_wandb_requirements_2q620nss",
+    }
+    assert contract["executable_generation_packages"] == {
+        "vllm": "0.8.2",
+        "transformers": "4.49.0",
+        "torch": "2.6.0",
+    }
     assert contract["contract_payload_sha256"] == (
         collect_module.source_runtime_contract_payload_sha256(contract)
     )
@@ -170,6 +190,40 @@ def test_runtime_contract_builder_is_canonical_and_identity_bound(
         expected_reconstruction_identity=identity,
         expected_runtime_root=tmp_path,
     )
+    missing_source = json.loads(json.dumps(contract))
+    missing_source.pop("source_generation_package_evidence")
+    missing_source["contract_payload_sha256"] = (
+        collect_module.source_runtime_contract_payload_sha256(missing_source)
+    )
+    with pytest.raises(ValueError, match="fields drift"):
+        collect_module.validate_source_runtime_contract(
+            missing_source,
+            expected_reconstruction_identity=identity,
+        )
+    overloaded = json.loads(json.dumps(contract))
+    overloaded["executable_generation_packages"] = overloaded[
+        "source_generation_package_evidence"
+    ]["packages"]
+    overloaded["contract_payload_sha256"] = (
+        collect_module.source_runtime_contract_payload_sha256(overloaded)
+    )
+    with pytest.raises(ValueError, match="executable generation package"):
+        collect_module.validate_source_runtime_contract(
+            overloaded,
+            expected_reconstruction_identity=identity,
+        )
+    legacy_extra = json.loads(json.dumps(contract))
+    legacy_extra["package_versions"] = dict(
+        legacy_extra["executable_generation_packages"]
+    )
+    legacy_extra["contract_payload_sha256"] = (
+        collect_module.source_runtime_contract_payload_sha256(legacy_extra)
+    )
+    with pytest.raises(ValueError, match="fields drift"):
+        collect_module.validate_source_runtime_contract(
+            legacy_extra,
+            expected_reconstruction_identity=identity,
+        )
     service_identity = collect_module.expected_service_runtime_identity(contract)
     collect_module.validate_service_runtime_identity(
         service_identity,

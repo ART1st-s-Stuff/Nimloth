@@ -63,6 +63,12 @@ def _source_runtime_evidence(
         },
         "environment_assets": collect_module.RECONSTRUCTION_ENVIRONMENT_ASSETS,
         "service_api_contract": "legacy_batch_environment_v1",
+        "source_generation_package_evidence": (
+            collect_module.SOURCE_GENERATION_PACKAGE_EVIDENCE
+        ),
+        "executable_generation_packages": (
+            collect_module.EXECUTABLE_GENERATION_PACKAGES
+        ),
         "service_routes": collect_module.RECONSTRUCTION_SERVICE_ROUTES,
         "reward_provenance": reward_provenance,
         "trajectory_reward_info_key": None,
@@ -121,10 +127,16 @@ class _FakePolicy:
             "engine_seed": 7,
             "tokenizer_eos_token_id": 102,
             "package_versions": {
-                "vllm": "0.8.5.post1",
+                "vllm": "0.8.2",
                 "transformers": "4.49.0",
                 "torch": "2.6.0",
             },
+            "source_generation_package_evidence": (
+                collect_module.SOURCE_GENERATION_PACKAGE_EVIDENCE
+            ),
+            "executable_generation_packages": (
+                collect_module.EXECUTABLE_GENERATION_PACKAGES
+            ),
             "model_config_artifacts": {
                 "config.json": {"size_bytes": 1, "sha256": "d" * 64},
                 "tokenizer_config.json": {

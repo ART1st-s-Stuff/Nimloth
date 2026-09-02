@@ -233,6 +233,26 @@ This review is not a regression pass and no completion/commit/launch claim is ma
 - Reviewed identity literals: tree `58ef0eb66ad0bef7587c253c5c643af572c1d3a7`; canonical binary/full-index diff SHA256 `7f025476657de1289cf84b61d7702de26d248cd196412e9374a15e6de62730e9`; evidence SHA256 `e9e1ebc4f61b07e5b3b77b165cf72fdfa525d7d840f54296ce5873c5e68463c8`; commit count and parent count both one; worktree clean.
 - These literals are now bound in Nimloth code. After separate exact push approval, `origin/task/step60-runtime-reconstruction` was created and read back at exact `170a673d1bf5855fc0ea6fbed0744b3d7168f8f0` without force or other ref updates. The subsequent Nimloth commit/push remain separately gated. No server/GPU/experiment action occurred.
 
+### W-009 Nimloth commit/push and remote CPU preflight
+
+- After separate complete-diff, commit and push approvals, Nimloth created commit `a54ae97ad651d64aca98734834038f022aaee0fc` and fast-forwarded only `origin/task/rollout-vagen-step60-sft1-sft2` from `696ee904...`; `origin/dev` was not updated.
+- Created detached clean remote worktrees at exact approved commits: Nimloth `/project/peilab/atst/nimloth/.worktree/rollout-vagen-step60-sft1-sft2` and VAGEN `/project/peilab/atst/nimloth/.worktree/vagen-step60-runtime-reconstruction-vagen`. Top-level, common Git dirs, controller registration and `.local` link were verified. The first nested VAGEN submodule update failed because a canonical local URL hit Git's file-transport block; one-shot `-c protocol.file.allow=always` then populated the approved gitlink, nested VERL `494f264...`, and le-wm `8edfeb3...` cleanly without persistent config changes.
+- Remote CPU tests: VAGEN reconstruction plus both compatibility files `18 passed`; Nimloth affected suite `101 passed` after all approved submodules were populated.
+- Remote runtime identity exactly matched approved VAGEN HEAD/tree/diff/assets/routes/config/evidence. Canonical runtime-contract payload SHA256 is `1de6f3d02c948f80bb1f4f7aed824da37228a9867a4ee43f951b23f814ea2543`; independent hash CLI agreed; temp contract file SHA256 is `c5a9024ee292ed72a020f2d3f6072f9e5127a729c7e5fb056c128cc3385e6f69`.
+- Full source checkpoint hash inspection and non-executing merge plan both bound 8 model + 8 extra-state shards; temp evidence SHA256 values are `a819cbef...ab500` (inspection) and `d8881b27...83d7` (plan). No merge target was created and no model was loaded.
+- Deterministic `/tmp` partition preflight validated all 20,000 rows, batch1 2,000 = 1,800 train + 200 held-out, zero source/eval-set-seed/bare-seed overlap; manifest SHA256 `be7db7ea975927bc176186bcb51a202b3be191196ced26e043a57add5f99b87c`.
+- The source package contract is not yet available: canonical `.venv` has exact PyTorch `2.6.0` and Transformers `4.49.0` but vLLM `0.8.2`, while `.venv-vagen-main` has `2.8.0/4.55.4/0.11.0`; the inaccessible source environment had vLLM `0.8.5.post1`. No approximate model runtime was launched.
+- Latest resource query has no healthy responsive `normal` node with four free GPUs (only `dgx-18` responsive with one); DOWN/NOT_RESPONDING GPUs are not candidates. Stable output group remains absent. No checkpoint merge, model load, service, GPU, Slurm or rollout was started.
+- Human declined installing an exact vLLM `0.8.5.post1` overlay and explicitly selected accessible vLLM `0.8.2` with the otherwise source-matching Torch `2.6.0` / Transformers `4.49.0`. This is a material executable-runtime change: task returned to planning for W-012, with source package evidence retained separately and no package-parity claim.
+
+### W-012 vLLM 0.8.2 executable reconstruction
+
+- Fresh implementation approval covered local Nimloth changes only. Reconstruction-consumed formats are now v3 before first real rollout use; runtime/raw/shard/COMPLETE/conversion/rejection/source-audit v1/v2 and missing/single/overloaded package provenance are rejected, while partition/HF-merge v1 remain intentional.
+- Runtime and policy provenance now separate `source_generation_package_evidence` (`vllm=0.8.5.post1`, Transformers `4.49.0`, Torch `2.6.0`, W&B requirements evidence) from `executable_generation_packages` and actual `package_versions` (`vllm=0.8.2`, Transformers `4.49.0`, Torch `2.6.0`). Shard, conversion, source-audit and SFT2 validators revalidate all three views.
+- Read-only inspection of installed vLLM 0.8.2 bound `outputs.py` SHA256 `047d4697...36f8` and `stop_checker.py` SHA256 `5ed39ad2...fa28`; their EOS/null-stop semantics match the persisted evidence contract. Actual model generation/tokenization remains GPU smoke-gated.
+- Local affected suite now passes `108 passed`; targeted Ruff passed; final read-only `trellis-check` found no blocker/high. VAGEN remained clean and unchanged at pushed `170a673...`.
+- No W-012 commit, push, remote refresh, package installation, model load, GPU, Slurm or rollout occurred. W-009 must perform the new Nimloth commit/push and remote CPU refresh before launch review.
+
 ### Second W-006 review remediation
 
 A second read-only check found three residual blockers. They were fixed before resuming W-006:

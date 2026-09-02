@@ -74,6 +74,13 @@ The archived W&B `requirements.txt` pins vLLM `0.8.5.post1`, Transformers `4.49.
 - `https://github.com/vllm-project/vllm/blob/v0.8.5.post1/vllm/outputs.py`
 - `https://github.com/vllm-project/vllm/blob/v0.8.5.post1/vllm/engine/output_processor/stop_checker.py`
 
+For the human-selected executable vLLM `0.8.2`, read-only inspection of canonical `.venv` found the same relevant contract: `CompletionOutput.stop_reason` is `None` for EOS, and `StopChecker` checks `last_token_id == eos_token_id`, sets `FINISHED_STOPPED`, and returns without setting a custom stop reason. Exact installed-source hashes are:
+
+- `vllm/outputs.py`: `047d469792ba4b332fd6bc6837af03340135cb49798e1ddfd2ffa730ead436f8`
+- `vllm/engine/output_processor/stop_checker.py`: `5ed39ad2df9912b7a4b9ff52168c50bfe9d937675d3f1122148c0824450afa28`
+
+This verifies the metadata interpretation for 0.8.2; actual model generation/tokenization remains smoke-gated.
+
 ## Accessible reconstruction lineage
 
 Approved base candidate:

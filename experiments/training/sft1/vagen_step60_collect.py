@@ -41,10 +41,10 @@ from experiments.training.sft1.vagen_step60_data import (
     validate_partition_manifest,
 )
 
-RAW_RECORD_FORMAT = "vagen_step60_source_trajectory_v2"
-SHARD_MANIFEST_FORMAT = "vagen_step60_complete_shard_v2"
+RAW_RECORD_FORMAT = "vagen_step60_source_trajectory_v3"
+SHARD_MANIFEST_FORMAT = "vagen_step60_complete_shard_v3"
 COMPLETE_MARKER_FORMAT = SHARD_MANIFEST_FORMAT
-SOURCE_RUNTIME_CONTRACT_FORMAT = "vagen_step60_reconstruction_runtime_contract_v2"
+SOURCE_RUNTIME_CONTRACT_FORMAT = "vagen_step60_reconstruction_runtime_contract_v3"
 RECONSTRUCTION_BASE_COMMIT = "3003c2e5e4ad84565627e6aa7f6ad5ca731dad1a"
 APPROVED_RECONSTRUCTION_HEAD = "170a673d1bf5855fc0ea6fbed0744b3d7168f8f0"
 APPROVED_RECONSTRUCTION_TREE = "58ef0eb66ad0bef7587c253c5c643af572c1d3a7"
@@ -102,6 +102,19 @@ SOURCE_ENV_BASE_CONFIG = {
     "invalid_action_penalty": -0.2,
     "success_threshold": 1.5,
 }
+SOURCE_GENERATION_PACKAGE_EVIDENCE = {
+    "packages": {
+        "vllm": "0.8.5.post1",
+        "transformers": "4.49.0",
+        "torch": "2.6.0",
+    },
+    "evidence": "source_wandb_requirements_2q620nss",
+}
+EXECUTABLE_GENERATION_PACKAGES = {
+    "vllm": "0.8.2",
+    "transformers": "4.49.0",
+    "torch": "2.6.0",
+}
 SOURCE_SAMPLING_CONTRACT = {
     "do_sample": True,
     "temperature": 0.7,
@@ -115,9 +128,6 @@ SOURCE_SAMPLING_CONTRACT = {
     "ignore_eos": False,
     "custom_stop_strings": [],
     "custom_stop_token_ids": [],
-    "required_vllm_version": "0.8.5.post1",
-    "required_transformers_version": "4.49.0",
-    "required_torch_version": "2.6.0",
 }
 _EXTRACTED_ACTION_RE = re.compile(
     r"After your answer, the extracted valid action is (\[[^\n]*\])\."
@@ -515,11 +525,7 @@ class VLLMSourcePolicy:
             "transformers": importlib.metadata.version("transformers"),
             "torch": importlib.metadata.version("torch").split("+")[0],
         }
-        expected_versions = {
-            "vllm": SOURCE_SAMPLING_CONTRACT["required_vllm_version"],
-            "transformers": SOURCE_SAMPLING_CONTRACT["required_transformers_version"],
-            "torch": SOURCE_SAMPLING_CONTRACT["required_torch_version"],
-        }
+        expected_versions = EXECUTABLE_GENERATION_PACKAGES
         if package_versions != expected_versions:
             raise ValueError(
                 f"source generation package versions mismatch: "
@@ -542,6 +548,10 @@ class VLLMSourcePolicy:
             "gpu_memory_utilization": float(gpu_memory_utilization),
             "engine_seed": int(engine_seed),
             "package_versions": package_versions,
+            "source_generation_package_evidence": (
+                SOURCE_GENERATION_PACKAGE_EVIDENCE
+            ),
+            "executable_generation_packages": EXECUTABLE_GENERATION_PACKAGES,
             "tokenizer_eos_token_id": self.processor.tokenizer.eos_token_id,
             "model_config_artifacts": _model_config_artifacts(model_path),
             **SOURCE_SAMPLING_CONTRACT,
@@ -1213,6 +1223,8 @@ def build_source_runtime_contract(
         "environment_assets": RECONSTRUCTION_ENVIRONMENT_ASSETS,
         "service_api_contract": "legacy_batch_environment_v1",
         "service_routes": RECONSTRUCTION_SERVICE_ROUTES,
+        "source_generation_package_evidence": SOURCE_GENERATION_PACKAGE_EVIDENCE,
+        "executable_generation_packages": EXECUTABLE_GENERATION_PACKAGES,
         "reward_provenance": "step_rewards",
         "trajectory_reward_info_key": None,
         "http_timeout_seconds": 500,
@@ -1257,6 +1269,26 @@ def validate_source_runtime_contract(
         source_runtime_contract_payload_sha256(contract)
     ):
         raise ValueError("source runtime contract payload hash mismatch")
+    expected_contract_fields = {
+        "format",
+        "runtime_root",
+        "unavailable_source_commit",
+        "reconstruction_identity",
+        "evidence_artifact",
+        "environment_assets",
+        "service_api_contract",
+        "service_routes",
+        "source_generation_package_evidence",
+        "executable_generation_packages",
+        "reward_provenance",
+        "trajectory_reward_info_key",
+        "http_timeout_seconds",
+        "prompt_hashes",
+        "environment_config",
+        "contract_payload_sha256",
+    }
+    if set(contract) != expected_contract_fields:
+        raise ValueError("source runtime contract fields drift")
     if contract.get("unavailable_source_commit") != SOURCE_VAGEN_COMMIT:
         raise ValueError("unavailable source provenance mismatch")
     identity = contract.get("reconstruction_identity")
@@ -1284,6 +1316,14 @@ def validate_source_runtime_contract(
         raise ValueError("source runtime service API contract mismatch")
     if contract.get("service_routes") != RECONSTRUCTION_SERVICE_ROUTES:
         raise ValueError("source runtime service route contract mismatch")
+    if contract.get("source_generation_package_evidence") != (
+        SOURCE_GENERATION_PACKAGE_EVIDENCE
+    ):
+        raise ValueError("source generation package evidence mismatch")
+    if contract.get("executable_generation_packages") != (
+        EXECUTABLE_GENERATION_PACKAGES
+    ):
+        raise ValueError("executable generation package identity mismatch")
     if contract.get("reward_provenance") != "step_rewards":
         raise ValueError("reconstruction reward provenance must be step_rewards")
     if contract.get("trajectory_reward_info_key") is not None:

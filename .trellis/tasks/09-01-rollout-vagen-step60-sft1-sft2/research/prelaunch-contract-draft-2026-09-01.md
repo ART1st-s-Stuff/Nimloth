@@ -17,6 +17,8 @@ Trainable modules/objectives: none. Actor, vision encoder, environment and all N
 - unavailable source runtime commit (provenance only): `fee3ffac036a599b0ae979a6dd1ce2b21f7dec49`
 - approved reconstruction base: `3003c2e5e4ad84565627e6aa7f6ad5ca731dad1a`
 - approved and pushed VAGEN patch ref: `origin/task/step60-runtime-reconstruction` at `170a673d1bf5855fc0ea6fbed0744b3d7168f8f0`; tree `58ef0eb66ad0bef7587c253c5c643af572c1d3a7`; canonical diff SHA256 `7f025476657de1289cf84b61d7702de26d248cd196412e9374a15e6de62730e9`
+- pre-W-012 pushed Nimloth task ref: `origin/task/rollout-vagen-step60-sft1-sft2` at `a54ae97ad651d64aca98734834038f022aaee0fc`; not launchable after the vLLM 0.8.2 decision, replacement commit pending
+- pre-W-012 v2 runtime-contract payload SHA256: `1de6f3d02c948f80bb1f4f7aed824da37228a9867a4ee43f951b23f814ea2543`; non-launchable after v3/package split, replacement pending
 - model architecture/tokenizer lineage: `Qwen/Qwen2.5-VL-3B-Instruct`, source world size 8
 - batch1 rule: category ordinals 0–999 from `base` and `common_sense`; internal held-out when `category_ordinal % 10 == 9`; expected 1,800 train + 200 held-out and zero bare-seed overlap
 
@@ -25,7 +27,8 @@ The source test parquet is excluded because all 128 `(eval_set, seed)` identitie
 ## Frozen generation/environment contract
 
 - source log field `actor_rollout_ref.rollout`: `do_sample=true`, temperature `0.7`, top-p `0.95`, top-k `-1`, `n=1`, `ignore_eos=false`; no separate `actor_rollout_ref.rollout.val_kwargs` exists in this run
-- source W&B requirements: vLLM `0.8.5.post1`, Transformers `4.49.0`, PyTorch `2.6.0`; exact approved remote interpreter/environment remains pending preflight
+- source W&B requirements evidence: vLLM `0.8.5.post1`, Transformers `4.49.0`, PyTorch `2.6.0`
+- human-selected executable reconstruction: `/project/peilab/atst/nimloth/.venv/bin/python3`, vLLM `0.8.2`, Transformers `4.49.0`, PyTorch `2.6.0`; package drift is explicit and smoke-gated
 - max response tokens `256`, max model length `6144`, max turns `20`
 - history window `5`, at most six images per request
 - strict source response: `<think>...</think><answer>one_action</answer>`
@@ -40,8 +43,8 @@ The source test parquet is excluded because all 128 `(eval_set, seed)` identitie
 
 Reconstruction evidence status before launch approval:
 
-- completed locally and pushed: reviewed VAGEN patch `170a673...` on exact base `3003c2e...`, with clean worktree, ancestry/tree/diff/evidence hashes and golden prompt/parser/reward/API tests; remote clean-worktree/import/service recheck remains pending;
-- pending: reviewed Nimloth collector commit that distinguishes unavailable source provenance from actual reconstruction runtime identity and rejects metadata relabeling;
+- completed locally, pushed and remote-CPU rechecked: reviewed VAGEN patch `170a673...` on exact base `3003c2e...`, with clean worktree, ancestry/tree/diff/evidence hashes and golden prompt/parser/reward/API tests;
+- pre-W-012 completed evidence: Nimloth `a54ae97...` collector separated source/runtime identity and rejected metadata relabeling; pending replacement is the reviewed v3 dual-package contract commit;
 - exact legacy batch HTTP request/response contract under the patched mode;
 - aligned finite `step_rewards` through the actual batch API, including golden `0.02`, `10.02`, `-0.2` and too-many-action `0.0` cases; any aggregate-reward fallback requires replanning;
 - tokenizer EOS is the only generation stop: `ignore_eos=false`, empty custom stop strings/token IDs, and source-vLLM EOS tuple `(finish_reason="stop", stop_reason=null)` is required. Package/tokenizer/config hashes, EOS ID and generated token IDs are persisted. Length/custom/other finish or parser failure is audited but excludes the linked record from both SFT1 and SFT2; smoke uses `fail_shard`, formal collection uses `exclude_trajectory`.
@@ -148,8 +151,8 @@ Human-selected direction: `normal`, one node, four GPUs total: policy TP2 on two
 
 ## Current blockers
 
-1. VAGEN reconstruction commit/ref is approved and pushed; Nimloth reconstruction/task changes remain uncommitted and unapproved for commit/push, and no clean remote task worktrees exist yet.
-2. VAGEN base compatibility tests and actual Flask/AI2-THOR service behavior remain pending the clean remote CPU/GPU smoke gates because the local dependency install could not complete within user-cache space.
-3. Merge/load and real service smoke are launch-gated and have not run.
+1. Approved Nimloth/VAGEN code refs and clean remote worktrees now exist, but these post-preflight task-record updates still need the normal docs commit/push gate before launch.
+2. Human selected the accessible `.venv` runtime (PyTorch `2.6.0` / Transformers `4.49.0` / vLLM `0.8.2`) instead of installing source vLLM `0.8.5.post1`; W-012 code/tests/review and follow-up Nimloth commit/push are required before model load.
+3. Merge/load and real service/AI2-THOR smoke are launch-gated and have not run.
 4. Current `normal` availability has no healthy responsive node with four free GPUs; availability is transient and must be rechecked.
-5. Literal output paths, resource values and commands are incomplete, so this draft cannot authorize submission.
+5. Literal final output paths, CPU/memory/walltime, device binding and commands remain incomplete, so this draft cannot authorize submission.

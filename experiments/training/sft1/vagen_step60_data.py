@@ -42,14 +42,14 @@ SOURCE_ENV_CONFIG = {
     "success_threshold": 1.5,
 }
 PARTITION_FORMAT = "vagen_step60_partition_v1"
-CONVERSION_FORMAT = "vagen_step60_dual_view_conversion_v2"
-REJECTION_FORMAT = "vagen_step60_rejections_v2"
-SOURCE_AUDIT_CONTRACT_VERSION = "vagen_step60_reconstruction_audit_v2"
+CONVERSION_FORMAT = "vagen_step60_dual_view_conversion_v3"
+REJECTION_FORMAT = "vagen_step60_rejections_v3"
+SOURCE_AUDIT_CONTRACT_VERSION = "vagen_step60_reconstruction_audit_v3"
 RECONSTRUCTION_FORMATS = {
-    "runtime_contract": "vagen_step60_reconstruction_runtime_contract_v2",
-    "raw_row": "vagen_step60_source_trajectory_v2",
-    "shard_manifest": "vagen_step60_complete_shard_v2",
-    "complete_marker": "vagen_step60_complete_shard_v2",
+    "runtime_contract": "vagen_step60_reconstruction_runtime_contract_v3",
+    "raw_row": "vagen_step60_source_trajectory_v3",
+    "shard_manifest": "vagen_step60_complete_shard_v3",
+    "complete_marker": "vagen_step60_complete_shard_v3",
     "conversion_manifest": CONVERSION_FORMAT,
     "rejection_envelope": REJECTION_FORMAT,
     "source_audit": SOURCE_AUDIT_CONTRACT_VERSION,
@@ -1290,19 +1290,20 @@ def _validate_shard_runtime_policy_contract(manifest: Mapping[str, Any]) -> None
     for key, expected in collect_contract.SOURCE_SAMPLING_CONTRACT.items():
         if policy_runtime.get(key) != expected:
             raise ValueError(f"shard policy sampling/package drift: {key}")
-    expected_packages = {
-        "vllm": collect_contract.SOURCE_SAMPLING_CONTRACT[
-            "required_vllm_version"
-        ],
-        "transformers": collect_contract.SOURCE_SAMPLING_CONTRACT[
-            "required_transformers_version"
-        ],
-        "torch": collect_contract.SOURCE_SAMPLING_CONTRACT[
-            "required_torch_version"
-        ],
-    }
+    expected_packages = collect_contract.EXECUTABLE_GENERATION_PACKAGES
     if policy_runtime.get("package_versions") != expected_packages:
         raise ValueError("shard policy package versions mismatch")
+    if policy_runtime.get("source_generation_package_evidence") != (
+        collect_contract.SOURCE_GENERATION_PACKAGE_EVIDENCE
+    ) or runtime_contract.get("source_generation_package_evidence") != (
+        collect_contract.SOURCE_GENERATION_PACKAGE_EVIDENCE
+    ):
+        raise ValueError("shard source package evidence mismatch")
+    if policy_runtime.get("executable_generation_packages") != expected_packages or (
+        runtime_contract.get("executable_generation_packages")
+        != expected_packages
+    ):
+        raise ValueError("shard executable package identity mismatch")
     if policy_runtime.get("model_config_artifacts") != policy_artifact.get(
         "model_config_artifacts"
     ):
