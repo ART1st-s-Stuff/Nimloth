@@ -11,7 +11,9 @@ A Trellis task is mandatory for:
 - experiments, GPU work, Slurm/remote long jobs, collection, evaluation, or rollout-train;
 - work needing durable design, handoff, or multi-session progress.
 
-After task consent is declined, only a one-reply explanation, read-only lookup with no durable decision, or clearly bounded low-risk small edit may remain inline. Task creation authorizes planning only; implementation waits for reviewed artifacts and `task.py start`. Experiments require a separate launch approval.
+An explicit human request to implement a goal authorizes creating the task needed to plan that goal; do not ask separately for task creation. If task/implementation intent is unclear, ask once. After task or implementation consent is declined, only a one-reply explanation, read-only lookup with no durable decision, or clearly bounded low-risk small edit may remain inline. Experiments still require a separate launch approval.
+
+A tightly related low-risk correction inside an existing reviewed scope uses the Fast path and does not create another task. Multi-file/public-contract work uses the Standard path; experiments, remote/destructive operations, protected data and push/merge use the High-risk path.
 
 ## Work-item authority and runtime projection
 
@@ -33,7 +35,7 @@ After task consent is declined, only a one-reply explanation, read-only lookup w
 - `trellis mem`: read-only raw dialogue recall; never verified truth.
 - `.memory/` and `.local/memory/`: compact, evidence-backed, human-reviewed reusable lessons.
 
-After a substantive milestone, immediately apply the `on-progress` skill: update task/checklist state, add a concise branch milestone when warranted, and evaluate used memory. Do not defer progress updates to another conversation.
+Apply `on-progress` when a work-item completes, risk/design changes, experiment state changes, or a cross-session handoff is needed. Consecutive fixes within one work-item are consolidated; they do not each create progress prose, memory review, or bookkeeping commits. Update a branch milestone only when branch-level state actually changes.
 
 ## Curated memory contract
 

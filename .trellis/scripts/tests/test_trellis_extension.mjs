@@ -15,7 +15,8 @@ const jitiModule = process.env.TRELLIS_JITI_MODULE ?? join(
 );
 const { createJiti } = require(jitiModule);
 const jiti = createJiti(import.meta.url);
-const { default: extension } = await jiti.import(extensionPath);
+const trellisModule = await jiti.import(extensionPath);
+const { default: extension, trellisContextTestApi } = trellisModule;
 delete process.env.TRELLIS_SUBAGENT_CHILD;
 
 function makeRepo(base, name) {
@@ -41,6 +42,9 @@ const rootB = makeRepo(base, "root-b");
 const foreign = join(base, "foreign");
 mkdirSync(foreign);
 process.chdir(foreign);
+
+assert(trellisContextTestApi,
+  "extension must expose bounded context builders for regression tests");
 
 const tools = new Map();
 const handlers = new Map();
@@ -231,6 +235,76 @@ const cancelRuntime = JSON.parse(readFileSync(
   join(cancelRoot, ".trellis/.runtime/execution/pi_approval-session.json"), "utf8"
 ));
 assert.equal(cancelRuntime.approvalReceipts.length, 0);
+
+const promptRoot = makeRepo(base, "prompt-root");
+const promptTask = join(promptRoot, ".trellis/tasks/task");
+mkdirSync(join(promptRoot, ".trellis/.runtime/sessions"), { recursive: true });
+writeFileSync(join(promptRoot, ".trellis/.runtime/sessions/pi_prompt-session.json"), JSON.stringify({
+  current_task: ".trellis/tasks/task",
+}));
+const repeatedMarker = "PRD_BODY_MUST_NOT_REPEAT_";
+writeFileSync(join(promptTask, "prd.md"), `# Task\n${repeatedMarker.repeat(400)}`);
+writeFileSync(join(promptTask, "design.md"), `# Design\n${"DESIGN_BODY_".repeat(400)}`);
+writeFileSync(join(promptTask, "implement.md"), `# Plan\n- [ ] [W-001] ${"IMPLEMENT_BODY_".repeat(400)}`);
+mkdirSync(join(promptRoot, ".trellis/spec"), { recursive: true });
+const guidePath = join(promptRoot, ".trellis/spec/guide.md");
+writeFileSync(guidePath, `# Guide\n${"GUIDE_BODY_MUST_BE_INDEX_ONLY_".repeat(400)}`);
+symlinkSync(guidePath, join(promptRoot, ".trellis/spec/guide-alias.md"));
+writeFileSync(join(promptTask, "implement.jsonl"), [
+  JSON.stringify({ file: ".trellis/tasks/task/prd.md", reason: "artifact duplicate" }),
+  JSON.stringify({ file: ".trellis/spec/guide.md", reason: "relative" }),
+  JSON.stringify({ file: guidePath, reason: "absolute duplicate" }),
+  JSON.stringify({ file: ".trellis/spec/guide-alias.md", reason: "canonical duplicate" }),
+  JSON.stringify({ file: ".trellis/spec/missing.md", reason: "missing evidence" }),
+].join("\n"));
+
+const legacyFixtureContext = [
+  readFileSync(join(promptTask, "prd.md"), "utf8"),
+  readFileSync(guidePath, "utf8"),
+  readFileSync(join(promptRoot, ".trellis/spec/guide-alias.md"), "utf8"),
+  readFileSync(join(promptTask, "prd.md"), "utf8"),
+  readFileSync(join(promptTask, "design.md"), "utf8"),
+  readFileSync(join(promptTask, "implement.md"), "utf8"),
+].join("\n\n");
+const legacyFixtureBytes = Buffer.byteLength(legacyFixtureContext, "utf8");
+
+const mainContext = trellisContextTestApi.buildMainContext(
+  promptRoot, "pi_prompt-session",
+);
+assert(Buffer.byteLength(mainContext, "utf8") <= 16 * 1024,
+  "main Trellis context must stay below 16 KiB");
+assert(!mainContext.includes(repeatedMarker),
+  "main context must not inline task artifact bodies");
+assert.match(mainContext, /artifactHashes/);
+
+const childContext = trellisContextTestApi.buildChildContext(
+  promptRoot, "trellis-implement", "pi_prompt-session",
+);
+assert(Buffer.byteLength(childContext, "utf8") <= 32 * 1024,
+  "child Trellis context must stay below 32 KiB");
+assert.match(childContext, /loading steps in the agent definition are already satisfied/,
+  "dispatch must override generated-agent mechanical reload instructions");
+assert.equal(childContext.split(repeatedMarker).length - 1, 400,
+  "the PRD body must appear exactly once in child context");
+assert(!childContext.includes("GUIDE_BODY_MUST_BE_INDEX_ONLY_"),
+  "JSONL evidence bodies must be indexed instead of inlined");
+assert.equal((childContext.match(/guide\.md/g) ?? []).length, 1,
+  "relative, absolute, and symlink aliases must canonicalize to one index row");
+assert.match(childContext, /missing.*missing\.md|missing\.md.*missing/i,
+  "missing context entries must remain diagnosable");
+
+const promptCtx = ctx(promptRoot, "prompt-session");
+const firstPrompt = await emit("before_agent_start", { systemPrompt: "base" }, promptCtx);
+assert(Buffer.byteLength(firstPrompt.systemPrompt, "utf8") <= 16 * 1024,
+  "integrated main system context must stay below 16 KiB");
+assert(!firstPrompt.systemPrompt.includes(repeatedMarker));
+writeFileSync(join(promptTask, "implement.md"), "# Plan\n- [ ] [W-001] changed\n");
+const changedPrompt = await emit("before_agent_start", { systemPrompt: "base" }, promptCtx);
+assert(Buffer.byteLength(changedPrompt.message?.content ?? "", "utf8") <= 4096,
+  "artifact changes must emit a bounded delta");
+assert(!changedPrompt.message?.content.includes("# Plan"),
+  "artifact delta must not append the full changed artifact");
+console.log(`bounded context fixture bytes: legacy=${legacyFixtureBytes} main=${Buffer.byteLength(mainContext, "utf8")} child=${Buffer.byteLength(childContext, "utf8")} delta=${Buffer.byteLength(changedPrompt.message?.content ?? "", "utf8")}`);
 
 await emit("session_start", { reason: "startup" }, ctx(rootA));
 const selected = await cursor.execute("cursor-call", {

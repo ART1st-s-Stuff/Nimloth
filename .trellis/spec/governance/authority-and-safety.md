@@ -39,6 +39,16 @@ Do not exceed the current prompt or reviewed task scope. Stop and ask the human 
 
 Research locally before asking when evidence can answer the question without mutation. Never infer a missing mechanism or parameter merely because one choice looks plausible.
 
+Authorization is scoped and reusable. A direct human prompt or validated receipt remains effective for the same repository, target, scope, risk class, and exclusions until one of those materially changes. Do not ask again for read-only research, local tests, internal bookkeeping, or edits already covered by that authorization. Aggregate unresolved decisions into one request; a repeated request is itself a workflow defect unless the prior grant expired or changed scope.
+
+## Proportional workflow and evidence
+
+- **Fast path:** a tightly related small change inside reviewed scope, with no protected, remote, destructive, experiment, schema, or public-contract risk. It uses adjacent-code inspection and focused RED/GREEN only; no new task, implement/check sub-agent, extra approval, full suite, or per-fix progress entry.
+- **Standard path:** a task with one implementation review and one final affected-scope check batch.
+- **High-risk path:** experiments, remote/destructive operations, protected data, and push/merge retain their exact gates.
+
+Validation evidence is identified by the command and fingerprints of relevant source, config, dependency, and test inputs. Reuse a successful result while those inputs are unchanged. A fix after failure re-runs the failed or affected check first; full lint/typecheck/build belongs to the final batch and runs at most once per unchanged input state.
+
 ## Human-only and protected actions
 
 An AI must not run commands explicitly reserved for humans, including `./skill human ...`. It must not launch an expensive/remote experiment without the separate launch approval required by the experiment contract. It must not commit, push, merge, delete protected data, or alter checkpoints unless the current workflow and human authorization allow that exact action.

@@ -8,7 +8,8 @@ Trellis是Nimloth唯一的当前开发任务系统。本工作流保留Trellis�
 2. **实施前必须规划。** 创建任务只批准规划。经审查后启动任务才批准实施。实验启动还需要单独审批。
 3. **只注入经选择的证据。** 整理相关spec、研究和单条known error；禁止注入整个known-error库。
 4. **按所有权持久化。** 任务保存当前工作，工作空间日志保存会话，curated memory保存经审查的可复用经验，旧任务/问题文件只保留历史。
-5. **提交前必须审查。** 工作提交前展示完整范围和验证；只有结束审查完成后才能执行归档/会话日志记账。
+5. **提交前必须审查。** 工作提交前展示完整范围和验证；复用未失效证据与已有同scope授权，只有结束审查完成后才能执行归档/会话日志记账。
+6. **流程必须与风险成比例。** Fast path不升级为完整task/subagent/check/approval仪式；Standard只执行一次最终批次；High-risk保留精确门禁。
 
 ## Trellis 系统
 
@@ -33,21 +34,21 @@ python3 ./.trellis/scripts/get_context.py --mode phase --step <X.Y>
 
 ```text
 Phase 1: Plan    → classify risk, obtain task consent, research, persist and review artifacts
-Phase 2: Execute → implement approved scope, apply progress/experiment gates, verify repeatedly
-Phase 3: Finish  → full-scope check, memory/spec review, complete-diff review, work commits, wrap-up
+Phase 2: Execute → implement approved scope, run focused checks, preserve high-risk gates
+Phase 3: Finish  → one final affected-scope check, review, authorized commits, wrap-up
 ```
 
 ### Task threshold
 
 多文件或歧义实施、项目规则/工作流变更、任何实验、GPU、Slurm、远程长job、收集、评估或rollout-train，以及需要持久设计、交接或跨session的工作，都必须使用Trellis任务。
 
-创建任务前必须先征得创建同意。如果人类拒绝，广泛工作必须停止；仅可继续一轮解释、不产生持久决策的只读查询，或边界明确、低风险的小修改。
+人类明确要求实施某目标时，该prompt即授权为该目标创建task并进入规划，不得再询问“是否创建task”；只有请求是否要求持久实施不明确时才询问。如果人类拒绝任务或实施，仅可继续一轮解释、不产生持久决策的只读查询，或边界明确、低风险的小修改。
 
-Trellis是唯一的任务权威。Pi TaskTree必须保持空，不得复制状态、优先级、层级、focus、验收标准或backlog。
+现有approved task内的紧密相关小改若不涉及protected/remote/destructive/schema/public-contract/实验风险，走Fast path：不新建task、不启动implement/check agent、不增加approval、不逐次跑full suite或写progress。Trellis仍是唯一任务权威；Pi TaskTree保持空。
 
 [workflow-state:no_task]
-当前没有活动任务。先对请求分类，并在创建Trellis任务前征得任务创建同意。
-多文件/歧义工作、规则/工作流变更、实验/远程job和持久或跨session工作都必须使用任务。若人类拒绝，禁止继续广泛工作；只允许解释、不产生持久决策的只读查询，或边界明确、低风险的小修改。
+当前没有活动任务。先对请求分类；人类已明确要求实施时直接创建所需task并规划，不重复询问task创建许可。仅当实施意图不明确时询问。
+规则/工作流变更、实验/远程job和持久或跨session工作使用任务；边界明确的低风险小修改可inline。若人类拒绝，禁止继续广泛工作。
 Pi TaskTree必须保持空；Trellis是唯一的开发任务权威。
 [/workflow-state:no_task]
 
@@ -80,17 +81,16 @@ Pi TaskTree必须保持空；Trellis是唯一的开发任务权威。
 - 2.3 回滚或重新规划 `[on demand]`
 
 [workflow-state:in_progress]
-只能实施经审查的任务范围。先读取curated JSONL条目，再读取`prd.md`、`design.md`和`implement.md`；编辑前检查相邻源码/测试。
-主会话流程：`trellis-implement` -> `trellis-check` -> memory/spec审查 -> 完整diff与验证审查 -> 获批的工作提交 -> `/trellis:finish-work`。
-子代理递归保护：当前`trellis-implement`或`trellis-check` agent必须直接完成自身职责，禁止再次启动这两种角色。
-出现实质里程碑后必须执行`on-progress`。实验必须具备完整合同和单独、明确的启动审批；完成/失败/取消/暂停时必须触发`on-experiment-end`。
-最终检查必须覆盖所有受影响的spec层，并包含相关known errors、链接/config/hooks和语义证据。
+只能实施经审查的范围。使用已提供的task locator/artifacts；同一session内不机械重读，只有task/hash/scope或修改对象变化时按需读取delta、相关spec和相邻源码/测试。
+Fast path由主会话直接完成focused RED/GREEN，不启动implement/check agent、不新增approval或逐次progress。Standard可委派implement并在最终批次执行一次check；子代理不得递归启动这些角色。
+复用相关输入未变的成功证据；完整lint/typecheck/build在最终批次至多一次。仅在work-item完成、风险/设计变化、实验状态变化或跨session交接时执行`on-progress`。
+实验仍需完整合同和单独launch approval，结束时触发`on-experiment-end`；protected/remote/destructive/push-merge门禁不变。
 [/workflow-state:in_progress]
 
 [workflow-state:in_progress-inline]
-只能实施经审查的任务范围。编辑前必须加载任务产物，以及相关governance/domain/experiment/Python specs、源码证据、单条known error和经核验的memory。
-流程：开发前审查 -> 编辑 -> 全范围检查 -> memory/spec审查 -> 完整diff与验证审查 -> 获批的工作提交 -> `/trellis:finish-work`。
-出现实质里程碑后必须执行`on-progress`；实验仍需单独启动审批，并强制执行结束门禁。
+只能实施经审查的范围。首次或task/hash/scope变化时按需加载task产物和相关合同；禁止每轮机械重读。
+Fast path直接编辑并focused验证；Standard在最终批次执行一次受影响范围检查、diff审查和已授权提交。复用未失效证据与同scope授权。
+仅在work-item完成、风险/设计变化、实验状态变化或跨session交接时执行`on-progress`；实验仍需单独启动审批和结束门禁。
 [/workflow-state:in_progress-inline]
 
 ### Phase 3: Finish
@@ -101,7 +101,7 @@ Pi TaskTree必须保持空；Trellis是唯一的开发任务权威。
 - 3.5 Finish-work审查与记账 `[required · once]`
 
 [workflow-state:completed]
-工作提交已经完成。必须展示finish-work的归档/会话日志影响并取得人类验收，之后`/trellis:finish-work`才能执行自动记账提交。
+工作提交已经完成。展示finish-work的归档/会话日志影响；若用户尚未授权该精确finish范围则取得一次验收，已有同scope授权不得重复请求。之后执行`/trellis:finish-work`自动记账。
 [/workflow-state:completed]
 
 ### Phase rules
@@ -182,7 +182,7 @@ python3 ./.trellis/scripts/task.py start <task>
 
 #### 2.1 Implement `[required · repeatable]`
 
-主会话通常启动`trellis-implement`，其prompt首行为`Active task: <path>`。实施agent加载JSONL条目和任务产物，阅读相邻源码/测试，直接编辑并运行针对性检查。它禁止启动另一个实施或检查agent。
+Fast path由主会话直接实施。Standard仅在委派能降低复杂度或提供明确所有权时启动一次`trellis-implement`，其prompt首行为`Active task: <path>`；dispatch已提供的artifact不得重读，JSONL索引只按实际修改需要读取。实施agent检查相邻源码/测试并运行focused检查，禁止递归启动实施或检查agent。
 
 Pi的work-item runtime producer可用时，Agent必须维护显式cursor：
 
@@ -192,20 +192,15 @@ Pi的work-item runtime producer可用时，Agent必须维护显式cursor：
 - 完成只由`implement.md`checkbox表达：先更新checkbox并审查diff，再`release`或选择下一项。runtime工具不得直接标记done。
 - 非Pi平台或producer不可用时不得伪造runtime；继续以task artifact为权威并明确说明没有live assignment projection。
 
-每次编辑前：
+每个连续修改批次开始时核验branch/worktree/dirty状态；只有cwd、worktree或外部并发状态变化时重复核验。按实际修改层读取相关索引/模块文档，保留无关修改与受保护内容；源码与规划冲突或scope扩大时返回Phase 1。
 
-- 核验branch/worktree和完整dirty状态；
-- 阅读每个受影响层索引中的开发前检查清单及所属模块文档；
-- 保留无关修改与受保护内容；
-- 如果源码与规划冲突或范围扩大，必须停止并返回Phase 1。
-
-完成可验证子任务、关键修复、重要设计决定、实验阶段、规则变更或推翻既有结论后，必须立即执行`.agents/skills/on-progress/`。当前细节留在Trellis任务中；只有确有必要时才添加简短branch里程碑。禁止创建新的`ai_tasks/ai_progress/`文件。
+只有work-item完成、风险/设计变化、实验状态变化或跨session交接时执行`.agents/skills/on-progress/`。同一item连续小修合并记录，不逐次写progress或记账commit。禁止创建新的`ai_tasks/ai_progress/`文件。
 
 启动实验前必须执行`on-experiment-start`，展示精确最终合同/资源/命令并取得明确的人类批准。启动后持续监控到健康运行。任何终止状态都必须在当前对话中执行`on-experiment-end`。
 
 #### 2.2 Quality check `[required · repeatable]`
 
-主会话通常启动`trellis-check`；实施子代理禁止自行启动它，只能报告需要该检查。必须审查并修复：
+Standard任务在最终批次通常启动一次`trellis-check`；Fast path不启动。Check必须先复用implement阶段未失效的证据，只补查缺失、失败、可疑或相关输入已变化的项目，并审查：
 
 - 任务PRD/设计/计划合规性与范围；
 - 每个受影响spec索引中的质量检查；
@@ -215,7 +210,7 @@ Pi的work-item runtime producer可用时，Agent必须维护显式cursor：
 - 工作流变更涉及的Markdown链接、generated-adapter合同、任务/上下文验证和`git diff --check`；
 - 受保护文件、memory hashes、产品/实验/输出边界和无法识别的dirty路径。
 
-必须报告精确命令与结果。缺失依赖、不可用硬件或未运行的平台reload/probe都必须明确标记为未验证项。
+必须报告新运行命令、复用证据与结果。完整suite在相关输入未变化时不得重复；缺失依赖、不可用硬件或未运行的平台reload/probe明确标记为未验证项。
 
 #### 2.3 Roll back or re-plan `[on demand]`
 
@@ -260,11 +255,11 @@ git log --oneline -5
 - 排除在工作提交之外的未知dirty文件；
 - 建议的逻辑工作commit分组/消息。
 
-必须请求一次性的人类commit审批。获批后只能提交列出的工作组；禁止amend、push、merge，也禁止混入归档/会话日志记账。如果人类拒绝或选择手工提交，则停止commit并遵循其决定。平台/任务角色的禁止提交限制具有更高优先级。
+若当前prompt或有效receipt尚未授权所列本地commit范围，请求一次人类commit审批；已有同scope授权则直接复用，不重复询问。只能提交审查列出的工作组；禁止amend、push、merge或混入归档/会话日志记账。平台/任务角色的禁止提交限制优先。
 
 #### 3.5 Finish-work review and bookkeeping `[required · once]`
 
-工作提交完成且worktree处于已审查状态后，展示`/trellis:finish-work`将归档和记录的内容，包括自动记账提交（`session_auto_commit: true`）。必须在调用finish-work前取得人类验收。归档和会话日志提交只能发生在工作提交之后，禁止早于完整diff审查。
+工作提交完成且worktree处于已审查状态后，展示`/trellis:finish-work`将归档和记录的内容，包括自动记账提交（`session_auto_commit: true`）。若该精确finish范围尚未授权则取得一次验收；已有授权直接复用。归档和会话日志提交只能发生在工作提交之后。
 
 ## Platform consistency and upgrade boundary
 

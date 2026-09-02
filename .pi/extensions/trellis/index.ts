@@ -9,7 +9,6 @@ import {
   resolve,
 } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { isUtf8 } from "node:buffer";
 
 // ── Types ──────────────────────────────────────────────────────────────
 type JsonObject = Record<string, unknown>;
@@ -907,12 +906,6 @@ class ContextBudget {
 function truncateNotice(path: string, cap: number): string {
   return `\n[Trellis: truncated at ${cap} bytes — read ${path} for the full content]`;
 }
-function isBinaryContent(data: Buffer): boolean {
-  return data.includes(0) || !isUtf8(data);
-}
-function binaryNotice(path: string, size: number, reason: string): string {
-  return `[Trellis: not inlined (binary file) — ${path} (${size} bytes): ${reason}]`;
-}
 function indexNotice(path: string, size: number, reason: string): string {
   return `[Trellis: not inlined (total context limit reached) — ${path} (${size} bytes): ${reason}]`;
 }
@@ -934,8 +927,11 @@ function budgetedBlock(
   budget.add(blockBytes);
   return block;
 }
+function resolveContextPath(basePath: string, filePath: string): string {
+  return isAbsolute(filePath) ? resolve(filePath) : resolve(basePath, filePath);
+}
 function readFileBytes(basePath: string, filePath: string): Buffer | null {
-  const full = join(basePath, filePath);
+  const full = resolveContextPath(basePath, filePath);
   try {
     if (!statSync(full).isFile()) return null;
   } catch {
@@ -946,27 +942,6 @@ function readFileBytes(basePath: string, filePath: string): Buffer | null {
   } catch {
     return null;
   }
-}
-function materializeFile(
-  basePath: string,
-  filePath: string,
-  reason: string,
-  limits: ContextInjectionLimits,
-  budget: ContextBudget,
-): string | null {
-  const data = readFileBytes(basePath, filePath);
-  if (data === null) return null;
-  const size = data.length;
-  if (isBinaryContent(data)) {
-    const notice = binaryNotice(filePath, size, reason);
-    budget.add(Buffer.byteLength(notice, "utf-8"));
-    return notice;
-  }
-  const cap = limits.max_file_bytes;
-  const truncated = truncateUtf8(data, cap);
-  let content = truncated.toString("utf-8");
-  if (truncated.length < size) content += truncateNotice(filePath, cap);
-  return budgetedBlock(budget, filePath, filePath, content, reason, size);
 }
 function materializeArtifact(
   basePath: string,
@@ -1358,66 +1333,180 @@ function buildStartupContext(
     .join("\n\n");
 }
 
-function buildContext(root: string, agent: string, key: string | null): string {
+const MAIN_CONTEXT_MAX_BYTES = 16 * 1024;
+const CHILD_CONTEXT_MAX_BYTES = 32 * 1024;
+const TASK_ARTIFACTS = ["prd.md", "design.md", "implement.md"] as const;
+
+type MainTaskSnapshot = {
+  taskRef: string | null;
+  status: string | null;
+  taskPath: string | null;
+  goal: string | null;
+  workItem: { taskRef: string; workItemRef: string; state: string | null } | null;
+  artifactHashes: Record<string, string>;
+  approvalState: { pending: number; approved: number; declined: number };
+};
+
+function sha256(data: Buffer): string {
+  return createHash("sha256").update(data).digest("hex");
+}
+
+function boundedUtf8(text: string, maxBytes: number, notice: string): string {
+  const data = Buffer.from(text, "utf-8");
+  if (data.length <= maxBytes) return text;
+  const suffix = `\n${notice}`;
+  const suffixBytes = Buffer.byteLength(suffix, "utf-8");
+  return truncateUtf8(data, Math.max(0, maxBytes - suffixBytes)).toString("utf-8") + suffix;
+}
+
+function taskSnapshot(root: string, key: string | null): MainTaskSnapshot {
   const dir = readTaskDir(root, key);
-  if (!dir)
-    return "No active Trellis task found. Read .trellis/ before proceeding.";
+  if (!dir) {
+    return {
+      taskRef: null, status: null, taskPath: null, goal: null, workItem: null,
+      artifactHashes: {}, approvalState: { pending: 0, approved: 0, declined: 0 },
+    };
+  }
+  let task: JsonObject = {};
+  try { task = JSON.parse(readText(join(dir, "task.json"))) as JsonObject; } catch {}
+  const artifactHashes: Record<string, string> = {};
+  for (const name of TASK_ARTIFACTS) {
+    const data = readFileBytes(dir, name);
+    if (data !== null) artifactHashes[name] = sha256(data);
+  }
+  const assignment = key ? activePrimaryAssignment(root, key) : null;
+  let approvalState = { pending: 0, approved: 0, declined: 0 };
+  if (key) {
+    try {
+      const runtime = JSON.parse(readText(executionFile(root, key))) as JsonObject;
+      const requests = Array.isArray(runtime.approvalRequests) ? runtime.approvalRequests : [];
+      const receipts = Array.isArray(runtime.approvalReceipts) ? runtime.approvalReceipts : [];
+      approvalState = {
+        pending: requests.filter((row) => isObj(row) && row.status === "pending").length,
+        approved: receipts.filter((row) => isObj(row) && row.decision === "approve").length,
+        declined: receipts.filter((row) => isObj(row) && row.decision === "decline").length,
+      };
+    } catch {}
+  }
+  return {
+    taskRef: str(task.id) ?? dir.split(/[\\/]/).pop() ?? null,
+    status: str(task.status) ?? null,
+    taskPath: relative(root, dir).replace(/\\/g, "/"),
+    goal: str(task.description) ?? null,
+    workItem: assignment ? {
+      taskRef: str(assignment.taskRef) ?? "",
+      workItemRef: str(assignment.workItemRef) ?? "",
+      state: str(assignment.declaredState) ?? null,
+    } : null,
+    artifactHashes,
+    approvalState,
+  };
+}
+
+function buildMainContext(root: string, key: string | null): string {
+  const snapshot = taskSnapshot(root, key);
+  return boundedUtf8(
+    `<trellis-task-locator>\n${JSON.stringify(snapshot, null, 2)}\n` +
+      "Task artifacts are available at taskPath; read only what the current action needs.\n" +
+      "</trellis-task-locator>",
+    MAIN_CONTEXT_MAX_BYTES,
+    "[Trellis: compact task locator truncated]",
+  );
+}
+
+function buildTaskDelta(previous: MainTaskSnapshot, current: MainTaskSnapshot): string {
+  const changedArtifacts = Object.fromEntries(
+    [...new Set([...Object.keys(previous.artifactHashes), ...Object.keys(current.artifactHashes)])]
+      .filter((name) => previous.artifactHashes[name] !== current.artifactHashes[name])
+      .map((name) => [name, current.artifactHashes[name] ?? null]),
+  );
+  const delta: JsonObject = { artifactHashes: changedArtifacts };
+  for (const field of ["taskRef", "status", "taskPath", "goal", "workItem", "approvalState"] as const) {
+    if (JSON.stringify(previous[field]) !== JSON.stringify(current[field])) delta[field] = current[field];
+  }
+  return boundedUtf8(
+    `<trellis-context-delta>\n${JSON.stringify(delta, null, 2)}\n</trellis-context-delta>`,
+    4096,
+    "[Trellis: context delta truncated]",
+  );
+}
+
+function contextIndexPath(root: string, filePath: string): {
+  display: string; canonical: string; size: number | null; digest: string | null; status: "ok" | "missing";
+} {
+  const resolved = resolveContextPath(root, filePath);
+  try {
+    const canonical = realpathSync(resolved);
+    const stat = statSync(canonical);
+    if (!stat.isFile()) throw new Error("not a file");
+    const rel = relative(root, canonical);
+    const display = rel !== "" && !rel.startsWith("..") && !isAbsolute(rel)
+      ? rel.replace(/\\/g, "/") : canonical.replace(/\\/g, "/");
+    const data = readFileSync(canonical);
+    return { display, canonical, size: stat.size, digest: sha256(data), status: "ok" };
+  } catch {
+    return {
+      display: (isAbsolute(filePath) ? resolve(filePath) : relative(root, resolved)).replace(/\\/g, "/"),
+      canonical: resolved,
+      size: null,
+      digest: null,
+      status: "missing",
+    };
+  }
+}
+
+function buildChildContext(root: string, agent: string, key: string | null): string {
+  const dir = readTaskDir(root, key);
+  if (!dir) return "No active Trellis task found. Read .trellis/ before proceeding.";
   const relTaskDir = relative(root, dir).replace(/\\/g, "/");
   const limits = readContextInjectionLimits(root);
-  const budget = new ContextBudget(limits.max_total_bytes);
+  const budget = new ContextBudget(Math.min(
+    limits.max_total_bytes || CHILD_CONTEXT_MAX_BYTES,
+    CHILD_CONTEXT_MAX_BYTES - 1024,
+  ));
+  const artifactBlocks: string[] = [];
+  const seen = new Set<string>();
+  for (const [name, label] of [
+    ["prd.md", "Requirements"], ["design.md", "Technical Design"], ["implement.md", "Execution Plan"],
+  ] as const) {
+    const artifactPath = `${relTaskDir}/${name}`;
+    const full = resolveContextPath(root, artifactPath);
+    try { seen.add(realpathSync(full)); } catch { seen.add(full); }
+    const block = materializeArtifact(root, artifactPath, `${artifactPath} (${label})`, `${label} document`, {
+      ...limits,
+      max_artifact_bytes: Math.min(limits.max_artifact_bytes || CHILD_CONTEXT_MAX_BYTES, 12 * 1024),
+    }, budget);
+    if (block) artifactBlocks.push(block);
+    else artifactBlocks.push(`[Trellis: missing task artifact — ${artifactPath}]`);
+  }
 
-  // 1. Curated spec/research files from {agent}.jsonl (same order, budget
-  //    processed first, matching Python's get_agent_context()).
+  const indexRows: string[] = [];
   const jsonlName = TRELLIS_AGENT_JSONL[agent] ?? "";
-  const specBlocks: string[] = [];
   if (jsonlName) {
     for (const entry of readJsonlEntries(dir, jsonlName)) {
-      if (entry.type === "directory") continue;
-      const block = materializeFile(root, entry.file, entry.reason, limits, budget);
-      if (block) specBlocks.push(block);
+      const indexed = contextIndexPath(root, entry.file);
+      if (seen.has(indexed.canonical)) continue;
+      seen.add(indexed.canonical);
+      const reason = entry.reason.replace(/\s+/g, " ").slice(0, 240);
+      indexRows.push(indexed.status === "ok"
+        ? `- ${indexed.display} | ${indexed.size} bytes | sha256:${indexed.digest} | ${reason}`
+        : `- MISSING ${indexed.display} | ${reason}`);
     }
   }
-  const spec = specBlocks.join("\n\n");
-
-  // 2-4. Task artifacts, in order: prd.md -> design.md -> implement.md.
-  const prd = materializeArtifact(
-    root,
-    `${relTaskDir}/prd.md`,
-    `${relTaskDir}/prd.md (Requirements)`,
-    "Requirements document",
-    limits,
-    budget,
-  );
-  const design = materializeArtifact(
-    root,
-    `${relTaskDir}/design.md`,
-    `${relTaskDir}/design.md (Technical Design)`,
-    "Technical design document",
-    limits,
-    budget,
-  );
-  const impl = materializeArtifact(
-    root,
-    `${relTaskDir}/implement.md`,
-    `${relTaskDir}/implement.md (Execution Plan)`,
-    "Execution plan document",
-    limits,
-    budget,
-  );
-
-  // prd/design/impl already carry their own "=== path (label) ===" header
-  // (from materializeArtifact) — no extra "### x.md" wrapper needed, that
-  // would just double the header.
-  return [
-    `## Trellis Task Context`,
-    `Task directory: ${dir}`,
-    "",
-    prd ?? `(missing) ${relTaskDir}/prd.md`,
-    design ? "\n" + design : "",
-    impl ? "\n" + impl : "",
-    spec ? "\n### Curated Spec / Research Context\n" + spec : "",
-  ].join("\n");
+  const snapshot = taskSnapshot(root, key);
+  const text = [
+    "## Trellis Task Context",
+    `Task locator: ${JSON.stringify({ taskRef: snapshot.taskRef, status: snapshot.status, taskPath: snapshot.taskPath, workItem: snapshot.workItem })}`,
+    "Context delivery contract: task-artifact loading steps in the agent definition are already satisfied by the bodies below. Do not execute those steps again unless an artifact is marked missing, truncated, or changed.",
+    ...artifactBlocks,
+    "### Curated context index",
+    "Read only entries needed for the delegated modification/review; their bodies are not preloaded.",
+    ...(indexRows.length ? indexRows : ["- (no curated entries)"]),
+  ].join("\n\n");
+  return boundedUtf8(text, CHILD_CONTEXT_MAX_BYTES, "[Trellis: child context truncated; read listed paths on demand]");
 }
+
+export const trellisContextTestApi = { buildMainContext, buildChildContext, buildTaskDelta, taskSnapshot };
 
 function normalizeAgent(agent: string | undefined): string {
   const name = agent ?? "trellis-implement";
@@ -1436,7 +1525,7 @@ function buildPrompt(
   const agent = normalizeAgent(input.agent);
   const raw = readText(join(root, ".pi", "agents", `${agent}.md`));
   const def = stripFM(raw);
-  const ctx = buildContext(root, agent, key);
+  const ctx = buildChildContext(root, agent, key);
   return [
     "## Trellis Agent Definition",
     def || "(missing)",
@@ -1908,8 +1997,8 @@ export default function trellisExtension(pi: {
     return startup;
   };
   const taskCtxSnapshot = new Map<string, string>();
-  const lastSentTaskCtx = new Map<string, string>();
-  const lastSentRuntimeCtx = new Map<string, string>();
+  const taskStateSnapshot = new Map<string, MainTaskSnapshot>();
+  const lastSentWorkflow = new Map<string, string>();
   const heartbeatTargets = new Map<string, { root: string; key: string }>();
   const genericSubagentAssignments = new Map<string, { root: string; key: string; assignmentId: string }>();
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -2495,28 +2584,25 @@ export default function trellisExtension(pi: {
     const cur = (event as { systemPrompt?: string }).systemPrompt ?? "";
     const turn = getTurnCtx(k, ctx);
     const startup = getStartupCtx(k, turn, ctx);
-    // Task context is snapshotted into systemPrompt once; later on-disk
-    // changes are delivered as persisted messages so the prefix stays stable.
-    const freshTaskCtx = buildContext(activeRoot, "trellis-implement", k);
+    // Keep the provider-cache prefix stable: the system prompt receives one
+    // compact locator, while later task/artifact changes become bounded deltas.
     let taskCtx = taskCtxSnapshot.get(key);
-    if (taskCtx === undefined) {
-      taskCtx = freshTaskCtx;
+    const freshTaskState = taskSnapshot(activeRoot, k);
+    let previousTaskState = taskStateSnapshot.get(key);
+    if (taskCtx === undefined || previousTaskState === undefined) {
+      taskCtx = buildMainContext(activeRoot, k);
       taskCtxSnapshot.set(key, taskCtx);
-      lastSentTaskCtx.set(key, freshTaskCtx);
+      taskStateSnapshot.set(key, freshTaskState);
+      previousTaskState = freshTaskState;
     }
     const updates: string[] = [];
-    const runtimeContext = [turn.wf, turn.ov].filter(Boolean).join("\n\n");
-    if (runtimeContext && runtimeContext !== lastSentRuntimeCtx.get(key)) {
-      lastSentRuntimeCtx.set(key, runtimeContext);
-      updates.push(runtimeContext);
+    if (turn.wf && turn.wf !== lastSentWorkflow.get(key)) {
+      lastSentWorkflow.set(key, turn.wf);
+      updates.push(turn.wf);
     }
-    if (freshTaskCtx !== lastSentTaskCtx.get(key)) {
-      lastSentTaskCtx.set(key, freshTaskCtx);
-      updates.push(
-        "<trellis-task-context-update>\nTask context changed on disk. This supersedes the Trellis Task Context in the system prompt.\n\n" +
-          freshTaskCtx +
-          "\n</trellis-task-context-update>",
-      );
+    if (JSON.stringify(freshTaskState) !== JSON.stringify(previousTaskState)) {
+      taskStateSnapshot.set(key, freshTaskState);
+      updates.push(buildTaskDelta(previousTaskState, freshTaskState));
     }
     const content = updates.join("\n\n");
     return {
