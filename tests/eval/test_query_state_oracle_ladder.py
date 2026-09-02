@@ -336,6 +336,15 @@ def test_id198_visual_indices_are_not_the_id194_posthoc_randperm() -> None:
     )
 
 
+def test_id198_pair_identity_binds_actual_image_sha256_values() -> None:
+    assert oracle_eval.ID198_ROW_IMAGE_PAIR_IDENTITY == (
+        "4cdbae2b914d245971fb385ce6516c3a2b18610d45bd766c1c27b1dd8b2831a3"
+    )
+    assert oracle_eval.ID198_ROW_IMAGE_PAIR_IDENTITY != (
+        "b8eaddac0c595f26525cf60e6de98312d41bd32271e243deb1a4c61aabe40c86"
+    )
+
+
 def test_id198_visual_reference_is_byte_and_pair_bound(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
