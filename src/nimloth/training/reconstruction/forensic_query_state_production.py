@@ -25,7 +25,9 @@ from torch import nn
 from nimloth.backbone.qwen25vl.factory import build_input_builder, load_backbone
 from nimloth.backbone.qwen25vl.state_training import QwenStateTrainingBatch
 from nimloth.training.reconstruction.forensic_query_state_cache import (
+    FORENSIC_STAGE_B_DEFAULT_SHARD_RECORDS,
     ForensicCheckpointIdentity,
+    ForensicExperimentStage,
     ForensicProducerIdentity,
     ForensicRankShardIdentity,
     ForensicStateExtractor,
@@ -65,6 +67,9 @@ from nimloth.training.verl.runtime import (
 
 FORENSIC_QUERY_STATE_PRODUCTION_CONFIG_SCHEMA = (
     "nimloth_formal38_forensic_query_state_cache_production_v1"
+)
+FORENSIC_QUERY_STATE_STAGE_B_PRODUCTION_CONFIG_SCHEMA = (
+    "nimloth_formal38_forensic_query_state_cache_production_v2"
 )
 FORMAL38_SOURCE_COMMIT = "4838e5fdb469dffb78909e307cf11a808cb2d29e"
 FORMAL38_CONFIG_SHA256 = "cedadb5f8ba8574e52bf3130aac7e07c546925de417971d7da571744c235c266"
@@ -112,11 +117,13 @@ def _absolute(value: object, *, field: str) -> Path:
     return Path(value)
 
 
-def _strict_section(raw: Mapping[str, Any], name: str) -> dict[str, Any]:
+def _strict_section(
+    raw: Mapping[str, Any], name: str, *, expected_fields: set[str] | None = None
+) -> dict[str, Any]:
     value = raw.get(name)
     if not isinstance(value, Mapping):
         raise ValueError(f"missing forensic production section: {name}")
-    expected = _SECTION_FIELDS[name]
+    expected = _SECTION_FIELDS[name] if expected_fields is None else expected_fields
     unknown = sorted(set(value) - expected)
     missing = sorted(expected - set(value))
     if unknown:
@@ -227,7 +234,9 @@ class ForensicQueryStateProductionConfig:
     formal_config_identity: str
     checkpoint: ForensicCheckpointIdentity
     output_path: Path
-    selection_seed: int
+    selection_seed: int | None
+    experiment_stage: ForensicExperimentStage
+    max_shard_records: int
     row_index_identity: str
     torchrun_backend: str
     torchrun_world_size: int
@@ -247,20 +256,44 @@ def parse_forensic_query_state_production_config(
         raise ValueError(f"unknown forensic production section: {unknown[0]}")
     if missing:
         raise ValueError(f"missing forensic production section: {missing[0]}")
-    if raw.get("schema") != FORENSIC_QUERY_STATE_PRODUCTION_CONFIG_SCHEMA:
+    schema = raw.get("schema")
+    if schema not in {
+        FORENSIC_QUERY_STATE_PRODUCTION_CONFIG_SCHEMA,
+        FORENSIC_QUERY_STATE_STAGE_B_PRODUCTION_CONFIG_SCHEMA,
+    }:
         raise ValueError("unsupported forensic production config schema")
     source = _strict_section(raw, "integrated_source")
     formal = _strict_section(raw, "formal_resolved_config")
-    cache = _strict_section(raw, "cache")
+    stage_b = schema == FORENSIC_QUERY_STATE_STAGE_B_PRODUCTION_CONFIG_SCHEMA
+    cache = _strict_section(
+        raw,
+        "cache",
+        expected_fields=(
+            {"output_path", "experiment_stage", "max_shard_records", "row_index_identity"}
+            if stage_b else _SECTION_FIELDS["cache"]
+        ),
+    )
     torchrun = _strict_section(raw, "torchrun")
     commit = source["commit"]
     if not _is_git_sha(commit):
         raise ValueError("integrated_source.commit must be a lowercase Git SHA")
     if not _is_sha256(formal["sha256"]) or not _is_sha256(formal["identity"]):
         raise ValueError("formal_resolved_config sha256/identity must be SHA256")
-    seed = cache["selection_seed"]
-    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+    seed = None if stage_b else cache["selection_seed"]
+    if not stage_b and (isinstance(seed, bool) or not isinstance(seed, int) or seed < 0):
         raise ValueError("cache.selection_seed must be a non-negative integer")
+    stage = (
+        ForensicExperimentStage.STAGE_B_DIAGNOSTIC
+        if stage_b else ForensicExperimentStage.MECHANICS_ONLY
+    )
+    max_shard_records = len(range(64)) if not stage_b else cache["max_shard_records"]
+    if stage_b and (
+        cache["experiment_stage"] != stage.value
+        or isinstance(max_shard_records, bool)
+        or not isinstance(max_shard_records, int)
+        or max_shard_records != FORENSIC_STAGE_B_DEFAULT_SHARD_RECORDS
+    ):
+        raise ValueError("Stage B cache stage/max_shard_records contract is not exact")
     if cache["row_index_identity"] != FORMAL38_ROW_INDEX_IDENTITY:
         raise ValueError("cache.row_index_identity must bind the exact Formal38 live row index")
     if (
@@ -309,6 +342,8 @@ def parse_forensic_query_state_production_config(
         checkpoint=checkpoint,
         output_path=_absolute(cache["output_path"], field="cache.output_path"),
         selection_seed=seed,
+        experiment_stage=stage,
+        max_shard_records=max_shard_records,
         row_index_identity=str(cache["row_index_identity"]),
         torchrun_backend="nccl",
         torchrun_world_size=8,
@@ -688,6 +723,8 @@ def run_forensic_query_state_cache(
         checkpoint=config.checkpoint,
         source=source,
         selection_seed=config.selection_seed,
+        experiment_stage=config.experiment_stage,
+        max_shard_records=config.max_shard_records,
         producer=ForensicProducerIdentity(
             integrated_repo_root=str(config.integrated_repo_root),
             integrated_source_commit=config.integrated_source_commit,
@@ -736,6 +773,7 @@ if __name__ == "__main__":
 
 __all__ = [
     "FORENSIC_QUERY_STATE_PRODUCTION_CONFIG_SCHEMA",
+    "FORENSIC_QUERY_STATE_STAGE_B_PRODUCTION_CONFIG_SCHEMA",
     "ForensicQueryStateProductionConfig",
     "Formal38ForensicStateExtractor",
     "build_parser",

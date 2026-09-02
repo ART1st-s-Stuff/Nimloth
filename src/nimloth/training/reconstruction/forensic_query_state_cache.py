@@ -14,6 +14,7 @@ import os
 import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -38,9 +39,18 @@ FORENSIC_SELECTION_MECHANICS_VALIDATION = "mechanics_validation"
 FORENSIC_SELECTION_ALL_TRAIN = "all_train"
 FORENSIC_SELECTION_EXTERNAL_VALIDATION = "external_validation"
 FORENSIC_STAGE_A_SELECTION_ALGORITHM = "sha256_image_group_subset_v1"
+FORENSIC_STAGE_B_SELECTION_ALGORITHM = "live_audited_full_roles_v1"
 FORENSIC_STAGE_B_ROLES = frozenset(
     {FORENSIC_SELECTION_ALL_TRAIN, FORENSIC_SELECTION_EXTERNAL_VALIDATION}
 )
+FORENSIC_STAGE_B_TRAIN_COUNT = 12_836
+FORENSIC_STAGE_B_EXTERNAL_COUNT = 1_413
+FORENSIC_STAGE_B_DEFAULT_SHARD_RECORDS = 2_048
+
+
+class ForensicExperimentStage(str, Enum):
+    MECHANICS_ONLY = "mechanics_only"
+    STAGE_B_DIAGNOSTIC = "stage_b_diagnostic"
 _STATE_SHAPE = (16, 1024)
 _HEX = frozenset("0123456789abcdef")
 _PROVENANCE_FIELDS = (
@@ -134,11 +144,16 @@ class ForensicSelectionEntry:
 
 
 @dataclass(frozen=True)
-class ForensicStageASelection:
-    seed: int
+class ForensicSelection:
+    stage: ForensicExperimentStage
+    seed: int | None
     algorithm: str
     identity: str
     entries: tuple[ForensicSelectionEntry, ...]
+
+
+# Public compatibility name for the already-published Stage A owner.
+ForensicStageASelection = ForensicSelection
 
 
 @dataclass(frozen=True)
@@ -534,11 +549,75 @@ def select_forensic_stage_a_rows(
              *((FORENSIC_SELECTION_MECHANICS_VALIDATION, row) for row in validation_rows))
         )
     )
-    return ForensicStageASelection(
+    return ForensicSelection(
+        stage=ForensicExperimentStage.MECHANICS_ONLY,
         seed=seed,
         algorithm=FORENSIC_STAGE_A_SELECTION_ALGORITHM,
         identity=_identity(payload),
         entries=entries,
+    )
+
+
+def select_forensic_stage_b_rows(
+    rows: Sequence[SFT1V2Early4Row],
+) -> ForensicSelection:
+    """Select the complete live-audited train/external roles without a caller mask."""
+
+    train = tuple(sorted((row for row in rows if row.split == "train"), key=lambda row: row.ordinal))
+    external = tuple(
+        sorted(
+            (row for row in rows if row.split == "val" and row.external_eligible),
+            key=lambda row: row.ordinal,
+        )
+    )
+    if any(not row.external_eligible for row in train) or (len(train), len(external)) != (
+        FORENSIC_STAGE_B_TRAIN_COUNT,
+        FORENSIC_STAGE_B_EXTERNAL_COUNT,
+    ):
+        raise ValueError("forensic Stage B live audit must yield exactly 12836/1413 rows")
+    identities = [row.identity for row in (*train, *external)]
+    if len(set(identities)) != len(identities):
+        raise ValueError("forensic Stage B source has duplicate row identity")
+    train_images = {row.original_image_sha256 for row in train}
+    external_images = {row.original_image_sha256 for row in external}
+    if train_images & external_images:
+        raise ValueError("forensic Stage B roles must have zero exact-image overlap")
+    payload = {
+        "algorithm": FORENSIC_STAGE_B_SELECTION_ALGORITHM,
+        "roles": {
+            FORENSIC_SELECTION_ALL_TRAIN: [row.identity for row in train],
+            FORENSIC_SELECTION_EXTERNAL_VALIDATION: [row.identity for row in external],
+        },
+    }
+    entries = tuple(
+        ForensicSelectionEntry(ordinal, role, row)
+        for ordinal, (role, row) in enumerate(
+            (*((FORENSIC_SELECTION_ALL_TRAIN, row) for row in train),
+             *((FORENSIC_SELECTION_EXTERNAL_VALIDATION, row) for row in external))
+        )
+    )
+    return ForensicSelection(
+        stage=ForensicExperimentStage.STAGE_B_DIAGNOSTIC,
+        seed=None,
+        algorithm=FORENSIC_STAGE_B_SELECTION_ALGORITHM,
+        identity=_identity(payload),
+        entries=entries,
+    )
+
+
+def forensic_shard_ranges(count: int, *, max_records: int) -> tuple[tuple[int, int], ...]:
+    if (
+        isinstance(count, bool)
+        or not isinstance(count, int)
+        or count < 1
+        or isinstance(max_records, bool)
+        or not isinstance(max_records, int)
+        or max_records < 1
+    ):
+        raise ValueError("forensic cache shard count and bound must be positive integers")
+    return tuple(
+        (start, min(start + max_records, count))
+        for start in range(0, count, max_records)
     )
 
 
@@ -731,6 +810,8 @@ def _validate_local_cache_payload(payload: object) -> tuple[torch.Tensor, list[d
             or row.get("selection_role") not in {
                 FORENSIC_SELECTION_MECHANICS_TRAIN,
                 FORENSIC_SELECTION_MECHANICS_VALIDATION,
+                FORENSIC_SELECTION_ALL_TRAIN,
+                FORENSIC_SELECTION_EXTERNAL_VALIDATION,
             }
             or not isinstance(row.get("row_identity"), str)
             or not row["row_identity"]
@@ -774,8 +855,9 @@ def _publish_rank_payloads(
     summaries: Sequence[ForensicRankSummary],
     checkpoint: ForensicCheckpointIdentity,
     source: QueryStateSourceContract,
-    selection: ForensicStageASelection,
+    selection: ForensicSelection,
     producer: ForensicProducerIdentity,
+    max_shard_records: int = FORENSIC_STAGE_B_DEFAULT_SHARD_RECORDS,
 ) -> Mapping[str, Any]:
     if len(summaries) != 8 or {item.rank for item in summaries} != set(range(8)):
         raise ValueError("forensic rank summary world coverage is invalid")
@@ -790,7 +872,7 @@ def _publish_rank_payloads(
             raise ValueError("forensic rank temporary shard count/ordinal identity mismatch")
         merged.extend((state[index], row) for index, row in enumerate(rows))
     merged.sort(key=lambda item: int(item[1]["selection_ordinal"]))
-    if [item[1]["selection_ordinal"] for item in merged] != list(range(len(selection.entries))) or len(merged) != 64:
+    if [item[1]["selection_ordinal"] for item in merged] != list(range(len(selection.entries))):
         raise ValueError("forensic global selection-ordinal coverage is invalid")
     expected = {entry.selection_ordinal: entry for entry in selection.entries}
     for _state, row in merged:
@@ -802,12 +884,29 @@ def _publish_rank_payloads(
         raise FileExistsError("forensic publication temporary path already exists")
     publication.mkdir()
     try:
-        final_path = publication / "shard_00000.pt"
-        final_payload = {"schema": _FORENSIC_SHARD_SCHEMA, "state": torch.stack([item[0] for item in merged]), "rows": [item[1] for item in merged]}
-        with final_path.open("xb") as stream:
-            torch.save(final_payload, stream)
-            stream.flush(); os.fsync(stream.fileno())
-        descriptor = {"file": final_path.name, "count": 64, "start": 0, "stop": 64, "sha256": _sha256_file(final_path), "state_dtype": "float32", "state_shape": list(_STATE_SHAPE)}
+        descriptors: list[dict[str, Any]] = []
+        for shard_index, (start, stop) in enumerate(
+            forensic_shard_ranges(len(merged), max_records=max_shard_records)
+        ):
+            final_path = publication / f"shard_{shard_index:05d}.pt"
+            chunk = merged[start:stop]
+            final_payload = {
+                "schema": _FORENSIC_SHARD_SCHEMA,
+                "state": torch.stack([item[0] for item in chunk]),
+                "rows": [item[1] for item in chunk],
+            }
+            with final_path.open("xb") as stream:
+                torch.save(final_payload, stream)
+                stream.flush(); os.fsync(stream.fileno())
+            descriptors.append({
+                "file": final_path.name, "count": stop - start, "start": start,
+                "stop": stop, "sha256": _sha256_file(final_path),
+                "state_dtype": "float32", "state_shape": list(_STATE_SHAPE),
+            })
+        roles = {
+            role: sum(entry.role == role for entry in selection.entries)
+            for role in dict.fromkeys(entry.role for entry in selection.entries)
+        }
         manifest: dict[str, Any] = {
             "schema": FORENSIC_QUERY_STATE_CACHE_SCHEMA,
             "version": 1,
@@ -817,16 +916,16 @@ def _publish_rank_payloads(
             "terminal_primary": False,
             "deployable": False,
             "sft2_ready": False,
-            "count": 64,
+            "count": len(merged),
             "state_shape": list(_STATE_SHAPE),
             "state_dtype": "float32",
             "checkpoint": _checkpoint_payload(checkpoint),
             "producer": asdict(producer),
             "source_jsonl": _source_payload(source),
-            "selection": {"stage": "mechanics_only", "algorithm": selection.algorithm, "seed": selection.seed, "identity": selection.identity, "roles": {FORENSIC_SELECTION_MECHANICS_TRAIN: 48, FORENSIC_SELECTION_MECHANICS_VALIDATION: 16}},
+            "selection": {"stage": selection.stage.value, "algorithm": selection.algorithm, "seed": selection.seed, "identity": selection.identity, "roles": roles},
             "row_set_identity": _identity({"rows": [item[1] for item in merged]}),
             "rank_cache_summaries": [asdict(item) for item in sorted(summaries, key=lambda item: item.rank)],
-            "shards": [descriptor],
+            "shards": descriptors,
         }
         manifest["cache_fingerprint"] = _identity(manifest)
         with (publication / "manifest.json").open("x", encoding="utf-8") as stream:
@@ -849,10 +948,12 @@ def build_forensic_query_state_cache_rank(
     *,
     checkpoint: ForensicCheckpointIdentity,
     source: QueryStateSourceContract,
-    selection_seed: int,
+    selection_seed: int | None,
     producer: ForensicProducerIdentity,
     extractor: ForensicStateExtractor,
     collective: ForensicCollective,
+    experiment_stage: ForensicExperimentStage = ForensicExperimentStage.MECHANICS_ONLY,
+    max_shard_records: int = FORENSIC_STAGE_B_DEFAULT_SHARD_RECORDS,
 ) -> Mapping[str, Any] | None:
     """Run one WS8 rank; rank0 atomically publishes after all rank validation."""
 
@@ -862,14 +963,36 @@ def build_forensic_query_state_cache_rank(
         raise ValueError("forensic cache builder requires exact WS8 rank identity")
     identity_error: BaseException | None = None
     rows: tuple[SFT1V2Early4Row, ...] = ()
-    selection: ForensicStageASelection | None = None
+    selection: ForensicSelection | None = None
     try:
+        if not isinstance(experiment_stage, ForensicExperimentStage):
+            raise TypeError("forensic cache experiment_stage must be typed")
+        if (
+            isinstance(max_shard_records, bool)
+            or not isinstance(max_shard_records, int)
+            or max_shard_records < 1
+            or (
+                experiment_stage is ForensicExperimentStage.STAGE_B_DIAGNOSTIC
+                and max_shard_records != FORENSIC_STAGE_B_DEFAULT_SHARD_RECORDS
+            )
+        ):
+            raise ValueError("forensic cache stage/shard bound contract is invalid")
         validate_forensic_checkpoint_identity(checkpoint)
         _validate_producer_identity(producer)
         rows, audit = index_early4_rows(source, enforce_approved_counts=False)
         if build_query_state_source_manifest_identity(rows, audit) != source.source_manifest_identity:
             raise ValueError("forensic live source manifest identity mismatch")
-        selection = select_forensic_stage_a_rows(rows, seed=selection_seed)
+        if experiment_stage is ForensicExperimentStage.STAGE_B_DIAGNOSTIC and (
+            audit.train_rows != FORENSIC_STAGE_B_TRAIN_COUNT
+            or audit.raw_validation_rows != 1_420
+            or audit.external_validation_rows != FORENSIC_STAGE_B_EXTERNAL_COUNT
+        ):
+            raise ValueError("forensic Stage B live source audit counts are not exact")
+        selection = (
+            select_forensic_stage_a_rows(rows, seed=selection_seed)
+            if experiment_stage is ForensicExperimentStage.MECHANICS_ONLY
+            else select_forensic_stage_b_rows(rows)
+        )
     except BaseException as caught:
         identity_error = caught
     statuses = collective.gate(
@@ -948,6 +1071,11 @@ def build_forensic_query_state_cache_rank(
                 source=source,
                 selection=selection,
                 producer=producer,
+                max_shard_records=(
+                    len(selection.entries)
+                    if selection.stage is ForensicExperimentStage.MECHANICS_ONLY
+                    else max_shard_records
+                ),
             )
         except BaseException as caught:
             publish_error = caught
@@ -976,29 +1104,85 @@ def _parse_manifest(raw: Mapping[str, Any]) -> Mapping[str, Any]:
     summaries = raw.get("rank_cache_summaries")
     source = raw.get("source_jsonl")
     producer = raw.get("producer")
-    descriptor = shards[0] if isinstance(shards, list) and len(shards) == 1 else None
+    stage = selection.get("stage") if isinstance(selection, dict) else None
+    expected_count, expected_algorithm, expected_roles = (
+        (64, FORENSIC_STAGE_A_SELECTION_ALGORITHM, {
+            FORENSIC_SELECTION_MECHANICS_TRAIN: 48,
+            FORENSIC_SELECTION_MECHANICS_VALIDATION: 16,
+        })
+        if stage == ForensicExperimentStage.MECHANICS_ONLY.value
+        else (FORENSIC_STAGE_B_TRAIN_COUNT + FORENSIC_STAGE_B_EXTERNAL_COUNT,
+              FORENSIC_STAGE_B_SELECTION_ALGORITHM, {
+                  FORENSIC_SELECTION_ALL_TRAIN: FORENSIC_STAGE_B_TRAIN_COUNT,
+                  FORENSIC_SELECTION_EXTERNAL_VALIDATION: FORENSIC_STAGE_B_EXTERNAL_COUNT,
+              })
+        if stage == ForensicExperimentStage.STAGE_B_DIAGNOSTIC.value
+        else (-1, "", {})
+    )
+    valid_shards = isinstance(shards, list) and bool(shards)
+    expected_start = 0
+    if valid_shards:
+        for index, descriptor in enumerate(shards):
+            if (
+                not isinstance(descriptor, dict)
+                or set(descriptor) != {"file", "count", "start", "stop", "sha256", "state_dtype", "state_shape"}
+                or descriptor.get("file") != f"shard_{index:05d}.pt"
+                or descriptor.get("start") != expected_start
+                or isinstance(descriptor.get("stop"), bool)
+                or not isinstance(descriptor.get("stop"), int)
+                or descriptor["stop"] <= expected_start
+                or descriptor.get("count") != descriptor["stop"] - expected_start
+                or not _is_sha256(descriptor.get("sha256"))
+                or descriptor.get("state_dtype") != "float32"
+                or tuple(descriptor.get("state_shape", ())) != _STATE_SHAPE
+                or (
+                    stage == ForensicExperimentStage.STAGE_B_DIAGNOSTIC.value
+                    and descriptor["count"] > FORENSIC_STAGE_B_DEFAULT_SHARD_RECORDS
+                )
+            ):
+                valid_shards = False
+                break
+            expected_start = descriptor["stop"]
+        valid_shards = valid_shards and expected_start == expected_count
+        if valid_shards:
+            actual_ranges = tuple((item["start"], item["stop"]) for item in shards)
+            expected_ranges = forensic_shard_ranges(
+                expected_count,
+                max_records=(
+                    expected_count
+                    if stage == ForensicExperimentStage.MECHANICS_ONLY.value
+                    else FORENSIC_STAGE_B_DEFAULT_SHARD_RECORDS
+                ),
+            )
+            valid_shards = actual_ranges == expected_ranges
     if (
         raw.get("version") != 1
         or raw.get("owner_role") != FORENSIC_QUERY_STATE_OWNER_ROLE
         or raw.get("forensic_only") is not True
         or any(raw.get(name) is not False for name in ("authoritative", "terminal_primary", "deployable", "sft2_ready"))
-        or raw.get("count") != 64
+        or raw.get("count") != expected_count
         or tuple(raw.get("state_shape", ())) != _STATE_SHAPE
         or raw.get("state_dtype") != "float32"
         or not _is_sha256(raw.get("row_set_identity"))
         or not _is_sha256(raw.get("cache_fingerprint"))
         or not isinstance(selection, dict)
         or set(selection) != {"stage", "algorithm", "seed", "identity", "roles"}
-        or selection.get("stage") != "mechanics_only"
-        or selection.get("algorithm") != FORENSIC_STAGE_A_SELECTION_ALGORITHM
-        or isinstance(selection.get("seed"), bool)
-        or not isinstance(selection.get("seed"), int)
-        or selection["seed"] < 0
+        or stage not in {item.value for item in ForensicExperimentStage}
+        or selection.get("algorithm") != expected_algorithm
+        or (
+            stage == ForensicExperimentStage.MECHANICS_ONLY.value
+            and (
+                isinstance(selection.get("seed"), bool)
+                or not isinstance(selection.get("seed"), int)
+                or selection["seed"] < 0
+            )
+        )
+        or (
+            stage == ForensicExperimentStage.STAGE_B_DIAGNOSTIC.value
+            and selection.get("seed") is not None
+        )
         or not _is_sha256(selection.get("identity"))
-        or selection.get("roles") != {
-            FORENSIC_SELECTION_MECHANICS_TRAIN: 48,
-            FORENSIC_SELECTION_MECHANICS_VALIDATION: 16,
-        }
+        or selection.get("roles") != expected_roles
         or not isinstance(producer, dict)
         or set(producer) != {
             "integrated_repo_root", "integrated_source_commit",
@@ -1014,15 +1198,7 @@ def _parse_manifest(raw: Mapping[str, Any]) -> Mapping[str, Any]:
         or not isinstance(source, dict)
         or set(source) != {"train", "validation", "source_manifest_identity"}
         or not _is_sha256(source.get("source_manifest_identity"))
-        or not isinstance(descriptor, dict)
-        or set(descriptor) != {"file", "count", "start", "stop", "sha256", "state_dtype", "state_shape"}
-        or descriptor.get("file") != "shard_00000.pt"
-        or descriptor.get("count") != 64
-        or descriptor.get("start") != 0
-        or descriptor.get("stop") != 64
-        or not _is_sha256(descriptor.get("sha256"))
-        or descriptor.get("state_dtype") != "float32"
-        or tuple(descriptor.get("state_shape", ())) != _STATE_SHAPE
+        or not valid_shards
         or not isinstance(summaries, list)
         or len(summaries) != 8
         or {item.get("rank") for item in summaries if isinstance(item, dict)} != set(range(8))
@@ -1039,7 +1215,7 @@ def _parse_manifest(raw: Mapping[str, Any]) -> Mapping[str, Any]:
             or item["count"] < 0
             for item in summaries
         )
-        or sum(item["count"] for item in summaries) != 64
+        or sum(item["count"] for item in summaries) != expected_count
         or _identity({key: value for key, value in raw.items() if key != "cache_fingerprint"}) != raw.get("cache_fingerprint")
     ):
         raise ValueError("forensic cache manifest identity/watermark is invalid")
@@ -1091,18 +1267,33 @@ class ForensicQueryStateCacheDataset:
         rows, audit = index_early4_rows(source, enforce_approved_counts=False)
         if build_query_state_source_manifest_identity(rows, audit) != source.source_manifest_identity:
             raise ValueError("forensic cache live source identity mismatch")
-        selection = select_forensic_stage_a_rows(rows, seed=self.manifest["selection"]["seed"])
-        if selection.identity != self.manifest["selection"]["identity"]:
+        selection_raw = self.manifest["selection"]
+        selection = (
+            select_forensic_stage_a_rows(rows, seed=selection_raw["seed"])
+            if selection_raw["stage"] == ForensicExperimentStage.MECHANICS_ONLY.value
+            else select_forensic_stage_b_rows(rows)
+        )
+        if selection.identity != selection_raw["identity"]:
             raise ValueError("forensic cache live selection identity mismatch")
         self._expected = {entry.selection_ordinal: entry for entry in selection.entries}
-        descriptor = self.manifest["shards"][0]
-        path = self.root / descriptor["file"]
-        if not path.is_file() or path.is_symlink() or _sha256_file(path) != descriptor["sha256"]:
-            raise ValueError("forensic cache shard SHA256/hash mismatch")
-        self._state, self._rows = _validate_local_cache_payload(torch.load(path, map_location="cpu", weights_only=False))
-        if len(self._rows) != 64:
-            raise ValueError("forensic cache shard count mismatch")
-        if [row["selection_ordinal"] for row in self._rows] != list(range(64)):
+        states: list[torch.Tensor] = []
+        cache_rows: list[dict[str, Any]] = []
+        for descriptor in self.manifest["shards"]:
+            path = self.root / descriptor["file"]
+            if not path.is_file() or path.is_symlink() or _sha256_file(path) != descriptor["sha256"]:
+                raise ValueError("forensic cache shard SHA256/hash mismatch")
+            state, shard_rows = _validate_local_cache_payload(
+                torch.load(path, map_location="cpu", weights_only=False)
+            )
+            if len(shard_rows) != descriptor["count"]:
+                raise ValueError("forensic cache shard count mismatch")
+            states.append(state)
+            cache_rows.extend(shard_rows)
+        self._state = torch.cat(states, dim=0).contiguous()
+        self._rows = cache_rows
+        if len(self._rows) != len(selection.entries):
+            raise ValueError("forensic cache global shard count mismatch")
+        if [row["selection_ordinal"] for row in self._rows] != list(range(len(selection.entries))):
             raise ValueError("forensic cache rows must preserve exact selection ordinal order")
         for row in self._rows:
             expected = self._expected[row["selection_ordinal"]]
@@ -1126,7 +1317,7 @@ class ForensicQueryStateCacheDataset:
             raise ValueError("forensic cache row-set identity mismatch")
 
     def __len__(self) -> int:
-        return 64
+        return len(self._rows)
 
     @property
     def cache_fingerprint(self) -> str:
@@ -1150,12 +1341,18 @@ __all__ = [
     "FORENSIC_SELECTION_MECHANICS_TRAIN",
     "FORENSIC_SELECTION_MECHANICS_VALIDATION",
     "FORENSIC_STAGE_A_SELECTION_ALGORITHM",
+    "FORENSIC_STAGE_B_DEFAULT_SHARD_RECORDS",
+    "FORENSIC_STAGE_B_EXTERNAL_COUNT",
     "FORENSIC_STAGE_B_ROLES",
+    "FORENSIC_STAGE_B_SELECTION_ALGORITHM",
+    "FORENSIC_STAGE_B_TRAIN_COUNT",
     "ForensicCheckpointIdentity",
     "ForensicCollective",
+    "ForensicExperimentStage",
     "ForensicProducerIdentity",
     "ForensicQueryStateCacheDataset",
     "ForensicRankShardIdentity",
+    "ForensicSelection",
     "ForensicStageASelection",
     "ForensicStateExtractor",
     "PreparedForensicRow",
@@ -1163,6 +1360,8 @@ __all__ = [
     "actor_failure_evidence_from_manifest",
     "build_forensic_query_state_cache_rank",
     "forensic_rank_schedule",
+    "forensic_shard_ranges",
     "select_forensic_stage_a_rows",
+    "select_forensic_stage_b_rows",
     "validate_forensic_checkpoint_identity",
 ]

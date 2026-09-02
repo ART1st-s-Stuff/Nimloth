@@ -15,6 +15,7 @@ from nimloth.training.reconstruction.cfm_query_state import (
     LoadedQueryStateImageSplit,
     build_query_state_cfm_model,
     evaluate_query_state_multi_noise_sensitivity,
+    make_global_shuffle_mapping,
 )
 from nimloth.training.reconstruction.forensic_query_state_cache import (
     FORENSIC_QUERY_STATE_CACHE_SCHEMA,
@@ -47,7 +48,7 @@ def _split(role: str, *, marker: str, image_marker: str) -> LoadedQueryStateImag
         checkpoint_identity=forensic_cfm.FORMAL38_UNSAFE_CONTROL_SHA256,
         split_name=role,
         split_identity=marker * 64,
-        row_set_identity=("e" if role == FORENSIC_SELECTION_MECHANICS_TRAIN else "f") * 64,
+        row_set_identity=("e" if role in {FORENSIC_SELECTION_MECHANICS_TRAIN, "all_train"} else "f") * 64,
         image_preprocessing={"size": 8, "resample": "bicubic", "range": [-1, 1], "color_space": "sRGB"},
     )
 
@@ -123,6 +124,103 @@ class _RecordingVelocity(nn.Module):
         return torch.zeros_like(image) + condition[:, :1, None, None] / 100.0
 
 
+def test_stage_b_contract_is_locked_and_distinct_from_stage_a() -> None:
+    parser = forensic_cfm.build_cli_parser()
+    parsed = parser.parse_args([
+        "--experiment-stage", "stage_b_diagnostic", "--cache", "cache",
+        "--output-dir", "out", "--no-wandb",
+    ])
+    assert parsed.image_size == 128
+    assert parsed.max_steps == 4000
+    assert parsed.batch_size == 32
+    assert parsed.learning_rate == parsed.weight_decay == 1e-4
+    assert parsed.gradient_clip == 1.0
+    assert parsed.evaluation_interval == parsed.save_interval == 1000
+    assert parsed.seed == 20260921
+    assert parsed.noise_seeds == [20260931, 20260932, 20260933]
+    assert parsed.sample_items == 16 and parsed.sample_ode_steps == 50
+
+    kwargs = _invariant_kwargs()
+    model = build_query_state_cfm_model(
+        image_size=128, base_channels=64, condition_dim=256, time_dim=512
+    )
+    invariants = forensic_cfm.build_forensic_checkpoint_invariants(
+        **{
+            **kwargs,
+            "config": model.config,
+            "experiment_stage": "stage_b_diagnostic",
+            "train_items": 12836,
+            "validation_items": 1413,
+            "evaluation_interval": 1000,
+            "save_interval": 1000,
+            "seed": 20260921,
+            "noise_seeds": (20260931, 20260932, 20260933),
+            "sample_items": 16,
+            "sample_ode_steps": 50,
+            "sample_noise_seed": 20260921,
+            "image_preprocessing": {
+                "size": 128, "resample": "bicubic", "range": [-1, 1],
+                "color_space": "sRGB",
+            },
+        }
+    )
+    assert invariants["train_role"] == "all_train"
+    assert invariants["validation_role"] == "external_validation"
+    assert invariants["max_steps"] == 4000
+    assert invariants["pass_min_delta"] == 0.01
+    assert invariants["pass_min_aggregate_ratio"] == 1.05
+    with pytest.raises(ValueError, match="Stage A|cross-stage|stage"):
+        forensic_cfm._validate_invariants({**invariants, "experiment_stage": "mechanics_only"}, model.config)
+
+
+def test_stage_b_gate_uses_complete_external_rows_and_all_three_locked_seeds() -> None:
+    evidence = _evidence((0.06, 0.07, 0.08))
+    evidence["seeds"] = [20260931, 20260932, 20260933]
+    evidence["num_items"] = 1413
+    for item, seed in zip(evidence["per_seed"], evidence["seeds"], strict=True):
+        mapping = make_global_shuffle_mapping(item_count=1413, seed=seed)
+        item["noise_time_seed"] = seed
+        item["num_items"] = 1413
+        item["shuffle_indices"] = mapping.tolist()
+        item["shuffle_identity"] = forensic_cfm._sha256_mapping({
+            "algorithm": forensic_cfm.QUERY_STATE_SHUFFLE_ALGORITHM,
+            "seed": seed,
+            "indices": mapping.tolist(),
+        })
+    payload = {key: value for key, value in evidence.items() if key != "identity"}
+    evidence["identity"] = forensic_cfm._sha256_mapping(payload)
+    verdict = forensic_cfm.evaluate_stage_b_publication_gate(evidence)
+    assert verdict["passed"] is True
+    assert verdict["source_role"] == "external_validation"
+    assert verdict["checkpoint_step"] == 4000
+    with pytest.raises(ValueError, match="complete|evidence") as malformed:
+        forensic_cfm.evaluate_stage_b_publication_gate({**evidence, "num_items": 1412})
+    assert not isinstance(
+        malformed.value, forensic_cfm.QueryStatePublicationGateFailure
+    )
+
+    failed = json.loads(json.dumps(evidence))
+    failed["per_seed"][0]["shuffled_flow_mse"] = 1.005
+    failed["per_seed"][0]["shuffled_minus_correct"] = 0.005
+    failed["per_seed"][0]["shuffled_over_correct"] = 1.005
+    for name in (
+        "shuffled_flow_mse", "shuffled_minus_correct", "shuffled_over_correct"
+    ):
+        values = [float(item[name]) for item in failed["per_seed"]]
+        failed["aggregate"][name] = {
+            "mean": sum(values) / len(values),
+            "min": min(values),
+            "max": max(values),
+        }
+    failed["identity"] = forensic_cfm._sha256_mapping(
+        {key: value for key, value in failed.items() if key != "identity"}
+    )
+    with pytest.raises(
+        forensic_cfm.QueryStatePublicationGateFailure, match="sensitivity gate"
+    ):
+        forensic_cfm.evaluate_stage_b_publication_gate(failed)
+
+
 def test_cli_is_forensic_stage_a_only_and_has_no_unsafe_override() -> None:
     parser = forensic_cfm.build_cli_parser()
     options = {option for action in parser._actions for option in action.option_strings}
@@ -137,7 +235,6 @@ def test_cli_is_forensic_stage_a_only_and_has_no_unsafe_override() -> None:
     with pytest.raises(SystemExit):
         parser.parse_args([
             "--experiment-stage", "stage_b", "--cache", "cache", "--output-dir", "out",
-            "--noise-seeds", "11", "29", "47",
         ])
 
 
@@ -173,6 +270,35 @@ def test_manifest_gate_rejects_deployable_wrong_owner_source_and_stage() -> None
     for value in mutations:
         with pytest.raises(ValueError, match="forensic|owner|stage|Formal38|source|schema"):
             forensic_cfm.validate_forensic_stage_a_manifest(value)
+
+
+def test_stage_b_manifest_and_split_pair_reject_stage_a_owners() -> None:
+    stage_b = {
+        "schema": FORENSIC_QUERY_STATE_CACHE_SCHEMA,
+        "owner_role": FORENSIC_QUERY_STATE_OWNER_ROLE,
+        "forensic_only": True, "authoritative": False, "terminal_primary": False,
+        "deployable": False, "sft2_ready": False, "cache_fingerprint": "a" * 64,
+        "selection": {"stage": "stage_b_diagnostic", "roles": {"all_train": 12836, "external_validation": 1413}},
+        "checkpoint": {
+            "source_commit": forensic_cfm.FORMAL38_SOURCE_COMMIT,
+            "control_sha256": forensic_cfm.FORMAL38_UNSAFE_CONTROL_SHA256,
+            "failure_manifest_sha256": forensic_cfm.FORMAL38_FAILURE_MANIFEST_SHA256,
+            "config_identity": forensic_cfm.FORMAL38_RUN_IDENTITY,
+            "run_identity": forensic_cfm.FORMAL38_RUN_IDENTITY,
+            "world_size": 8, "checkpoint_path": "/run/forensics/unsafe_update_00001605",
+            "actor_failure": {"passed": False},
+        },
+    }
+    forensic_cfm.validate_forensic_manifest(stage_b, experiment_stage="stage_b_diagnostic")
+    with pytest.raises(ValueError, match="stage|role"):
+        forensic_cfm.validate_forensic_stage_a_manifest(stage_b)
+    train = _split("all_train", marker="1", image_marker="7")
+    validation = _split("external_validation", marker="3", image_marker="8")
+    forensic_cfm.validate_forensic_split_pair(
+        train, validation, experiment_stage="stage_b_diagnostic"
+    )
+    with pytest.raises(ValueError, match="stage"):
+        forensic_cfm.validate_forensic_split_pair(train, validation)
 
 
 def test_stage_a_pair_requires_exact_roles_same_cache_and_image_disjoint() -> None:

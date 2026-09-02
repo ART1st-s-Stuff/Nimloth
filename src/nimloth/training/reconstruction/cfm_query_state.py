@@ -45,6 +45,10 @@ _QUERY_STATE_SHAPE = (16, 1024)
 _HEX = frozenset("0123456789abcdef")
 
 
+class QueryStatePublicationGateFailure(ValueError):
+    """Valid recomputed evidence failed a preregistered scientific threshold."""
+
+
 @dataclass(frozen=True)
 class LoadedQueryStateImageSplit:
     """Fully validated split used by the decoder runtime.
@@ -1078,7 +1082,7 @@ def _validate_multi_noise_publication_evidence(
     ]
     failed = [result for result in per_seed_verdict if not result["passed"]]
     if failed:
-        raise ValueError(
+        raise QueryStatePublicationGateFailure(
             "RGB publication sensitivity gate failed: every registered seed must meet "
             f"shuffled_minus_correct >= {threshold}; failures={failed}"
         )
@@ -1768,6 +1772,7 @@ __all__ = [
     "QUERY_STATE_CFM_RGB_ARTIFACT_SCHEMA",
     "QUERY_STATE_SHUFFLE_ALGORITHM",
     "LoadedQueryStateImageSplit",
+    "QueryStatePublicationGateFailure",
     "build_checkpoint_invariants",
     "build_cli_parser",
     "build_decoder_optimizer",

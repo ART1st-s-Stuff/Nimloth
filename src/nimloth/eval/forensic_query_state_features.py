@@ -1,7 +1,7 @@
 """Strict direct-feature diagnostics for Formal38 unsafe update1605.
 
 This entry point is deliberately separate from the deployable Query-State feature
-CLI.  It accepts only the Stage A forensic cache owner and preserves the actor
+CLI. It accepts only typed Stage A/B forensic cache owners and preserves the actor
 safety failure as the highest-level evidence.  No operation here promotes the
 checkpoint, cache, or report to a deployable artifact.
 """
@@ -34,6 +34,7 @@ from nimloth.eval.query_state_features import (
     _is_sha256,
     _render_query_state_feature_report_from_records,
     _sha256_file,
+    aggregate_direct_feature_metrics,
     dino_feature_identity,
     extract_dino_feature_records,
     load_shared_feature_basis,
@@ -41,8 +42,11 @@ from nimloth.eval.query_state_features import (
 from nimloth.training.reconstruction.forensic_query_state_cache import (
     FORENSIC_QUERY_STATE_CACHE_SCHEMA,
     FORENSIC_QUERY_STATE_OWNER_ROLE,
+    FORENSIC_SELECTION_ALL_TRAIN,
+    FORENSIC_SELECTION_EXTERNAL_VALIDATION,
     FORENSIC_SELECTION_MECHANICS_TRAIN,
     FORENSIC_SELECTION_MECHANICS_VALIDATION,
+    ForensicExperimentStage,
     ForensicQueryStateCacheDataset,
 )
 
@@ -52,11 +56,32 @@ FORMAL38_UNSAFE_UPDATE1605_CONTROL_SHA256 = (
 )
 FORENSIC_FEATURE_REPORT_SCHEMA = "nimloth_forensic_query_state_feature_report_v1"
 _FORENSIC_BASIS_RECEIPT_SCHEMA = "nimloth_forensic_query_state_feature_basis_receipt_v1"
-_STAGE = "mechanics_only"
-_ROLE_COUNTS = {
+_STAGE_A_ROLE_COUNTS = {
     FORENSIC_SELECTION_MECHANICS_TRAIN: 48,
     FORENSIC_SELECTION_MECHANICS_VALIDATION: 16,
 }
+_STAGE_B_ROLE_COUNTS = {
+    FORENSIC_SELECTION_ALL_TRAIN: 12_836,
+    FORENSIC_SELECTION_EXTERNAL_VALIDATION: 1_413,
+}
+_STAGE_B_VISUAL_COUNT = 16
+_STAGE_B_VISUAL_SEED = 20260921
+
+
+def _stage_roles(stage: str) -> tuple[str, str, Mapping[str, int]]:
+    if stage == ForensicExperimentStage.MECHANICS_ONLY.value:
+        return (
+            FORENSIC_SELECTION_MECHANICS_TRAIN,
+            FORENSIC_SELECTION_MECHANICS_VALIDATION,
+            _STAGE_A_ROLE_COUNTS,
+        )
+    if stage == ForensicExperimentStage.STAGE_B_DIAGNOSTIC.value:
+        return (
+            FORENSIC_SELECTION_ALL_TRAIN,
+            FORENSIC_SELECTION_EXTERNAL_VALIDATION,
+            _STAGE_B_ROLE_COUNTS,
+        )
+    raise ValueError("unsupported forensic feature experiment stage")
 _BASIS_RECEIPT_FIELDS = {
     "schema", "basis_file", "basis_file_sha256", "basis_artifact_sha256",
     "global_scale_sha256", "cache_schema", "cache_fingerprint",
@@ -147,51 +172,53 @@ def _strict_forensic_records(
         or not _is_sha256(checkpoint.get("failure_manifest_sha256"))
         or not _matches_formal38_actor_failure(checkpoint.get("actor_failure"))
         or not isinstance(selection, Mapping)
-        or selection.get("stage") != _STAGE
-        or selection.get("roles") != _ROLE_COUNTS
     ):
         raise ValueError(
             "forensic feature adapter requires exact Formal38 unsafe update1605 "
-            "checkpoint/failure evidence and Stage A mechanics roles"
+            "checkpoint/failure evidence"
         )
+    _fit_role, _transform_role, role_counts = _stage_roles(str(selection.get("stage")))
+    if selection.get("roles") != role_counts:
+        raise ValueError("forensic feature stage/role/count contract mismatch")
     cache_fingerprint = str(manifest.get("cache_fingerprint"))
     source_manifest_identity = str(manifest["source_jsonl"]["source_manifest_identity"])
-    source_sha256 = str(manifest["source_jsonl"]["train"]["sha256"])
+    source_sha256_by_role = {
+        role: str(manifest["source_jsonl"]["train"]["sha256"])
+        for role in role_counts
+    }
+    if selection.get("stage") == ForensicExperimentStage.STAGE_B_DIAGNOSTIC.value:
+        source_sha256_by_role[_transform_role] = str(
+            manifest["source_jsonl"]["validation"]["sha256"]
+        )
     selection_identity = str(selection["identity"])
     if any(
         not _is_sha256(value)
         for value in (
             cache_fingerprint,
             source_manifest_identity,
-            source_sha256,
             selection_identity,
+            *source_sha256_by_role.values(),
         )
     ):
         raise ValueError("forensic feature cache/source/selection identity is invalid")
 
-    raw_by_role: dict[str, list[dict[str, Any]]] = {role: [] for role in _ROLE_COUNTS}
+    raw_by_role: dict[str, list[dict[str, Any]]] = {role: [] for role in role_counts}
     state_by_identity: dict[str, torch.Tensor] = {}
     for index in range(len(dataset)):
         item = dataset[index]
         state = item.pop("state")
         role = str(item.get("selection_role"))
         if role not in raw_by_role:
-            raise ValueError("forensic feature adapter rejects non-Stage-A selection role")
+            raise ValueError("forensic feature adapter rejects a cross-stage selection role")
         row = dict(item)
         raw_by_role[role].append(row)
         state_by_identity[str(row["row_identity"])] = state
-    if any(len(raw_by_role[role]) != count for role, count in _ROLE_COUNTS.items()):
-        raise ValueError("forensic mechanics_train/mechanics_validation count mismatch")
-    train_images = {
-        row["original_image_sha256"]
-        for row in raw_by_role[FORENSIC_SELECTION_MECHANICS_TRAIN]
-    }
-    validation_images = {
-        row["original_image_sha256"]
-        for row in raw_by_role[FORENSIC_SELECTION_MECHANICS_VALIDATION]
-    }
+    if any(len(raw_by_role[role]) != count for role, count in role_counts.items()):
+        raise ValueError("forensic feature stage role count mismatch")
+    train_images = {row["original_image_sha256"] for row in raw_by_role[_fit_role]}
+    validation_images = {row["original_image_sha256"] for row in raw_by_role[_transform_role]}
     if train_images & validation_images:
-        raise ValueError("forensic Stage A mechanics roles must be exact-image disjoint")
+        raise ValueError("forensic feature roles must be exact-image disjoint")
 
     records: dict[str, list[QueryStateFeatureRecord]] = {}
     provenance: dict[str, dict[str, Mapping[str, Any]]] = {}
@@ -220,7 +247,7 @@ def _strict_forensic_records(
                         row["archived_assistant_response_sha256"]
                     ),
                     bundle_fingerprint=cache_fingerprint,
-                    source_jsonl_sha256=source_sha256,
+                    source_jsonl_sha256=source_sha256_by_role[role],
                     source_manifest_identity=source_manifest_identity,
                     selection_role=role,
                     cache_split_identity=split_identity,
@@ -240,6 +267,7 @@ def _strict_forensic_records(
 def _expected_basis_identity(
     train_records: Sequence[QueryStateFeatureRecord],
     *,
+    fit_role: str,
     dino_identity: str,
     interpolation: str,
 ) -> SharedFeatureBasisIdentity:
@@ -249,11 +277,11 @@ def _expected_basis_identity(
         bundle_fingerprint=first.bundle_fingerprint,
         source_jsonl_sha256=first.source_jsonl_sha256,
         source_manifest_identity=first.source_manifest_identity,
-        fit_split=FORENSIC_SELECTION_MECHANICS_TRAIN,
+        fit_split=fit_role,
         fit_split_identity=_feature_split_identity(
             train_records,
             source_manifest_identity=first.source_manifest_identity,
-            expected_selection_role=FORENSIC_SELECTION_MECHANICS_TRAIN,
+            expected_selection_role=fit_role,
         ),
         fit_row_set_identity=_feature_row_set_identity(train_records),
         dino_identity=dino_identity,
@@ -276,6 +304,9 @@ def _write_basis_receipt(
     receipt = _basis_receipt_path(basis_path)
     if receipt.exists() or receipt.is_symlink():
         raise FileExistsError(f"forensic basis receipt already exists: {receipt}")
+    mechanics_only = (
+        manifest["selection"]["stage"] == ForensicExperimentStage.MECHANICS_ONLY.value
+    )
     payload = {
         "schema": _FORENSIC_BASIS_RECEIPT_SCHEMA,
         "basis_file": basis_path.name,
@@ -286,13 +317,13 @@ def _write_basis_receipt(
         "cache_fingerprint": manifest["cache_fingerprint"],
         "checkpoint_identity": manifest["checkpoint"],
         "selection_identity": manifest["selection"]["identity"],
-        "fit_role": FORENSIC_SELECTION_MECHANICS_TRAIN,
-        "transform_only_role": FORENSIC_SELECTION_MECHANICS_VALIDATION,
+        "fit_role": _stage_roles(str(manifest["selection"]["stage"]))[0],
+        "transform_only_role": _stage_roles(str(manifest["selection"]["stage"]))[1],
         "forensic_only": True,
         "unsafe_actor_checkpoint": True,
         "not_deployable": True,
-        "mechanics_only": True,
-        "not_heldout": True,
+        "mechanics_only": mechanics_only,
+        "not_heldout": mechanics_only,
         "formal38_calibration_80_aggregation_reproduced": False,
         "deep_sight_exact_colorization": False,
     }
@@ -333,15 +364,18 @@ def _validate_basis_receipt(
         or receipt.get("cache_fingerprint") != manifest["cache_fingerprint"]
         or receipt.get("checkpoint_identity") != manifest["checkpoint"]
         or receipt.get("selection_identity") != manifest["selection"]["identity"]
-        or receipt.get("fit_role") != FORENSIC_SELECTION_MECHANICS_TRAIN
+        or receipt.get("fit_role") != _stage_roles(str(manifest["selection"]["stage"]))[0]
         or receipt.get("transform_only_role")
-        != FORENSIC_SELECTION_MECHANICS_VALIDATION
+        != _stage_roles(str(manifest["selection"]["stage"]))[1]
         or any(
             receipt.get(field) is not True
-            for field in (
-                "forensic_only", "unsafe_actor_checkpoint", "not_deployable",
-                "mechanics_only", "not_heldout",
-            )
+            for field in ("forensic_only", "unsafe_actor_checkpoint", "not_deployable")
+        )
+        or receipt.get("mechanics_only") is not (
+            manifest["selection"]["stage"] == ForensicExperimentStage.MECHANICS_ONLY.value
+        )
+        or receipt.get("not_heldout") is not (
+            manifest["selection"]["stage"] == ForensicExperimentStage.MECHANICS_ONLY.value
         )
         or receipt.get("formal38_calibration_80_aggregation_reproduced") is not False
         or receipt.get("deep_sight_exact_colorization") is not False
@@ -358,14 +392,17 @@ def fit_forensic_shared_feature_basis(
     dino_dtype: torch.dtype,
     dino_batch_size: int,
 ) -> SharedFeatureBasis:
-    """Fit one shared PCA/global scale from mechanics_train only."""
+    """Fit one shared PCA/global scale from the stage's strict training role only."""
 
     manifest, records, _provenance = _strict_forensic_records(forensic_cache)
     output = Path(output_path)
     receipt = _basis_receipt_path(output)
     if output.exists() or output.is_symlink() or receipt.exists() or receipt.is_symlink():
         raise FileExistsError("forensic basis or receipt output already exists")
-    train = records[FORENSIC_SELECTION_MECHANICS_TRAIN]
+    fit_role, _transform_role, _role_counts = _stage_roles(
+        str(manifest["selection"]["stage"])
+    )
+    train = records[fit_role]
     teacher = _build_pinned_dino_teacher(
         device=dino_device, dtype=dino_dtype, batch_size=dino_batch_size
     )
@@ -377,8 +414,8 @@ def fit_forensic_shared_feature_basis(
         targets,
         interpolation=interpolation,
         output_path=output,
-        fit_split=FORENSIC_SELECTION_MECHANICS_TRAIN,
-        expected_selection_role=FORENSIC_SELECTION_MECHANICS_TRAIN,
+        fit_split=fit_role,
+        expected_selection_role=fit_role,
     )
     try:
         _write_basis_receipt(output, basis=basis, manifest=manifest)
@@ -389,6 +426,9 @@ def fit_forensic_shared_feature_basis(
 
 
 def _report_extension(manifest: Mapping[str, Any], *, role: str) -> dict[str, Any]:
+    mechanics_only = (
+        manifest["selection"]["stage"] == ForensicExperimentStage.MECHANICS_ONLY.value
+    )
     return {
         "report_schema": FORENSIC_FEATURE_REPORT_SCHEMA,
         "cache_schema": FORENSIC_QUERY_STATE_CACHE_SCHEMA,
@@ -400,12 +440,15 @@ def _report_extension(manifest: Mapping[str, Any], *, role: str) -> dict[str, An
         "forensic_only": True,
         "unsafe_actor_checkpoint": True,
         "not_deployable": True,
-        "mechanics_only": True,
-        "not_heldout": True,
+        "mechanics_only": mechanics_only,
+        "not_heldout": mechanics_only,
         "formal38_calibration_80_aggregation_reproduced": False,
         "evidence_limit": (
             "Stage A train-derived mechanics diagnostics only; this does not reproduce "
             "Formal38 calibration-80 aggregation or DeepSight exact colorization."
+            if mechanics_only
+            else "Stage B full all_train/external_validation direct diagnostics; actor failure "
+            "remains controlling and this is not DeepSight exact colorization."
         ),
     }
 
@@ -422,14 +465,18 @@ def render_forensic_query_state_feature_reports(
     dino_dtype: torch.dtype,
     dino_batch_size: int,
 ) -> dict[str, Any]:
-    """Render direct metrics/maps for both Stage A roles without validation refit."""
+    """Compute both stage roles without validation refit; bound Stage B visuals."""
 
     manifest, records, provenance = _strict_forensic_records(forensic_cache)
     teacher = _build_pinned_dino_teacher(
         device=dino_device, dtype=dino_dtype, batch_size=dino_batch_size
     )
+    fit_role, transform_role, _role_counts = _stage_roles(
+        str(manifest["selection"]["stage"])
+    )
     expected = _expected_basis_identity(
-        records[FORENSIC_SELECTION_MECHANICS_TRAIN],
+        records[fit_role],
+        fit_role=fit_role,
         dino_identity=dino_feature_identity(teacher),
         interpolation=interpolation,
     )
@@ -442,51 +489,112 @@ def render_forensic_query_state_feature_reports(
     temporary.mkdir(parents=True)
     reports: dict[str, Any] = {}
     try:
-        for role in (
-            FORENSIC_SELECTION_MECHANICS_TRAIN,
-            FORENSIC_SELECTION_MECHANICS_VALIDATION,
-        ):
+        for role in (fit_role, transform_role):
             targets = extract_dino_feature_records(
                 records[role],
                 teacher=teacher,
                 device=dino_device,
                 batch_size=dino_batch_size,
             )
-            reports[role] = _render_query_state_feature_report_from_records(
-                records[role],
-                targets,
-                basis=basis,
-                output_dir=temporary / role,
-                interpolation=interpolation,
-                normalization=normalization,
-                shuffle_seed=shuffle_seed,
-                authoritative_provenance=False,
-                expected_selection_role=role,
-                metadata_extension=_report_extension(manifest, role=role),
-                row_metadata_extension=provenance[role],
-            )
+            stage_b = manifest["selection"]["stage"] == ForensicExperimentStage.STAGE_B_DIAGNOSTIC.value
+            visual_selection: list[int] | None = None
+            if stage_b and role == fit_role:
+                role_dir = temporary / role
+                role_dir.mkdir()
+                report = {
+                    "metadata": _report_extension(manifest, role=role),
+                    "metrics": aggregate_direct_feature_metrics(
+                        torch.stack([record.state for record in records[role]]),
+                        torch.stack([target.features for target in targets]),
+                        shuffle_seed=shuffle_seed,
+                    ),
+                    "rows": [],
+                    "contact_sheet": None,
+                    "full_statistical_count": len(records[role]),
+                    "visual_selection": None,
+                }
+                (role_dir / "report.json").write_text(
+                    json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n",
+                    encoding="utf-8",
+                )
+            else:
+                render_records = records[role]
+                render_targets = targets
+                if stage_b:
+                    visual_selection = sorted(
+                        range(len(render_records)),
+                        key=lambda index: hashlib.sha256(
+                            f"{_STAGE_B_VISUAL_SEED}:{render_records[index].row_identity}".encode()
+                        ).hexdigest(),
+                    )[:_STAGE_B_VISUAL_COUNT]
+                    render_records = [render_records[index] for index in visual_selection]
+                    render_targets = [targets[index] for index in visual_selection]
+                report = _render_query_state_feature_report_from_records(
+                    render_records,
+                    render_targets,
+                    basis=basis,
+                    output_dir=temporary / role,
+                    interpolation=interpolation,
+                    normalization=normalization,
+                    shuffle_seed=shuffle_seed,
+                    authoritative_provenance=False,
+                    expected_selection_role=role,
+                    metadata_extension=_report_extension(manifest, role=role),
+                    row_metadata_extension={
+                        row.row_identity: provenance[role][row.row_identity]
+                        for row in render_records
+                    },
+                )
+                if visual_selection is not None:
+                    report["metrics"] = aggregate_direct_feature_metrics(
+                        torch.stack([record.state for record in records[role]]),
+                        torch.stack([target.features for target in targets]),
+                        shuffle_seed=shuffle_seed,
+                    )
+                    report["full_statistical_count"] = len(records[role])
+                    report["visual_selection"] = {
+                        "algorithm": "sha256_row_identity_sample_v1",
+                        "seed": _STAGE_B_VISUAL_SEED,
+                        "indices": visual_selection,
+                        "row_identities": [records[role][index].row_identity for index in visual_selection],
+                    }
+                    (temporary / role / "report.json").write_text(
+                        json.dumps(report, indent=2, sort_keys=True, allow_nan=False) + "\n",
+                        encoding="utf-8",
+                    )
+            reports[role] = report
+        mechanics_only = (
+            manifest["selection"]["stage"] == ForensicExperimentStage.MECHANICS_ONLY.value
+        )
         summary = {
             "schema": FORENSIC_FEATURE_REPORT_SCHEMA,
+            "experiment_stage": manifest["selection"]["stage"],
             "watermarks": {
                 "forensic_only": True,
                 "unsafe_actor_checkpoint": True,
                 "not_deployable": True,
-                "mechanics_only": True,
-                "not_heldout": True,
+                "mechanics_only": mechanics_only,
+                "not_heldout": mechanics_only,
             },
             "cache_fingerprint": manifest["cache_fingerprint"],
             "basis_sha256": basis.artifact_sha256,
             "global_scale_sha256": basis.global_scale_sha256,
             "roles": {
                 role: {
-                    "count": len(reports[role]["rows"]),
+                    "count": len(records[role]),
+                    "visual_count": len(reports[role]["rows"]),
+                    "visual_selection": reports[role].get("visual_selection"),
                     "metrics": reports[role]["metrics"],
                     "report": f"{role}/report.json",
-                    "contact_sheet": f"{role}/{reports[role]['contact_sheet']}",
+                    "contact_sheet": (
+                        f"{role}/{reports[role]['contact_sheet']}"
+                        if reports[role]["contact_sheet"] is not None else None
+                    ),
                 }
                 for role in reports
             },
             "mechanics_validation_controls_pass_or_checkpoint_selection": False,
+            "external_validation_controls_checkpoint_selection": False,
             "formal38_calibration_80_aggregation_reproduced": False,
             "deep_sight_exact_colorization": False,
         }

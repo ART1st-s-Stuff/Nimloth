@@ -92,6 +92,27 @@ def _raw() -> dict[str, object]:
     }
 
 
+def test_stage_b_production_config_is_typed_and_has_bounded_shards() -> None:
+    raw = _raw()
+    raw["schema"] = production.FORENSIC_QUERY_STATE_STAGE_B_PRODUCTION_CONFIG_SCHEMA
+    raw["cache"] = {
+        "output_path": "/forensic/cache-stage-b",
+        "experiment_stage": "stage_b_diagnostic",
+        "max_shard_records": 2048,
+        "row_index_identity": production.FORMAL38_ROW_INDEX_IDENTITY,
+    }
+    parsed = production.parse_forensic_query_state_production_config(raw)
+    assert parsed.experiment_stage.value == "stage_b_diagnostic"
+    assert parsed.selection_seed is None
+    assert parsed.max_shard_records == 2048
+    assert parsed.output_path == Path("/forensic/cache-stage-b")
+    for field, value in (("experiment_stage", "mechanics_only"), ("max_shard_records", 4096)):
+        wrong = json.loads(json.dumps(raw))
+        wrong["cache"][field] = value
+        with pytest.raises(ValueError, match="Stage B"):
+            production.parse_forensic_query_state_production_config(wrong)
+
+
 def test_forensic_production_config_has_no_semantic_defaults() -> None:
     parsed = production.parse_forensic_query_state_production_config(_raw())
     assert parsed.checkpoint.world_size == 8

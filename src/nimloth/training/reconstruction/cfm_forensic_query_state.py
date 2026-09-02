@@ -1,9 +1,8 @@
-"""Stage-A CFM mechanics probe for the Formal38 unsafe forensic Query-State.
+"""Typed Stage A/B CFM probes for the Formal38 unsafe forensic Query-State.
 
 This entry point is deliberately incompatible with the deployable Query-State CFM
-owner.  It accepts one exact forensic cache, trains only the RGB decoder, and
-allows RGB publication only from the final step-10000 checkpoint after the
-mechanics-train condition-sensitivity gate passes.
+owner. It trains only a stage-bound RGB decoder and permits RGB publication only
+from that stage's final checkpoint after its preregistered sensitivity gate.
 """
 
 from __future__ import annotations
@@ -32,6 +31,7 @@ from nimloth.recon.cfm import (
 from nimloth.training.reconstruction.cfm_query_state import (
     QUERY_STATE_SHUFFLE_ALGORITHM,
     LoadedQueryStateImageSplit,
+    QueryStatePublicationGateFailure,
     _load_image_uint8,
     _validate_multi_noise_publication_evidence,
     build_decoder_optimizer,
@@ -42,6 +42,8 @@ from nimloth.training.reconstruction.cfm_query_state import (
 from nimloth.training.reconstruction.forensic_query_state_cache import (
     FORENSIC_QUERY_STATE_CACHE_SCHEMA,
     FORENSIC_QUERY_STATE_OWNER_ROLE,
+    FORENSIC_SELECTION_ALL_TRAIN,
+    FORENSIC_SELECTION_EXTERNAL_VALIDATION,
     FORENSIC_SELECTION_MECHANICS_TRAIN,
     FORENSIC_SELECTION_MECHANICS_VALIDATION,
     ForensicQueryStateCacheDataset,
@@ -54,9 +56,14 @@ FORMAL38_RUN_IDENTITY = "0f82a37c9e191e543d29f8e66857ca1d12a1e2941c2962fc2420366
 FORENSIC_CFM_CHECKPOINT_SCHEMA = "nimloth_query_state_forensic_cfm_checkpoint_v1"
 FORENSIC_CFM_RGB_ARTIFACT_SCHEMA = "nimloth_query_state_forensic_cfm_rgb_artifact_v1"
 FORENSIC_EXPERIMENT_STAGE = "mechanics_only"
+FORENSIC_STAGE_B_EXPERIMENT_STAGE = "stage_b_diagnostic"
 FORENSIC_FINAL_STEP = 10_000
+FORENSIC_STAGE_B_FINAL_STEP = 4_000
 FORENSIC_PASS_MIN_DELTA = 1e-4
 FORENSIC_PASS_MIN_AGGREGATE_RATIO = 1.25
+FORENSIC_STAGE_B_PASS_MIN_DELTA = 0.01
+FORENSIC_STAGE_B_PASS_MIN_AGGREGATE_RATIO = 1.05
+FORENSIC_STAGE_B_NOISE_SEEDS = (20260931, 20260932, 20260933)
 FORENSIC_WATERMARKS = (
     "mechanics_only",
     "unsafe_actor_checkpoint",
@@ -87,8 +94,10 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def validate_forensic_stage_a_manifest(manifest: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Reject every deployable/legacy/stage-B/wrong-Formal38 cache owner."""
+def validate_forensic_manifest(
+    manifest: Mapping[str, Any], *, experiment_stage: str
+) -> Mapping[str, Any]:
+    """Reject deployable, legacy, wrong-stage, or wrong-Formal38 cache owners."""
 
     checkpoint = manifest.get("checkpoint") if isinstance(manifest, Mapping) else None
     selection = manifest.get("selection") if isinstance(manifest, Mapping) else None
@@ -101,15 +110,20 @@ def validate_forensic_stage_a_manifest(manifest: Mapping[str, Any]) -> Mapping[s
         or not _is_sha256(manifest.get("cache_fingerprint"))
     ):
         raise ValueError("forensic Stage A cache schema/owner/watermarks are invalid")
+    role_counts = (
+        {FORENSIC_SELECTION_MECHANICS_TRAIN: 48, FORENSIC_SELECTION_MECHANICS_VALIDATION: 16}
+        if experiment_stage == FORENSIC_EXPERIMENT_STAGE
+        else {FORENSIC_SELECTION_ALL_TRAIN: 12_836, FORENSIC_SELECTION_EXTERNAL_VALIDATION: 1_413}
+        if experiment_stage == FORENSIC_STAGE_B_EXPERIMENT_STAGE
+        else None
+    )
     if (
-        not isinstance(selection, Mapping)
-        or selection.get("stage") != FORENSIC_EXPERIMENT_STAGE
-        or selection.get("roles") != {
-            FORENSIC_SELECTION_MECHANICS_TRAIN: 48,
-            FORENSIC_SELECTION_MECHANICS_VALIDATION: 16,
-        }
+        role_counts is None
+        or not isinstance(selection, Mapping)
+        or selection.get("stage") != experiment_stage
+        or selection.get("roles") != role_counts
     ):
-        raise ValueError("forensic CFM accepts only the explicit mechanics_only Stage A roles")
+        raise ValueError("forensic CFM cache stage/role/count contract is invalid")
     if (
         not isinstance(checkpoint, Mapping)
         or checkpoint.get("source_commit") != FORMAL38_SOURCE_COMMIT
@@ -126,13 +140,20 @@ def validate_forensic_stage_a_manifest(manifest: Mapping[str, Any]) -> Mapping[s
     return manifest
 
 
+def validate_forensic_stage_a_manifest(manifest: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Compatibility-preserving strict Stage A gate."""
+
+    return validate_forensic_manifest(manifest, experiment_stage=FORENSIC_EXPERIMENT_STAGE)
+
+
 def _source_identity(manifest: Mapping[str, Any]) -> dict[str, str]:
     checkpoint = manifest["checkpoint"]
     return {field: str(checkpoint[field]) for field in sorted(_SOURCE_FIELDS)}
 
 
 def load_forensic_image_splits(
-    cache_dir: str | Path, *, image_size: int
+    cache_dir: str | Path, *, image_size: int,
+    experiment_stage: str = FORENSIC_EXPERIMENT_STAGE,
 ) -> tuple[LoadedQueryStateImageSplit, LoadedQueryStateImageSplit, Mapping[str, str]]:
     """Load both fixed roles from one strict live forensic cache."""
 
@@ -141,29 +162,28 @@ def load_forensic_image_splits(
         raw = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError("forensic cache manifest is missing or invalid") from error
-    manifest = validate_forensic_stage_a_manifest(raw)
+    manifest = validate_forensic_manifest(raw, experiment_stage=experiment_stage)
     dataset = ForensicQueryStateCacheDataset(root)
-    role_indices: dict[str, list[int]] = {
-        FORENSIC_SELECTION_MECHANICS_TRAIN: [],
-        FORENSIC_SELECTION_MECHANICS_VALIDATION: [],
-    }
+    train_role, validation_role, role_counts = (
+        (FORENSIC_SELECTION_MECHANICS_TRAIN, FORENSIC_SELECTION_MECHANICS_VALIDATION, {FORENSIC_SELECTION_MECHANICS_TRAIN: 48, FORENSIC_SELECTION_MECHANICS_VALIDATION: 16})
+        if experiment_stage == FORENSIC_EXPERIMENT_STAGE
+        else (FORENSIC_SELECTION_ALL_TRAIN, FORENSIC_SELECTION_EXTERNAL_VALIDATION, {FORENSIC_SELECTION_ALL_TRAIN: 12_836, FORENSIC_SELECTION_EXTERNAL_VALIDATION: 1_413})
+    )
+    role_indices: dict[str, list[int]] = {role: [] for role in role_counts}
     items: list[dict[str, Any]] = []
     for index in range(len(dataset)):
         item = dataset[index]
         role = item.get("selection_role")
         if role not in role_indices:
-            raise ValueError("forensic cache contains a non-Stage-A selection role")
+            raise ValueError("forensic cache contains a cross-stage selection role")
         role_indices[role].append(index)
         items.append(item)
-    if {role: len(indices) for role, indices in role_indices.items()} != {
-        FORENSIC_SELECTION_MECHANICS_TRAIN: 48,
-        FORENSIC_SELECTION_MECHANICS_VALIDATION: 16,
-    }:
-        raise ValueError("forensic Stage A role counts must be exactly 48/16")
+    if {role: len(indices) for role, indices in role_indices.items()} != role_counts:
+        raise ValueError("forensic cache role counts do not match its experiment stage")
     preprocessing = {"size": image_size, "resample": "bicubic", "range": [-1, 1], "color_space": "sRGB"}
     source = _source_identity(manifest)
     splits: list[LoadedQueryStateImageSplit] = []
-    for role in (FORENSIC_SELECTION_MECHANICS_TRAIN, FORENSIC_SELECTION_MECHANICS_VALIDATION):
+    for role in (train_role, validation_role):
         selected = [items[index] for index in role_indices[role]]
         states = torch.stack([item["state"] for item in selected]).detach().cpu().float().contiguous()
         if states.shape != (len(selected), *_STATE_SHAPE) or not torch.isfinite(states).all():
@@ -183,31 +203,43 @@ def load_forensic_image_splits(
             split_name=role, split_identity=split_identity,
             row_set_identity=row_set_identity, image_preprocessing=preprocessing,
         ))
-    validate_forensic_split_pair(splits[0], splits[1])
+    validate_forensic_split_pair(splits[0], splits[1], experiment_stage=experiment_stage)
     return splits[0], splits[1], source
 
 
-def validate_forensic_split_pair(train: LoadedQueryStateImageSplit, validation: LoadedQueryStateImageSplit) -> None:
-    if train.split_name != FORENSIC_SELECTION_MECHANICS_TRAIN or validation.split_name != FORENSIC_SELECTION_MECHANICS_VALIDATION:
-        raise ValueError("forensic Stage A requires mechanics_train and mechanics_validation roles")
+def validate_forensic_split_pair(
+    train: LoadedQueryStateImageSplit,
+    validation: LoadedQueryStateImageSplit,
+    *,
+    experiment_stage: str = FORENSIC_EXPERIMENT_STAGE,
+) -> None:
+    roles = (
+        (FORENSIC_SELECTION_MECHANICS_TRAIN, FORENSIC_SELECTION_MECHANICS_VALIDATION)
+        if experiment_stage == FORENSIC_EXPERIMENT_STAGE
+        else (FORENSIC_SELECTION_ALL_TRAIN, FORENSIC_SELECTION_EXTERNAL_VALIDATION)
+        if experiment_stage == FORENSIC_STAGE_B_EXPERIMENT_STAGE
+        else None
+    )
+    if roles is None or (train.split_name, validation.split_name) != roles:
+        raise ValueError("forensic CFM split roles do not match the experiment stage")
     if train.cache_schema != FORENSIC_QUERY_STATE_CACHE_SCHEMA or validation.cache_schema != FORENSIC_QUERY_STATE_CACHE_SCHEMA:
         raise ValueError("deployable or legacy cache cannot enter forensic CFM")
     if train.cache_fingerprint != validation.cache_fingerprint or not _is_sha256(train.cache_fingerprint):
-        raise ValueError("forensic Stage A roles must come from the same exact cache")
+        raise ValueError("forensic stage roles must come from the same exact cache")
     if train.split_identity == validation.split_identity or train.row_set_identity == validation.row_set_identity:
-        raise ValueError("forensic Stage A role identities must differ")
+        raise ValueError("forensic stage role identities must differ")
     if train.image_preprocessing != validation.image_preprocessing:
-        raise ValueError("forensic Stage A image preprocessing mismatch")
+        raise ValueError("forensic stage image preprocessing mismatch")
     train_rows = {row.get("row_identity") for row in train.rows}
     validation_rows = {row.get("row_identity") for row in validation.rows}
     train_images = {row.get("original_image_sha256") for row in train.rows}
     validation_images = {row.get("original_image_sha256") for row in validation.rows}
     if None in train_rows | validation_rows | train_images | validation_images:
-        raise ValueError("forensic Stage A row/image identities are required")
+        raise ValueError("forensic stage row/image identities are required")
     if train_rows & validation_rows:
-        raise ValueError("forensic Stage A row overlap is forbidden")
+        raise ValueError("forensic stage row overlap is forbidden")
     if train_images & validation_images:
-        raise ValueError("forensic Stage A image overlap is forbidden")
+        raise ValueError("forensic stage image overlap is forbidden")
 
 
 def _validate_source_identity(source: Mapping[str, Any]) -> dict[str, str]:
@@ -225,6 +257,7 @@ def _validate_source_identity(source: Mapping[str, Any]) -> dict[str, str]:
 
 def build_forensic_checkpoint_invariants(
     *, config: CFMConfig, cache_fingerprint: str,
+    experiment_stage: str = FORENSIC_EXPERIMENT_STAGE,
     train_split_identity: str, train_row_set_identity: str,
     validation_split_identity: str, validation_row_set_identity: str,
     source_identity: Mapping[str, Any], train_items: int, validation_items: int,
@@ -241,9 +274,31 @@ def build_forensic_checkpoint_invariants(
         raise ValueError("forensic CFM cache/role identities are invalid")
     registered = tuple(noise_seeds)
     if len(registered) < 3 or len(set(registered)) != len(registered) or any(isinstance(value, bool) or not isinstance(value, int) for value in registered):
-        raise ValueError("forensic Stage A requires at least three unique preregistered noise seeds")
-    if (train_items, validation_items) != (48, 16):
-        raise ValueError("forensic Stage A item counts must be exactly 48/16")
+        raise ValueError("forensic CFM requires at least three unique preregistered noise seeds")
+    stage_b = experiment_stage == FORENSIC_STAGE_B_EXPERIMENT_STAGE
+    if experiment_stage not in {FORENSIC_EXPERIMENT_STAGE, FORENSIC_STAGE_B_EXPERIMENT_STAGE}:
+        raise ValueError("unsupported forensic CFM experiment stage")
+    expected_counts = (12_836, 1_413) if stage_b else (48, 16)
+    if (train_items, validation_items) != expected_counts:
+        raise ValueError(f"forensic CFM stage item counts must be exactly {expected_counts[0]}/{expected_counts[1]}")
+    if stage_b and (
+        config.image_size != 128
+        or config.base_channels != 64
+        or config.condition_dim != 256
+        or config.time_dim != 512
+        or batch_size != 32
+        or learning_rate != 1e-4
+        or weight_decay != 1e-4
+        or gradient_clip != 1.0
+        or evaluation_interval != 1_000
+        or save_interval != 1_000
+        or seed != 20260921
+        or registered != FORENSIC_STAGE_B_NOISE_SEEDS
+        or sample_items != 16
+        or sample_ode_steps != 50
+        or sample_noise_seed != 20260921
+    ):
+        raise ValueError("forensic Stage B decoder/training/publication contract is not exact")
     integers = (
         batch_size, evaluation_interval, sample_items, sample_ode_steps,
         sample_batch_size,
@@ -273,14 +328,16 @@ def build_forensic_checkpoint_invariants(
     if not isinstance(image_preprocessing, Mapping) or not image_preprocessing:
         raise ValueError("forensic Stage A image preprocessing identity is required")
     return {
-        "experiment_stage": FORENSIC_EXPERIMENT_STAGE,
-        "watermarks": list(FORENSIC_WATERMARKS),
+        "experiment_stage": experiment_stage,
+        "watermarks": list(FORENSIC_WATERMARKS if not stage_b else (
+            "stage_b_diagnostic", "unsafe_actor_checkpoint", "not_deployable"
+        )),
         "cache_schema": FORENSIC_QUERY_STATE_CACHE_SCHEMA,
         "cache_fingerprint": cache_fingerprint,
-        "train_role": FORENSIC_SELECTION_MECHANICS_TRAIN,
+        "train_role": FORENSIC_SELECTION_ALL_TRAIN if stage_b else FORENSIC_SELECTION_MECHANICS_TRAIN,
         "train_split_identity": train_split_identity,
         "train_row_set_identity": train_row_set_identity,
-        "validation_role": FORENSIC_SELECTION_MECHANICS_VALIDATION,
+        "validation_role": FORENSIC_SELECTION_EXTERNAL_VALIDATION if stage_b else FORENSIC_SELECTION_MECHANICS_VALIDATION,
         "validation_split_identity": validation_split_identity,
         "validation_row_set_identity": validation_row_set_identity,
         "source_identity": _validate_source_identity(source_identity),
@@ -291,9 +348,9 @@ def build_forensic_checkpoint_invariants(
         "evaluation_interval": evaluation_interval, "save_interval": save_interval,
         "seed": seed,
         "shuffle_algorithm": QUERY_STATE_SHUFFLE_ALGORITHM,
-        "noise_seeds": list(registered), "max_steps": FORENSIC_FINAL_STEP,
-        "pass_min_delta": FORENSIC_PASS_MIN_DELTA,
-        "pass_min_aggregate_ratio": FORENSIC_PASS_MIN_AGGREGATE_RATIO,
+        "noise_seeds": list(registered), "max_steps": FORENSIC_STAGE_B_FINAL_STEP if stage_b else FORENSIC_FINAL_STEP,
+        "pass_min_delta": FORENSIC_STAGE_B_PASS_MIN_DELTA if stage_b else FORENSIC_PASS_MIN_DELTA,
+        "pass_min_aggregate_ratio": FORENSIC_STAGE_B_PASS_MIN_AGGREGATE_RATIO if stage_b else FORENSIC_PASS_MIN_AGGREGATE_RATIO,
         "sample_items": sample_items, "sample_ode_steps": sample_ode_steps,
         "sample_noise_seed": sample_noise_seed, "sample_batch_size": sample_batch_size,
         "image_preprocessing": json.loads(json.dumps(dict(image_preprocessing), sort_keys=True)),
@@ -317,6 +374,7 @@ def _validate_invariants(invariants: Mapping[str, Any], config: CFMConfig) -> No
         raise ValueError("forensic CFM checkpoint invariants schema is invalid")
     rebuilt = build_forensic_checkpoint_invariants(
         config=config, cache_fingerprint=invariants["cache_fingerprint"],
+        experiment_stage=invariants["experiment_stage"],
         train_split_identity=invariants["train_split_identity"], train_row_set_identity=invariants["train_row_set_identity"],
         validation_split_identity=invariants["validation_split_identity"], validation_row_set_identity=invariants["validation_row_set_identity"],
         source_identity=invariants["source_identity"], train_items=invariants["train_items"], validation_items=invariants["validation_items"],
@@ -355,7 +413,8 @@ def _atomic_save(payload: Mapping[str, Any], path: Path) -> None:
 def save_forensic_cfm_checkpoint(path: str | Path, *, model: TokenConditionedFlowUNet, optimizer: torch.optim.Optimizer, step: int, invariants: Mapping[str, Any]) -> None:
     _validate_invariants(invariants, model.config)
     _require_decoder_optimizer(model, optimizer)
-    if isinstance(step, bool) or not isinstance(step, int) or not 0 <= step <= FORENSIC_FINAL_STEP:
+    max_steps = int(invariants["max_steps"])
+    if isinstance(step, bool) or not isinstance(step, int) or not 0 <= step <= max_steps:
         raise ValueError("forensic CFM checkpoint step is invalid")
     _atomic_save({
         "schema": FORENSIC_CFM_CHECKPOINT_SCHEMA, "model": model.state_dict(),
@@ -380,7 +439,7 @@ def load_forensic_cfm_checkpoint(path: str | Path, *, model: TokenConditionedFlo
     if (
         isinstance(step, bool)
         or not isinstance(step, int)
-        or not 0 <= step <= FORENSIC_FINAL_STEP
+        or not 0 <= step <= int(expected_invariants["max_steps"])
         or not isinstance(cpu_rng, torch.Tensor)
         or cpu_rng.ndim != 1
         or cpu_rng.dtype != torch.uint8
@@ -450,6 +509,39 @@ def evaluate_stage_a_pass(evidence: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def evaluate_stage_b_publication_gate(evidence: Mapping[str, Any]) -> dict[str, Any]:
+    seeds = evidence.get("seeds") if isinstance(evidence, Mapping) else None
+    if seeds != list(FORENSIC_STAGE_B_NOISE_SEEDS):
+        raise ValueError("Stage B requires all three locked publication noise seeds")
+    _validate_multi_noise_publication_evidence(
+        evidence,
+        expected_seeds=FORENSIC_STAGE_B_NOISE_SEEDS,
+        item_count=1_413,
+        min_shuffled_minus_correct=FORENSIC_STAGE_B_PASS_MIN_DELTA,
+    )
+    correct = [float(item["correct_flow_mse"]) for item in evidence["per_seed"]]
+    shuffled = [float(item["shuffled_flow_mse"]) for item in evidence["per_seed"]]
+    deltas = [float(item["shuffled_minus_correct"]) for item in evidence["per_seed"]]
+    ratio = (sum(shuffled) / len(shuffled)) / max(sum(correct) / len(correct), 1e-12)
+    if not math.isfinite(ratio):
+        raise ValueError("Stage B aggregate shuffled/correct ratio is non-finite")
+    if ratio < FORENSIC_STAGE_B_PASS_MIN_AGGREGATE_RATIO:
+        raise QueryStatePublicationGateFailure(
+            f"Stage B aggregate shuffled/correct ratio gate failed: {ratio}"
+        )
+    return {
+        "passed": True,
+        "source_role": FORENSIC_SELECTION_EXTERNAL_VALIDATION,
+        "checkpoint_step": FORENSIC_STAGE_B_FINAL_STEP,
+        "metric_unit": "mean conditional-flow velocity MSE per normalized [-1,1] RGB image element",
+        "aggregation": "per seed: mean over all external rows and RGB elements; aggregate ratio: mean shuffled MSE / mean correct MSE across seeds",
+        "per_seed_min_delta": FORENSIC_STAGE_B_PASS_MIN_DELTA,
+        "minimum_observed_delta": min(deltas),
+        "aggregate_shuffled_over_correct": ratio,
+        "aggregate_min_ratio": FORENSIC_STAGE_B_PASS_MIN_AGGREGATE_RATIO,
+    }
+
+
 def _tensor_image(tensor: torch.Tensor) -> Image.Image:
     array = tensor.detach().cpu().float().clamp(-1, 1).add(1).mul(127.5).round().byte().permute(1, 2, 0).numpy()
     return Image.fromarray(array, mode="RGB")
@@ -475,15 +567,20 @@ def publish_forensic_rgb_artifacts(*, output_dir: str | Path, decoder_checkpoint
     checkpoint_sha = _sha256_file(checkpoint_path)
     try: payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     except Exception as error: raise ValueError("forensic RGB decoder checkpoint is unreadable") from error
-    if not isinstance(payload, dict) or payload.get("schema") != FORENSIC_CFM_CHECKPOINT_SCHEMA or payload.get("step") != FORENSIC_FINAL_STEP:
-        raise ValueError("forensic RGB publication requires only the final step10000 checkpoint")
-    invariants = payload.get("invariants")
+    invariants = payload.get("invariants") if isinstance(payload, dict) else None
+    final_step = invariants.get("max_steps") if isinstance(invariants, Mapping) else None
+    if not isinstance(payload, dict) or payload.get("schema") != FORENSIC_CFM_CHECKPOINT_SCHEMA or payload.get("step") != final_step:
+        label = "final step10000" if final_step == FORENSIC_FINAL_STEP else "final step4000"
+        raise ValueError(f"forensic RGB publication requires only the {label} checkpoint")
     if not isinstance(invariants, Mapping) or not isinstance(invariants.get("cfm_config"), Mapping): raise ValueError("forensic RGB checkpoint invariants are invalid")
     try: config = CFMConfig(**dict(invariants["cfm_config"]))
     except Exception as error: raise ValueError("forensic RGB CFM config is invalid") from error
     _validate_invariants(invariants, config)
-    train, validation, source = load_forensic_image_splits(cache_dir, image_size=config.image_size)
-    validate_forensic_split_pair(train, validation)
+    experiment_stage = str(invariants["experiment_stage"])
+    train, validation, source = load_forensic_image_splits(
+        cache_dir, image_size=config.image_size, experiment_stage=experiment_stage
+    )
+    validate_forensic_split_pair(train, validation, experiment_stage=experiment_stage)
     expected = {
         "cache_fingerprint": train.cache_fingerprint, "train_split_identity": train.split_identity,
         "train_row_set_identity": train.row_set_identity, "validation_split_identity": validation.split_identity,
@@ -497,13 +594,57 @@ def publish_forensic_rgb_artifacts(*, output_dir: str | Path, decoder_checkpoint
     decoder.load_state_dict(payload["model"], strict=True); optimizer.load_state_dict(payload["optimizer"]); _require_decoder_optimizer(decoder, optimizer)
     decoder.eval().requires_grad_(False)
     reports = {
-        FORENSIC_SELECTION_MECHANICS_TRAIN: evaluate_query_state_multi_noise_sensitivity(decoder, train.states, train.images_uint8, device, batch_size=int(invariants["batch_size"]), seeds=invariants["noise_seeds"]),
-        FORENSIC_SELECTION_MECHANICS_VALIDATION: evaluate_query_state_multi_noise_sensitivity(decoder, validation.states, validation.images_uint8, device, batch_size=int(invariants["batch_size"]), seeds=invariants["noise_seeds"]),
+        train.split_name: evaluate_query_state_multi_noise_sensitivity(decoder, train.states, train.images_uint8, device, batch_size=int(invariants["batch_size"]), seeds=invariants["noise_seeds"]),
+        validation.split_name: evaluate_query_state_multi_noise_sensitivity(decoder, validation.states, validation.images_uint8, device, batch_size=int(invariants["batch_size"]), seeds=invariants["noise_seeds"]),
     }
-    gate = evaluate_stage_a_pass(reports[FORENSIC_SELECTION_MECHANICS_TRAIN])
+    stage_b = experiment_stage == FORENSIC_STAGE_B_EXPERIMENT_STAGE
+    try:
+        gate = (
+            evaluate_stage_b_publication_gate(reports[validation.split_name])
+            if stage_b else evaluate_stage_a_pass(reports[train.split_name])
+        )
+    except QueryStatePublicationGateFailure as error:
+        if not stage_b:
+            raise
+        destination.mkdir(parents=True)
+        metadata = {
+            "schema": FORENSIC_CFM_RGB_ARTIFACT_SCHEMA,
+            "status": "publication_gate_failed",
+            "watermarks": list(invariants["watermarks"]),
+            "forensic_only": True,
+            "unsafe_actor_checkpoint": True,
+            "deployable": False,
+            "formal38_actor_failure_remains_valid": True,
+            "experiment_stage": experiment_stage,
+            "decoder_checkpoint": str(checkpoint_path.resolve()),
+            "decoder_checkpoint_sha256": checkpoint_sha,
+            "decoder_checkpoint_step": final_step,
+            "cache_fingerprint": train.cache_fingerprint,
+            "source_identity": dict(source),
+            "split_reports": reports,
+            "pass_source_role": FORENSIC_SELECTION_EXTERNAL_VALIDATION,
+            "checkpoint_selection": "final_step4000_only_no_best_selection",
+            "additional_steps_or_checkpoint_fallback_allowed": False,
+            "publication_gate": {"passed": False, "error": str(error)},
+            "rgb_artifacts_published": False,
+        }
+        metadata["artifact_identity"] = _sha256_mapping(metadata)
+        metadata_path = destination / "metadata.json"
+        metadata_path.write_text(
+            json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        return {
+            "metadata_path": str(metadata_path),
+            "contact_sheet_path": None,
+            "strip_paths": [],
+            "publication_gate": metadata["publication_gate"],
+            "stage_a_pass": None,
+            "artifact_identity": metadata["artifact_identity"],
+        }
+    sample_split = validation if stage_b else train
     count = int(invariants["sample_items"]); seed = int(invariants["sample_noise_seed"])
-    indices = torch.randperm(len(train), generator=torch.Generator().manual_seed(seed))[:count]
-    states = train.states[indices].float(); noise = torch.randn((count, 3, config.image_size, config.image_size), generator=torch.Generator().manual_seed(seed))
+    indices = torch.randperm(len(sample_split), generator=torch.Generator().manual_seed(seed))[:count]
+    states = sample_split.states[indices].float(); noise = torch.randn((count, 3, config.image_size, config.image_size), generator=torch.Generator().manual_seed(seed))
     reconstructions = sample_euler(decoder, flatten_query_state_condition(states), noise, steps=int(invariants["sample_ode_steps"]), device=device, chunk_size=int(invariants["sample_batch_size"]))
     destination.mkdir(parents=True)
     strips_dir = destination / "strips"; strips_dir.mkdir()
@@ -512,8 +653,8 @@ def publish_forensic_rgb_artifacts(*, output_dir: str | Path, decoder_checkpoint
     strips: list[Image.Image] = []; strip_paths: list[str] = []; rows: list[dict[str, Any]] = []
     try:
         for ordinal, selected_index in enumerate(indices.tolist()):
-            original = _uint8_image(train.images_uint8[selected_index]); reconstruction = _tensor_image(reconstructions[ordinal])
-            source_row = train.rows[selected_index]
+            original = _uint8_image(sample_split.images_uint8[selected_index]); reconstruction = _tensor_image(reconstructions[ordinal])
+            source_row = sample_split.rows[selected_index]
             row_identity = str(source_row["row_identity"]); strip = _strip(original, reconstruction, row_identity)
             stem = f"row_{ordinal:05d}_{hashlib.sha256(row_identity.encode()).hexdigest()[:12]}"
             original_path = originals_dir / f"{stem}.png"
@@ -540,22 +681,25 @@ def publish_forensic_rgb_artifacts(*, output_dir: str | Path, decoder_checkpoint
         contact_path = destination / "contact_sheet.png"; contact.save(contact_path, format="PNG"); contact.close()
         metric_contract = {"unit": gate["metric_unit"], "aggregation": gate["aggregation"], "correct_and_shuffled_share_noise_and_time": True, "global_nonidentity_shuffle": QUERY_STATE_SHUFFLE_ALGORITHM}
         metadata = {
-            "schema": FORENSIC_CFM_RGB_ARTIFACT_SCHEMA, "watermarks": list(FORENSIC_WATERMARKS),
+            "schema": FORENSIC_CFM_RGB_ARTIFACT_SCHEMA, "watermarks": list(invariants["watermarks"]),
             "forensic_only": True, "unsafe_actor_checkpoint": True, "heldout": False, "deployable": False,
             "diagnostic_role": "secondary_post_hoc_rgb_probe", "primary_direct_dino_metrics_required_separately": True,
-            "formal38_actor_failure_remains_valid": True, "experiment_stage": FORENSIC_EXPERIMENT_STAGE,
+            "formal38_actor_failure_remains_valid": True, "experiment_stage": experiment_stage,
             "decoder_checkpoint": str(checkpoint_path.resolve()), "decoder_checkpoint_sha256": checkpoint_sha,
-            "decoder_checkpoint_step": FORENSIC_FINAL_STEP, "checkpoint_invariants_sha256": _sha256_mapping(dict(invariants)),
+            "decoder_checkpoint_step": final_step, "checkpoint_invariants_sha256": _sha256_mapping(dict(invariants)),
             "cache_fingerprint": train.cache_fingerprint, "source_identity": dict(source), "cfm_config": config.to_metadata(),
             "color_space": "sRGB", "channels": 3, "tensor_range": [-1, 1], "metric_contract": metric_contract,
-            "split_reports": reports, "pass_source_role": FORENSIC_SELECTION_MECHANICS_TRAIN,
-            "mechanics_validation_controls_pass": False, "checkpoint_selection": "final_step10000_only_no_best_selection",
-            "stage_a_pass": gate, "sample_selection": {"role": FORENSIC_SELECTION_MECHANICS_TRAIN, "algorithm": "torch_randperm_cpu_v1", "seed": seed, "indices": indices.tolist()},
+            "split_reports": reports, "pass_source_role": gate["source_role"],
+            "mechanics_validation_controls_pass": False,
+            "external_validation_controls_checkpoint_selection": False,
+            "checkpoint_selection": f"final_step{final_step}_only_no_best_selection",
+            "publication_gate": gate, "stage_a_pass": gate if not stage_b else None,
+            "sample_selection": {"role": sample_split.split_name, "algorithm": "torch_randperm_cpu_v1", "seed": seed, "indices": indices.tolist()},
             "rows": rows, "contact_sheet_path": str(contact_path), "contact_sheet_sha256": _sha256_file(contact_path),
         }
         metadata["artifact_identity"] = _sha256_mapping(metadata)
         metadata_path = destination / "metadata.json"; metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        return {"metadata_path": str(metadata_path), "contact_sheet_path": str(contact_path), "strip_paths": strip_paths, "stage_a_pass": gate, "artifact_identity": metadata["artifact_identity"]}
+        return {"metadata_path": str(metadata_path), "contact_sheet_path": str(contact_path), "strip_paths": strip_paths, "publication_gate": gate, "stage_a_pass": gate if not stage_b else None, "artifact_identity": metadata["artifact_identity"]}
     except BaseException:
         shutil.rmtree(destination); raise
     finally:
@@ -567,10 +711,12 @@ def _latest_checkpoint(output: Path) -> Path | None:
 
 
 def train_forensic_query_state_cfm(args: argparse.Namespace) -> int:
-    if args.experiment_stage != FORENSIC_EXPERIMENT_STAGE:
-        raise ValueError("only mechanics_only Stage A is implemented")
-    if args.max_steps != FORENSIC_FINAL_STEP:
-        raise ValueError("Stage A max_steps is locked to 10000")
+    if args.experiment_stage not in {FORENSIC_EXPERIMENT_STAGE, FORENSIC_STAGE_B_EXPERIMENT_STAGE}:
+        raise ValueError("unsupported forensic CFM experiment stage")
+    stage_b = args.experiment_stage == FORENSIC_STAGE_B_EXPERIMENT_STAGE
+    final_step = FORENSIC_STAGE_B_FINAL_STEP if stage_b else FORENSIC_FINAL_STEP
+    if args.max_steps != final_step:
+        raise ValueError(f"{args.experiment_stage} max_steps is locked to {final_step}")
     if len(args.noise_seeds) < 3 or len(set(args.noise_seeds)) != len(args.noise_seeds):
         raise ValueError("at least three unique preregistered noise seeds are required")
     for field in ("batch_size", "evaluation_interval", "sample_items", "sample_ode_steps", "sample_batch_size"):
@@ -597,12 +743,15 @@ def train_forensic_query_state_cfm(args: argparse.Namespace) -> int:
     if device.type == "cuda":
         if not torch.cuda.is_available(): raise RuntimeError("CUDA requested but unavailable")
         torch.cuda.manual_seed_all(args.seed)
-    train, validation, source = load_forensic_image_splits(args.cache, image_size=args.image_size)
+    train, validation, source = load_forensic_image_splits(
+        args.cache, image_size=args.image_size, experiment_stage=args.experiment_stage
+    )
     output.mkdir(parents=True, exist_ok=True)
     model = build_query_state_cfm_model(image_size=args.image_size, base_channels=args.base_channels, condition_dim=args.condition_dim, time_dim=args.time_dim).to(device)
     optimizer = build_decoder_optimizer(model, learning_rate=args.learning_rate, weight_decay=args.weight_decay)
     invariants = build_forensic_checkpoint_invariants(
         config=model.config, cache_fingerprint=train.cache_fingerprint,
+        experiment_stage=args.experiment_stage,
         train_split_identity=train.split_identity, train_row_set_identity=train.row_set_identity,
         validation_split_identity=validation.split_identity, validation_row_set_identity=validation.row_set_identity,
         source_identity=source, train_items=len(train), validation_items=len(validation), batch_size=args.batch_size,
@@ -613,8 +762,8 @@ def train_forensic_query_state_cfm(args: argparse.Namespace) -> int:
         sample_batch_size=args.sample_batch_size, image_preprocessing=train.image_preprocessing,
     )
     metadata = {
-        "task": "formal38_unsafe_forensic_query_state_cfm_stage_a",
-        "watermarks": list(FORENSIC_WATERMARKS),
+        "task": f"formal38_unsafe_forensic_query_state_cfm_{args.experiment_stage}",
+        "watermarks": invariants["watermarks"],
         "trainable_owner": "TokenConditionedFlowUNet only",
         "target": "matching original observation",
         "invariants": invariants,
@@ -635,8 +784,8 @@ def train_forensic_query_state_cfm(args: argparse.Namespace) -> int:
         if resume is None: raise FileNotFoundError("--resume requested but no checkpoint exists")
     if resume is not None:
         start = load_forensic_cfm_checkpoint(resume, model=model, optimizer=optimizer, expected_invariants=invariants, device=device)
-    if start >= FORENSIC_FINAL_STEP:
-        raise ValueError("final step10000 checkpoint cannot be resumed for further training")
+    if start >= final_step:
+        raise ValueError("stage-final checkpoint cannot be resumed for further training")
     wandb_run = None
     if not args.no_wandb:
         cpu_rng = torch.get_rng_state()
@@ -660,46 +809,94 @@ def train_forensic_query_state_cfm(args: argparse.Namespace) -> int:
                 torch.cuda.set_rng_state_all(cuda_rng)
     log_path = output / "train_step_log.csv"
     if not log_path.exists():
-        with log_path.open("x", newline="") as stream: csv.writer(stream).writerow(["time", "step", "train_flow_mse", "mechanics_train_report_identity", "mechanics_validation_report_identity"])
-    for step in range(start + 1, FORENSIC_FINAL_STEP + 1):
+        with log_path.open("x", newline="") as stream:
+            csv.writer(stream).writerow([
+                "time", "step", "train_flow_mse",
+                f"{train.split_name}_report_identity",
+                f"{validation.split_name}_report_identity",
+            ])
+    for step in range(start + 1, final_step + 1):
         indices = torch.randint(len(train), (args.batch_size,)); states = train.states[indices].to(device).float(); targets = train.images_uint8[indices].to(device).float().div(127.5).sub(1)
         model.train(); loss = conditional_flow_matching_loss(model, targets, flatten_query_state_condition(states)); optimizer.zero_grad(set_to_none=True); loss.backward(); torch.nn.utils.clip_grad_norm_(model.parameters(), args.gradient_clip); optimizer.step()
-        if step == 1 or step % args.evaluation_interval == 0 or step == FORENSIC_FINAL_STEP:
+        if (
+            (not stage_b and step == 1)
+            or step % args.evaluation_interval == 0
+            or step == final_step
+        ):
             reports = [evaluate_query_state_multi_noise_sensitivity(model, split.states, split.images_uint8, device, batch_size=args.batch_size, seeds=args.noise_seeds) for split in (train, validation)]
             with log_path.open("a", newline="") as stream:
                 csv.writer(stream).writerow([time.time(), step, float(loss.detach().cpu()), reports[0]["identity"], reports[1]["identity"]])
             if wandb_run is not None:
                 wandb_run.log({
                     "cfm/train_flow_mse": float(loss.detach().cpu()),
-                    "cfm/mechanics_train_correct_flow_mse": reports[0]["aggregate"]["correct_flow_mse"]["mean"],
-                    "cfm/mechanics_train_shuffled_flow_mse": reports[0]["aggregate"]["shuffled_flow_mse"]["mean"],
-                    "cfm/mechanics_validation_correct_flow_mse_report_only": reports[1]["aggregate"]["correct_flow_mse"]["mean"],
-                    "cfm/mechanics_validation_shuffled_flow_mse_report_only": reports[1]["aggregate"]["shuffled_flow_mse"]["mean"],
+                    f"cfm/{train.split_name}_correct_flow_mse": reports[0]["aggregate"]["correct_flow_mse"]["mean"],
+                    f"cfm/{train.split_name}_shuffled_flow_mse": reports[0]["aggregate"]["shuffled_flow_mse"]["mean"],
+                    f"cfm/{validation.split_name}_correct_flow_mse_report_only": reports[1]["aggregate"]["correct_flow_mse"]["mean"],
+                    f"cfm/{validation.split_name}_shuffled_flow_mse_report_only": reports[1]["aggregate"]["shuffled_flow_mse"]["mean"],
                 }, step=step)
-        if args.save_interval > 0 and step % args.save_interval == 0 and step != FORENSIC_FINAL_STEP:
+        if args.save_interval > 0 and step % args.save_interval == 0 and step != final_step:
             save_forensic_cfm_checkpoint(output / f"checkpoint_{step:09d}.pt", model=model, optimizer=optimizer, step=step, invariants=invariants)
-    final = output / f"checkpoint_{FORENSIC_FINAL_STEP:09d}.pt"; save_forensic_cfm_checkpoint(final, model=model, optimizer=optimizer, step=FORENSIC_FINAL_STEP, invariants=invariants)
+    final = output / f"checkpoint_{final_step:09d}.pt"; save_forensic_cfm_checkpoint(final, model=model, optimizer=optimizer, step=final_step, invariants=invariants)
     artifact = publish_forensic_rgb_artifacts(output_dir=output / "rgb_samples", decoder_checkpoint=final, cache_dir=args.cache, device=device)
-    summary = {"status": "completed", "watermarks": list(FORENSIC_WATERMARKS), "final_checkpoint": str(final), "rgb_artifact": artifact}
+    gate_passed = artifact["publication_gate"]["passed"] is True
+    summary = {
+        "status": "completed" if gate_passed else "publication_gate_failed",
+        "watermarks": invariants["watermarks"],
+        "final_checkpoint": str(final),
+        "rgb_artifact": artifact,
+        "additional_steps_or_checkpoint_fallback_allowed": False,
+    }
     (output / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if wandb_run is not None:
-        wandb_run.log({
-            "cfm/stage_a_pass": 1,
-            "cfm/stage_a_aggregate_shuffled_over_correct": artifact["stage_a_pass"]["aggregate_shuffled_over_correct"],
-        }, step=FORENSIC_FINAL_STEP + 1)
+        gate = artifact["publication_gate"]
+        final_metrics = {f"cfm/{args.experiment_stage}_pass": int(gate_passed)}
+        if "aggregate_shuffled_over_correct" in gate:
+            final_metrics[f"cfm/{args.experiment_stage}_aggregate_shuffled_over_correct"] = gate["aggregate_shuffled_over_correct"]
+        wandb_run.log(final_metrics, step=final_step + 1)
         wandb_run.finish()
     return 0
 
 
+class _ForensicStageParser(argparse.ArgumentParser):
+    def parse_args(self, args: Sequence[str] | None = None, namespace: argparse.Namespace | None = None) -> argparse.Namespace:
+        parsed = super().parse_args(args, namespace)
+        stage_b = parsed.experiment_stage == FORENSIC_STAGE_B_EXPERIMENT_STAGE
+        defaults = {
+            "image_size": 128 if stage_b else 64,
+            "base_channels": 64,
+            "condition_dim": 256,
+            "time_dim": 512,
+            "batch_size": 32,
+            "learning_rate": 1e-4,
+            "weight_decay": 1e-4,
+            "gradient_clip": 1.0,
+            "max_steps": FORENSIC_STAGE_B_FINAL_STEP if stage_b else FORENSIC_FINAL_STEP,
+            "evaluation_interval": 1000 if stage_b else 500,
+            "save_interval": 1000 if stage_b else 2000,
+            "noise_seeds": list(FORENSIC_STAGE_B_NOISE_SEEDS) if stage_b else None,
+            "sample_items": 16 if stage_b else 8,
+            "sample_ode_steps": 50,
+            "sample_noise_seed": 20260921 if stage_b else 20260901,
+            "sample_batch_size": 8,
+            "seed": 20260921 if stage_b else 20260901,
+        }
+        for field, value in defaults.items():
+            if getattr(parsed, field) is None:
+                setattr(parsed, field, value)
+        if parsed.noise_seeds is None:
+            self.error("--noise-seeds is required for mechanics_only")
+        return parsed
+
+
 def build_cli_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Train the Stage-A decoder-only CFM mechanics probe for exact Formal38 unsafe update1605 (launch approval required)")
-    parser.add_argument("--experiment-stage", choices=(FORENSIC_EXPERIMENT_STAGE,), required=True)
+    parser = _ForensicStageParser(description="Train a decoder-only CFM probe for exact Formal38 unsafe update1605 (launch approval required)")
+    parser.add_argument("--experiment-stage", choices=(FORENSIC_EXPERIMENT_STAGE, FORENSIC_STAGE_B_EXPERIMENT_STAGE), required=True)
     parser.add_argument("--cache", type=Path, required=True); parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--image-size", type=int, default=64); parser.add_argument("--base-channels", type=int, default=64); parser.add_argument("--condition-dim", type=int, default=256); parser.add_argument("--time-dim", type=int, default=512)
-    parser.add_argument("--batch-size", type=int, default=32); parser.add_argument("--learning-rate", type=float, default=1e-4); parser.add_argument("--weight-decay", type=float, default=1e-4); parser.add_argument("--gradient-clip", type=float, default=1.0)
-    parser.add_argument("--max-steps", type=int, default=FORENSIC_FINAL_STEP); parser.add_argument("--evaluation-interval", type=int, default=500); parser.add_argument("--save-interval", type=int, default=2000)
-    parser.add_argument("--noise-seeds", type=int, nargs="+", required=True); parser.add_argument("--sample-items", type=int, default=8); parser.add_argument("--sample-ode-steps", type=int, default=50); parser.add_argument("--sample-noise-seed", type=int, default=20260901); parser.add_argument("--sample-batch-size", type=int, default=8)
-    parser.add_argument("--seed", type=int, default=20260901); parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda"); parser.add_argument("--resume", action="store_true"); parser.add_argument("--resume-checkpoint", type=Path)
+    parser.add_argument("--image-size", type=int); parser.add_argument("--base-channels", type=int); parser.add_argument("--condition-dim", type=int); parser.add_argument("--time-dim", type=int)
+    parser.add_argument("--batch-size", type=int); parser.add_argument("--learning-rate", type=float); parser.add_argument("--weight-decay", type=float); parser.add_argument("--gradient-clip", type=float)
+    parser.add_argument("--max-steps", type=int); parser.add_argument("--evaluation-interval", type=int); parser.add_argument("--save-interval", type=int)
+    parser.add_argument("--noise-seeds", type=int, nargs="+"); parser.add_argument("--sample-items", type=int); parser.add_argument("--sample-ode-steps", type=int); parser.add_argument("--sample-noise-seed", type=int); parser.add_argument("--sample-batch-size", type=int)
+    parser.add_argument("--seed", type=int); parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda"); parser.add_argument("--resume", action="store_true"); parser.add_argument("--resume-checkpoint", type=Path)
     parser.add_argument("--wandb-project", default="nimloth-recon"); parser.add_argument("--wandb-run-id"); parser.add_argument("--wandb-run-name"); parser.add_argument("--no-wandb", action="store_true")
     return parser
 
@@ -711,6 +908,9 @@ def main(argv: list[str] | None = None) -> int:
 __all__ = [
     "FORENSIC_CFM_CHECKPOINT_SCHEMA",
     "FORENSIC_CFM_RGB_ARTIFACT_SCHEMA",
+    "FORENSIC_STAGE_B_EXPERIMENT_STAGE",
+    "FORENSIC_STAGE_B_FINAL_STEP",
+    "FORENSIC_STAGE_B_NOISE_SEEDS",
     "FORENSIC_WATERMARKS",
     "FORMAL38_FAILURE_MANIFEST_SHA256",
     "FORMAL38_SOURCE_COMMIT",
@@ -719,11 +919,13 @@ __all__ = [
     "build_decoder_optimizer",
     "build_forensic_checkpoint_invariants",
     "evaluate_stage_a_pass",
+    "evaluate_stage_b_publication_gate",
     "load_forensic_cfm_checkpoint",
     "load_forensic_image_splits",
     "publish_forensic_rgb_artifacts",
     "save_forensic_cfm_checkpoint",
     "train_forensic_query_state_cfm",
+    "validate_forensic_manifest",
     "validate_forensic_split_pair",
     "validate_forensic_stage_a_manifest",
 ]

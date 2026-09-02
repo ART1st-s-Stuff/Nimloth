@@ -4,6 +4,7 @@ import hashlib
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -197,6 +198,45 @@ def _publish_cache(tmp_path: Path) -> Path:
     return output
 
 
+def test_stage_b_selection_is_live_audited_complete_and_image_disjoint() -> None:
+    rows = tuple(
+        SimpleNamespace(
+            split="train" if index < 12836 else "val",
+            external_eligible=True,
+            identity=f"row-{index}",
+            ordinal=index,
+            original_image_sha256=f"{index:064x}",
+        )
+        for index in range(12836 + 1413)
+    )
+    selection = forensic.select_forensic_stage_b_rows(rows)
+    assert selection.stage.value == "stage_b_diagnostic"
+    assert selection.seed is None
+    assert len(selection.entries) == 14249
+    assert [entry.role for entry in selection.entries[:12836]] == ["all_train"] * 12836
+    assert [entry.role for entry in selection.entries[12836:]] == ["external_validation"] * 1413
+    train_images = {entry.row.original_image_sha256 for entry in selection.entries[:12836]}
+    external_images = {entry.row.original_image_sha256 for entry in selection.entries[12836:]}
+    assert train_images.isdisjoint(external_images)
+    schedules = tuple(
+        forensic.forensic_rank_schedule(selection.entries, rank=rank, world_size=8)
+        for rank in range(8)
+    )
+    assert {len(schedule) for schedule in schedules} == {1782}
+    assert sum(contributing for schedule in schedules for _entry, contributing in schedule) == 14249
+    assert all(schedules[rank][-1][1] is False for rank in range(1, 8))
+
+    with pytest.raises(ValueError, match="12836/1413"):
+        forensic.select_forensic_stage_b_rows(rows[:-1])
+    overlapping = list(rows)
+    overlapping[-1] = SimpleNamespace(**{
+        **overlapping[-1].__dict__,
+        "original_image_sha256": overlapping[0].original_image_sha256,
+    })
+    with pytest.raises(ValueError, match="image.*overlap|disjoint"):
+        forensic.select_forensic_stage_b_rows(tuple(overlapping))
+
+
 def test_stage_a_selection_is_deterministic_exact_and_image_disjoint(tmp_path: Path) -> None:
     _source_contract, rows = _source(tmp_path)
     first = select_forensic_stage_a_rows(rows, seed=20260901)
@@ -210,6 +250,13 @@ def test_stage_a_selection_is_deterministic_exact_and_image_disjoint(tmp_path: P
         {entry.row.original_image_sha256 for entry in validation}
     )
     assert forensic.FORENSIC_STAGE_B_ROLES == {"all_train", "external_validation"}
+
+
+def test_stage_b_bounded_shard_ranges_cover_all_rows() -> None:
+    assert forensic.forensic_shard_ranges(14249, max_records=2048) == (
+        (0, 2048), (2048, 4096), (4096, 6144), (6144, 8192),
+        (8192, 10240), (10240, 12288), (12288, 14249),
+    )
 
 
 def test_generic_schedule_has_equal_forward_count_and_explicit_padding(tmp_path: Path) -> None:
@@ -519,6 +566,49 @@ def test_forensic_manifest_reader_live_hash_shape_and_bidirectional_schema_rejec
         ForensicQueryStateCacheDataset(cache)
 
 
+def test_stage_b_manifest_parser_requires_exact_stage_roles_counts_and_bounded_shards(
+    tmp_path: Path,
+) -> None:
+    cache = _publish_cache(tmp_path)
+    manifest = json.loads((cache / "manifest.json").read_text())
+    manifest["count"] = 14249
+    manifest["selection"] = {
+        "stage": "stage_b_diagnostic",
+        "algorithm": forensic.FORENSIC_STAGE_B_SELECTION_ALGORITHM,
+        "seed": None,
+        "identity": "1" * 64,
+        "roles": {"all_train": 12836, "external_validation": 1413},
+    }
+    ranges = forensic.forensic_shard_ranges(14249, max_records=2048)
+    manifest["shards"] = [
+        {
+            "file": f"shard_{index:05d}.pt", "count": stop - start,
+            "start": start, "stop": stop, "sha256": f"{index + 1:x}" * 64,
+            "state_dtype": "float32", "state_shape": [16, 1024],
+        }
+        for index, (start, stop) in enumerate(ranges)
+    ]
+    rank_counts = [1782, *([1781] * 7)]
+    for summary, count in zip(manifest["rank_cache_summaries"], rank_counts, strict=True):
+        summary["count"] = count
+    manifest["cache_fingerprint"] = forensic._identity({
+        key: value for key, value in manifest.items() if key != "cache_fingerprint"
+    })
+    assert forensic._parse_manifest(manifest)["selection"]["stage"] == "stage_b_diagnostic"
+    for mutation in ("roles", "shard"):
+        wrong = json.loads(json.dumps(manifest))
+        if mutation == "roles":
+            wrong["selection"]["roles"] = {"mechanics_train": 12836, "mechanics_validation": 1413}
+        else:
+            wrong["shards"][0]["stop"] = 2047
+            wrong["shards"][0]["count"] = 2047
+        wrong["cache_fingerprint"] = forensic._identity({
+            key: value for key, value in wrong.items() if key != "cache_fingerprint"
+        })
+        with pytest.raises(ValueError, match="manifest identity|watermark"):
+            forensic._parse_manifest(wrong)
+
+
 def test_reader_rejects_reordered_state_row_pairs_even_with_rehashed_manifest(
     tmp_path: Path,
 ) -> None:
@@ -646,6 +736,29 @@ def test_typed_protocol_has_equal_gate_order_padding_exclusion_and_rank_temp(tmp
     payload = torch.load(output.with_name(f".{output.name}.forensic-tmp") / "rank_cache_00001_of_00008.pt", map_location="cpu", weights_only=False)
     assert payload["state"].shape == (8, 16, 1024)
     assert all(row["selection_ordinal"] % 8 == 1 for row in payload["rows"])
+
+
+def test_stage_b_builder_rejects_noncanonical_shard_bound_before_extraction(
+    tmp_path: Path,
+) -> None:
+    source, _rows = _source(tmp_path)
+    checkpoint = _checkpoint(tmp_path)
+    collective = _FakeCollective()
+    extractor = _FakeExtractor()
+    with pytest.raises(RuntimeError, match="identity gate failed.*stage/shard"):
+        forensic.build_forensic_query_state_cache_rank(
+            tmp_path / "cache",
+            checkpoint=checkpoint,
+            source=source,
+            selection_seed=None,
+            producer=_producer(),
+            extractor=extractor,
+            collective=collective,
+            experiment_stage=forensic.ForensicExperimentStage.STAGE_B_DIAGNOSTIC,
+            max_shard_records=4096,
+        )
+    assert extractor.calls == 0
+    assert collective.phases == [("identity", False)]
 
 
 def test_forward_exception_writes_rank_failure_tears_down_and_reraises(tmp_path: Path) -> None:

@@ -229,6 +229,79 @@ def test_forensic_basis_fit_uses_only_mechanics_train_and_pinned_dino(
     assert all(row.split == FORENSIC_SELECTION_MECHANICS_TRAIN for row in captured["records"])
 
 
+def test_stage_b_feature_owner_uses_full_metrics_and_deterministic_16_row_visuals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest, _rows = _cache(tmp_path)
+    manifest["selection"] = {
+        **manifest["selection"],
+        "stage": "stage_b_diagnostic",
+        "roles": {"all_train": 12836, "external_validation": 1413},
+    }
+    records = {}
+    provenance = {}
+    for role, count in (("all_train", 20), ("external_validation", 18)):
+        records[role] = [
+            forensic.QueryStateFeatureRecord(
+                row_identity=f"{role}-{index}", split=role,
+                image_path=str((tmp_path / "unused.png").resolve()),
+                image_sha256=_sha(f"image-{role}-{index}"),
+                archived_response_sha256=_sha(f"cot-{role}-{index}"),
+                bundle_fingerprint=manifest["cache_fingerprint"],
+                source_jsonl_sha256=manifest["source_jsonl"]["train"]["sha256"],
+                source_manifest_identity=manifest["source_jsonl"]["source_manifest_identity"],
+                selection_role=role, cache_split_identity=_sha(f"split-{role}"),
+                state=torch.zeros(16, 1024),
+            )
+            for index in range(count)
+        ]
+        provenance[role] = {
+            row.row_identity: {"record_id": row.row_identity, "step_index": 0,
+                "selection_ordinal": index, "selection_role": role,
+                "prompt_history_identity": _sha("h"), "messages_identity": _sha("m"),
+                "renderer_identity": _sha("r"), "template_identity": _sha("t"),
+                "encoded_input_identity": _sha("e"), "response_source": "archived"}
+            for index, row in enumerate(records[role])
+        }
+    monkeypatch.setattr(forensic, "_strict_forensic_records", lambda _cache: (manifest, records, provenance))
+    teacher = SimpleNamespace()
+    monkeypatch.setattr(forensic, "_build_pinned_dino_teacher", lambda **_kwargs: teacher)
+    monkeypatch.setattr(forensic, "dino_feature_identity", lambda _teacher: _sha("dino"))
+    monkeypatch.setattr(forensic, "load_shared_feature_basis", lambda *_args, **_kwargs: SimpleNamespace(artifact_sha256=_sha("basis"), global_scale_sha256=_sha("scale")))
+    monkeypatch.setattr(forensic, "_validate_basis_receipt", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(forensic, "extract_dino_feature_records", lambda values, **_kwargs: [
+        DinoFeatureRecord(row_identity=row.row_identity, split=row.split, image_sha256=row.image_sha256, dino_identity=_sha("dino"), features=row.state)
+        for row in values
+    ])
+    metric_counts = []
+    monkeypatch.setattr(forensic, "aggregate_direct_feature_metrics", lambda state, target, **_kwargs: metric_counts.append(len(state)) or {"full": len(state)})
+    rendered = []
+    def render(values, _targets, *, output_dir, **_kwargs):
+        rendered.append([row.row_identity for row in values])
+        Path(output_dir).mkdir()
+        return {"rows": [{"row_identity": row.row_identity} for row in values], "metrics": {}, "contact_sheet": "contact.png"}
+    monkeypatch.setattr(forensic, "_render_query_state_feature_report_from_records", render)
+    first = forensic.render_forensic_query_state_feature_reports(
+        forensic_cache=tmp_path / "cache", basis_path=tmp_path / "basis",
+        output_dir=tmp_path / "report-1", interpolation="nearest",
+        normalization="shared_global", shuffle_seed=7, dino_device=torch.device("cpu"),
+        dino_dtype=torch.float32, dino_batch_size=8,
+    )
+    assert metric_counts == [20, 18]
+    assert [len(items) for items in rendered] == [16]
+    assert first["roles"]["all_train"]["count"] == 20
+    assert first["roles"]["all_train"]["visual_count"] == 0
+    assert first["roles"]["all_train"]["contact_sheet"] is None
+    assert first["roles"]["external_validation"]["count"] == 18
+    assert first["roles"]["external_validation"]["visual_count"] == 16
+    persisted = json.loads(
+        (tmp_path / "report-1" / "external_validation" / "report.json").read_text()
+    )
+    assert persisted["metrics"] == {"full": 18}
+    assert persisted["full_statistical_count"] == 18
+    assert len(persisted["visual_selection"]["row_identities"]) == 16
+
+
 def test_forensic_report_renders_both_roles_with_metrics_maps_and_mandatory_watermarks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

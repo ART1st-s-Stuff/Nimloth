@@ -53,6 +53,13 @@ Stage B. Full `all_train`/`external_validation`, 128px training, thresholds,
 resources, and launch identity must be replanned and separately approved, and a
 fresh decoder is the default.
 
+The separate `stage_b_diagnostic` forensic owner requires a fresh 128px decoder
+and the complete image-disjoint 12,836/1,413 cache. Its only publication
+checkpoint is step4000; seeds 20260931/32/33 must each reach external normalized
+velocity-MSE delta 0.01 and their aggregate shuffled/correct ratio must reach
+1.05 before 16 deterministic external Euler50 RGB examples are emitted. Stage A
+cache/checkpoints cannot initialize or resume this owner.
+
 Formal38's actor failure remains above all reconstruction evidence. Direct DINO
 metrics are primary, condition sensitivity is secondary, and three-channel sRGB
 strips/contact sheets are visual inspection aids that can also fail because of

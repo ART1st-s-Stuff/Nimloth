@@ -101,22 +101,25 @@ launch contract; this example does not choose remote paths, resources, output,
 or authorize execution. The entry requires torchrun's
 `TORCHELASTIC_MAX_RESTARTS=0` evidence and rejects any other world/rank topology.
 
-`cfm_forensic_query_state.py` is Stage-A-only. It trains only
-`TokenConditionedFlowUNet` with 16×1024 conditions and the matching original
-observation target; the unsafe Query-State producer is absent from the optimizer
-and decoder checkpoint. Correct and global deterministic shuffled conditions use
-matched noise/time over at least three preregistered seeds. Only the final
-step10000 decoder checkpoint's `mechanics_train` sensitivity controls the Stage A
-mechanics verdict; image-disjoint `mechanics_validation` is report-only, is not
-held out, and cannot select a checkpoint.
+`cfm_forensic_query_state.py` has separate typed `mechanics_only` and
+`stage_b_diagnostic` owners. Both train only `TokenConditionedFlowUNet` with
+16×1024 conditions and matching original observations; the unsafe producer is
+absent from decoder optimizer/checkpoints. Stage A retains its exact 48/16,
+64px, step10000 mechanics contract. Stage B strictly requires a fresh 128px
+decoder with base channels 64, 4,000 random-batch steps (batch32), LR/WD 1e-4, clip1,
+eval/save1000, seed 20260921, and full 12,836 `all_train` / 1,413
+`external_validation` cache. Its final-only external publication gate uses
+seeds 20260931/32/33, per-seed delta >=0.01 and aggregate shuffled/correct ratio
+>=1.05 before producing 16 deterministic Euler50 external RGB examples.
+Stage/cache/checkpoint invariants reject every cross-stage resume or reuse.
 
-Stage A tests the loader→cache→decoder→condition-sensitive RGB mechanics on 48/16
-tiny train-derived rows. It cannot establish generalization or safe/deployable
-state quality. Stage B is not implemented or authorized by a Stage A pass: after
-human review it requires a new full `all_train`/`external_validation` cache,
-128px budget, publication thresholds, resources, output/W&B identity, experiment
-contract, and separate launch approval. Stage A checkpoints are not silently
-reused for Stage B.
+The Stage B cache is rebuilt from the live audit without a caller row mask,
+requires zero train/external image overlap, uses the same WS8 padded collective
+schedule, and publishes fixed bounded 2,048-record shards with manifest-last NFS
+semantics. Direct metrics cover all rows; only deterministic 16-row visual
+samples are retained, with PCA/global scale fit on `all_train` and external rows
+transform-only. Neither stage establishes safe/deployable state quality, and
+implementation still does not grant cache/GPU launch approval.
 
 Evidence is interpreted in this order: Formal38's actor safety failure remains
 valid; direct frozen-DINO metrics describe the unsafe state's feature relation;
