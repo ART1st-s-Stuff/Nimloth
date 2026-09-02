@@ -1,7 +1,7 @@
 # Pre-launch contract draft — VAGEN step60 batch1
 
 Date: 2026-09-01
-Status: **not launch approval**; after the approved reconstruction replan, W-009 must replace every pending field with reviewed dual-repository commits and read-only preflight evidence, then obtain a separate `experiment_launch` approval.
+Status: **exact candidate contract, not launch approval**; W-009 remote CPU preflight is complete. The docs-only evidence update still requires commit/push, then a separate exact `experiment_launch` approval before any merge, GPU, Slurm, service or rollout action.
 
 ## Purpose and validity boundary
 
@@ -17,8 +17,8 @@ Trainable modules/objectives: none. Actor, vision encoder, environment and all N
 - unavailable source runtime commit (provenance only): `fee3ffac036a599b0ae979a6dd1ce2b21f7dec49`
 - approved reconstruction base: `3003c2e5e4ad84565627e6aa7f6ad5ca731dad1a`
 - approved and pushed VAGEN patch ref: `origin/task/step60-runtime-reconstruction` at `170a673d1bf5855fc0ea6fbed0744b3d7168f8f0`; tree `58ef0eb66ad0bef7587c253c5c643af572c1d3a7`; canonical diff SHA256 `7f025476657de1289cf84b61d7702de26d248cd196412e9374a15e6de62730e9`
-- pre-W-012 pushed Nimloth task ref: `origin/task/rollout-vagen-step60-sft1-sft2` at `a54ae97ad651d64aca98734834038f022aaee0fc`; not launchable after the vLLM 0.8.2 decision, replacement commit pending
-- pre-W-012 v2 runtime-contract payload SHA256: `1de6f3d02c948f80bb1f4f7aed824da37228a9867a4ee43f951b23f814ea2543`; non-launchable after v3/package split, replacement pending
+- approved and pushed post-W-012 Nimloth task ref: `origin/task/rollout-vagen-step60-sft1-sft2` at `187fe112038944a3ba7dd913fb4e87e15a33937e`
+- remote-generated v3 runtime-contract payload SHA256: `cbb30382ffa5170daba37458f182d472e63b46c97f9fe588c6ce565214e6fcbf`; JSON file SHA256 `7b9184b8e33d76c0d410b141d4cff9ea993bef43708f5f9d16e7b2972718e9e8`
 - model architecture/tokenizer lineage: `Qwen/Qwen2.5-VL-3B-Instruct`, source world size 8
 - batch1 rule: category ordinals 0–999 from `base` and `common_sense`; internal held-out when `category_ordinal % 10 == 9`; expected 1,800 train + 200 held-out and zero bare-seed overlap
 
@@ -44,7 +44,7 @@ The source test parquet is excluded because all 128 `(eval_set, seed)` identitie
 Reconstruction evidence status before launch approval:
 
 - completed locally, pushed and remote-CPU rechecked: reviewed VAGEN patch `170a673...` on exact base `3003c2e...`, with clean worktree, ancestry/tree/diff/evidence hashes and golden prompt/parser/reward/API tests;
-- pre-W-012 completed evidence: Nimloth `a54ae97...` collector separated source/runtime identity and rejected metadata relabeling; pending replacement is the reviewed v3 dual-package contract commit;
+- completed locally, pushed and remote-CPU rechecked: Nimloth `187fe112...` implements v3 dual package provenance and rejects v1/v2, missing, single or overloaded package identities; affected remote suite is `108 passed`;
 - exact legacy batch HTTP request/response contract under the patched mode;
 - aligned finite `step_rewards` through the actual batch API, including golden `0.02`, `10.02`, `-0.2` and too-many-action `0.0` cases; any aggregate-reward fallback requires replanning;
 - tokenizer EOS is the only generation stop: `ignore_eos=false`, empty custom stop strings/token IDs, and source-vLLM EOS tuple `(finish_reason="stop", stop_reason=null)` is required. Package/tokenizer/config hashes, EOS ID and generated token IDs are persisted. Length/custom/other finish or parser failure is audited but excludes the linked record from both SFT1 and SFT2; smoke uses `fail_shard`, formal collection uses `exclude_trajectory`.
@@ -65,7 +65,7 @@ Therefore no merge, GPU allocation, Slurm submission or rollout was started. The
 
 ## Staged commands
 
-The exact approved Nimloth/VAGEN commits, clean remote worktrees and unique output identities are intentionally pending until dual-repository commit approval. W-009 must render these commands verbatim with literal paths before launch approval.
+The exact first-stage merge + one-row smoke contract is now [`exact-merge-smoke-launch-contract-2026-09-02.md`](exact-merge-smoke-launch-contract-2026-09-02.md). It supersedes placeholders 1–4 below for that bounded launch request. The placeholder 100-row/formal batch/conversion commands below remain planning aids only and require new post-smoke launch approvals with fresh literal paths.
 
 1. Partition (CPU, non-overwriting):
 
@@ -151,8 +151,7 @@ Human-selected direction: `normal`, one node, four GPUs total: policy TP2 on two
 
 ## Current blockers
 
-1. Approved Nimloth/VAGEN code refs and clean remote worktrees now exist, but these post-preflight task-record updates still need the normal docs commit/push gate before launch.
-2. Human selected the accessible `.venv` runtime (PyTorch `2.6.0` / Transformers `4.49.0` / vLLM `0.8.2`) instead of installing source vLLM `0.8.5.post1`; W-012 code/tests/review and follow-up Nimloth commit/push are required before model load.
-3. Merge/load and real service/AI2-THOR smoke are launch-gated and have not run.
-4. Current `normal` availability has no healthy responsive node with four free GPUs; availability is transient and must be rechecked.
-5. Literal final output paths, CPU/memory/walltime, device binding and commands remain incomplete, so this draft cannot authorize submission.
+1. The 2026-09-02 remote preflight and exact merge/smoke contract task records need their normal docs-only commit and exact-ref push approvals.
+2. Checkpoint merge/load, one-node four-GPU allocation, reconstructed service, AI2-THOR and the one-row smoke require a separate exact `experiment_launch` approval; none has run.
+3. `normal` availability is transient. The latest snapshot has healthy nodes with four or more free GPUs, but availability and run-root nonexistence must be rechecked immediately before submission.
+4. The 100-row concurrency gate and remaining batch1 are intentionally not included in the first launch request. Their literal outputs/resources/commands require actual smoke evidence and fresh approvals.

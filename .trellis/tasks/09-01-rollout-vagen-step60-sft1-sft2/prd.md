@@ -102,7 +102,8 @@
 - 声称 reconstructed runtime 等同于不可读的 exact `fee3ffac...` source tree；允许的结论仅是列明证据覆盖范围的 source-behavior reconstruction。
 - 在未取得 commit/push/merge 审批时执行这些 Git 操作。
 
-## Deferred downstream decision and launch details
+## Deferred downstream decision and staged launch details
 
 1. SFT1 训练集最终采用 `train_all` 还是 `train_success`；本任务将两者都产出并分别标注，后续训练选择可以延后决定。
-2. 已选择 `normal` partition、单节点 4 GPU（policy TP2 + 2 environment GPUs）作为准备方向；最终 walltime、CPU、memory、实际 availability 和完整命令仍须在 launch approval 前核定。
+2. 第一阶段精确合同绑定 [`research/exact-merge-smoke-launch-contract-2026-09-02.md`](research/exact-merge-smoke-launch-contract-2026-09-02.md)：`normal`、任意健康单节点、4 GPU（policy TP2 + 2 environment）、112 CPU、256 GiB、`03:00:00`，只执行 CPU partition/runtime evidence、actor merge/load 与 source-index-0 smoke。它必须取得单独 launch approval，且不授权 100-row gate。
+3. 100-row concurrency gate 与剩余 batch1 的资源、时限、输出和完整命令仍须根据真实 smoke 证据另行固定并分别取得新 launch approval；batches2–10 继续不在本任务启动范围内。
