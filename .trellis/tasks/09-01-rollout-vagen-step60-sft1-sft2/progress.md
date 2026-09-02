@@ -332,4 +332,10 @@ Commit gate:
 
 - Exact R2 launch approval bound docs commit `4ad2d77f195f9e2e8236cf1aa5974ef956584fd2`, contract blob `dba410d4abaa1118e034999070591edaad42f93a`, SHA256 `397c1ea6c1083e602ef432bb4d58e723088873bcdf13874490eeacf527ec3d2a`, and fresh run `20260902T150000Z_step60_batch1_v3_venv_r2_7dac687b`.
 - The added inert merge preflight ran before run-root creation but used `$RUN/merge/hf_actor` as its target. `prepare_merge_plan()` correctly rejected the absent parent, so the exact script exited before output mutation, resource query or `sbatch`. Read-only audit confirmed the R2 run root and matching live/accounting job were absent. This is terminal `failed_pre_submit`; R2 must never be reused.
-- R3 changes only the inert preflight target to a unique nonexistent child of existing machine-local `.local/tmp`; the real merge target remains under the later-created fresh run root. R3 requires a distinct identity, exact review/commit/push and fresh launch approval.
+- R3 changed only the inert preflight target to a unique nonexistent child of existing machine-local `.local/tmp`; the real merge target remained under the later-created fresh run root.
+
+### 2026-09-02 venv-safe R3 retry failed before submit
+
+- Exact R3 approval bound docs commit `b215a5ef905267fb06139d39a5958156864fd796`, contract blob `d26f8fae3ca4e2f8cbec4683435828c503e9b44e`, SHA256 `a4ae638b481e8d415f83fa3cad98c82c6961ee4bad2a6225d567a41b8c7d740a`, and fresh run `20260902T153000Z_step60_batch1_v3_venv_r3_7dac687b`.
+- The inert plan and first three isolated import gates passed. The `vagen.server.server` gate emitted its expected Gym/SAPIEN CPU warnings but exited before `IMPORT_OK`, so `set -e` stopped the script before run-root creation, resource query or `sbatch`. Read-only audit confirmed no R3 run root or matching Slurm job. Three immediate identical isolated imports then returned `IMPORT_OK`/0, so the failure is transient rather than a reproducible package defect.
+- R3 is terminal `failed_pre_submit` and must never be reused. R4 adds only a bounded maximum-three-attempt policy to each side-effect-free import gate and uses fresh run/preflight/port/job identities; it still requires exact review/commit/push and a new launch approval.
