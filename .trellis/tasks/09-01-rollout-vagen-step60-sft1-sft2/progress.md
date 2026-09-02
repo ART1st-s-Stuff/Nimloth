@@ -327,3 +327,9 @@ Commit gate:
 
 - Exact launch approval bound docs commit `f268fcf5c1bf39c12537bf72bd89efe6ac0756cc`, contract SHA256 `ce4fd79cf065f74c8f56c373cd94aadee6fc3cf79b906400e09cf10194cb27c6`, and fresh run `20260902T143000Z_step60_batch1_v3_venv_7dac687b`. The SSH invocation closed before any remote output.
 - Subsequent read-only audit proved the run root remained absent and found no matching live or accounting Slurm job; only terminal historical job `543910` appeared. This attempt is `failed_pre_submit`: no allocation, merge, model load, service, trajectory, dataset or W&B run existed. The consumed approval cannot be reused.
+
+### 2026-09-02 venv-safe R2 retry failed before submit
+
+- Exact R2 launch approval bound docs commit `4ad2d77f195f9e2e8236cf1aa5974ef956584fd2`, contract blob `dba410d4abaa1118e034999070591edaad42f93a`, SHA256 `397c1ea6c1083e602ef432bb4d58e723088873bcdf13874490eeacf527ec3d2a`, and fresh run `20260902T150000Z_step60_batch1_v3_venv_r2_7dac687b`.
+- The added inert merge preflight ran before run-root creation but used `$RUN/merge/hf_actor` as its target. `prepare_merge_plan()` correctly rejected the absent parent, so the exact script exited before output mutation, resource query or `sbatch`. Read-only audit confirmed the R2 run root and matching live/accounting job were absent. This is terminal `failed_pre_submit`; R2 must never be reused.
+- R3 changes only the inert preflight target to a unique nonexistent child of existing machine-local `.local/tmp`; the real merge target remains under the later-created fresh run root. R3 requires a distinct identity, exact review/commit/push and fresh launch approval.
