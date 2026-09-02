@@ -220,7 +220,8 @@ def prepare_merge_plan(
         raise FileNotFoundError(
             f"merge target parent does not exist: {target_dir.parent}"
         )
-    python_executable = python_executable.resolve()
+    # Keep the venv entry path: resolving its symlink loses virtualenv ownership.
+    python_executable = Path(os.path.abspath(os.fspath(python_executable)))
     if not python_executable.is_file():
         raise FileNotFoundError(f"Python executable does not exist: {python_executable}")
     if not os.access(python_executable, os.X_OK):

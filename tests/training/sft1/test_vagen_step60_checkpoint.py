@@ -111,6 +111,30 @@ def test_merge_plan_is_exact_and_rejects_existing_target(tmp_path: Path) -> None
         )
 
 
+def test_merge_plan_preserves_virtualenv_python_symlink(tmp_path: Path) -> None:
+    actor = _fake_actor(tmp_path)
+    real_python = tmp_path / "system-python3"
+    real_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    real_python.chmod(0o755)
+    venv = tmp_path / "venv" / "bin"
+    venv.mkdir(parents=True)
+    python = venv / "python3"
+    python.symlink_to(real_python)
+    merger = tmp_path / "legacy_model_merger.py"
+    merger.write_text("# fixture\n", encoding="utf-8")
+
+    plan = prepare_merge_plan(
+        actor,
+        tmp_path / "merged",
+        python_executable=python,
+        merger_script=merger,
+    )
+
+    assert plan["python_executable"] == str(python.absolute())
+    assert plan["command"][0] == str(python.absolute())
+    assert plan["command"][0] != str(real_python.resolve())
+
+
 def test_merge_manifest_rebinds_every_policy_artifact_byte(tmp_path: Path) -> None:
     target = tmp_path / "merged"
     target.mkdir()

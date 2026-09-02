@@ -80,6 +80,13 @@
   - Recheck `normal` one-node/four-GPU availability and present exact TP2 policy + two-environment GPU binding, CPU/memory/walltime, paths, commands, resume/cancel and monitoring contract.
   - Obtain a separate explicit experiment launch approval for the exact merge/smoke/concurrency/batch1 commands.
 
+- [x] [W-014] **Preserve virtualenv executable ownership in the checkpoint merger**
+  - Add RED coverage proving a symlinked `<venv>/bin/python3` remains the merger command executable rather than resolving to the system interpreter target.
+  - Replace only executable-path canonicalization with lexical absolute normalization while retaining existence/executable checks; keep checkpoint, merger-script and target path validation unchanged.
+  - Run focused checkpoint tests and the affected SFT1 suite, then review and commit/push only the exact task ref from the clean isolated worktree.
+  - Re-run remote inert merge planning and require both `command[0]` and `python_executable` to equal `/project/peilab/atst/nimloth/.venv/bin/python3`; verify `torch`, `torch.utils`, `accelerate` and merger imports under that interpreter before any new launch approval.
+  - Preserve failed run `20260902T123000Z_step60_batch1_v3_nfs_32bcc045`; retry only with a fresh run root, refreshed exact code commit and fresh launch approval.
+
 - [ ] [W-010] **Launch and monitor checkpoint merge, smoke and production-concurrency gate**
   - Run the approved merge/load preflight.
   - Run one-trajectory smoke and validate prompt hashes, parser/reward/runtime contract, transcript/image alignment and terminal non-execution.
