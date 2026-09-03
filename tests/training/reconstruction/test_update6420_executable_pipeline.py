@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -25,10 +26,153 @@ from nimloth.training.reconstruction.update6420_query_state_cache import (
     derive_matched_row,
     publish_update6420_cache_from_rank_payloads,
 )
+from nimloth.training.sft1.query_state_training_config import (
+    parse_query_state_training_config,
+)
 from tests.training.reconstruction.test_update6420_forensic_comparison import (
     _checkpoint,
     _row,
 )
+
+
+def _archived_visual_config() -> dict[str, object]:
+    fixture = Path("tests/training/sft1/fixtures/job542431_process.json")
+    return json.loads(fixture.read_text(encoding="utf-8"))["resolved_config"]
+
+
+def test_archived_update6420_loader_preserves_strict_missing_migration_failure_and_identity_distinction() -> None:
+    raw = _archived_visual_config()
+    assert "execution_migration" not in raw
+    with pytest.raises(
+        ValueError,
+        match="^missing Query-State training section: execution_migration$",
+    ):
+        parse_query_state_training_config(raw)
+
+    loaded = production.parse_archived_update6420_resolved_config(
+        raw,
+        authoritative_run_identity="ca1003f306f0337a33dee11790ce983788c0522f5e4022776a1655a9aeb41487",
+        expected_source_commit="f65ed859f9377584af7e1bb450e7e9de99e02b95",
+    )
+    assert loaded.compatibility_envelope == "archived_update6420_disabled_execution_migration_v1"
+    assert loaded.normalized_parser_identity == loaded.config.identity
+    assert loaded.normalized_parser_identity == "735a596084a06269fc94bf9e56e2ff216cf1d0ad0a775efca8fa35daf833cba0"
+    assert loaded.authoritative_run_identity == "ca1003f306f0337a33dee11790ce983788c0522f5e4022776a1655a9aeb41487"
+    assert loaded.normalized_parser_identity != loaded.authoritative_run_identity
+    assert "execution_migration" not in raw
+
+
+def test_archived_update6420_loader_rejects_present_unknown_malformed_and_unbound_config() -> None:
+    raw = _archived_visual_config()
+    for migration in ({}, {"enabled": False}, "disabled"):
+        changed = deepcopy(raw)
+        changed["execution_migration"] = migration
+        with pytest.raises(ValueError, match="historical top-level shape"):
+            production.parse_archived_update6420_resolved_config(
+                changed,
+                authoritative_run_identity="a" * 64,
+                expected_source_commit="f65ed859f9377584af7e1bb450e7e9de99e02b95",
+            )
+    unknown = deepcopy(raw)
+    unknown["invented_provenance"] = {}
+    with pytest.raises(ValueError, match="historical top-level shape"):
+        production.parse_archived_update6420_resolved_config(
+            unknown,
+            authoritative_run_identity="a" * 64,
+            expected_source_commit="f65ed859f9377584af7e1bb450e7e9de99e02b95",
+        )
+    unbound = deepcopy(raw)
+    unbound["source"]["commit"] = "0" * 40
+    with pytest.raises(ValueError, match="source commit"):
+        production.parse_archived_update6420_resolved_config(
+            unbound,
+            authoritative_run_identity="a" * 64,
+            expected_source_commit="f65ed859f9377584af7e1bb450e7e9de99e02b95",
+        )
+
+
+def test_cpu_preflight_authenticates_before_applying_archived_compatibility(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    config = production.Update6420ProductionConfig(
+        integrated_repo_root=tmp_path,
+        integrated_source_commit="a" * 40,
+        checkpoint_evidence_path=tmp_path / "evidence.json",
+        baseline_cache_path=cache_module.BASELINE_CACHE_PATH,
+        output_path=tmp_path / "unused-output",
+        backend="nccl", world_size=8, max_restarts=0,
+    )
+    events: list[str] = []
+    evidence = {
+        "run_identity": "a" * 64,
+        "source_commit": "f65ed859f9377584af7e1bb450e7e9de99e02b95",
+        "files": {"resolved_config": "/immutable/resolved_config.json"},
+    }
+    monkeypatch.setattr(production, "_verify_source", lambda _config: events.append("source"))
+
+    monkeypatch.setattr(
+        production,
+        "_read_json",
+        lambda path, *, label: evidence
+        if Path(path) == config.checkpoint_evidence_path
+        else pytest.fail(f"unexpected JSON read: {path} ({label})"),
+    )
+
+    def read_hash_bound_json(path, *, expected_sha256, label):
+        events.append("compatibility")
+        assert str(path) == evidence["files"]["resolved_config"]
+        assert expected_sha256 == "b" * 64
+        return _archived_visual_config()
+
+    evidence["resolved_config_sha256"] = "b" * 64
+    monkeypatch.setattr(production, "_read_hash_bound_json", read_hash_bound_json)
+    monkeypatch.setattr(
+        production,
+        "validate_checkpoint_evidence",
+        lambda value: events.append("checkpoint") or value,
+    )
+    monkeypatch.setattr(
+        torch.cuda,
+        "is_available",
+        lambda: pytest.fail("CPU preflight entered CUDA"),
+    )
+    monkeypatch.setattr(
+        torch.distributed,
+        "init_process_group",
+        lambda *_args, **_kwargs: pytest.fail("CPU preflight entered distributed state"),
+    )
+    report = production.preflight_update6420_producer(config)
+    assert events == ["source", "checkpoint", "compatibility"]
+    assert report == {
+        "schema": "nimloth_update6420_query_state_cpu_preflight_v1",
+        "compatibility_envelope": "archived_update6420_disabled_execution_migration_v1",
+        "normalized_parser_identity": "735a596084a06269fc94bf9e56e2ff216cf1d0ad0a775efca8fa35daf833cba0",
+        "authoritative_run_identity": "a" * 64,
+        "actor_unsafe": True,
+        "deployable": False,
+    }
+    assert not config.output_path.exists()
+
+
+def test_archived_update6420_loader_parses_only_hash_bound_bytes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    resolved = tmp_path / "resolved_config.json"
+    payload = json.dumps(_archived_visual_config(), sort_keys=True).encode("utf-8")
+    resolved.write_bytes(payload)
+    evidence = {
+        "run_identity": "a" * 64,
+        "source_commit": "f65ed859f9377584af7e1bb450e7e9de99e02b95",
+        "resolved_config_sha256": hashlib.sha256(payload).hexdigest(),
+        "files": {"resolved_config": str(resolved)},
+    }
+    monkeypatch.setattr(production, "validate_checkpoint_evidence", lambda value: value)
+    loaded = production.load_archived_update6420_resolved_config(evidence)
+    assert loaded.authoritative_run_identity == "a" * 64
+
+    resolved.write_bytes(payload + b"\n")
+    with pytest.raises(ValueError, match="hash changed after owner authentication"):
+        production.load_archived_update6420_resolved_config(evidence)
 
 
 def test_native_baseline_rows_derive_missing_observation_and_response_identities() -> None:

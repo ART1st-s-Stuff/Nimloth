@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -43,6 +44,7 @@ from nimloth.training.sft1.query_state_runtime import (
     construct_query_state_production_root,
 )
 from nimloth.training.sft1.query_state_training_config import (
+    QueryStateTrainingConfig,
     parse_query_state_training_config,
 )
 from nimloth.training.sft1.real_rows import index_early4_rows
@@ -53,6 +55,35 @@ from nimloth.training.verl.runtime import (
 )
 
 UPDATE6420_PRODUCTION_CONFIG_SCHEMA = "nimloth_update6420_unsafe_query_state_cache_production_v1"
+UPDATE6420_CPU_PREFLIGHT_SCHEMA = "nimloth_update6420_query_state_cpu_preflight_v1"
+_ARCHIVED_UPDATE6420_COMPATIBILITY_ENVELOPE = (
+    "archived_update6420_disabled_execution_migration_v1"
+)
+_ARCHIVED_UPDATE6420_TOP_LEVEL_FIELDS = frozenset({
+    "schema", "mode", "lifecycle", "source", "data", "model", "objective",
+    "optimizer", "runtime", "schedule", "early_stopping", "validation",
+    "output", "resources", "authorization", "initialization", "tracking",
+    "environment", "forensic_fork", "command", "artifacts",
+})
+_DISABLED_EXECUTION_MIGRATION_ENVELOPE = {
+    "enabled": False,
+    "anchor_run_identity": "disabled",
+    "anchor_source_commit": "disabled",
+    "anchor_source_manifest_path": "disabled",
+    "anchor_source_manifest_identity": "disabled",
+    "anchor_partition": "disabled",
+    "prior_process_path": "disabled",
+    "prior_process_sha256": "disabled",
+    "anchor_checkpoint_path": "disabled",
+    "anchor_control_sha256": "disabled",
+    "anchor_index_path": "disabled",
+    "anchor_index_sha256": "disabled",
+    "execution_source_commit": "disabled",
+    "execution_source_manifest_path": "disabled",
+    "execution_source_manifest_identity": "disabled",
+    "execution_partition": "disabled",
+    "approval_sha256": "disabled",
+}
 
 
 @dataclass(frozen=True)
@@ -65,6 +96,16 @@ class Update6420ProductionConfig:
     backend: str
     world_size: int
     max_restarts: int
+
+
+@dataclass(frozen=True)
+class ArchivedUpdate6420ResolvedConfig:
+    """Strict current-parser view without replacing authoritative run provenance."""
+
+    config: QueryStateTrainingConfig
+    compatibility_envelope: str
+    normalized_parser_identity: str
+    authoritative_run_identity: str
 
 
 def _absolute(value: object, *, field: str) -> Path:
@@ -112,6 +153,25 @@ def _read_json(path: Path, *, label: str) -> dict[str, Any]:
     return value
 
 
+def _read_hash_bound_json(
+    path: Path, *, expected_sha256: str, label: str
+) -> dict[str, Any]:
+    """Parse exactly the bytes whose immutable owner hash was authenticated."""
+
+    if path.is_symlink() or not path.is_file():
+        raise ValueError(f"{label} must be a regular file")
+    try:
+        payload = path.read_bytes()
+        if hashlib.sha256(payload).hexdigest() != expected_sha256:
+            raise ValueError(f"{label} hash changed after owner authentication")
+        value = json.loads(payload.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid {label}") from error
+    if not isinstance(value, dict):
+        raise TypeError(f"{label} must contain a mapping")
+    return value
+
+
 def _verify_source(config: Update6420ProductionConfig) -> None:
     root = config.integrated_repo_root.resolve()
     if root != config.integrated_repo_root or _git(root, "rev-parse", "--show-toplevel") != str(root):
@@ -120,6 +180,82 @@ def _verify_source(config: Update6420ProductionConfig) -> None:
         raise ValueError("update6420 integrated source commit drift")
     if _git(root, "status", "--porcelain", "--untracked-files=all"):
         raise ValueError("update6420 integrated source must be clean")
+
+
+def parse_archived_update6420_resolved_config(
+    raw: Mapping[str, Any],
+    *,
+    authoritative_run_identity: str,
+    expected_source_commit: str,
+) -> ArchivedUpdate6420ResolvedConfig:
+    """Apply the sole named compatibility envelope to the exact archived shape."""
+
+    if not isinstance(raw, Mapping) or set(raw) != _ARCHIVED_UPDATE6420_TOP_LEVEL_FIELDS:
+        raise ValueError(
+            "archived update6420 config must have the exact historical top-level shape "
+            "with execution_migration absent"
+        )
+    if (
+        not isinstance(authoritative_run_identity, str)
+        or len(authoritative_run_identity) != 64
+        or set(authoritative_run_identity) - frozenset("0123456789abcdef")
+    ):
+        raise ValueError("authoritative update6420 run identity is malformed")
+    compatible = deepcopy(dict(raw))
+    compatible["execution_migration"] = deepcopy(
+        _DISABLED_EXECUTION_MIGRATION_ENVELOPE
+    )
+    parsed = parse_query_state_training_config(compatible)
+    if parsed.mode != "visual_only_forensic_fork":
+        raise ValueError("archived update6420 config is not the visual-fork producer")
+    if parsed.source["commit"] != expected_source_commit:
+        raise ValueError("archived update6420 config source commit is unbound")
+    return ArchivedUpdate6420ResolvedConfig(
+        config=parsed,
+        compatibility_envelope=_ARCHIVED_UPDATE6420_COMPATIBILITY_ENVELOPE,
+        normalized_parser_identity=parsed.identity,
+        authoritative_run_identity=authoritative_run_identity,
+    )
+
+
+def load_archived_update6420_resolved_config(
+    evidence: Mapping[str, Any],
+) -> ArchivedUpdate6420ResolvedConfig:
+    """Authenticate immutable owners before reading and adapting the archived config."""
+
+    validated = validate_checkpoint_evidence(evidence)
+    resolved_path = Path(str(validated["files"]["resolved_config"]))
+    raw = _read_hash_bound_json(
+        resolved_path,
+        expected_sha256=str(validated["resolved_config_sha256"]),
+        label="update6420 resolved config",
+    )
+    return parse_archived_update6420_resolved_config(
+        raw,
+        authoritative_run_identity=str(validated["run_identity"]),
+        expected_source_commit=str(validated["source_commit"]),
+    )
+
+
+def preflight_update6420_producer(
+    config: Update6420ProductionConfig,
+) -> Mapping[str, Any]:
+    """CPU-only immutable owner/config compatibility gate; no output is created."""
+
+    _verify_source(config)
+    evidence = _read_json(
+        config.checkpoint_evidence_path,
+        label="update6420 checkpoint evidence",
+    )
+    archived = load_archived_update6420_resolved_config(evidence)
+    return {
+        "schema": UPDATE6420_CPU_PREFLIGHT_SCHEMA,
+        "compatibility_envelope": archived.compatibility_envelope,
+        "normalized_parser_identity": archived.normalized_parser_identity,
+        "authoritative_run_identity": archived.authoritative_run_identity,
+        "actor_unsafe": True,
+        "deployable": False,
+    }
 
 
 def _backbone_args(resolved: Any) -> SimpleNamespace:
@@ -143,13 +279,10 @@ def construct_update6420_producer(
     """Construct the real visual-fork root and bind native source rows to baseline order."""
 
     _verify_source(config)
-    validate_checkpoint_evidence(evidence)
-    resolved_path = Path(str(evidence["files"]["resolved_config"]))
-    resolved = parse_query_state_training_config(_read_json(resolved_path, label="update6420 resolved config"))
+    archived = load_archived_update6420_resolved_config(evidence)
+    resolved = archived.config
     if (
-        resolved.mode != "visual_only_forensic_fork"
-        or resolved.identity != LOCKED_UPDATE6420_EXPECTED["config_identity"]
-        or str(resolved.source["commit"]) != LOCKED_UPDATE6420_EXPECTED["source_commit"]
+        str(resolved.source["commit"]) != LOCKED_UPDATE6420_EXPECTED["source_commit"]
         or int(resolved.resources["world_size"]) != 8
         or resolved.runtime["fsdp_sharding"] != "full_shard"
         or resolved.runtime["fsdp_use_orig_params"] is not True
@@ -359,12 +492,20 @@ def run_update6420_cache(config: Update6420ProductionConfig) -> Mapping[str, Any
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build the strict unsafe/nondeployable update6420 Query-State cache under WS8 torchrun --max-restarts=0")
     parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument(
+        "--preflight-only",
+        action="store_true",
+        help="authenticate immutable evidence and parse the archived config on CPU",
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = parse_update6420_production_config(_read_json(args.config.resolve(), label="update6420 production config"))
+    if args.preflight_only:
+        print(json.dumps(preflight_update6420_producer(config), sort_keys=True))
+        return 0
     try:
         manifest = run_update6420_cache(config)
         if manifest is not None:

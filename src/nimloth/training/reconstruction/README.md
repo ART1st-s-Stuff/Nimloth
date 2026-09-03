@@ -238,6 +238,13 @@ The update6420 comparison uses four executable, schema-distinct owners:
   config/migration/segment evidence, and all eight rank payloads; constructs the
   production visual-fork SFT1 root; restores model tensors only; recursively
   freezes it; and replays the locked Formal38 Stage B archived-response rows.
+  The immutable update6420 resolved config predates the required top-level
+  `execution_migration` section, so this owner accepts only that exact historical
+  shape and applies the named disabled-migration compatibility envelope in memory
+  after owner/hash authentication. It reports the resulting current-parser identity
+  separately from the authoritative checkpoint run identity. Running the same entry
+  with `--preflight-only` performs this authentication and strict semantic parse on
+  CPU without constructing the model, creating output, or entering torchrun.
 - `update6420_query_state_cache.py` publishes bounded shards with `manifest.json`
   last. Its strict reader re-authenticates the live checkpoint and baseline,
   cache fingerprint, shard file/state/row hashes, and all ordered row,
