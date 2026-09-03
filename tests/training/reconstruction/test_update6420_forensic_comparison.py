@@ -10,6 +10,7 @@ from nimloth.training.reconstruction.update6420_forensic_comparison import (
     LOCKED_UPDATE6420_EXPECTED,
     UPDATE6420_CACHE_SCHEMA,
     _epoch1_metric_input,
+    _ordered_digest,
     build_comparison_artifact,
     build_inspection_contract,
     build_matched_cfm_invariants,
@@ -152,6 +153,21 @@ def _row(index: int, role: str) -> dict[str, object]:
     })
     row["archived_response_identity"] = row["archived_assistant_response_sha256"]
     return row
+
+
+def test_ordered_digest_uses_primitive_lists_only_for_single_fields() -> None:
+    rows = [_row(0, "all_train"), _row(1, "external_validation")]
+
+    row_digest = _ordered_digest(rows, ("row_identity",))
+    assert row_digest == canonical_identity([row["row_identity"] for row in rows])
+    assert row_digest != canonical_identity(
+        [{"row_identity": row["row_identity"]} for row in rows]
+    )
+
+    fields = ("selection_ordinal", "selection_role", "row_identity")
+    assert _ordered_digest(rows, fields) == canonical_identity(
+        [{field: row[field] for field in fields} for row in rows]
+    )
 
 
 def test_cache_requires_exact_archived_rows_and_rejects_deployable_reader() -> None:

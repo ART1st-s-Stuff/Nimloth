@@ -30,11 +30,14 @@ from nimloth.training.reconstruction.forensic_query_state_production import (
     _source_contract,
 )
 from nimloth.training.reconstruction.update6420_forensic_comparison import (
+    LOCKED_SELECTION_DIGESTS,
     LOCKED_UPDATE6420_EXPECTED,
     _restore_authenticated_update6420_model_only,
     validate_checkpoint_evidence,
+    validate_matched_rows,
 )
 from nimloth.training.reconstruction.update6420_query_state_cache import (
+    BASELINE_CACHE_FINGERPRINT,
     BASELINE_CACHE_PATH,
     _write_rank_payload,
     load_locked_baseline_rows,
@@ -248,11 +251,22 @@ def preflight_update6420_producer(
         label="update6420 checkpoint evidence",
     )
     archived = load_archived_update6420_resolved_config(evidence)
+    baseline_rows = load_locked_baseline_rows(config.baseline_cache_path)
+    baseline_digests = validate_matched_rows(
+        baseline_rows,
+        baseline_rows=baseline_rows,
+        expected_digests=LOCKED_SELECTION_DIGESTS,
+    )
     return {
         "schema": UPDATE6420_CPU_PREFLIGHT_SCHEMA,
         "compatibility_envelope": archived.compatibility_envelope,
         "normalized_parser_identity": archived.normalized_parser_identity,
         "authoritative_run_identity": archived.authoritative_run_identity,
+        "baseline_cache": {
+            "count": len(baseline_rows),
+            "cache_fingerprint": BASELINE_CACHE_FINGERPRINT,
+            "ordered_identity_digests": baseline_digests,
+        },
         "actor_unsafe": True,
         "deployable": False,
     }
@@ -495,7 +509,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--preflight-only",
         action="store_true",
-        help="authenticate immutable evidence and parse the archived config on CPU",
+        help="authenticate immutable evidence/config and strict-load the locked baseline cache on CPU",
     )
     return parser
 

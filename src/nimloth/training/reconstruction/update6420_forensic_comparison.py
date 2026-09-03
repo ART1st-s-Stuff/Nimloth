@@ -236,6 +236,9 @@ _BASELINE_FULL_FIELDS = (
 
 
 def _ordered_digest(rows: Sequence[Mapping[str, Any]], fields: Sequence[str]) -> str:
+    if len(fields) == 1:
+        field = fields[0]
+        return canonical_identity([row[field] for row in rows])
     return canonical_identity([{field: row[field] for field in fields} for row in rows])
 
 

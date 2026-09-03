@@ -243,8 +243,10 @@ The update6420 comparison uses four executable, schema-distinct owners:
   shape and applies the named disabled-migration compatibility envelope in memory
   after owner/hash authentication. It reports the resulting current-parser identity
   separately from the authoritative checkpoint run identity. Running the same entry
-  with `--preflight-only` performs this authentication and strict semantic parse on
-  CPU without constructing the model, creating output, or entering torchrun.
+  with `--preflight-only` performs this authentication and strict semantic parse,
+  then strict-loads the immutable Formal38 baseline cache and reports its count,
+  fingerprint, and audit-locked ordered identity digests. This runs on CPU without
+  constructing the model, creating output, entering CUDA, or entering torchrun.
 - `update6420_query_state_cache.py` publishes bounded shards with `manifest.json`
   last. Its strict reader re-authenticates the live checkpoint and baseline,
   cache fingerprint, shard file/state/row hashes, and all ordered row,

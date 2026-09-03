@@ -103,6 +103,7 @@ def test_cpu_preflight_authenticates_before_applying_archived_compatibility(
         backend="nccl", world_size=8, max_restarts=0,
     )
     events: list[str] = []
+    baseline_rows = (object(),) * 14_249
     evidence = {
         "run_identity": "a" * 64,
         "source_commit": "f65ed859f9377584af7e1bb450e7e9de99e02b95",
@@ -132,6 +133,27 @@ def test_cpu_preflight_authenticates_before_applying_archived_compatibility(
         lambda value: events.append("checkpoint") or value,
     )
     monkeypatch.setattr(
+        production,
+        "load_locked_baseline_rows",
+        lambda root: events.append("baseline") or baseline_rows,
+    )
+    monkeypatch.setattr(
+        production,
+        "validate_matched_rows",
+        lambda rows, **kwargs: events.append("digests")
+        or dict(comparison.LOCKED_SELECTION_DIGESTS),
+    )
+    monkeypatch.setattr(
+        production,
+        "construct_query_state_production_root",
+        lambda *_args, **_kwargs: pytest.fail("CPU preflight constructed the model"),
+    )
+    monkeypatch.setattr(
+        production,
+        "load_backbone",
+        lambda *_args, **_kwargs: pytest.fail("CPU preflight loaded the model"),
+    )
+    monkeypatch.setattr(
         torch.cuda,
         "is_available",
         lambda: pytest.fail("CPU preflight entered CUDA"),
@@ -142,12 +164,17 @@ def test_cpu_preflight_authenticates_before_applying_archived_compatibility(
         lambda *_args, **_kwargs: pytest.fail("CPU preflight entered distributed state"),
     )
     report = production.preflight_update6420_producer(config)
-    assert events == ["source", "checkpoint", "compatibility"]
+    assert events == ["source", "checkpoint", "compatibility", "baseline", "digests"]
     assert report == {
         "schema": "nimloth_update6420_query_state_cpu_preflight_v1",
         "compatibility_envelope": "archived_update6420_disabled_execution_migration_v1",
         "normalized_parser_identity": "735a596084a06269fc94bf9e56e2ff216cf1d0ad0a775efca8fa35daf833cba0",
         "authoritative_run_identity": "a" * 64,
+        "baseline_cache": {
+            "count": 14_249,
+            "cache_fingerprint": cache_module.BASELINE_CACHE_FINGERPRINT,
+            "ordered_identity_digests": dict(comparison.LOCKED_SELECTION_DIGESTS),
+        },
         "actor_unsafe": True,
         "deployable": False,
     }
@@ -184,7 +211,7 @@ def test_native_baseline_rows_derive_missing_observation_and_response_identities
     assert validate_matched_rows(
         [derived], baseline_rows=[native],
         expected_counts={"all_train": 1, "external_validation": 0},
-    )["observation"] == canonical_identity([{"observation_identity": derived["observation_identity"]}])
+    )["observation"] == canonical_identity([derived["observation_identity"]])
 
 
 def test_ws8_producer_owner_executes_extract_and_manifest_publish_with_heavy_compute_patched(
