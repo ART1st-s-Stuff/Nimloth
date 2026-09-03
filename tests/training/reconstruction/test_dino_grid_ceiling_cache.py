@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -154,7 +155,7 @@ class _Teacher(FrozenDINOMultigridTargets):
     ) -> None:
         self.identity = DINOV2_LARGE_IDENTITY
         self.grid_sizes = (4, 8, 16)
-        self.native_grid_size = 37
+        self.native_grid_size = 16
         self.model = torch.nn.Linear(1, 1).requires_grad_(False).eval()
         self.image_processor = object()
         self.batch_size = 2
@@ -162,7 +163,7 @@ class _Teacher(FrozenDINOMultigridTargets):
         self.mismatch_grid4 = mismatch_grid4
         self.mutation = mutation
         if mutation == "native":
-            self.native_grid_size = 16
+            self.native_grid_size = 37
         elif mutation == "trainable":
             self.model.requires_grad_(True)
 
@@ -238,6 +239,16 @@ def _install(
         "_processor_fingerprint",
         lambda _processor: DINOV2_LARGE_IDENTITY.processor_fingerprint,
     )
+    monkeypatch.setattr(
+        ceiling,
+        "_validate_processor_config",
+        lambda _processor: {
+            "class": "BitImageProcessor",
+            "resize": {"shortest_edge": 256},
+            "center_crop": {"height": 224, "width": 224},
+            "output_size": {"height": 224, "width": 224},
+        },
+    )
     return state_root, grid4_root, state, grid4, teacher
 
 
@@ -263,23 +274,55 @@ def _build(
     return output, state, grid4, teacher
 
 
-def test_concrete_multigrid_teacher_pools_every_view_directly_from_native37(
+def test_exact_processor_config_emits_224px_native16_for_archived_image() -> None:
+    transformers = pytest.importorskip("transformers")
+    image_value = os.environ.get("NIMLOTH_DINO_PROCESSOR_TEST_IMAGE")
+    if not image_value:
+        pytest.skip("requires a real archived image on the experiment server")
+    path = Path(image_value)
+    assert path.is_absolute() and path.is_file() and not path.is_symlink()
+    processor = transformers.AutoImageProcessor.from_pretrained(
+        DINOV2_LARGE_IDENTITY.source,
+        revision=DINOV2_LARGE_IDENTITY.revision,
+        trust_remote_code=True,
+    )
+    assert ceiling._processor_fingerprint(processor) == (
+        DINOV2_LARGE_IDENTITY.processor_fingerprint
+    )
+    with Image.open(path) as image:
+        pixels = processor(images=[image.convert("RGB")], return_tensors="pt")[
+            "pixel_values"
+        ]
+    assert tuple(pixels.shape) == (1, 3, 224, 224)
+    assert ceiling._validate_processor_config(processor) == {
+        "class": "BitImageProcessor",
+        "resize": {"shortest_edge": 256},
+        "center_crop": {"height": 224, "width": 224},
+        "output_size": {"height": 224, "width": 224},
+    }
+    processor.size = {"height": 518, "width": 518}
+    processor.crop_size = {"height": 518, "width": 518}
+    with pytest.raises(ValueError, match="224px|image_size|resize"):
+        ceiling._validate_processor_config(processor)
+
+
+def test_concrete_multigrid_teacher_uses_native16_and_keeps_grid16_unpooled(
     tmp_path: Path,
 ) -> None:
     class Processor:
         def __call__(self, *, images, return_tensors):
             assert return_tensors == "pt"
-            return {"pixel_values": torch.zeros(len(images), 3, 518, 518)}
+            return {"pixel_values": torch.zeros(len(images), 3, 224, 224)}
 
     class Model(torch.nn.Module):
         def __init__(self) -> None:
             super().__init__()
             self.marker = torch.nn.Parameter(torch.zeros(()), requires_grad=False)
-            self.config = SimpleNamespace(patch_size=14)
+            self.config = SimpleNamespace(patch_size=14, image_size=518)
 
         def forward(self, *, pixel_values):
             batch = pixel_values.shape[0]
-            native = torch.arange(37 * 37, dtype=torch.float32).square().div(1_000_000)
+            native = torch.arange(16 * 16, dtype=torch.float32).square().div(1_000_000)
             native = native.view(1, -1, 1).expand(batch, -1, 1024)
             cls = torch.zeros(batch, 1, 1024)
             return SimpleNamespace(last_hidden_state=torch.cat((cls, native), dim=1))
@@ -300,19 +343,26 @@ def test_concrete_multigrid_teacher_pools_every_view_directly_from_native37(
         batch_size=2,
     ).load(paths, device=torch.device("cpu"))
     torch.testing.assert_close(outputs[4], legacy, rtol=0, atol=0)
-    native = torch.arange(37 * 37, dtype=torch.float32).square().div(1_000_000)
-    native = native.view(1, 37, 37, 1).expand(2, -1, -1, 1024)
+    native = torch.arange(16 * 16, dtype=torch.float32).square().div(1_000_000)
+    native = native.view(1, 16, 16, 1).expand(2, -1, -1, 1024)
     channels_first = native.permute(0, 3, 1, 2).float()
-    for grid_size in (4, 8, 16):
+    for grid_size in (4, 8):
         expected = torch.nn.functional.adaptive_avg_pool2d(
             channels_first, (grid_size, grid_size)
         ).permute(0, 2, 3, 1).reshape(2, grid_size**2, 1024)
-        torch.testing.assert_close(outputs[grid_size], expected, rtol=2e-7, atol=2e-7)
-    chained_grid8 = torch.nn.functional.adaptive_avg_pool2d(
-        outputs[16].view(2, 16, 16, 1024).permute(0, 3, 1, 2),
-        (8, 8),
-    ).permute(0, 2, 3, 1).reshape(2, 64, 1024)
-    assert not torch.equal(outputs[8], chained_grid8)
+        torch.testing.assert_close(outputs[grid_size], expected, rtol=0, atol=0)
+    torch.testing.assert_close(
+        outputs[16], native.reshape(2, 16 * 16, 1024), rtol=0, atol=0
+    )
+
+    class Explicit518Processor:
+        def __call__(self, *, images, return_tensors):
+            assert return_tensors == "pt"
+            return {"pixel_values": torch.zeros(len(images), 3, 518, 518)}
+
+    teacher.image_processor = Explicit518Processor()
+    with pytest.raises(ValueError, match="processor224|native16"):
+        teacher.load_grids(paths, device=torch.device("cpu"))
 
 
 def test_multigrid_builder_has_no_sft1_state_cache_input() -> None:
@@ -332,12 +382,12 @@ def test_multigrid_cache_uses_originals_and_stores_only_direct_grid8_grid16(
     assert manifest["schema"] == ceiling.DINO_GRID_CEILING_CACHE_SCHEMA
     assert manifest["owner_role"] == ceiling.DINO_GRID_CEILING_OWNER_ROLE
     assert manifest["count"] == 4
-    assert manifest["native_grid"] == {"height": 37, "width": 37, "tokens": 1369}
+    assert manifest["native_grid"] == {"height": 16, "width": 16, "tokens": 256}
     assert set(manifest["views"]) == {"grid8", "grid16"}
     assert manifest["views"]["grid8"]["condition_shape"] == [64, 1024]
     assert manifest["views"]["grid16"]["condition_shape"] == [256, 1024]
-    assert manifest["views"]["grid8"]["pooling"] == "native37_direct_adaptive_avg_pool2d_8x8_row_major"
-    assert manifest["views"]["grid16"]["pooling"] == "native37_direct_adaptive_avg_pool2d_16x16_row_major"
+    assert manifest["views"]["grid8"]["pooling"] == "native16_direct_adaptive_avg_pool2d_8x8_row_major"
+    assert manifest["views"]["grid16"]["pooling"] == "native16_unpooled_row_major"
     assert manifest["lineage_audit"]["grid4"]["all_rows_equal"] is True
     assert manifest["lineage_audit"]["grid4"]["compared_rows"] == 4
     assert manifest["lineage_audit"]["grid4"]["max_abs_error"] == 0.0
@@ -386,7 +436,7 @@ def test_multigrid_cache_stops_without_output_on_any_grid4_lineage_mismatch(
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        ("native", "native37|teacher"),
+        ("native", "native16|teacher"),
         ("trainable", "frozen|teacher"),
         ("shape", "grid8|batch"),
         ("dtype", "grid16|float32"),

@@ -68,8 +68,9 @@ forensic-only、unsafe-actor、nondeployable边界，不改变Formal38 actor fai
 也不产生SFT2授权。真实oracle-cache、训练和evaluation均需各自完整launch contract与明确批准。
 
 Direct-DINO grid ceiling继续复用immutable grid4 decoder，并只加载fresh grid8/grid16
-final4000 decoder。三种condition都来自original observation的同一次原生37×37 teacher
-空间：每个grid独立直接池化，不从16×16串行降采样。Evaluator CLI没有`--state-cache`，
+final4000 decoder。三种condition都来自original observation经精确processor得到的同一次
+224px/native16 teacher空间：grid4/grid8直接池化，grid16原样保留，不作串行降采样。
+Evaluator CLI没有`--state-cache`，
 只metadata-only读取grid4中已冻结的row/image与embedded fingerprint，并严格读取multigrid
 cache；任何SFT1/Query-State tensor都不进入条件或评估。
 

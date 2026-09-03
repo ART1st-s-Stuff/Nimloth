@@ -3,11 +3,16 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
 from PIL import Image
 
+from nimloth.backbone.dino_grid import (
+    DINOV2_LARGE_IDENTITY,
+    FrozenDINOMultigridTargets,
+)
 from nimloth.eval import dino_grid_ceiling_decision as ceiling_decision
 from nimloth.eval import dino_grid_reconstruction_ceiling as ceiling_eval
 
@@ -32,6 +37,65 @@ def test_evaluator_cli_has_no_sft1_state_cache_input() -> None:
     assert "--state-cache" not in help_text
     assert "--grid4-cache" in help_text
     assert "--multigrid-cache" in help_text
+
+
+def test_generated_scoring_uses_native16_and_preserves_unpooled_dino16() -> None:
+    class Processor:
+        def __call__(self, *, images, return_tensors):
+            assert return_tensors == "pt"
+            return {"pixel_values": torch.zeros(len(images), 3, 224, 224)}
+
+    class Model(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.marker = torch.nn.Parameter(torch.zeros(()), requires_grad=False)
+            self.config = SimpleNamespace(patch_size=14, image_size=518)
+
+        def forward(self, *, pixel_values):
+            batch = len(pixel_values)
+            native = torch.arange(256, dtype=torch.float32).view(1, 256, 1)
+            native = native.expand(batch, -1, 1024)
+            return SimpleNamespace(
+                last_hidden_state=torch.cat(
+                    (torch.zeros(batch, 1, 1024), native), dim=1
+                )
+            )
+
+    teacher = FrozenDINOMultigridTargets(
+        model=Model(),
+        image_processor=Processor(),
+        identity=DINOV2_LARGE_IDENTITY,
+        batch_size=2,
+    )
+    features = ceiling_eval._generated_multigrid_features(
+        teacher,
+        torch.zeros(2, 3, 128, 128),
+        device=torch.device("cpu"),
+        batch_size=2,
+    )
+    native = torch.arange(256, dtype=torch.float32).view(1, 16, 16, 1)
+    native = native.expand(2, -1, -1, 1024)
+    torch.testing.assert_close(
+        features[16], native.reshape(2, 256, 1024), rtol=0, atol=0
+    )
+    expected4 = torch.nn.functional.adaptive_avg_pool2d(
+        native.permute(0, 3, 1, 2), (4, 4)
+    ).permute(0, 2, 3, 1).reshape(2, 16, 1024)
+    torch.testing.assert_close(features[4], expected4, rtol=0, atol=0)
+
+    class Explicit518Processor:
+        def __call__(self, *, images, return_tensors):
+            assert return_tensors == "pt"
+            return {"pixel_values": torch.zeros(len(images), 3, 518, 518)}
+
+    teacher.image_processor = Explicit518Processor()
+    with pytest.raises(ValueError, match="processor224|native16"):
+        ceiling_eval._generated_multigrid_features(
+            teacher,
+            torch.zeros(1, 3, 128, 128),
+            device=torch.device("cpu"),
+            batch_size=1,
+        )
 
 
 def test_multiscale_metrics_average_noise_inside_rows_and_keep_dino_owners() -> None:

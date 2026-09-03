@@ -179,12 +179,13 @@ contract and separate explicit launch approval.
 `dino_grid_ceiling_cache.py` does not accept or open an SFT1 state cache. It
 metadata-only reads the immutable direct-DINO grid4 cache to recover its audited
 ordered original-image rows, then sends each original observation through the
-pinned frozen DINOv2-large owner exactly once. The processor produces a native
-37×37 patch map (`518px / patch14`); grid4, grid8 and grid16 are independently
-adaptive-average-pooled from that native tensor. Direct grid4 must be exactly
-equal to every immutable grid4 row before the manifest-last cache may publish.
-Only float32 grid8 `[N,64,1024]` and grid16 `[N,256,1024]` views are stored;
-chained16→8/4 pooling and the74.41GiB native37 payload are excluded.
+pinned frozen DINOv2-large owner exactly once. The fingerprinted processor uses
+shortest-edge256 plus center-crop224 and therefore produces a native16×16 patch
+map at patch14; `model.config.image_size=518` is not runtime geometry. Grid4 and
+grid8 are independently adaptive-average-pooled from native16, while grid16 is
+stored unpooled. Direct grid4 must be exactly equal to every immutable grid4 row
+before the manifest-last cache may publish. Only float32 grid8 `[N,64,1024]`
+and grid16 `[N,256,1024]` views are stored; chained pooling is excluded.
 
 `cfm_dino_grid_ceiling.py` has only `spatial_dino8` and `spatial_dino16` cells.
 It accepts no state-cache CLI argument and trains only equal-capacity

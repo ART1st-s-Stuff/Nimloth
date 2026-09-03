@@ -1,9 +1,9 @@
 """Immutable direct-DINO grid8/grid16 cache for reconstruction-ceiling tests.
 
-Every stored view is independently pooled from the same native 37×37 DINO
-feature map of the original archived observation.  The direct 4×4 view is not
-stored; it must exactly match the immutable parent grid4 oracle cache for every
-row before publication can succeed.
+The stored grid8 view is pooled directly from the native 16×16 DINO feature
+map of the original archived observation; grid16 preserves that native map
+unpooled. The direct 4×4 view is not stored and must exactly match the immutable
+parent grid4 oracle cache for every row before publication can succeed.
 """
 
 from __future__ import annotations
@@ -21,8 +21,10 @@ from PIL import Image
 
 from nimloth.backbone.dino_grid import (
     DINOV2_LARGE_IDENTITY,
+    DINOV2_LARGE_NATIVE_GRID_SIZE,
     FrozenDINOMultigridTargets,
     _processor_fingerprint,
+    _validate_processor_config,
 )
 from nimloth.training.reconstruction.forensic_query_state_cache import (
     FORENSIC_SELECTION_ALL_TRAIN,
@@ -56,7 +58,7 @@ DINO_GRID_CEILING_SHARD_SCHEMA = (
 )
 DINO_GRID_CEILING_OWNER_ROLE = "unsafe_forensic_direct_dino_multigrid_condition"
 GRID4_FEATURE_IDENTITY = EXACT_DINO_FEATURE_IDENTITY
-_NATIVE_GRID_SIZE = 37
+_NATIVE_GRID_SIZE = DINOV2_LARGE_NATIVE_GRID_SIZE
 _GRID_SIZES = (8, 16)
 _VIEW_KEYS = {8: "grid8", 16: "grid16"}
 _ROW_FIELDS = {
@@ -83,8 +85,12 @@ def _view_payload(grid_size: int) -> dict[str, Any]:
         "condition_shape": [grid_size**2, DINOV2_LARGE_IDENTITY.hidden_size],
         "condition_dtype": "float32",
         "pooling": (
-            f"native37_direct_adaptive_avg_pool2d_"
-            f"{grid_size}x{grid_size}_row_major"
+            "native16_unpooled_row_major"
+            if grid_size == _NATIVE_GRID_SIZE
+            else (
+                f"native16_direct_adaptive_avg_pool2d_"
+                f"{grid_size}x{grid_size}_row_major"
+            )
         ),
         "input_owner": "original_archived_observation",
         "resize_before_processor": False,
@@ -112,6 +118,10 @@ DINO_GRID_CEILING_FEATURE_IDENTITIES = {
 def _validate_teacher(teacher: FrozenDINOMultigridTargets) -> dict[str, Any]:
     model = getattr(teacher, "model", None)
     processor = getattr(teacher, "image_processor", None)
+    try:
+        processor_geometry = _validate_processor_config(processor)
+    except ValueError as error:
+        raise ValueError("multigrid cache processor geometry is invalid") from error
     if (
         not isinstance(teacher, FrozenDINOMultigridTargets)
         or teacher.identity != DINOV2_LARGE_IDENTITY
@@ -126,7 +136,7 @@ def _validate_teacher(teacher: FrozenDINOMultigridTargets) -> dict[str, Any]:
     ):
         raise ValueError(
             "multigrid cache requires concrete pinned frozen/eval DINOv2-large "
-            "native37 direct-pooling teacher"
+            "processor224/native16 direct-view teacher"
         )
     parameters = tuple(model.parameters())
     if not parameters:
@@ -141,6 +151,7 @@ def _validate_teacher(teacher: FrozenDINOMultigridTargets) -> dict[str, Any]:
         "hidden_size": DINOV2_LARGE_IDENTITY.hidden_size,
         "native_grid_size": _NATIVE_GRID_SIZE,
         "native_tokens": _NATIVE_GRID_SIZE**2,
+        "processor_geometry": processor_geometry,
         "input_owner": "original_archived_observation",
         "resize_before_processor": False,
         "model_dtype": next(iter(dtypes)),
@@ -485,6 +496,7 @@ def _parse_manifest(raw: Mapping[str, Any]) -> Mapping[str, Any]:
         "model_dtype",
         "output_dtype",
         "batch_size",
+        "processor_geometry",
     }
     if (
         set(raw) != required
@@ -498,7 +510,7 @@ def _parse_manifest(raw: Mapping[str, Any]) -> Mapping[str, Any]:
             for key in ("authoritative", "terminal_primary", "deployable", "sft2_ready")
         )
         or raw.get("count") != expected_count
-        or raw.get("native_grid") != {"height": 37, "width": 37, "tokens": 1369}
+        or raw.get("native_grid") != {"height": 16, "width": 16, "tokens": 256}
         or raw.get("views") != _VIEW_PAYLOADS
         or not isinstance(source_grid4, Mapping)
         or set(source_grid4) != source_grid4_fields
@@ -524,8 +536,15 @@ def _parse_manifest(raw: Mapping[str, Any]) -> Mapping[str, Any]:
         or dino.get("processor_fingerprint")
         != DINOV2_LARGE_IDENTITY.processor_fingerprint
         or dino.get("hidden_size") != 1024
-        or dino.get("native_grid_size") != 37
-        or dino.get("native_tokens") != 1369
+        or dino.get("native_grid_size") != 16
+        or dino.get("native_tokens") != 256
+        or dino.get("processor_geometry")
+        != {
+            "class": "BitImageProcessor",
+            "resize": {"shortest_edge": 256},
+            "center_crop": {"height": 224, "width": 224},
+            "output_size": {"height": 224, "width": 224},
+        }
         or dino.get("input_owner") != "original_archived_observation"
         or dino.get("resize_before_processor") is not False
         or dino.get("model_dtype") not in {"float32", "float16", "bfloat16"}
@@ -714,7 +733,7 @@ def build_dino_grid_ceiling_cache(
             max_abs_error = max(max_abs_error, float(difference))
             if not torch.equal(grids[4], expected_grid4):
                 raise ValueError(
-                    "direct native37 grid4 lineage must be exactly equal to immutable grid4 cache"
+                    "direct native16 grid4 lineage must be exactly equal to immutable grid4 cache"
                 )
             compared_rows += len(batch_rows)
             cursor = 0
@@ -756,7 +775,7 @@ def build_dino_grid_ceiling_cache(
             "deployable": False,
             "sft2_ready": False,
             "count": len(rows),
-            "native_grid": {"height": 37, "width": 37, "tokens": 1369},
+            "native_grid": {"height": 16, "width": 16, "tokens": 256},
             "views": _VIEW_PAYLOADS,
             "source_grid4_cache": _source_grid4_payload(grid4_root, grid4_manifest),
             "dino": dino,
@@ -900,7 +919,7 @@ def _dtype(name: str) -> torch.dtype:
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build direct native37-to-grid8/grid16 DINO ceiling cache"
+        description="Build native16 grid8/unpooled-grid16 DINO ceiling cache"
     )
     parser.add_argument("--grid4-cache", required=True)
     parser.add_argument("--output", required=True)

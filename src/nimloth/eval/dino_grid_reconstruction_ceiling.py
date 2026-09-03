@@ -24,7 +24,12 @@ import torch
 from PIL import Image, ImageDraw
 from torch import nn
 
-from nimloth.backbone.dino_grid import DINOV2_LARGE_IDENTITY, FrozenDINOMultigridTargets
+from nimloth.backbone.dino_grid import (
+    DINOV2_LARGE_IDENTITY,
+    DINOV2_LARGE_NATIVE_GRID_SIZE,
+    DINOV2_LARGE_PROCESSOR_OUTPUT_SIZE,
+    FrozenDINOMultigridTargets,
+)
 from nimloth.eval.query_state_oracle_ladder import (
     ID198_INITIAL_NOISE_SHA256,
     ID198_SAMPLE_INDICES,
@@ -683,19 +688,35 @@ def _generated_multigrid_features(
             pixels = processed["pixel_values"].to(device=parameter.device, dtype=parameter.dtype)
             hidden = teacher.model(pixel_values=pixels).last_hidden_state
             patch_size = int(teacher.model.config.patch_size)
-            height = int(pixels.shape[-2]) // patch_size
-            width = int(pixels.shape[-1]) // patch_size
-            if (height, width) != (37, 37):
-                raise ValueError("generated-image DINO scoring requires native37 geometry")
+            pixel_height = int(pixels.shape[-2])
+            pixel_width = int(pixels.shape[-1])
+            height = pixel_height // patch_size
+            width = pixel_width // patch_size
+            if (
+                (pixel_height, pixel_width)
+                != (
+                    DINOV2_LARGE_PROCESSOR_OUTPUT_SIZE,
+                    DINOV2_LARGE_PROCESSOR_OUTPUT_SIZE,
+                )
+                or (height, width)
+                != (DINOV2_LARGE_NATIVE_GRID_SIZE, DINOV2_LARGE_NATIVE_GRID_SIZE)
+            ):
+                raise ValueError(
+                    "generated-image DINO scoring requires processor224/native16 geometry"
+                )
             native = hidden[:, -(height * width) :, :].reshape(
                 len(pil_images), height, width, DINOV2_LARGE_IDENTITY.hidden_size
             ).permute(0, 3, 1, 2).float()
             for grid_size in (4, 16):
-                pooled = torch.nn.functional.adaptive_avg_pool2d(
-                    native, (grid_size, grid_size)
+                view = (
+                    native
+                    if grid_size == DINOV2_LARGE_NATIVE_GRID_SIZE
+                    else torch.nn.functional.adaptive_avg_pool2d(
+                        native, (grid_size, grid_size)
+                    )
                 )
                 outputs[grid_size].append(
-                    pooled.permute(0, 2, 3, 1).reshape(
+                    view.permute(0, 2, 3, 1).reshape(
                         len(pil_images), grid_size**2, DINOV2_LARGE_IDENTITY.hidden_size
                     ).detach().cpu().contiguous()
                 )
@@ -1484,8 +1505,15 @@ def validate_dino_grid_ceiling_report(root: str | Path) -> Mapping[str, Any]:
         or dino_owner.get("processor_fingerprint")
         != DINOV2_LARGE_IDENTITY.processor_fingerprint
         or dino_owner.get("hidden_size") != DINOV2_LARGE_IDENTITY.hidden_size
-        or dino_owner.get("native_grid_size") != 37
-        or dino_owner.get("native_tokens") != 1369
+        or dino_owner.get("native_grid_size") != 16
+        or dino_owner.get("native_tokens") != 256
+        or dino_owner.get("processor_geometry")
+        != {
+            "class": "BitImageProcessor",
+            "resize": {"shortest_edge": 256},
+            "center_crop": {"height": 224, "width": 224},
+            "output_size": {"height": 224, "width": 224},
+        }
         or dino_owner.get("input_owner") != "original_archived_observation"
         or dino_owner.get("resize_before_processor") is not False
         or dino_owner.get("model_dtype") != config["dino_dtype"]

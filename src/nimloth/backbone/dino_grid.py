@@ -46,6 +46,8 @@ DINOV2_LARGE_IDENTITY = DINOIdentity(
     processor_fingerprint="7d65a7de8788e87d",
     hidden_size=1024,
 )
+DINOV2_LARGE_PROCESSOR_OUTPUT_SIZE = 224
+DINOV2_LARGE_NATIVE_GRID_SIZE = 16
 
 
 class DINOGridTargets(Protocol):
@@ -71,6 +73,33 @@ def _processor_fingerprint(processor: Any) -> str:
         else {"class": type(processor).__qualname__}
     )
     return _json_fingerprint(payload)
+
+
+def _validate_processor_config(processor: Any) -> dict[str, Any]:
+    """Return exact pinned processor geometry, independent of model.image_size."""
+
+    to_dict = getattr(processor, "to_dict", None)
+    raw = to_dict() if callable(to_dict) else None
+    if (
+        not isinstance(raw, dict)
+        or type(processor).__name__ != "BitImageProcessor"
+        or _processor_fingerprint(processor)
+        != DINOV2_LARGE_IDENTITY.processor_fingerprint
+        or raw.get("do_resize") is not True
+        or raw.get("size") != {"shortest_edge": 256}
+        or raw.get("do_center_crop") is not True
+        or raw.get("crop_size") != {"height": 224, "width": 224}
+    ):
+        raise ValueError(
+            "DINO multigrid requires the exact pinned 224px BitImageProcessor; "
+            "model.config.image_size or explicit resize overrides are not geometry evidence"
+        )
+    return {
+        "class": "BitImageProcessor",
+        "resize": {"shortest_edge": 256},
+        "center_crop": {"height": 224, "width": 224},
+        "output_size": {"height": 224, "width": 224},
+    }
 
 
 class FrozenDINOGridTargets:
@@ -253,7 +282,7 @@ def _load_grid_shard(path: Path) -> torch.Tensor:
 
 
 class FrozenDINOMultigridTargets:
-    """Extract direct 4×4/8×8/16×16 views from one native37 DINO pass.
+    """Extract direct 4×4/8×8 and native 16×16 views from one DINO pass.
 
     This owner is intentionally separate from :class:`FrozenDINOGridTargets`:
     it does not cache rows in memory, and no lower-resolution view is derived
@@ -261,7 +290,7 @@ class FrozenDINOMultigridTargets:
     """
 
     grid_sizes = (4, 8, 16)
-    native_grid_size = 37
+    native_grid_size = DINOV2_LARGE_NATIVE_GRID_SIZE
 
     def __init__(
         self,
@@ -294,6 +323,7 @@ class FrozenDINOMultigridTargets:
         )
         if _processor_fingerprint(processor) != identity.processor_fingerprint:
             raise ValueError("loaded DINO processor does not match its identity")
+        _validate_processor_config(processor)
         model = AutoModel.from_pretrained(
             identity.source,
             revision=identity.revision,
@@ -328,15 +358,23 @@ class FrozenDINOMultigridTargets:
         )
         hidden = self.model(pixel_values=pixel_values).last_hidden_state
         patch_size = int(self.model.config.patch_size)
-        patch_height = int(pixel_values.shape[-2]) // patch_size
-        patch_width = int(pixel_values.shape[-1]) // patch_size
-        if (patch_height, patch_width) != (
-            self.native_grid_size,
-            self.native_grid_size,
+        pixel_height = int(pixel_values.shape[-2])
+        pixel_width = int(pixel_values.shape[-1])
+        patch_height = pixel_height // patch_size
+        patch_width = pixel_width // patch_size
+        if (
+            (pixel_height, pixel_width)
+            != (
+                DINOV2_LARGE_PROCESSOR_OUTPUT_SIZE,
+                DINOV2_LARGE_PROCESSOR_OUTPUT_SIZE,
+            )
+            or (patch_height, patch_width)
+            != (self.native_grid_size, self.native_grid_size)
         ):
             raise ValueError(
-                "DINO multigrid requires exact native37 patch geometry; "
-                f"got {patch_height}x{patch_width}"
+                "DINO multigrid requires exact processor224/native16 geometry; "
+                f"got pixels={pixel_height}x{pixel_width}, "
+                f"patches={patch_height}x{patch_width}"
             )
         patch_count = patch_height * patch_width
         native = hidden[:, -patch_count:, :].reshape(
@@ -348,12 +386,16 @@ class FrozenDINOMultigridTargets:
         channels_first = native.permute(0, 3, 1, 2).float()
         outputs: dict[int, torch.Tensor] = {}
         for grid_size in self.grid_sizes:
-            pooled = torch.nn.functional.adaptive_avg_pool2d(
-                channels_first,
-                (grid_size, grid_size),
+            view = (
+                channels_first
+                if grid_size == self.native_grid_size
+                else torch.nn.functional.adaptive_avg_pool2d(
+                    channels_first,
+                    (grid_size, grid_size),
+                )
             )
             outputs[grid_size] = (
-                pooled.permute(0, 2, 3, 1)
+                view.permute(0, 2, 3, 1)
                 .reshape(len(images), grid_size**2, self.identity.hidden_size)
                 .detach()
                 .to(device=device, dtype=torch.float32, non_blocking=True)
