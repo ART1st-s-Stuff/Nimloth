@@ -415,7 +415,9 @@ def _metric_summary(value: Mapping[str, Any]) -> dict[str, Any]:
         per_seed.append({"seed": item["seed"], "correct": float(correct), "shuffled": float(shuffled), "delta": float(shuffled) - float(correct)})
     correct_mean = sum(item["correct"] for item in per_seed) / 3
     shuffled_mean = sum(item["shuffled"] for item in per_seed) / 3
-    ratio = shuffled_mean / correct_mean if correct_mean > 0 else math.inf
+    if any(item["correct"] <= 0 for item in per_seed):
+        raise ValueError("matched CFM per-seed ratio requires positive correct MSE")
+    ratio = sum(item["shuffled"] / item["correct"] for item in per_seed) / 3
     return {"checkpoint_sha256": value["checkpoint_sha256"], "correct_mse": correct_mean, "shuffled_mse": shuffled_mean, "delta": shuffled_mean - correct_mean, "ratio": ratio, "per_seed": per_seed}
 
 
@@ -499,12 +501,16 @@ def _validate_update_evaluation(value: Mapping[str, Any]) -> Mapping[str, Any]:
         if isinstance(item, Mapping)
     ]
     expected_deltas = [item["delta"] for item in summary["per_seed"]]
+    # ID209 immutably stored ratio-of-aggregate-means in its gate. Preserve strict
+    # validation of those bytes while comparison output follows the locked
+    # Formal38 protocol: mean of the three per-seed shuffled/correct ratios.
+    archived_gate_ratio = summary["shuffled_mse"] / summary["correct_mse"]
     expected_gate = {
-        "passed": all(delta >= 0.01 for delta in expected_deltas) and summary["ratio"] >= 1.05,
+        "passed": all(delta >= 0.01 for delta in expected_deltas) and archived_gate_ratio >= 1.05,
         "each_delta_minimum": 0.01,
         "aggregate_ratio_minimum": 1.05,
         "per_seed_delta": expected_deltas,
-        "aggregate_ratio": summary["ratio"],
+        "aggregate_ratio": archived_gate_ratio,
     }
     if expected_per_seed != value["per_seed"] or gate != expected_gate:
         raise ValueError("update6420 final evaluation report/gate mismatch")

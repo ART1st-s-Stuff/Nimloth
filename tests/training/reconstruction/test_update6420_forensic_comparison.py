@@ -275,6 +275,10 @@ def test_matched_cfm_comparison_and_actual_gate_inspection_contract() -> None:
     }
     artifact = build_comparison_artifact(epoch1=epoch1, update6420=update, cache_manifest_sha256="f" * 64)
     assert artifact["claim_boundary"] == "representation_decodability_and_condition_use_only"
+    assert artifact["epoch1"]["ratio"] == pytest.approx(1.200490453127298)
+    assert artifact["update6420"]["ratio"] == pytest.approx(
+        sum(item["shuffled"] / item["correct"] for item in update["per_seed"]) / 3
+    )
     assert artifact["update6420_minus_epoch1"]["correct_mse"] < 0
 
     passed = build_inspection_contract(gate={"passed": True}, decoder_checkpoint_sha256="e" * 64, cache_manifest_sha256="f" * 64)
