@@ -1,0 +1,8 @@
+{"file":".trellis/spec/governance/authority-and-safety.md","reason":"重建薄安全内核与授权/不确定性边界。"}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"重建per-task branch、canonical主槽位和worktree合同。"}
+{"file":".trellis/spec/governance/platform-integration.md","reason":"分离上游Trellis与Nimloth覆盖层所有权。"}
+{"file":".trellis/spec/governance/tasks-progress-and-memory.md","reason":"保持Trellis唯一task权威及progress/memory边界。"}
+{"file":".trellis/spec/experiments/task-contract.md","reason":"重建meta.kind=experiment和remote-only task合同。"}
+{"file":".trellis/spec/experiments/launch-and-lifecycle.md","reason":"重建短实验deadline与取消/defer路由。"}
+{"file":".trellis/spec/python/quality-and-testing.md","reason":"定义focused RED/GREEN和最终affected-scope验证。"}
+{"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/research/execution-baseline-2026-09-03.md","reason":"提供恢复前发布来源、hash和dry-run基线。"}

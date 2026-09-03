@@ -1,0 +1,34 @@
+{
+  "id": "rebuild-nimloth-trellis-prompts",
+  "name": "rebuild-nimloth-trellis-prompts",
+  "title": "交互式重建 Nimloth Trellis prompts",
+  "description": "以上游Trellis语义为基线，逐项与人类确认Nimloth项目prompt、工作流及项目专属安全规则的最小合同。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-09-02",
+  "completedAt": null,
+  "branch": "task/rebuild-nimloth-trellis-prompts",
+  "base_branch": "dev",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "09-03-rebuild-trellis-baseline-policy",
+    "09-03-extract-nimloth-work-item-visibility",
+    "09-03-simplify-pi-app-trellis-interaction",
+    "09-03-archive-legacy-trellis-knowledge",
+    "09-03-integrate-trellis-prompt-rebuild"
+  ],
+  "parent": "09-02-reduce-trellis-prompt-overhead",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "repository_branches": "{\"nimloth\":{\"integration_branch\":\"task/rebuild-nimloth-trellis-prompts\",\"base_branch\":\"dev\",\"base_commit\":\"cbd05e5d091c9919dff42def51566e149ebfc44d\"},\"pi-app\":{\"integration_branch\":\"task/rebuild-nimloth-trellis-prompts\",\"base_branch\":\"feature/trellis-work-item-visibility\",\"base_commit\":\"5dd9adc188569b4b1b4b0b6a0049bd1fb6bd39a7\"}}"
+  }
+}

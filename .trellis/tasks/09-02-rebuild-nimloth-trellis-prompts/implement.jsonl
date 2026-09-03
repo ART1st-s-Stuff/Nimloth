@@ -1,0 +1,10 @@
+{"file":".trellis/spec/governance/authority-and-safety.md","reason":"约束授权、不确定性、替代机制与破坏性操作边界；实施时需按新PRD重构但不得先行放宽。"}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"约束per-task branch、canonical主槽位、并行worktree、dirty保护和cleanup。"}
+{"file":".trellis/spec/governance/platform-integration.md","reason":"界定Trellis、Pi extension、pi-app、TaskTree和通用问题transport的所有权。"}
+{"file":".trellis/spec/governance/tasks-progress-and-memory.md","reason":"约束Trellis唯一task权威、progress、archive与memory审批流程。"}
+{"file":".trellis/spec/experiments/task-contract.md","reason":"定义所有真实实验的meta.kind、轻量task和声明范围。"}
+{"file":".trellis/spec/experiments/launch-and-lifecycle.md","reason":"定义remote-only启动、短实验deadline、取消与defer/blocker语义。"}
+{"file":".trellis/spec/python/quality-and-testing.md","reason":"承载focused RED/GREEN与一次最终affected-scope检查合同。"}
+{"file":".trellis/spec/guides/investigation-and-uncertainty.md","reason":"在上游恢复、legacy迁移和跨repo冲突中维持证据与停止条件。"}
+{"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/research/validation-cost-and-boundary-audit-2026-09-03.md","reason":"提供现有验证命令、成本、clean-base既有失败及最终边界证据。"}
+{"file":".trellis/tasks/09-02-reduce-trellis-prompt-overhead/research/upstream-trellis-approval-compliance-audit-2026-09-02.md","reason":"证明typed approval/receipt并非上游0.6.16语义，并界定删除目标。"}

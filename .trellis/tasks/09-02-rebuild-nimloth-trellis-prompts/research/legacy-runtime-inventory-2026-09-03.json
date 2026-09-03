@@ -1,0 +1,106 @@
+{
+  "root": "/workspace/remote2/nimloth/.trellis/.runtime/execution",
+  "generated_from": "read-only live runtime metadata",
+  "file_count": 8,
+  "aggregate": {
+    "approval_requests": 151,
+    "approval_receipts": 142,
+    "assignments": 312,
+    "request_status": {
+      "system_cancelled": 8,
+      "approve": 141,
+      "comment": 1,
+      "pending": 1
+    }
+  },
+  "files": [
+    {
+      "path": ".trellis/.runtime/execution/pi_01a05646-e483-7e57-8500-918296664d95.json",
+      "bytes": 59060,
+      "sha256": "0c6f5e42b60d1341286b8187d3c5d67c805f733999466a7a633679a1ccd7dc8e",
+      "schema_version": 1,
+      "counts": {
+        "approval_requests": 5,
+        "approval_receipts": 4,
+        "assignments": 26
+      }
+    },
+    {
+      "path": ".trellis/.runtime/execution/pi_01a0565b-12e5-76d6-9c3b-e624a4a39191.json",
+      "bytes": 7417,
+      "sha256": "350ffc1e04b016a3e3498c37a91a792d7890391bfbb3bd221be835aca0529552",
+      "schema_version": 1,
+      "counts": {
+        "approval_requests": 0,
+        "approval_receipts": 0,
+        "assignments": 6
+      }
+    },
+    {
+      "path": ".trellis/.runtime/execution/pi_01a0574c-979e-76e3-aa35-25990a6514b2.json",
+      "bytes": 401177,
+      "sha256": "c02fbc3abad121366f5ad8ebea4db45c271d8829cef045a8c594fddef66be7d8",
+      "schema_version": 1,
+      "counts": {
+        "approval_requests": 50,
+        "approval_receipts": 46,
+        "assignments": 137
+      }
+    },
+    {
+      "path": ".trellis/.runtime/execution/pi_01a057c7-a866-753d-a32f-706aa4a6725e.json",
+      "bytes": 1731,
+      "sha256": "364f464623d60eb4b562d8ab4369f6a7777d29a0b3f38661d8a2b774c48e90d2",
+      "schema_version": 1,
+      "counts": {
+        "approval_requests": 0,
+        "approval_receipts": 0,
+        "assignments": 1
+      }
+    },
+    {
+      "path": ".trellis/.runtime/execution/pi_01a057f0-f15e-7fe2-8c98-52e0fb714c05.json",
+      "bytes": 87968,
+      "sha256": "382c240f2c32a3f65af045af8e8101547bc8a22355832e29e77f40e6e2d98527",
+      "schema_version": 1,
+      "counts": {
+        "approval_requests": 10,
+        "approval_receipts": 8,
+        "assignments": 26
+      }
+    },
+    {
+      "path": ".trellis/.runtime/execution/pi_01a05ae2-6e3e-78a1-84f0-26d7c0b6822e.json",
+      "bytes": 392693,
+      "sha256": "ad6a07e7c4a08e261eac7136a715d8642a6623020982552dcae08c4d64d01742",
+      "schema_version": 1,
+      "counts": {
+        "approval_requests": 59,
+        "approval_receipts": 58,
+        "assignments": 79
+      }
+    },
+    {
+      "path": ".trellis/.runtime/execution/pi_01a05c8d-6cb5-7ffc-b5ea-223e53834d29.json",
+      "bytes": 68771,
+      "sha256": "ba76c0246f618b282a5f434a0d78728cd9599df6464bfdf0d3e7ebc18bf1bc0e",
+      "schema_version": 1,
+      "counts": {
+        "approval_requests": 10,
+        "approval_receipts": 10,
+        "assignments": 11
+      }
+    },
+    {
+      "path": ".trellis/.runtime/execution/pi_01a06259-0bb6-7332-aad3-7b7ed77fceac.json",
+      "bytes": 130076,
+      "sha256": "9d08de0cd70c216d559da19b91379d6caaed8ad4642a7fb7b849610f55ef4c71",
+      "schema_version": 1,
+      "counts": {
+        "approval_requests": 17,
+        "approval_receipts": 16,
+        "assignments": 26
+      }
+    }
+  ]
+}

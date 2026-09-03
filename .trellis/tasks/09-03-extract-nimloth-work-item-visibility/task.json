@@ -1,0 +1,30 @@
+{
+  "id": "extract-nimloth-work-item-visibility",
+  "name": "extract-nimloth-work-item-visibility",
+  "title": "提取独立Nimloth work-item可见性",
+  "description": "实现独立work-item extension/skill/runtime，并让pi-app只读消费projection。",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-09-03",
+  "completedAt": null,
+  "branch": "task/extract-nimloth-work-item-visibility",
+  "base_branch": "task/rebuild-nimloth-trellis-prompts",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "09-02-rebuild-nimloth-trellis-prompts",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "repositories": "nimloth@task/rebuild-nimloth-trellis-prompts;pi-app@5dd9adc:task/extract-nimloth-work-item-visibility",
+    "exclusions": "no Trellis upstream fork; no approval or task lifecycle authority",
+    "worktree_paths": "/workspace/remote2/nimloth/.worktree/task-extract-nimloth-work-item-visibility;/workspace/pi-app/.worktree/task-extract-nimloth-work-item-visibility"
+  }
+}

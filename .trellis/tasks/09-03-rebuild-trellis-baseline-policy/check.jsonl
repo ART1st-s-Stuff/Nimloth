@@ -1,0 +1,6 @@
+{"file":".trellis/spec/governance/authority-and-safety.md","reason":"检查薄安全内核没有丢失或放宽高风险边界。"}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"检查branch/worktree/dirty/cleanup合同。"}
+{"file":".trellis/spec/governance/platform-integration.md","reason":"检查通用Trellis文件无Nimloth fork。"}
+{"file":".trellis/spec/experiments/launch-and-lifecycle.md","reason":"检查remote-only和十五分钟总deadline未弱化。"}
+{"file":".trellis/spec/python/quality-and-testing.md","reason":"确定最终focused与affected-scope检查。"}
+{"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/research/template-hash-baseline-2026-09-03.json","reason":"与修改前template状态对比并验证恢复范围。"}

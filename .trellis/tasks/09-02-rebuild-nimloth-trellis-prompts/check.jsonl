@@ -1,0 +1,9 @@
+{"file":".trellis/spec/governance/authority-and-safety.md","reason":"最终检查授权、破坏性门禁、fail-closed和不确定性报告是否符合人类合同。"}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"最终检查两仓库branch/worktree绑定、dirty保护、cleanup与E0094防回归。"}
+{"file":".trellis/spec/governance/platform-integration.md","reason":"最终检查上游Trellis、独立work-item extension与pi-app通用层的所有权未交叉。"}
+{"file":".trellis/spec/governance/tasks-progress-and-memory.md","reason":"最终检查Trellis唯一task权威、legacy archive和memory处理。"}
+{"file":".trellis/spec/experiments/launch-and-lifecycle.md","reason":"确认重建后的prompt/spec没有弱化remote-only、deadline或实验launch门禁。"}
+{"file":".trellis/spec/python/quality-and-testing.md","reason":"决定最终affected-scope静态/CPU检查批次及失败报告标准。"}
+{"file":".trellis/spec/guides/known-error-routing.md","reason":"验证156条known errors退出active routing后仍有可追溯索引且通用模式已进入spec。"}
+{"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/research/validation-cost-and-boundary-audit-2026-09-03.md","reason":"核对最终命令选择、既有失败和验证成本，避免重复full suite。"}
+{"file":".trellis/tasks/09-02-reduce-trellis-prompt-overhead/research/upstream-trellis-approval-compliance-audit-2026-09-02.md","reason":"检查typed approval、receipt和supersede治理已完整删除且未换名重建。"}

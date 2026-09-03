@@ -1,0 +1,30 @@
+{
+  "id": "rebuild-trellis-baseline-policy",
+  "name": "rebuild-trellis-baseline-policy",
+  "title": "恢复Trellis基线并重建Nimloth政策层",
+  "description": "恢复发布版Trellis 0.6.16通用文件，建立薄AGENTS.md、scoped specs和project-local skills。",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-09-03",
+  "completedAt": null,
+  "branch": "task/rebuild-trellis-baseline-policy",
+  "base_branch": "task/rebuild-nimloth-trellis-prompts",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "09-02-rebuild-nimloth-trellis-prompts",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "repositories": "nimloth@cbd05e5d:task/rebuild-trellis-baseline-policy",
+    "exclusions": "no pi-app mutation; no experiment; no legacy archive",
+    "worktree_paths": "/workspace/remote2/nimloth/.worktree/task-rebuild-trellis-baseline-policy"
+  }
+}

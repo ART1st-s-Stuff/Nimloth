@@ -1,0 +1,30 @@
+{
+  "id": "integrate-trellis-prompt-rebuild",
+  "name": "integrate-trellis-prompt-rebuild",
+  "title": "集成并清理Trellis prompt重建",
+  "description": "集成各child，执行两仓库最终检查，并在独立门禁后处理旧approval runtime。",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-09-03",
+  "completedAt": null,
+  "branch": "task/integrate-trellis-prompt-rebuild",
+  "base_branch": "task/rebuild-nimloth-trellis-prompts",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "09-02-rebuild-nimloth-trellis-prompts",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "repositories": "nimloth@task/rebuild-nimloth-trellis-prompts;pi-app@task/rebuild-nimloth-trellis-prompts",
+    "exclusions": "no push; no force; no experiment; live runtime deletion separately gated",
+    "worktree_paths": "/workspace/remote2/nimloth/.worktree/task-integrate-trellis-prompt-rebuild;/workspace/pi-app/.worktree/task-integrate-trellis-prompt-rebuild"
+  }
+}
