@@ -9,13 +9,13 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Protocol, Sequence
+from typing import Any, Protocol
 
 import torch
 from PIL import Image
-
 
 DINO_GRID_CACHE_FORMAT = "dino_grid_sharded_v1"
 
@@ -101,7 +101,7 @@ class FrozenDINOGridTargets:
         dtype: torch.dtype,
         grid_size: int = 4,
         batch_size: int = 32,
-    ) -> "FrozenDINOGridTargets":
+    ) -> FrozenDINOGridTargets:
         """按固定 revision 加载 RL 使用的 frozen DINO teacher。"""
 
         from transformers import AutoImageProcessor, AutoModel
@@ -252,6 +252,115 @@ def _load_grid_shard(path: Path) -> torch.Tensor:
     return features
 
 
+class FrozenDINOMultigridTargets:
+    """Extract direct 4×4/8×8/16×16 views from one native37 DINO pass.
+
+    This owner is intentionally separate from :class:`FrozenDINOGridTargets`:
+    it does not cache rows in memory, and no lower-resolution view is derived
+    from another pooled view.
+    """
+
+    grid_sizes = (4, 8, 16)
+    native_grid_size = 37
+
+    def __init__(
+        self,
+        *,
+        model: torch.nn.Module,
+        image_processor: Any,
+        identity: DINOIdentity,
+        batch_size: int = 32,
+    ) -> None:
+        self.model = model.requires_grad_(False).eval()
+        self.image_processor = image_processor
+        self.identity = identity
+        self.batch_size = int(batch_size)
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        identity: DINOIdentity,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+        batch_size: int = 32,
+    ) -> FrozenDINOMultigridTargets:
+        from transformers import AutoImageProcessor, AutoModel
+
+        processor = AutoImageProcessor.from_pretrained(
+            identity.source,
+            revision=identity.revision,
+            trust_remote_code=True,
+        )
+        if _processor_fingerprint(processor) != identity.processor_fingerprint:
+            raise ValueError("loaded DINO processor does not match its identity")
+        model = AutoModel.from_pretrained(
+            identity.source,
+            revision=identity.revision,
+            trust_remote_code=True,
+            torch_dtype=dtype,
+        ).to(device=device, dtype=dtype)
+        return cls(
+            model=model,
+            image_processor=processor,
+            identity=identity,
+            batch_size=batch_size,
+        )
+
+    @torch.no_grad()
+    def load_grids(
+        self,
+        paths: Sequence[str | Path],
+        *,
+        device: torch.device,
+    ) -> dict[int, torch.Tensor]:
+        if not paths:
+            raise ValueError("DINO multigrid extraction requires at least one image")
+        images: list[Image.Image] = []
+        for path in paths:
+            with Image.open(path) as image:
+                images.append(image.convert("RGB"))
+        processed = self.image_processor(images=images, return_tensors="pt")
+        model_parameter = next(self.model.parameters())
+        pixel_values = processed["pixel_values"].to(
+            device=model_parameter.device,
+            dtype=model_parameter.dtype,
+        )
+        hidden = self.model(pixel_values=pixel_values).last_hidden_state
+        patch_size = int(self.model.config.patch_size)
+        patch_height = int(pixel_values.shape[-2]) // patch_size
+        patch_width = int(pixel_values.shape[-1]) // patch_size
+        if (patch_height, patch_width) != (
+            self.native_grid_size,
+            self.native_grid_size,
+        ):
+            raise ValueError(
+                "DINO multigrid requires exact native37 patch geometry; "
+                f"got {patch_height}x{patch_width}"
+            )
+        patch_count = patch_height * patch_width
+        native = hidden[:, -patch_count:, :].reshape(
+            len(images),
+            patch_height,
+            patch_width,
+            self.identity.hidden_size,
+        )
+        channels_first = native.permute(0, 3, 1, 2).float()
+        outputs: dict[int, torch.Tensor] = {}
+        for grid_size in self.grid_sizes:
+            pooled = torch.nn.functional.adaptive_avg_pool2d(
+                channels_first,
+                (grid_size, grid_size),
+            )
+            outputs[grid_size] = (
+                pooled.permute(0, 2, 3, 1)
+                .reshape(len(images), grid_size**2, self.identity.hidden_size)
+                .detach()
+                .to(device=device, dtype=torch.float32, non_blocking=True)
+            )
+        return outputs
+
+
 class CachedDINOGridTargets:
     """从经过 lineage 校验的 mmap sidecar 读取 next-image DINO grid。"""
 
@@ -279,7 +388,7 @@ class CachedDINOGridTargets:
         *,
         identity: DINOIdentity,
         grid_size: int = 4,
-    ) -> "CachedDINOGridTargets":
+    ) -> CachedDINOGridTargets:
         cache_root = Path(cache_root)
         path_to_feature: dict[str, tuple[torch.Tensor, int]] = {}
         fingerprints: list[str] = []
@@ -397,10 +506,11 @@ class CachedDINOGridTargets:
 
 
 __all__ = [
+    "DINOV2_LARGE_IDENTITY",
+    "DINO_GRID_CACHE_FORMAT",
     "CachedDINOGridTargets",
     "DINOGridTargets",
     "DINOIdentity",
-    "DINO_GRID_CACHE_FORMAT",
-    "DINOV2_LARGE_IDENTITY",
     "FrozenDINOGridTargets",
+    "FrozenDINOMultigridTargets",
 ]

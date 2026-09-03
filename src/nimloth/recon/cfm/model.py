@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass
+from typing import ClassVar
 
 import torch
 from torch import nn
@@ -240,24 +241,30 @@ class TokenConditionedFlowUNet(nn.Module):
 
 
 class SpatialConditionedFlowUNet(nn.Module):
-    """UNet with explicit row-major K16 spatial conditioning.
+    """UNet with explicit row-major square-grid spatial conditioning.
 
     Unlike :class:`TokenConditionedFlowUNet`, this family does not normalize
-    each condition token independently or treat K16 as an unordered set.  The
-    raw 4×4 feature map and fixed coordinates are injected at every UNet scale.
+    each condition token independently or treat the grid as an unordered set.
+    The raw 4×4, 8×8, or 16×16 feature map and fixed coordinates are injected
+    at every UNet scale.  Grid size changes no trainable module or parameter.
     """
 
     decoder_family = "spatial_grid_v1"
+    _AUTHORIZED_GRID_SIZES: ClassVar[dict[int, int]] = {16: 4, 64: 8, 256: 16}
 
     def __init__(self, config: CFMConfig) -> None:
         super().__init__()
-        if config.token_count != 16:
-            raise ValueError("spatial-grid CFM requires exact K16 token_count")
+        try:
+            self.grid_size = self._AUTHORIZED_GRID_SIZES[config.token_count]
+        except KeyError as error:
+            raise ValueError(
+                "spatial-grid CFM token_count must be one of 16, 64, or 256"
+            ) from error
         self.config = config
         base = config.base_channels
         self.register_buffer(
             "condition_coordinates",
-            self._coordinate_grid(),
+            self._coordinate_grid(self.grid_size),
             persistent=True,
         )
         self.condition_projection = nn.Sequential(
@@ -307,8 +314,8 @@ class SpatialConditionedFlowUNet(nn.Module):
         self.out_conv = nn.Conv2d(base, config.output_channels, 3, padding=1)
 
     @staticmethod
-    def _coordinate_grid() -> torch.Tensor:
-        axis = torch.linspace(-1.0, 1.0, 4, dtype=torch.float32)
+    def _coordinate_grid(grid_size: int = 4) -> torch.Tensor:
+        axis = torch.linspace(-1.0, 1.0, grid_size, dtype=torch.float32)
         vertical, horizontal = torch.meshgrid(axis, axis, indexing="ij")
         return torch.stack((horizontal, vertical), dim=0).unsqueeze(0)
 
@@ -319,7 +326,12 @@ class SpatialConditionedFlowUNet(nn.Module):
                 f"expected condition shape (B, {expected}), got {tuple(condition.shape)}"
             )
         return (
-            condition.view(condition.shape[0], 4, 4, self.config.token_dim)
+            condition.view(
+                condition.shape[0],
+                self.grid_size,
+                self.grid_size,
+                self.config.token_dim,
+            )
             .permute(0, 3, 1, 2)
             .contiguous()
             .float()

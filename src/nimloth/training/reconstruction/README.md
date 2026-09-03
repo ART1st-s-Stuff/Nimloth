@@ -174,6 +174,30 @@ DINO 4×4 is pixel-invertible. Building the oracle cache, training any cell, or
 running the evaluator remains an experiment requiring a complete exact launch
 contract and separate explicit launch approval.
 
+### Direct-DINO spatial-grid ceiling
+
+`dino_grid_ceiling_cache.py` does not accept or open an SFT1 state cache. It
+metadata-only reads the immutable direct-DINO grid4 cache to recover its audited
+ordered original-image rows, then sends each original observation through the
+pinned frozen DINOv2-large owner exactly once. The processor produces a native
+37×37 patch map (`518px / patch14`); grid4, grid8 and grid16 are independently
+adaptive-average-pooled from that native tensor. Direct grid4 must be exactly
+equal to every immutable grid4 row before the manifest-last cache may publish.
+Only float32 grid8 `[N,64,1024]` and grid16 `[N,256,1024]` views are stored;
+chained16→8/4 pooling and the74.41GiB native37 payload are excluded.
+
+`cfm_dino_grid_ceiling.py` has only `spatial_dino8` and `spatial_dino16` cells.
+It accepts no state-cache CLI argument and trains only equal-capacity
+`SpatialConditionedFlowUNet` decoders under the matched Stage B image rows,
+batch32, seed20260921 and exact final-step4000 budget. Cache/view/grid/source,
+optimizer, RNG, W&B and output identities are checkpoint invariants; cross-grid
+resume, best/intermediate selection and post-result extension fail closed.
+
+These owners are direct-DINO representation-decodability probes. They never load
+SFT1, Query-State, actor, SFT2 or World Model tensors, and their cache/training
+commands remain separately gated experiments rather than evidence that any
+learned state can predict the DINO views.
+
 The Stage B cache is rebuilt from the live audit without a caller row mask,
 requires zero train/external image overlap, uses the same WS8 padded collective
 schedule, and publishes fixed bounded 2,048-record shards with manifest-last NFS

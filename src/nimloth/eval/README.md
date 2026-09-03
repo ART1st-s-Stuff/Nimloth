@@ -8,6 +8,8 @@
 | `query_state_features.py` | Deployable Direct Query-State 与 frozen DINO target 的 train-fit shared-basis feature 可视化、全 split metrics 和 shuffled-row baseline；这是 Nimloth 可复现方法，不是 DeepSight 未公开的 exact colorization |
 | `forensic_query_state_features.py` | 仅接受 Formal38 unsafe update1605 forensic cache 的 typed Stage A/B direct-feature adapter；Stage A 保持 mechanics 48/16，Stage B 在完整 `all_train` fit shared PCA/global scale、`external_validation` 只 transform、全量算 metrics 且仅保留确定性 16-row visuals；始终强制 unsafe/nondeployable watermark |
 | `query_state_oracle_ladder.py` | Formal38 Stage B 的只读 2×2 forensic evaluator：immutable token/state baseline 对比 fresh token/oracle、spatial/state、spatial/oracle；计算 full external random/fixed-t sensitivity、256×3 pure-noise RGB/DINO metrics、paired row bootstrap 与固定 16-row contact sheet |
+| `dino_grid_reconstruction_ceiling.py` | 不打开SFT1 state cache的direct-DINO grid4/grid8/grid16只读ceiling evaluator：匹配256×3 pure-noise计划、RGB128/32/16与低频梯度、DINO4/DINO16、paired-row CI及固定ID198 16-row结构判定表 |
+| `dino_grid_ceiling_decision.py` | 严格读取已验证ceiling report和逐行human judgment JSON，将16个固定ID198 row/image、contact-sheet identity/SHA及report artifact identity绑定为独立manifest-last最终decision artifact |
 | `rcdm_reconstruction.py` | 从 SFT2 true / WM-predicted latent state 采样 RCDM 可视化 |
 | `rollout_browser/` | 将 VAGEN/SFT behavior-time rollout 证据原子归档为可筛选的离线 HTML |
 | `sft_checkpoint_state_matrix.py` | 在pre-RL validation上只读交叉比较SFT1/ID74 backbone、projector与vision EMA，并审计冻结ID74 WM/ValueHead兼容性 |
@@ -64,5 +66,23 @@ fixed-t flow结果同时记录interpolated input已有的target-RGB比例，pure
 证据；16-row original+four-cell contact sheet只供人类检查，不控制科学结论。所有report强制
 forensic-only、unsafe-actor、nondeployable边界，不改变Formal38 actor failure，不选择SFT1，
 也不产生SFT2授权。真实oracle-cache、训练和evaluation均需各自完整launch contract与明确批准。
+
+Direct-DINO grid ceiling继续复用immutable grid4 decoder，并只加载fresh grid8/grid16
+final4000 decoder。三种condition都来自original observation的同一次原生37×37 teacher
+空间：每个grid独立直接池化，不从16×16串行降采样。Evaluator CLI没有`--state-cache`，
+只metadata-only读取grid4中已冻结的row/image与embedded fingerprint，并严格读取multigrid
+cache；任何SFT1/Query-State tensor都不进入条件或评估。
+
+主要生成证据是同一256 external rows×3 noise seeds×Euler50 pure-noise计划。固定noise先在
+row内平均，然后以external row作10,000次paired bootstrap。报告同时给出RGB128 L1/RMSE、
+area-downsample RGB32/16 L1/RMSE、对应水平/垂直finite-difference gradient L1，以及source
+original-image DINO4/DINO16对generated-128px-sRGB二次DINO评分。后者始终标为非canonical
+teacher target。统计通过要求相对grid4的RGB32 L1与RGB32 gradient-L1 improvement的95% CI
+下界都大于0；最终最小grid还必须由人类在固定ID198 16张中判定至少12张保留对应墙地边界、
+门窗或大型家具位置。阈值不得看结果后修改。
+
+该报告只回答固定decoder/budget下的direct-DINO representation decodability，不证明SFT1能
+预测这些features，不改变actor failure、SFT2 readiness或deployability。真实evaluation仍需
+完整exact launch contract与单独明确批准。
 
 静态数据集统计位于 `nimloth.wm.statistics`，不能作为模型 checkpoint 指标。

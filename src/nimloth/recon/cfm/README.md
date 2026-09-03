@@ -72,10 +72,12 @@ The forensic oracle ladder keeps the legacy `TokenConditionedFlowUNet`
 (`decoder_family=token_set_v1`) byte-compatible and adds a separate
 `SpatialConditionedFlowUNet` (`decoder_family=spatial_grid_v1`). The legacy
 family normalizes and cross-attends an unordered token set. The spatial family
-requires exactly 16 row-major slots, reshapes them to 4×4, adds fixed normalized
-coordinates, and injects resized spatial condition maps at every UNet resolution.
-Token and spatial checkpoints are schema-bound and cannot initialize or resume
-each other.
+accepts only16/64/256 row-major slots, reshapes them to4×4/8×8/16×16, adds fixed
+normalized coordinates, and injects resized spatial condition maps at every
+UNet resolution. Grid size changes only the condition buffer/reshape: trainable
+module names, shapes and parameter count remain identical, while the owning
+checkpoint schema must still reject cross-grid resume. Token and spatial
+checkpoints are schema-bound and cannot initialize or resume each other.
 
 The preregistered matrix is immutable `token_state` plus fresh `token_oracle`,
 `spatial_state`, and `spatial_oracle`. `state` always means the matching

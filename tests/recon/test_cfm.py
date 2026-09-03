@@ -196,18 +196,72 @@ def test_spatial_condition_has_finite_decoder_only_gradients() -> None:
     assert all(torch.isfinite(parameter.grad).all() for parameter in model.parameters())
 
 
-def test_spatial_condition_rejects_non_k16_or_wrong_flat_width() -> None:
-    with pytest.raises(ValueError, match="K16|token_count"):
+@pytest.mark.parametrize(("token_count", "grid_size"), [(16, 4), (64, 8), (256, 16)])
+def test_spatial_condition_supports_authorized_square_grids_with_equal_capacity(
+    token_count: int,
+    grid_size: int,
+) -> None:
+    config = CFMConfig(
+        image_size=16,
+        token_count=token_count,
+        token_dim=12,
+        base_channels=4,
+        condition_dim=8,
+        time_dim=16,
+    )
+    model = SpatialConditionedFlowUNet(config)
+    condition = torch.arange(token_count * 12, dtype=torch.float32).view(1, -1)
+    grid = model.reshape_condition(condition)
+    assert grid.shape == (1, 12, grid_size, grid_size)
+    torch.testing.assert_close(grid[:, :, 0, 0], condition.view(1, token_count, 12)[:, 0])
+    torch.testing.assert_close(grid[:, :, -1, -1], condition.view(1, token_count, 12)[:, -1])
+
+    reference = SpatialConditionedFlowUNet(_tiny_k16_config())
+    assert sum(parameter.numel() for parameter in model.parameters()) == sum(
+        parameter.numel() for parameter in reference.parameters()
+    )
+    assert set(model.state_dict()) == set(reference.state_dict())
+
+
+def test_spatial_k16_coordinates_and_forward_remain_legacy_compatible() -> None:
+    torch.manual_seed(31)
+    model = SpatialConditionedFlowUNet(_tiny_k16_config()).eval()
+    legacy_axis = torch.linspace(-1.0, 1.0, 4, dtype=torch.float32)
+    vertical, horizontal = torch.meshgrid(legacy_axis, legacy_axis, indexing="ij")
+    expected_coordinates = torch.stack((horizontal, vertical), dim=0).unsqueeze(0)
+    torch.testing.assert_close(model.condition_coordinates, expected_coordinates, rtol=0, atol=0)
+
+    condition = torch.randn(2, 16, 12)
+    expected_grid = condition.view(2, 4, 4, 12).permute(0, 3, 1, 2).contiguous()
+    torch.testing.assert_close(model.reshape_condition(condition.flatten(1)), expected_grid)
+
+    clone = SpatialConditionedFlowUNet(_tiny_k16_config()).eval()
+    clone.load_state_dict(model.state_dict(), strict=True)
+    image = torch.randn(2, 3, 16, 16)
+    time = torch.tensor([0.25, 0.75])
+    expected = model(image, time, condition.flatten(1))
+    actual = clone(image, time, condition.flatten(1))
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("token_count", [4, 15, 36, 255])
+def test_spatial_condition_rejects_unauthorized_token_counts(
+    token_count: int,
+) -> None:
+    with pytest.raises(ValueError, match="16|64|256|token_count"):
         SpatialConditionedFlowUNet(
             CFMConfig(
                 image_size=16,
-                token_count=4,
+                token_count=token_count,
                 token_dim=12,
                 base_channels=4,
                 condition_dim=8,
                 time_dim=16,
             )
         )
+
+
+def test_spatial_condition_rejects_wrong_flat_width() -> None:
     model = SpatialConditionedFlowUNet(_tiny_k16_config())
     with pytest.raises(ValueError, match="expected condition shape"):
         model(
