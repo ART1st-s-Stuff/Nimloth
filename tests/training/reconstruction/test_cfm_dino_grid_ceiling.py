@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -106,6 +108,7 @@ def _invariants(
         source_commit="f" * 40,
         multigrid_cache_path="/tmp/multigrid-cache",
         output_dir=str(tmp_path.resolve()),
+        wandb_entity=ceiling.WANDB_ENTITY,
         wandb_project="nimloth-recon",
         wandb_mode="online",
         wandb_run_id="test-run",
@@ -145,6 +148,7 @@ def test_invariants_lock_direct_feature_grid_budget_and_exclude_state_condition(
     assert invariants["grid_size"] == 8
     assert invariants["token_count"] == 64
     assert invariants["trainable_owner"] == "decoder_only"
+    assert invariants["wandb_entity"] == ceiling.WANDB_ENTITY
     assert invariants["final_step"] == 4
     assert invariants["source_grid4_cache_fingerprint"] == "b" * 64
     assert "state" not in invariants["condition_owner"]
@@ -253,6 +257,8 @@ def test_output_protection_and_cli_require_explicit_cell_and_wandb(
             str((tmp_path / "run").resolve()),
             "--device",
             "cpu",
+            "--wandb-entity",
+            ceiling.WANDB_ENTITY,
             "--wandb-project",
             "nimloth-recon",
             "--wandb-mode",
@@ -264,5 +270,95 @@ def test_output_protection_and_cli_require_explicit_cell_and_wandb(
         ]
     )
     assert args.cell == "spatial_dino8"
+    assert args.wandb_entity == ceiling.WANDB_ENTITY
     assert args.wandb_run_id == "run-id"
     assert not hasattr(args, "state_cache")
+
+
+def test_wandb_finish_records_explicit_success_and_failure() -> None:
+    class FakeRun:
+        def __init__(self) -> None:
+            self.exit_codes: list[int] = []
+
+        def finish(self, *, exit_code: int) -> None:
+            self.exit_codes.append(exit_code)
+
+    run = FakeRun()
+    ceiling._finish_wandb_run(run, succeeded=True)
+    ceiling._finish_wandb_run(run, succeeded=False)
+    assert run.exit_codes == [0, 1]
+
+
+def test_training_pins_entity_and_finishes_success_or_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_tiny(monkeypatch)
+    monkeypatch.setattr(ceiling, "_current_source_commit", lambda: "f" * 40)
+    monkeypatch.setattr(
+        ceiling,
+        "load_dino_grid_ceiling_splits",
+        lambda **_kwargs: (
+            _split(grid_size=8, role="all_train", marker="1"),
+            _split(grid_size=8, role="external_validation", marker="2"),
+        ),
+    )
+
+    class FakeRun:
+        entity = ceiling.WANDB_ENTITY
+        project = "nimloth-recon"
+        id = "run-id"
+        name = "run-name"
+
+        def __init__(self) -> None:
+            self.exit_codes: list[int] = []
+
+        def log(self, *_args, **_kwargs) -> None:
+            pass
+
+        def finish(self, *, exit_code: int) -> None:
+            self.exit_codes.append(exit_code)
+
+    runs: list[FakeRun] = []
+    init_kwargs: list[dict] = []
+
+    def fake_init(**kwargs):
+        init_kwargs.append(kwargs)
+        run = FakeRun()
+        runs.append(run)
+        return run
+
+    monkeypatch.setitem(sys.modules, "wandb", SimpleNamespace(init=fake_init))
+
+    def args(output: Path) -> SimpleNamespace:
+        return SimpleNamespace(
+            cell="spatial_dino8",
+            multigrid_cache=(tmp_path / "cache").resolve(),
+            output_dir=output.resolve(),
+            device=torch.device("cpu"),
+            resume=False,
+            resume_checkpoint=None,
+            wandb_entity=ceiling.WANDB_ENTITY,
+            wandb_project="nimloth-recon",
+            wandb_mode="online",
+            wandb_run_id="run-id",
+            wandb_run_name="run-name",
+        )
+
+    assert ceiling.train_dino_grid_ceiling_cfm(args(tmp_path / "success")) == 0
+    assert init_kwargs[0]["entity"] == ceiling.WANDB_ENTITY
+    assert runs[0].exit_codes == [0]
+
+    monkeypatch.setattr(
+        ceiling,
+        "conditional_flow_matching_loss",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("train failed")),
+    )
+    with pytest.raises(RuntimeError, match="train failed"):
+        ceiling.train_dino_grid_ceiling_cfm(args(tmp_path / "failure"))
+    assert runs[1].exit_codes == [1]
+
+    FakeRun.entity = "wrong-entity"
+    with pytest.raises(RuntimeError, match="different run identity"):
+        ceiling.train_dino_grid_ceiling_cfm(args(tmp_path / "identity-mismatch"))
+    assert runs[2].exit_codes == [1]

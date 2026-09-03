@@ -84,6 +84,7 @@ FIXED_TIMES = (0.0, 0.05, 0.25, 0.5, 0.75, 0.95)
 SAMPLE_ROWS = 256
 SAMPLE_ODE_STEPS = 50
 SAMPLE_SELECTION_ALGORITHM = "sha256_oracle_ladder_v1"
+WANDB_ENTITY = "art2nd-hong-kong-university-of-science-and-technology"
 _HEX = frozenset("0123456789abcdef")
 
 
@@ -214,6 +215,11 @@ def _atomic_json(payload: Mapping[str, Any], path: Path) -> None:
         if temporary.exists():
             temporary.unlink()
         raise
+
+
+def _finish_wandb_run(run: Any, *, succeeded: bool) -> None:
+    """Persist an explicit terminal status instead of a neutral W&B finish."""
+    run.finish(exit_code=0 if succeeded else 1)
 
 
 def _validate_split(split: LoadedDinoGridCeilingSplit, *, role: str) -> None:
@@ -495,7 +501,7 @@ def build_dino_grid_ceiling_invariants(
     final_step: int, evaluation_interval: int, save_interval: int, seed: int,
     noise_seeds: Sequence[int], fixed_times: Sequence[float], sample_rows: int,
     sample_ode_steps: int, source_commit: str, multigrid_cache_path: str,
-    output_dir: str, wandb_project: str,
+    output_dir: str, wandb_entity: str, wandb_project: str,
     wandb_mode: str, wandb_run_id: str, wandb_run_name: str,
 ) -> dict[str, Any]:
     owner = CELLS.get(cell)
@@ -524,6 +530,7 @@ def build_dino_grid_ceiling_invariants(
             Path(value).is_absolute()
             for value in (multigrid_cache_path, output_dir)
         )
+        and wandb_entity == WANDB_ENTITY
         and wandb_project == "nimloth-recon"
         and wandb_mode == "online"
         and bool(wandb_run_id)
@@ -542,6 +549,7 @@ def build_dino_grid_ceiling_invariants(
         "source_commit": source_commit,
         "multigrid_cache_path": multigrid_cache_path,
         "output_dir": output_dir,
+        "wandb_entity": wandb_entity,
         "wandb_project": wandb_project,
         "wandb_mode": wandb_mode,
         "wandb_run_id": wandb_run_id,
@@ -594,7 +602,7 @@ def validate_dino_grid_ceiling_invariants(
     required = {
         "schema", "cell", "decoder_family", "condition_family", "condition_owner",
         "trainable_owner", "grid_size", "token_count", "source_commit",
-        "multigrid_cache_path", "output_dir", "wandb_project",
+        "multigrid_cache_path", "output_dir", "wandb_entity", "wandb_project",
         "wandb_mode", "wandb_run_id", "wandb_run_name", "forensic_only",
         "deployable", "sft1_quality_established", "sft2_ready", "cfm_config",
         "decoder_parameter_count", "cache_schema", "train_cache_fingerprint",
@@ -626,6 +634,7 @@ def validate_dino_grid_ceiling_invariants(
             or not Path(str(invariants[field])).is_absolute()
             for field in ("multigrid_cache_path", "output_dir")
         )
+        or invariants.get("wandb_entity") != WANDB_ENTITY
         or invariants.get("wandb_project") != "nimloth-recon"
         or invariants.get("wandb_mode") != "online"
         or not invariants.get("wandb_run_id")
@@ -935,7 +944,8 @@ def train_dino_grid_ceiling_cfm(args: argparse.Namespace) -> int:
         raise RuntimeError("CUDA requested but unavailable")
     _reject_protected_output(args.output_dir, (args.multigrid_cache,))
     if (
-        args.wandb_project != "nimloth-recon"
+        args.wandb_entity != WANDB_ENTITY
+        or args.wandb_project != "nimloth-recon"
         or args.wandb_mode != "online"
         or not args.wandb_run_id
         or not args.wandb_run_name
@@ -989,6 +999,7 @@ def train_dino_grid_ceiling_cfm(args: argparse.Namespace) -> int:
         source_commit=source_commit,
         multigrid_cache_path=str(args.multigrid_cache.resolve()),
         output_dir=str(args.output_dir.resolve()),
+        wandb_entity=args.wandb_entity,
         wandb_project=args.wandb_project,
         wandb_mode=args.wandb_mode,
         wandb_run_id=args.wandb_run_id,
@@ -1002,6 +1013,7 @@ def train_dino_grid_ceiling_cfm(args: argparse.Namespace) -> int:
             "multigrid_cache": str(args.multigrid_cache.resolve()),
             "output": str(args.output_dir.resolve()),
             "device": str(args.device),
+            "wandb_entity": args.wandb_entity,
             "wandb_project": args.wandb_project,
             "wandb_mode": args.wandb_mode,
             "wandb_run_id": args.wandb_run_id,
@@ -1017,6 +1029,7 @@ def train_dino_grid_ceiling_cfm(args: argparse.Namespace) -> int:
         "producer": producer,
         "tracking": {
             "enabled": True,
+            "entity": args.wandb_entity,
             "project": args.wandb_project,
             "mode": args.wandb_mode,
             "run_id": args.wandb_run_id,
@@ -1054,6 +1067,7 @@ def train_dino_grid_ceiling_cfm(args: argparse.Namespace) -> int:
         import wandb
 
         wandb_run = wandb.init(
+            entity=args.wandb_entity,
             project=args.wandb_project,
             id=args.wandb_run_id,
             name=args.wandb_run_name,
@@ -1064,24 +1078,30 @@ def train_dino_grid_ceiling_cfm(args: argparse.Namespace) -> int:
         )
     except Exception as error:
         raise RuntimeError("DINO-grid W&B initialization failed") from error
-    finally:
+    try:
         torch.set_rng_state(cpu_rng)
         if torch.cuda.is_available() and cuda_rng is not None:
             torch.cuda.set_rng_state_all(cuda_rng)
-    if (
-        wandb_run.id != args.wandb_run_id
-        or wandb_run.name != args.wandb_run_name
-        or wandb_run.project != args.wandb_project
-    ):
-        wandb_run.finish()
-        raise RuntimeError("DINO-grid W&B returned a different run identity")
+        if (
+            wandb_run.entity != args.wandb_entity
+            or wandb_run.id != args.wandb_run_id
+            or wandb_run.name != args.wandb_run_name
+            or wandb_run.project != args.wandb_project
+        ):
+            raise RuntimeError("DINO-grid W&B returned a different run identity")
+    except BaseException:
+        _finish_wandb_run(wandb_run, succeeded=False)
+        raise
 
-    log_path = args.output_dir / "train_step_log.csv"
-    if not log_path.exists():
-        with log_path.open("x", newline="") as stream:
-            csv.writer(stream).writerow(["time", "step", "train_flow_mse", "external_report_identity"])
-    last_report: Mapping[str, Any] | None = None
+    succeeded = False
     try:
+        log_path = args.output_dir / "train_step_log.csv"
+        if not log_path.exists():
+            with log_path.open("x", newline="") as stream:
+                csv.writer(stream).writerow(
+                    ["time", "step", "train_flow_mse", "external_report_identity"]
+                )
+        last_report: Mapping[str, Any] | None = None
         for step in range(start_step + 1, FINAL_STEP + 1):
             indices = torch.randint(len(train), (BATCH_SIZE,))
             condition = train.conditions[indices].to(args.device)
@@ -1174,8 +1194,9 @@ def train_dino_grid_ceiling_cfm(args: argparse.Namespace) -> int:
             failure["identity"] = _identity(failure)
             _atomic_json(failure, args.output_dir / "post_validation_failure.json")
             raise
+        succeeded = True
     finally:
-        wandb_run.finish()
+        _finish_wandb_run(wandb_run, succeeded=succeeded)
     return 0
 
 
@@ -1189,6 +1210,7 @@ def build_cli_parser() -> argparse.ArgumentParser:
     parser.add_argument("--device", required=True, type=torch.device)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--resume-checkpoint", type=Path)
+    parser.add_argument("--wandb-entity", required=True, choices=(WANDB_ENTITY,))
     parser.add_argument("--wandb-project", required=True)
     parser.add_argument("--wandb-mode", required=True, choices=("online",))
     parser.add_argument("--wandb-run-id", required=True)

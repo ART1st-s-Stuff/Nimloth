@@ -191,8 +191,9 @@ and grid16 `[N,256,1024]` views are stored; chained pooling is excluded.
 It accepts no state-cache CLI argument and trains only equal-capacity
 `SpatialConditionedFlowUNet` decoders under the matched Stage B image rows,
 batch32, seed20260921 and exact final-step4000 budget. Cache/view/grid/source,
-optimizer, RNG, W&B and output identities are checkpoint invariants; cross-grid
-resume, best/intermediate selection and post-result extension fail closed.
+optimizer, RNG, exact W&B entity/project/run and output identities are checkpoint
+invariants; W&B finish records explicit success/failure status. Cross-grid resume,
+best/intermediate selection and post-result extension fail closed.
 
 These owners are direct-DINO representation-decodability probes. They never load
 SFT1, Query-State, actor, SFT2 or World Model tensors, and their cache/training
