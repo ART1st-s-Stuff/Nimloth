@@ -173,7 +173,7 @@ Trellis面板保持task权威只读。它消费上游静态task数据；独立wo
 2. **独立work-item可见性**：迁出producer/runtime/tool，再适配pi-app Trellis consumer。
 3. **pi-app交互清理**：保留通用问题队列，删除typed approval语义和全局TaskTree能力。
 4. **Legacy知识迁移**：审计156个known errors，单独审查spec diff，归档事故记录和旧progress。
-5. **Integration与cleanup**：跨child验证，并对live approval-runtime删除执行独立门禁。
+5. **Integration与cleanup**：跨child验证，对live approval-runtime删除执行独立门禁；完成最终审查后，将Nimloth parent integration branch经单独批准合入`dev`。
 
 依赖关系：child 1先于child 2和child 4；pi-app child 2与child 3在同一个隔离pi-app worktree中串行实施，确保one-writer ownership；child 5等待其余child完成。
 
@@ -186,4 +186,5 @@ Trellis面板保持task权威只读。它消费上游静态task数据；独立wo
 - pi-app当前存在并发dirty work，因此本task涉及pi-app的实施必须从记录的base创建隔离worktree，禁止覆盖canonical changes。
 - 本重建task不启动任何实验。
 - 每次迁移或删除前记录精确source hashes和destination manifest。
+- 所有Nimloth child先汇入parent integration branch；待`dev`可安全作为clean merge target时，重新核验两端SHA、完整merge diff和最终验证证据，取得独立merge批准后再以非force方式合入`dev`。pi-app成果只在pi-app repository中集成。
 - 回滚时，发布版Trellis文件从`0.6.16` package恢复，project文件从task diff恢复，legacy runtime/data从已核验archive恢复。删除独立extension后，上游Trellis必须仍可正常使用。

@@ -117,6 +117,7 @@
 - [ ] pi-app不再注册、显示、读写或文档化TaskTree专用能力，共享`workspace-json`回归通过。
 - [ ] legacy approval runtime已先归档；只有取得执行时精确批准后才删除live文件。
 - [ ] Nimloth受影响的静态/CPU测试、Trellis validation/update dry-run、pi-app受影响测试/typecheck/build及完整diff检查通过；未启动未经预算授权的实验。
+- [ ] 所有已验收Nimloth child成果汇入`task/rebuild-nimloth-trellis-prompts`；在最终diff审查和独立merge批准后，该parent branch以非force方式合并到Nimloth `dev`并完成合并后验证。未进入`dev`时本task不得宣称完成或archive。
 
 ## Out of Scope
 
