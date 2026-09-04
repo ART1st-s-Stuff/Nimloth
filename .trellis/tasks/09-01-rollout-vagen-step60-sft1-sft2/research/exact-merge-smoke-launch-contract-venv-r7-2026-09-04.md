@@ -1,9 +1,9 @@
-# Exact pipeline-audited R6 launch contract — step60 actor merge + one-row GPU smoke
+# Exact lower-memory R7 launch contract — step60 actor merge + one-row GPU smoke
 
-Date: 2026-09-03
-Status: **terminal failed pre-submit: no eligible resource; never reuse**
+Date: 2026-09-04
+Status: **candidate exact contract; not launch authorization**
 
-This contract replaces terminal failed job `544142` with the same reviewed code/runtime identities and a new run identity. R5 proved merge child step `544142.0` completed `0:0` and produced a valid actor, while the outer `srun | tee` pipeline returned nonzero to `set -e` before smoke-wrapper creation. R6 captures both pipeline component statuses, requires `tee=0`, authoritative Slurm merge-step `COMPLETED|0:0`, and a second full export/manifest-byte validation before allowing smoke. A nonzero `srun` client status is recorded but cannot override those stronger completion and artifact gates. It authorizes nothing until exact review/commit/push and separate launch approval; the 100-row gate and all later stages remain excluded.
+This contract replaces terminal pre-submit R6 with the same reviewed code/runtime and pipeline-accounting gates, a fresh run identity, and the human-selected lower source-index-0 smoke memory envelope: Slurm request `96G`, minimum observed free memory `80GiB`. R4/R5 merge steps peaked at approximately `15.6/15.9GiB` RSS; full vLLM plus environment host-memory peak remains unproven, so any OOM or node-pressure signal fails the smoke without retry. R7 performs the complete live resource query before creating its run root, preventing ordinary capacity shortage from consuming another identity. It authorizes nothing until exact review/commit/push and separate launch approval; the 100-row gate and all later stages remain excluded.
 
 Remote CPU evidence before this draft: affected suite `125 passed`; all three readiness-marker variants passed NFSv3 success, existing-target preservation, concurrent single-winner, final-marker ordering and both interruption rejection gates at `/project/peilab/atst/nimloth/.local/tmp/step60-nfs-publication-probe-20260902T121624Z-32bcc045` (summary SHA256 `aa63a9a8851a6e2df0960b896fad0d08c98d167155d82d3119eedcb051db1d5f`). A real pinned-source partition was published and all ten sibling parquets rehashed at `/project/peilab/atst/nimloth/.local/tmp/step60-cpu-preflight-20260902T122133Z-32bcc045/partition`; manifest SHA256 `be7db7ea975927bc176186bcb51a202b3be191196ced26e043a57add5f99b87c`. Regenerated continuation evidence under `/project/peilab/atst/nimloth/.local/tmp/step60-cpu-preflight-cont-20260902T122241Z-32bcc045` is runtime-contract file SHA256 `7b9184b8e33d76c0d410b141d4cff9ea993bef43708f5f9d16e7b2972718e9e8` (payload `cbb30382ffa5170daba37458f182d472e63b46c97f9fe588c6ce565214e6fcbf`), checkpoint inspection SHA256 `a819cbef1fafd5b9b9ef391b546ec092fa7a2193cd656d461ec258afe17ab500`, and inert merge-plan SHA256 `5e9472705ac54bbe75bbe6c1688c26fc8ef530291ae268565f78db0495732c05`.
 
@@ -30,11 +30,11 @@ No module is trainable; no optimizer or objective exists. Actor, vision encoder,
 
 Unique run root, absent at 2026-09-02 preflight:
 
-`/project/peilab/atst/nimloth/outputs/experiments/training/sft1-vagen-step60/20260903T023000Z_step60_batch1_v3_venv_r6_7dac687b`
+`/project/peilab/atst/nimloth/outputs/experiments/training/sft1-vagen-step60/20260904T174500Z_step60_batch1_v3_venv_r7_7dac687b`
 
 Allowed children: `partition/`, `runtime_contract.json`, `merge/hf_actor/`, `smoke/source-index-00000/`, failed `smoke/source-index-00000.partial-<12 hex>/`, `logs/`, `control/`, `metadata.json`, `LAUNCH_CONTRACT.md`, `RESOLVED_LAUNCH_CONTRACT.md`, `README.md`, and `END.json`. Existing paths are never reused or removed. W&B is disabled.
 
-Slurm: account `peilab`, partition `normal`, any healthy single node, one task, four GPUs, 112 CPUs, 256 GiB scheduler memory, walltime `03:00:00`. The one smoke step receives all four GPUs and fails unless its initial `CUDA_VISIBLE_DEVICES` resolves to four distinct entries. Policy is restricted to logical `0,1` with TP2; service is restricted to logical `2,3`, exposing its two devices internally as `[0,1]`, `max_workers=2`. The 2026-09-02 pre-contract snapshot found `dgx-14` and `dgx-35` satisfying the four-GPU/112-CPU/256-GiB gates; this is transient evidence only. `dgx-51` is excluded because two prior navigation runs passed HTTP health but timed out the first real AI2-THOR prewarm, and it has not been requalified. Availability and requested CPU/memory must be rechecked immediately before submission. Expected duration is under two hours, including repeated source hashing, merge and startup margin.
+Slurm: account `peilab`, partition `normal`, any healthy single node, one task, four GPUs, 112 CPUs, 96 GiB scheduler memory, walltime `03:00:00`. The one smoke step receives all four GPUs and fails unless its initial `CUDA_VISIBLE_DEVICES` resolves to four distinct entries. Policy is restricted to logical `0,1` with TP2; service is restricted to logical `2,3`, exposing its two devices internally as `[0,1]`, `max_workers=2`. The 2026-09-02 pre-contract snapshot found `dgx-14` and `dgx-35` satisfying the four-GPU/112-CPU/96-GiB scheduler and 80-GiB observed-memory gates; this is transient evidence only. `dgx-51` is excluded because two prior navigation runs passed HTTP health but timed out the first real AI2-THOR prewarm, and it has not been requalified. Availability and requested CPU/memory must be rechecked immediately before submission. Expected duration is under two hours, including repeated source hashing, merge and startup margin.
 
 ## Exact execution script
 
@@ -52,11 +52,11 @@ ROOT=/project/peilab/atst/nimloth
 NWT=$ROOT/.worktree/rollout-vagen-step60-sft1-sft2
 VWT=$ROOT/.worktree/vagen-step60-runtime-reconstruction-vagen
 PY=$ROOT/.venv/bin/python3
-RUN=$ROOT/outputs/experiments/training/sft1-vagen-step60/20260903T023000Z_step60_batch1_v3_venv_r6_7dac687b
+RUN=$ROOT/outputs/experiments/training/sft1-vagen-step60/20260904T174500Z_step60_batch1_v3_venv_r7_7dac687b
 ACTOR=/project/peilab/hligb/vagen-navigation/checkpoints/vagen_navigation_repro/navigation_vagen1_native_8gpu_rmb4_ppo16_val5_save5_lightckpt_48h_20260813T011326Z/global_step_60/actor
 SOURCE=/project/peilab/hligb/vagen-navigation/data/navigation_vagen1_native_8gpu_rmb4_ppo16_val5_save5_lightckpt_48h_20260813T011326Z/train.parquet
 TASK_REF=refs/remotes/origin/task/rollout-vagen-step60-sft1-sft2
-TASK_DOC=.trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2/research/exact-merge-smoke-launch-contract-venv-r6-2026-09-03.md
+TASK_DOC=.trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2/research/exact-merge-smoke-launch-contract-venv-r7-2026-09-04.md
 APPROVED_DOCS_COMMIT=${1:?missing-approved-docs-commit}
 HOLD=
 NODE=
@@ -113,7 +113,7 @@ for module, expected in ((vagen,root/'external/VAGEN'),(verl,root/'external/VAGE
     actual=Path(module.__file__).resolve()
     assert actual.is_relative_to(expected), (module.__name__,actual,expected)
 PY
-PREFLIGHT_TARGET=$ROOT/.local/tmp/step60-r6-inert-target-20260903T023000Z-7dac687b
+PREFLIGHT_TARGET=$ROOT/.local/tmp/step60-r7-inert-target-20260904T174500Z-7dac687b
 test -d "$ROOT/.local/tmp"
 test ! -e "$PREFLIGHT_TARGET" && test ! -L "$PREFLIGHT_TARGET"
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT/external/VAGEN/verl:$NWT/external/VAGEN:$NWT/src:$NWT" "$PY" - "$ACTOR" "$PREFLIGHT_TARGET" "$PY" "$NWT/external/VAGEN/verl/scripts/legacy_model_merger.py" <<'PY'
@@ -147,10 +147,30 @@ import importlib.metadata as m
 assert {k: m.version(k) for k in ("vllm", "transformers", "torch")} == {"vllm":"0.8.2", "transformers":"4.49.0", "torch":"2.6.0"}
 PY
 test "$(sha256sum "$SOURCE" | awk '{print $1}')" = 3c8161bd45adc4cde5d67157cf4db225753ed3925cb9a52e3a57d1dd11dbe9d6
-test ! -e "$RUN" && test ! -L "$RUN"
 
 git -C "$ROOT" fetch origin refs/heads/task/rollout-vagen-step60-sft1-sft2:refs/remotes/origin/task/rollout-vagen-step60-sft1-sft2
 test "$(git -C "$ROOT" rev-parse "$TASK_REF")" = "$APPROVED_DOCS_COMMIT"
+
+# Complete live resource gate occurs immediately before run-root creation and submission.
+module load slurm 2>/dev/null
+RESOURCE_REPORT=$(python3 "$NWT/experiments/training/baseline/slurm_gpu_resources.py" --partition normal --min-free-gpu 4)
+ELIGIBLE_JSON=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT" python3 - <<'PY'
+import json
+from experiments.training.baseline.slurm_gpu_resources import parse_nodes
+eligible=[]
+for row in parse_nodes():
+    scheduler_free=(row.real_mem_mb or 0)-(row.alloc_mem_mb or 0)
+    if row.partition=="normal" and row.node!="dgx-51" and row.state in {"IDLE","MIXED"} and row.free_gpu>=4 and row.free_cpu>=112 and scheduler_free>=96*1024 and (row.free_mem_mb or 0)>=80*1024:
+        eligible.append({"node":row.node,"free_gpu":row.free_gpu,"free_cpu":row.free_cpu,"scheduler_free_mem_mb":scheduler_free,"observed_free_mem_mb":row.free_mem_mb})
+eligible.sort(key=lambda item:(-item["free_gpu"],-item["free_cpu"],-item["observed_free_mem_mb"],item["node"]))
+assert eligible, "no one-node normal topology satisfies 4 GPU / 112 CPU / 96G scheduler / 80GiB observed memory"
+print(json.dumps(eligible,sort_keys=True))
+PY
+)
+ELIGIBLE_NODE=$("$PY" -c 'import json,sys; print(json.load(sys.stdin)[0]["node"])' <<< "$ELIGIBLE_JSON")
+test -n "$ELIGIBLE_NODE"
+test ! -e "$RUN" && test ! -L "$RUN"
+
 mkdir -p "$(dirname "$RUN")"
 mkdir "$RUN"
 mkdir "$RUN/logs" "$RUN/control" "$RUN/merge" "$RUN/smoke"
@@ -158,41 +178,16 @@ git -C "$ROOT" show "$APPROVED_DOCS_COMMIT:$TASK_DOC" > "$RUN/LAUNCH_CONTRACT.md
 cp "$RUN/LAUNCH_CONTRACT.md" "$RUN/RESOLVED_LAUNCH_CONTRACT.md"
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT/src:$NWT" "$PY" - "$RUN/metadata.json" "$APPROVED_DOCS_COMMIT" <<'PY'
 import json, sys
-payload={"format":"vagen_step60_merge_smoke_run_v1","purpose":"frozen step60 actor merge and one-row source-protocol smoke","nimloth_code_commit":"7dac687b733cccffaf0a211ef0a602ec001749dd","launch_contract_docs_commit":sys.argv[2],"vagen_reconstruction_commit":"170a673d1bf5855fc0ea6fbed0744b3d7168f8f0","checkpoint_component":"global_step_60/actor","trainable_modules":[],"objectives":[],"partition":"normal","gpus":4,"cpus":112,"memory":"256G","walltime":"03:00:00","wandb":None,"resume":"validated partition/runtime/merged actor only; smoke partials are not resumable","validity":"one-row path smoke only"}
+payload={"format":"vagen_step60_merge_smoke_run_v1","purpose":"frozen step60 actor merge and one-row source-protocol smoke","nimloth_code_commit":"7dac687b733cccffaf0a211ef0a602ec001749dd","launch_contract_docs_commit":sys.argv[2],"vagen_reconstruction_commit":"170a673d1bf5855fc0ea6fbed0744b3d7168f8f0","checkpoint_component":"global_step_60/actor","trainable_modules":[],"objectives":[],"partition":"normal","gpus":4,"cpus":112,"memory":"96G","observed_free_memory_floor":"80GiB","walltime":"03:00:00","wandb":None,"resume":"validated partition/runtime/merged actor only; smoke partials are not resumable","validity":"one-row path smoke only"}
 open(sys.argv[1],"x",encoding="utf-8").write(json.dumps(payload,indent=2)+"\n")
 PY
 
-cd "$NWT"
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT/src:$NWT" "$PY" experiments/training/sft1/vagen_step60_data.py --source "$SOURCE" --output "$RUN/partition"
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT/src:$NWT" "$PY" experiments/training/sft1/vagen_step60_runtime_contract.py --runtime-root "$VWT" --expected-head 170a673d1bf5855fc0ea6fbed0744b3d7168f8f0 --expected-tree 58ef0eb66ad0bef7587c253c5c643af572c1d3a7 --expected-diff-sha256 7f025476657de1289cf84b61d7702de26d248cd196412e9374a15e6de62730e9 --output "$RUN/runtime_contract.json"
-test "$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT/src:$NWT" "$PY" experiments/training/sft1/hash_vagen_step60_runtime_contract.py --contract "$RUN/runtime_contract.json")" = cbb30382ffa5170daba37458f182d472e63b46c97f9fe588c6ce565214e6fcbf
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT/src:$NWT" "$PY" experiments/training/sft1/vagen_step60_checkpoint.py inspect-source --actor-dir "$ACTOR" --hash-shards | tee "$RUN/logs/inspect-source.log"
 
-# Recheck the same repository resource surface again immediately before sbatch.
-module load slurm 2>/dev/null
-python3 "$NWT/experiments/training/baseline/slurm_gpu_resources.py" --partition normal --min-free-gpu 4 | tee "$RUN/control/resources-immediately-before-sbatch.txt"
-PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT" python3 - <<'PY' > "$RUN/control/eligible-nodes-immediately-before-sbatch.json"
-import json
-from experiments.training.baseline.slurm_gpu_resources import parse_nodes
-eligible=[]
-for row in parse_nodes():
-    scheduler_free=(row.real_mem_mb or 0)-(row.alloc_mem_mb or 0)
-    if row.partition=="normal" and row.node!="dgx-51" and row.state in {"IDLE","MIXED"} and row.free_gpu>=4 and row.free_cpu>=112 and scheduler_free>=256*1024 and (row.free_mem_mb or 0)>=256*1024:
-        eligible.append({"node":row.node,"free_gpu":row.free_gpu,"free_cpu":row.free_cpu,"scheduler_free_mem_mb":scheduler_free,"observed_free_mem_mb":row.free_mem_mb})
-eligible.sort(key=lambda item:(-item["free_gpu"],-item["free_cpu"],-item["observed_free_mem_mb"],item["node"]))
-assert eligible, "no one-node normal topology satisfies 4 GPU / 112 CPU / 256G scheduler+observed memory"
-print(json.dumps(eligible,sort_keys=True))
-PY
-ELIGIBLE_NODE=$("$PY" - "$RUN/control/eligible-nodes-immediately-before-sbatch.json" <<'PY'
-import json,sys
-items=json.load(open(sys.argv[1],encoding="utf-8"))
-assert items
-print(items[0]["node"])
-PY
-)
-test -n "$ELIGIBLE_NODE"
+# Persist the already-completed pre-root live resource decision without reselecting topology.
+printf '%s\n' "$RESOURCE_REPORT" > "$RUN/control/resources-immediately-before-sbatch.txt"
+printf '%s\n' "$ELIGIBLE_JSON" > "$RUN/control/eligible-nodes-immediately-before-sbatch.json"
 printf '%s\n' "$ELIGIBLE_NODE" > "$RUN/control/eligible-node"
-HOLD=$(sbatch --parsable --account=peilab --partition=normal --nodelist="$ELIGIBLE_NODE" --nodes=1 --ntasks=1 --cpus-per-task=112 --gres=gpu:4 --mem=256G --time=03:00:00 --job-name=step60-b1-v3venv6-smoke --output="$RUN/logs/hold_%j.out" --error="$RUN/logs/hold_%j.err" --wrap='sleep infinity')
+HOLD=$(sbatch --parsable --account=peilab --partition=normal --nodelist="$ELIGIBLE_NODE" --nodes=1 --ntasks=1 --cpus-per-task=112 --gres=gpu:4 --mem=96G --time=03:00:00 --job-name=step60-b1-v3venv7-smoke --output="$RUN/logs/hold_%j.out" --error="$RUN/logs/hold_%j.err" --wrap='sleep infinity')
 printf '%s\n' "$HOLD" > "$RUN/control/hold_job_id"
 for _ in $(seq 1 180); do
   state=$(squeue -h -j "$HOLD" -o '%T')
@@ -205,6 +200,14 @@ test -n "$NODE" && test "$NODE" != '(null)'
 test "$NODE" = "$ELIGIBLE_NODE"
 printf '%s\n' "$NODE" > "$RUN/control/node"
 scontrol show job -dd "$HOLD" > "$RUN/control/scontrol-job.txt"
+
+# Produce and validate CPU-side source/runtime evidence only after the allocation is secured.
+cd "$NWT"
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT/src:$NWT" "$PY" experiments/training/sft1/vagen_step60_data.py --source "$SOURCE" --output "$RUN/partition"
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT/src:$NWT" "$PY" experiments/training/sft1/vagen_step60_runtime_contract.py --runtime-root "$VWT" --expected-head 170a673d1bf5855fc0ea6fbed0744b3d7168f8f0 --expected-tree 58ef0eb66ad0bef7587c253c5c643af572c1d3a7 --expected-diff-sha256 7f025476657de1289cf84b61d7702de26d248cd196412e9374a15e6de62730e9 --output "$RUN/runtime_contract.json"
+test "$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT/src:$NWT" "$PY" experiments/training/sft1/hash_vagen_step60_runtime_contract.py --contract "$RUN/runtime_contract.json")" = cbb30382ffa5170daba37458f182d472e63b46c97f9fe588c6ce565214e6fcbf
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT/src:$NWT" "$PY" experiments/training/sft1/vagen_step60_checkpoint.py inspect-source --actor-dir "$ACTOR" --hash-shards | tee "$RUN/logs/inspect-source.log"
+
 
 # Merge wrapper re-hashes source and validates HF architecture/tokenizer/finite weights/artifact manifest.
 # Capture each pipeline component: R5 proved the Slurm child can finish 0:0 while the srun client returns nonzero.
@@ -244,8 +247,8 @@ ROOT=/project/peilab/atst/nimloth
 NWT=$ROOT/.worktree/rollout-vagen-step60-sft1-sft2
 VWT=$ROOT/.worktree/vagen-step60-runtime-reconstruction-vagen
 PY=$ROOT/.venv/bin/python3
-RUN=$ROOT/outputs/experiments/training/sft1-vagen-step60/20260903T023000Z_step60_batch1_v3_venv_r6_7dac687b
-PORT=18580
+RUN=$ROOT/outputs/experiments/training/sft1-vagen-step60/20260904T174500Z_step60_batch1_v3_venv_r7_7dac687b
+PORT=18590
 IFS=',' read -r -a ALLOCATED_GPUS <<< "${CUDA_VISIBLE_DEVICES:-}"
 test "${#ALLOCATED_GPUS[@]}" -eq 4
 test "$(printf '%s\n' "${ALLOCATED_GPUS[@]}" | sort -u | wc -l)" -eq 4
@@ -266,7 +269,7 @@ ready=0
 for _ in $(seq 1 167); do if curl -fsS "http://127.0.0.1:$PORT/health" > "$RUN/control/smoke-health.json"; then ready=1; break; fi; if ! kill -0 "$SERVER_PID" 2>/dev/null; then break; fi; sleep 3; done
 test "$ready" -eq 1
 cd "$NWT"
-CUDA_VISIBLE_DEVICES="$POLICY_GPUS" "$PY" experiments/training/sft1/vagen_step60_collect.py --model-path "$RUN/merge/hf_actor" --partition-manifest "$RUN/partition/partition_manifest.json" --source-index 0 --shard-index 0 --shard-size 100 --output-dir "$RUN/smoke/source-index-00000" --env-url "http://127.0.0.1:$PORT" --run-id step60-b1-v3venv6-smoke-source-00000 --source-runtime-root "$VWT" --source-runtime-contract "$RUN/runtime_contract.json" --expected-reconstruction-head 170a673d1bf5855fc0ea6fbed0744b3d7168f8f0 --expected-reconstruction-tree 58ef0eb66ad0bef7587c253c5c643af572c1d3a7 --expected-reconstruction-diff-sha256 7f025476657de1289cf84b61d7702de26d248cd196412e9374a15e6de62730e9 --expected-runtime-contract-payload-sha256 cbb30382ffa5170daba37458f182d472e63b46c97f9fe588c6ce565214e6fcbf --format-failure-policy fail_shard --concurrency 1 --tensor-parallel-size 2 --gpu-memory-utilization 0.35 --engine-seed 0 2>&1 | tee "$RUN/logs/smoke.log"
+CUDA_VISIBLE_DEVICES="$POLICY_GPUS" "$PY" experiments/training/sft1/vagen_step60_collect.py --model-path "$RUN/merge/hf_actor" --partition-manifest "$RUN/partition/partition_manifest.json" --source-index 0 --shard-index 0 --shard-size 100 --output-dir "$RUN/smoke/source-index-00000" --env-url "http://127.0.0.1:$PORT" --run-id step60-b1-v3venv7-smoke-source-00000 --source-runtime-root "$VWT" --source-runtime-contract "$RUN/runtime_contract.json" --expected-reconstruction-head 170a673d1bf5855fc0ea6fbed0744b3d7168f8f0 --expected-reconstruction-tree 58ef0eb66ad0bef7587c253c5c643af572c1d3a7 --expected-reconstruction-diff-sha256 7f025476657de1289cf84b61d7702de26d248cd196412e9374a15e6de62730e9 --expected-runtime-contract-payload-sha256 cbb30382ffa5170daba37458f182d472e63b46c97f9fe588c6ce565214e6fcbf --format-failure-policy fail_shard --concurrency 1 --tensor-parallel-size 2 --gpu-memory-utilization 0.35 --engine-seed 0 2>&1 | tee "$RUN/logs/smoke.log"
 SMOKE
 chmod 0555 "$RUN/control/smoke-step.sh"
 set +e
