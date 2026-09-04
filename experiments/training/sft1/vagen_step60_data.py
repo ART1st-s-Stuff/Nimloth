@@ -1449,6 +1449,20 @@ def validate_complete_shard(
     complete_path = shard_dir / "COMPLETE"
     manifest_path = shard_dir / "shard_manifest.json"
     raw_path = shard_dir / "raw.jsonl"
+    for control_name in ("IN_PROGRESS.json", "records", "attempts"):
+        control_path = shard_dir / control_name
+        if control_path.is_symlink():
+            raise ValueError(f"complete shard control path is a symlink: {control_name}")
+    if (shard_dir / "IN_PROGRESS.json").exists() and not (
+        shard_dir / "IN_PROGRESS.json"
+    ).is_file():
+        raise ValueError("complete shard in-progress metadata is invalid")
+    for directory_name in ("records", "attempts"):
+        directory = shard_dir / directory_name
+        if directory.exists() and not directory.is_dir():
+            raise ValueError(f"complete shard control directory is invalid: {directory_name}")
+    if complete_path.is_symlink() or manifest_path.is_symlink() or raw_path.is_symlink():
+        raise ValueError("complete shard root artifacts must not be symlinks")
     if not complete_path.is_file():
         raise ValueError(f"shard has no COMPLETE marker: {shard_dir}")
     if not manifest_path.is_file() or not raw_path.is_file():
@@ -1571,7 +1585,11 @@ def validate_complete_shard(
         relative = Path(str(artifact.get("path", "")))
         if relative.is_absolute() or ".." in relative.parts or not relative.parts:
             raise ValueError(f"invalid shard-relative image path: {relative}")
-        path = shard_dir / relative
+        path = shard_dir
+        for part in relative.parts:
+            path = path / part
+            if path.is_symlink():
+                raise ValueError(f"shard image path has symlinked ancestor: {relative}")
         if not path.is_file():
             raise ValueError(f"shard image is missing: {relative}")
         if int(artifact.get("size_bytes", -1)) != path.stat().st_size:

@@ -1,7 +1,7 @@
 # Exact login-detached normal-queue R13 contract — step60 actor merge + one-row GPU smoke
 
 Date: 2026-09-05
-Status: **candidate exact contract; not launch authorization**
+Status: **superseded without remote execution by direct existing-script submission; never launch**
 
 This contract replaces terminal pre-submit R12 with the same reviewed 24-hour normal queue, scheduler deadline, resource, identity, merge and smoke gates. R12 detached via a non-login `bash`, so `module load slurm` was unavailable and it exited before run creation. R13 changes the bootstrap to `nohup bash -l`, restoring the exact login environment used by successful prior Slurm submissions; all run and launcher identities are fresh. It authorizes nothing until exact review/commit/push and separate launch approval; source-index-0 remains the only rollout.
 

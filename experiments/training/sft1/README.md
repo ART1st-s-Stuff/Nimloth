@@ -14,7 +14,7 @@ Canonical location for SFT1 per `ai_tasks/sft1_exp.md`.
 | `extract_vagen_step60_evidence.py` | Non-overwriting W&B prompt/reward extractor that excludes assistant CoT and emits the hash-bound reconstruction fixture |
 | `vagen_step60_runtime_contract.py` | Non-overwriting Git-computed reconstruction contract producer; prints the payload hash for approval |
 | `hash_vagen_step60_runtime_contract.py` | Independent runtime-contract payload hash recomputation/check CLI |
-| `vagen_step60_collect.py` | Evidence-backed reconstructed legacy service client, frozen-policy rollout, EOS/terminal audit and reserved-directory/COMPLETE-last v3 shards; unavailable exact source commit remains provenance only |
+| `vagen_step60_collect.py` | Evidence-backed reconstructed legacy service client, frozen-policy rollout, EOS/terminal audit, per-trajectory durable checkpoints, explicit interrupted-shard resume and reserved-directory/COMPLETE-last v3 shards; unavailable exact source commit remains provenance only |
 | `vagen_step60_convert.py` | Complete batch1 shards → linked K16 SFT1/SFT2 views, v3 rejections and hash manifest; validates reserved-directory publication only after `conversion_manifest.json` appears last |
 | `validate_vagen_step60_conversion.py` | Independent published-conversion hash/count/envelope validator |
 | `derive_rollout_images_255.py` | Preserve sources and derive RGB 255×255 images with rewritten JSONLs |
@@ -70,6 +70,19 @@ For the fixed 120-task resolution probe, set `ROLLOUT_TRAIN120=1`; the dataset i
 Validation dumps produced before the E0030 stable-identity fix may have trajectory metrics paired with the wrong `data_source/env_seed`. Direct paired comparison now fails on visible `config_id/eval_set` mismatch. `recover_rollout_resolution_pairs.py` is diagnostic-only: it can recover task pairs from control-batch membership, runtime config, instruction, and initial-frame similarity, but cannot restore exact seed labels.
 
 SFT1 stores cached `pixel_values` as BF16 by default (`CACHE_PIXEL_DTYPE=bfloat16`), which matches the GPU visual encoder input dtype and halves their disk/read bandwidth versus FP32. The dependency-gated wrapper sets `REQUIRE_PREBUILT_CACHE=1`, so the GPU allocation never performs image preprocessing.
+
+## Step60 interrupted-shard resume
+
+A fresh collection command must omit `--resume`. It exclusively creates the stable direct-sibling `<output-dir>.inprogress` directory and fails if either that staging path or the final output exists. To resume the same interrupted shard, rerun the **identical command** with only `--resume` appended:
+
+```bash
+python experiments/training/sft1/vagen_step60_collect.py <all-approved-fresh-arguments>
+python experiments/training/sft1/vagen_step60_collect.py <the-identical-approved-arguments> --resume
+```
+
+Resume validates the ordered source specs, runtime/policy identities, max-step and format contracts, every completed record hash, and every referenced image before environment health/identity requests or vLLM GPU-engine construction. CPU-only policy inspection binds package, model/tokenizer, EOS, sampling and engine configuration first; activation must match it exactly. It skips only validated completed rows. Unfinished rows restart from their original source spec with an attempt-unique environment-service ID and image namespace, while the persisted record/source identity remains stable; previous attempt and unreferenced image evidence is retained.
+
+A crash-released exclusive sibling lock covers staging validation/creation, rollout, finalization and marker-last publication. Checkpoint files use atomic no-overwrite creation. A changed contract requires a fresh unique output identity rather than editing the in-progress directory.
 
 ## Legacy
 

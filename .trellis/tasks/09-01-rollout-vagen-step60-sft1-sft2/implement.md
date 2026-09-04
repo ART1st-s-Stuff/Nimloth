@@ -87,6 +87,13 @@
   - Re-run remote inert merge planning and require both `command[0]` and `python_executable` to equal `/project/peilab/atst/nimloth/.venv/bin/python3`; verify `torch`, `torch.utils`, `accelerate` and merger imports under that interpreter before any new launch approval.
   - Preserve failed run `20260902T123000Z_step60_batch1_v3_nfs_32bcc045`; retry only with a fresh run root, refreshed exact code commit and fresh launch approval.
 
+- [x] [W-015] **Add per-trajectory durable checkpoints and explicit interrupted-shard resume**
+  - Add RED tests proving each completed trajectory is atomically checkpointed and fsynced before the next trajectory completes, an interruption preserves completed rows, and explicit resume invokes policy/environment only for unfinished source rows.
+  - Add RED cases for fresh-vs-resume mode, stable staging identity, changed ordered specs/runtime/policy/max-step/format contract, corrupt/truncated checkpoint JSON, record-hash drift, missing/tampered image evidence, duplicate/unknown source rows and an existing final output; all must fail before rollout calls.
+  - Implement a stable direct-sibling in-progress directory with immutable hash-bound collection metadata, per-trajectory checkpoint files and attempt-unique image namespaces. Preserve incomplete attempt evidence; never infer or resume half an environment trajectory.
+  - On complete coverage, regenerate `raw.jsonl` deterministically in requested source-spec order, retain resume audit evidence, produce the existing strict manifest/COMPLETE marker and publish marker-last. Keep final v3 raw/shard/conversion semantics unchanged.
+  - Add CLI `--resume` fail-closed behavior, document the exact fresh/resume commands, run focused collector/data/converter tests and then one final affected SFT1 suite plus Ruff/compile/shell/diff checks. Obtain implementation approval before code edits and separate commit/push approvals; do not launch GPU work in this item.
+
 - [ ] [W-010] **Launch and monitor checkpoint merge, smoke and production-concurrency gate**
   - Run the approved merge/load preflight.
   - Run one-trajectory smoke and validate prompt hashes, parser/reward/runtime contract, transcript/image alignment and terminal non-execution.

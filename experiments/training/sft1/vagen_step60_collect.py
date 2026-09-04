@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import ast
 import base64
+import fcntl
 import hashlib
 import importlib.metadata
 import io
@@ -21,7 +22,8 @@ import os
 import re
 import subprocess
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -40,6 +42,7 @@ from experiments.training.sft1.vagen_step60_data import (
     parse_source_response,
     publish_reserved_directory,
     validate_complete_shard,
+    validate_raw_reconstruction_semantics,
 )
 
 RAW_RECORD_FORMAT = "vagen_step60_source_trajectory_v3"
@@ -158,13 +161,118 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_directory_chain(path: Path, *, root: Path) -> None:
+    current = path
+    while True:
+        _fsync_directory(current)
+        if current == root:
+            return
+        parent = current.parent
+        if parent == current or root not in current.parents:
+            raise ValueError(f"directory is outside fsync root: {path} not under {root}")
+        current = parent
+
+
+@contextmanager
+def _exclusive_collection_lock(output_dir: Path):
+    """Hold a crash-released lock for one stable shard identity."""
+
+    output_dir = lexical_absolute_path(output_dir)
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = output_dir.with_name(f".{output_dir.name}.collection.lock")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+    except OSError as error:
+        raise RuntimeError(f"collection lock path is invalid: {lock_path}") from error
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError(
+                f"source shard is locked by another collector: {output_dir}"
+            ) from error
+        yield
+    finally:
+        os.close(descriptor)
+
+
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     temporary = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex}")
-    temporary.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
+    encoded = (json.dumps(payload, indent=2, ensure_ascii=False) + "\n").encode(
+        "utf-8"
     )
-    os.replace(temporary, path)
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _write_json_exclusive_atomic(path: Path, payload: dict[str, Any]) -> None:
+    """Durably create JSON without ever replacing a concurrent winner."""
+
+    encoded = (json.dumps(payload, indent=2, ensure_ascii=False) + "\n").encode(
+        "utf-8"
+    )
+    temporary = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex}")
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary, path)
+        _fsync_directory(path.parent)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _write_finalization_artifact(path: Path, content: bytes) -> None:
+    """Create a derived shard artifact once, or accept byte-identical evidence."""
+
+    if path.exists() or path.is_symlink():
+        if path.is_symlink() or not path.is_file() or path.read_bytes() != content:
+            raise ValueError(f"existing finalization artifact differs: {path}")
+        return
+    temporary = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex}")
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            if path.is_symlink() or not path.is_file() or path.read_bytes() != content:
+                raise ValueError(f"existing finalization artifact differs: {path}")
+        _fsync_directory(path.parent)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _write_json_finalization_artifact(
+    path: Path,
+    payload: dict[str, Any],
+) -> None:
+    _write_finalization_artifact(
+        path,
+        (json.dumps(payload, indent=2, ensure_ascii=False) + "\n").encode("utf-8"),
+    )
 
 
 def _decode_value(value: Any) -> Any:
@@ -326,6 +434,19 @@ class SourcePolicy(Protocol):
         self,
         requests: Sequence[tuple[list[dict[str, str]], list[Image.Image]]],
     ) -> list[GeneratedTurn]: ...
+
+
+@dataclass(frozen=True)
+class InspectedSourcePolicy:
+    """CPU-only policy identity used before resume validation completes."""
+
+    runtime_contract: dict[str, Any]
+
+    def generate(
+        self,
+        requests: Sequence[tuple[list[dict[str, str]], list[Image.Image]]],
+    ) -> list[GeneratedTurn]:
+        raise RuntimeError("inspected policy cannot generate before runtime activation")
 
 
 class SourceEnvironmentClient(Protocol):
@@ -490,6 +611,48 @@ def _model_config_artifacts(model_path: Path) -> dict[str, dict[str, Any]]:
 class VLLMSourcePolicy:
     """Frozen source policy with explicit step60 sampling and history window."""
 
+    @staticmethod
+    def inspect_runtime_contract(
+        *,
+        model_path: Path,
+        tensor_parallel_size: int,
+        gpu_memory_utilization: float,
+        engine_seed: int,
+    ) -> dict[str, Any]:
+        """Inspect exact policy identity without constructing a GPU engine."""
+
+        from transformers import AutoProcessor
+
+        model_path = model_path.resolve()
+        processor = AutoProcessor.from_pretrained(
+            model_path,
+            trust_remote_code=True,
+            local_files_only=True,
+        )
+        package_versions = {
+            "vllm": importlib.metadata.version("vllm"),
+            "transformers": importlib.metadata.version("transformers"),
+            "torch": importlib.metadata.version("torch").split("+")[0],
+        }
+        if package_versions != EXECUTABLE_GENERATION_PACKAGES:
+            raise ValueError(
+                "source generation package versions mismatch: "
+                f"{package_versions} != {EXECUTABLE_GENERATION_PACKAGES}"
+            )
+        return {
+            "backend": "vllm",
+            "model_path": str(model_path),
+            "tensor_parallel_size": int(tensor_parallel_size),
+            "gpu_memory_utilization": float(gpu_memory_utilization),
+            "engine_seed": int(engine_seed),
+            "package_versions": package_versions,
+            "source_generation_package_evidence": SOURCE_GENERATION_PACKAGE_EVIDENCE,
+            "executable_generation_packages": EXECUTABLE_GENERATION_PACKAGES,
+            "tokenizer_eos_token_id": processor.tokenizer.eos_token_id,
+            "model_config_artifacts": _model_config_artifacts(model_path),
+            **SOURCE_SAMPLING_CONTRACT,
+        }
+
     def __init__(
         self,
         *,
@@ -497,11 +660,20 @@ class VLLMSourcePolicy:
         tensor_parallel_size: int,
         gpu_memory_utilization: float,
         engine_seed: int,
+        expected_runtime_contract: dict[str, Any] | None = None,
     ) -> None:
         from transformers import AutoProcessor
         from vllm import LLM, SamplingParams
 
         model_path = model_path.resolve()
+        inspected = self.inspect_runtime_contract(
+            model_path=model_path,
+            tensor_parallel_size=tensor_parallel_size,
+            gpu_memory_utilization=gpu_memory_utilization,
+            engine_seed=engine_seed,
+        )
+        if expected_runtime_contract is not None and inspected != expected_runtime_contract:
+            raise ValueError("policy runtime changed after CPU-only inspection")
         self.processor = AutoProcessor.from_pretrained(
             model_path,
             trust_remote_code=True,
@@ -521,17 +693,6 @@ class VLLMSourcePolicy:
             enable_chunked_prefill=False,
             seed=int(engine_seed),
         )
-        package_versions = {
-            "vllm": importlib.metadata.version("vllm"),
-            "transformers": importlib.metadata.version("transformers"),
-            "torch": importlib.metadata.version("torch").split("+")[0],
-        }
-        expected_versions = EXECUTABLE_GENERATION_PACKAGES
-        if package_versions != expected_versions:
-            raise ValueError(
-                f"source generation package versions mismatch: "
-                f"{package_versions} != {expected_versions}"
-            )
         self.sampling_params = SamplingParams(
             max_tokens=SOURCE_SAMPLING_CONTRACT["max_response_tokens"],
             temperature=SOURCE_SAMPLING_CONTRACT["temperature"],
@@ -542,21 +703,7 @@ class VLLMSourcePolicy:
             stop=[],
             stop_token_ids=[],
         )
-        self.runtime_contract = {
-            "backend": "vllm",
-            "model_path": str(model_path),
-            "tensor_parallel_size": int(tensor_parallel_size),
-            "gpu_memory_utilization": float(gpu_memory_utilization),
-            "engine_seed": int(engine_seed),
-            "package_versions": package_versions,
-            "source_generation_package_evidence": (
-                SOURCE_GENERATION_PACKAGE_EVIDENCE
-            ),
-            "executable_generation_packages": EXECUTABLE_GENERATION_PACKAGES,
-            "tokenizer_eos_token_id": self.processor.tokenizer.eos_token_id,
-            "model_config_artifacts": _model_config_artifacts(model_path),
-            **SOURCE_SAMPLING_CONTRACT,
-        }
+        self.runtime_contract = inspected
 
     def generate(
         self,
@@ -672,11 +819,15 @@ class SourceShardCollector:
         self.format_failure_policy = format_failure_policy
         self.concurrency = int(concurrency)
 
-    def _env_id(self, spec: EpisodeSpec) -> str:
+    def _record_id(self, spec: EpisodeSpec) -> str:
         return (
             f"v60_{self.run_id}_s{self.shard_index:03d}_"
             f"r{spec.source_index:05d}_{spec.eval_set}_{spec.seed}"
         )
+
+    def _env_id(self, spec: EpisodeSpec, *, attempt_id: str | None = None) -> str:
+        stable = self._record_id(spec)
+        return stable if attempt_id is None else f"{stable}_a{attempt_id}"
 
     @staticmethod
     def _environment_config(spec: EpisodeSpec) -> dict[str, Any]:
@@ -698,16 +849,24 @@ class SourceShardCollector:
     @staticmethod
     def _save_image(
         root: Path,
+        image_namespace: Path,
         env_id: str,
         step: int,
         image: Image.Image,
     ) -> str:
-        relative = Path("images") / env_id / f"step_{step:02d}.png"
+        relative = image_namespace / "images" / env_id / f"step_{step:02d}.png"
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex}")
-        image.save(temporary, format="PNG")
-        os.replace(temporary, path)
+        try:
+            image.save(temporary, format="PNG")
+            with temporary.open("rb") as handle:
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+            _fsync_directory_chain(path.parent, root=root)
+        finally:
+            if temporary.exists():
+                temporary.unlink()
         return str(relative)
 
     def _request_audit(
@@ -739,6 +898,7 @@ class SourceShardCollector:
         state: _EpisodeState,
         terminal: GeneratedTurn,
         root: Path,
+        image_namespace: Path,
     ) -> dict[str, Any]:
         terminal_parse = parse_source_response(terminal.response)
         terminal_audit = self._request_audit(state, terminal, kind="terminal")
@@ -766,7 +926,7 @@ class SourceShardCollector:
             raise ValueError("source step reward aggregate is non-finite")
         persisted_rewards = list(state.rewards)
         image_paths = [
-            self._save_image(root, state.env_id, index, image)
+            self._save_image(root, image_namespace, state.env_id, index, image)
             for index, image in enumerate(state.images)
         ]
         image_artifacts = [
@@ -784,7 +944,7 @@ class SourceShardCollector:
         ]
         record = {
             "record_format": RAW_RECORD_FORMAT,
-            "id": state.env_id,
+            "id": self._record_id(state.spec),
             "source_index": state.spec.source_index,
             "source_key": state.spec.source_key,
             "eval_set": state.spec.eval_set,
@@ -850,8 +1010,11 @@ class SourceShardCollector:
         *,
         max_steps: int,
         root: Path,
+        image_namespace: Path,
+        attempt_id: str,
+        on_record: Callable[[dict[str, Any]], None],
     ) -> list[dict[str, Any]]:
-        env_ids = [self._env_id(spec) for spec in specs]
+        env_ids = [self._env_id(spec, attempt_id=attempt_id) for spec in specs]
         if len(env_ids) != len(set(env_ids)):
             raise ValueError("source environment IDs are not globally unique")
         open_ids: set[str] = set()
@@ -961,9 +1124,11 @@ class SourceShardCollector:
                     if len(terminal_rows) != len(newly_finished):
                         raise RuntimeError("terminal source policy output count mismatch")
                     for state, terminal in zip(newly_finished, terminal_rows, strict=True):
-                        completed[state.env_id] = self._finalize_record(
-                            state, terminal, root
+                        record = self._finalize_record(
+                            state, terminal, root, image_namespace
                         )
+                        on_record(record)
+                        completed[state.env_id] = record
                     finished_ids = [state.env_id for state in newly_finished]
                     self.client.close_batch(finished_ids)
                     open_ids.difference_update(finished_ids)
@@ -976,9 +1141,11 @@ class SourceShardCollector:
                 if len(terminal_rows) != len(remaining):
                     raise RuntimeError("truncated terminal output count mismatch")
                 for state, terminal in zip(remaining, terminal_rows, strict=True):
-                    completed[state.env_id] = self._finalize_record(
-                        state, terminal, root
+                    record = self._finalize_record(
+                        state, terminal, root, image_namespace
                     )
+                    on_record(record)
+                    completed[state.env_id] = record
                 remaining_ids = [state.env_id for state in remaining]
                 self.client.close_batch(remaining_ids)
                 open_ids.difference_update(remaining_ids)
@@ -989,46 +1156,356 @@ class SourceShardCollector:
             if open_ids:
                 self.client.close_batch(sorted(open_ids))
 
+    @staticmethod
+    def _spec_payload(spec: EpisodeSpec) -> dict[str, Any]:
+        return {
+            "source_index": spec.source_index,
+            "eval_set": spec.eval_set,
+            "seed": spec.seed,
+            "dataset_split": spec.dataset_split,
+            "source_key": spec.source_key,
+        }
+
+    def _collection_payload(
+        self,
+        specs: Sequence[EpisodeSpec],
+        *,
+        max_steps: int,
+    ) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "shard_index": self.shard_index,
+            "ordered_episode_specs": [self._spec_payload(spec) for spec in specs],
+            "max_steps": max_steps,
+            "format_failure_policy": self.format_failure_policy,
+            "concurrency": self.concurrency,
+            "unavailable_source_commit": SOURCE_VAGEN_COMMIT,
+            "reconstruction_identity": self.reconstruction_identity,
+            "source_runtime_contract": self.source_runtime_evidence,
+            "policy_artifact": self.policy_artifact_evidence,
+            "policy_runtime_contract": self.policy.runtime_contract,
+        }
+
+    @staticmethod
+    def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
+        if path.is_symlink():
+            raise ValueError(f"{label} must not be a symlink: {path}")
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise ValueError(f"{label} JSON is unreadable: {path}") from error
+        if not isinstance(value, dict):
+            raise TypeError(f"{label} JSON must contain an object: {path}")
+        return value
+
+    @staticmethod
+    def _validate_staging_layout(staging: Path) -> None:
+        for name in ("IN_PROGRESS.json", "records", "attempts"):
+            path = staging / name
+            if path.is_symlink():
+                raise ValueError(f"in-progress control entry must not be a symlink: {path}")
+        if not (staging / "IN_PROGRESS.json").is_file():
+            raise ValueError("in-progress metadata is not a regular file")
+        for name in ("records", "attempts"):
+            if not (staging / name).is_dir():
+                raise ValueError(f"in-progress {name} directory is invalid")
+
+    @staticmethod
+    def _reject_symlinked_image_path(staging: Path, relative: Path) -> Path:
+        current = staging
+        for part in relative.parts:
+            current = current / part
+            if current.is_symlink():
+                raise ValueError(f"trajectory checkpoint image path has symlink: {relative}")
+        return current
+
+    def _validate_staging_metadata(
+        self,
+        staging: Path,
+        *,
+        expected_payload: dict[str, Any],
+    ) -> str:
+        metadata = self._load_json_object(
+            staging / "IN_PROGRESS.json", label="in-progress metadata"
+        )
+        expected_hash = _canonical_sha256(expected_payload)
+        if set(metadata) != {"format", "payload", "payload_sha256"}:
+            raise ValueError("in-progress metadata fields are invalid")
+        if metadata.get("format") != "vagen_step60_collection_in_progress_v1":
+            raise ValueError("in-progress metadata format is invalid")
+        if metadata.get("payload") != expected_payload:
+            raise ValueError("in-progress metadata does not match collection identity")
+        if metadata.get("payload_sha256") != expected_hash:
+            raise ValueError("in-progress metadata payload hash mismatch")
+        return expected_hash
+
+    def _validate_checkpoint(
+        self,
+        path: Path,
+        *,
+        spec: EpisodeSpec,
+        collection_payload_sha256: str,
+        staging: Path,
+    ) -> dict[str, Any]:
+        envelope = self._load_json_object(path, label="trajectory checkpoint")
+        if set(envelope) != {
+            "format",
+            "collection_payload_sha256",
+            "record_sha256",
+            "record",
+            "checkpoint_payload_sha256",
+        }:
+            raise ValueError(f"trajectory checkpoint fields are invalid: {path}")
+        payload = {
+            key: value
+            for key, value in envelope.items()
+            if key != "checkpoint_payload_sha256"
+        }
+        if envelope.get("checkpoint_payload_sha256") != _canonical_sha256(payload):
+            raise ValueError(f"trajectory checkpoint hash mismatch: {path}")
+        if envelope.get("format") != "vagen_step60_trajectory_checkpoint_v1":
+            raise ValueError(f"trajectory checkpoint format is invalid: {path}")
+        if envelope.get("collection_payload_sha256") != collection_payload_sha256:
+            raise ValueError(f"trajectory checkpoint collection identity mismatch: {path}")
+        record = envelope.get("record")
+        if not isinstance(record, dict):
+            raise TypeError(f"trajectory checkpoint record is invalid: {path}")
+        raw_hash = record.get("raw_record_sha256")
+        raw_payload = {
+            key: value for key, value in record.items() if key != "raw_record_sha256"
+        }
+        if raw_hash != _canonical_sha256(raw_payload) or envelope.get(
+            "record_sha256"
+        ) != raw_hash:
+            raise ValueError(f"trajectory checkpoint record hash mismatch: {path}")
+        validate_raw_reconstruction_semantics(record)
+        rewards = record.get("rewards")
+        reward_events = record.get("environment_reward_events")
+        turn_rewards = [turn.get("reward") for turn in record.get("turns", [])]
+        if rewards != reward_events or rewards != turn_rewards:
+            raise ValueError(f"trajectory checkpoint reward evidence is misaligned: {path}")
+        if not isinstance(rewards, list) or any(
+            not isinstance(value, (int, float)) or not math.isfinite(float(value))
+            for value in rewards
+        ):
+            raise ValueError(f"trajectory checkpoint reward evidence is invalid: {path}")
+        if not math.isclose(
+            float(record.get("reward", float("nan"))),
+            sum(float(value) for value in rewards),
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        ):
+            raise ValueError(f"trajectory checkpoint aggregate reward mismatch: {path}")
+        expected_spec = self._spec_payload(spec)
+        actual_spec = {
+            "source_index": record.get("source_index"),
+            "eval_set": record.get("eval_set"),
+            "seed": record.get("seed"),
+            "dataset_split": record.get("split"),
+            "source_key": record.get("source_key"),
+        }
+        if actual_spec != expected_spec:
+            raise ValueError(f"trajectory checkpoint source spec mismatch: {path}")
+        expected_bindings = {
+            "record_format": RAW_RECORD_FORMAT,
+            "unavailable_source_commit": SOURCE_VAGEN_COMMIT,
+            "reconstruction_identity": self.reconstruction_identity,
+            "source_runtime_contract": self.source_runtime_evidence,
+            "policy_artifact": self.policy_artifact_evidence,
+            "policy_runtime_contract": self.policy.runtime_contract,
+            "format_failure_policy": self.format_failure_policy,
+        }
+        for key, expected in expected_bindings.items():
+            if record.get(key) != expected:
+                raise ValueError(f"trajectory checkpoint {key} mismatch: {path}")
+        paths = record.get("image_paths")
+        artifacts = record.get("image_artifacts")
+        if not isinstance(paths, list) or not isinstance(artifacts, list):
+            raise TypeError(f"trajectory checkpoint image evidence is invalid: {path}")
+        if paths != [artifact.get("path") for artifact in artifacts if isinstance(artifact, dict)]:
+            raise ValueError(f"trajectory checkpoint image evidence is misaligned: {path}")
+        for artifact in artifacts:
+            relative = Path(str(artifact["path"]))
+            if relative.is_absolute() or ".." in relative.parts:
+                raise ValueError(f"trajectory checkpoint image path is unsafe: {relative}")
+            image_path = self._reject_symlinked_image_path(staging, relative)
+            if not image_path.is_file():
+                raise ValueError(f"trajectory checkpoint image is missing: {relative}")
+            if image_path.stat().st_size != artifact.get("size_bytes"):
+                raise ValueError(f"trajectory checkpoint image size mismatch: {relative}")
+            if _file_sha256(image_path) != artifact.get("sha256"):
+                raise ValueError(f"trajectory checkpoint image hash mismatch: {relative}")
+        return record
+
+    def _load_completed_checkpoints(
+        self,
+        staging: Path,
+        *,
+        specs: Sequence[EpisodeSpec],
+        collection_payload_sha256: str,
+    ) -> dict[int, dict[str, Any]]:
+        records_dir = staging / "records"
+        if records_dir.is_symlink() or not records_dir.is_dir():
+            raise ValueError("in-progress trajectory checkpoint directory is invalid")
+        specs_by_index = {spec.source_index: spec for spec in specs}
+        if len(specs_by_index) != len(specs):
+            raise ValueError("ordered source specs contain duplicate source rows")
+        completed: dict[int, dict[str, Any]] = {}
+        for path in sorted(records_dir.iterdir()):
+            if path.is_symlink() or not path.is_file() or not re.fullmatch(
+                r"\d{8}\.json", path.name
+            ):
+                raise ValueError(f"unknown checkpoint entry: {path.name}")
+            source_index = int(path.stem)
+            if source_index not in specs_by_index:
+                raise ValueError(f"unknown checkpoint source row: {source_index}")
+            if source_index in completed:
+                raise ValueError(f"duplicate checkpoint source row: {source_index}")
+            completed[source_index] = self._validate_checkpoint(
+                path,
+                spec=specs_by_index[source_index],
+                collection_payload_sha256=collection_payload_sha256,
+                staging=staging,
+            )
+        return completed
+
+    def _write_checkpoint(
+        self,
+        staging: Path,
+        *,
+        record: dict[str, Any],
+        collection_payload_sha256: str,
+    ) -> None:
+        source_index = int(record["source_index"])
+        path = staging / "records" / f"{source_index:08d}.json"
+        if path.exists() or path.is_symlink():
+            raise FileExistsError(f"trajectory checkpoint already exists: {path}")
+        envelope = {
+            "format": "vagen_step60_trajectory_checkpoint_v1",
+            "collection_payload_sha256": collection_payload_sha256,
+            "record_sha256": record["raw_record_sha256"],
+            "record": record,
+        }
+        envelope["checkpoint_payload_sha256"] = _canonical_sha256(envelope)
+        _write_json_exclusive_atomic(path, envelope)
+
     def collect(
         self,
         specs: Sequence[EpisodeSpec],
         *,
         output_dir: Path,
         max_steps: int = 20,
+        resume: bool = False,
+        activate_runtime: Callable[[], tuple[SourceEnvironmentClient, SourcePolicy]]
+        | None = None,
     ) -> dict[str, Any]:
         output_dir = lexical_absolute_path(output_dir)
+        with _exclusive_collection_lock(output_dir):
+            return self._collect_exclusive(
+                specs,
+                output_dir=output_dir,
+                max_steps=max_steps,
+                resume=resume,
+                activate_runtime=activate_runtime,
+            )
+
+    def _collect_exclusive(
+        self,
+        specs: Sequence[EpisodeSpec],
+        *,
+        output_dir: Path,
+        max_steps: int = 20,
+        resume: bool = False,
+        activate_runtime: Callable[[], tuple[SourceEnvironmentClient, SourcePolicy]]
+        | None = None,
+    ) -> dict[str, Any]:
+        output_dir = lexical_absolute_path(output_dir)
+        staging = output_dir.with_name(f"{output_dir.name}.inprogress")
         if output_dir.exists() or output_dir.is_symlink():
             raise FileExistsError(f"source shard output already exists: {output_dir}")
         if not specs:
             raise ValueError("source shard requires at least one episode")
         if max_steps != 20:
             raise ValueError("source step60 rollout requires exactly 20 max steps")
+        source_indices = [spec.source_index for spec in specs]
+        if len(source_indices) != len(set(source_indices)):
+            raise ValueError("ordered source specs contain duplicate source rows")
         output_dir.parent.mkdir(parents=True, exist_ok=True)
-        partial = output_dir.with_name(
-            f"{output_dir.name}.partial-{uuid.uuid4().hex[:12]}"
+        collection_payload = self._collection_payload(specs, max_steps=max_steps)
+        collection_hash = _canonical_sha256(collection_payload)
+        if resume:
+            if staging.is_symlink() or not staging.is_dir():
+                raise FileNotFoundError(
+                    f"resume requires existing real in-progress directory: {staging}"
+                )
+            self._validate_staging_layout(staging)
+            self._validate_staging_metadata(
+                staging, expected_payload=collection_payload
+            )
+        else:
+            if staging.exists() or staging.is_symlink():
+                raise FileExistsError(
+                    f"fresh collection refuses existing in-progress directory: {staging}"
+                )
+            staging.mkdir()
+            _fsync_directory(output_dir.parent)
+            (staging / "records").mkdir()
+            (staging / "attempts").mkdir()
+            _write_json_atomic(
+                staging / "IN_PROGRESS.json",
+                {
+                    "format": "vagen_step60_collection_in_progress_v1",
+                    "payload": collection_payload,
+                    "payload_sha256": collection_hash,
+                },
+            )
+        completed = self._load_completed_checkpoints(
+            staging,
+            specs=specs,
+            collection_payload_sha256=collection_hash,
         )
-        partial.mkdir()
-        raw_tmp = partial / "raw.jsonl.tmp"
-        records: list[dict[str, Any]] = []
+        unfinished = [spec for spec in specs if spec.source_index not in completed]
+        if activate_runtime is not None and unfinished:
+            expected_policy_runtime = dict(self.policy.runtime_contract)
+            client, policy = activate_runtime()
+            if policy.runtime_contract != expected_policy_runtime:
+                raise ValueError("activated policy runtime differs from inspected identity")
+            self.client = client
+            self.policy = policy
+        attempt_id = uuid.uuid4().hex
+        attempt_namespace = Path("attempts") / attempt_id
+        attempt_dir = staging / attempt_namespace
+        attempt_dir.mkdir()
+        _fsync_directory(staging / "attempts")
         try:
-            with raw_tmp.open("w", encoding="utf-8") as handle:
-                for start in range(0, len(specs), self.concurrency):
-                    microbatch = specs[start : start + self.concurrency]
-                    rows = self._collect_microbatch(
-                        microbatch,
-                        max_steps=max_steps,
-                        root=partial,
-                    )
-                    for row in rows:
-                        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-                        handle.flush()
-                        os.fsync(handle.fileno())
-                        records.append(row)
-            raw_path = partial / "raw.jsonl"
-            os.replace(raw_tmp, raw_path)
-            source_indices = [record["source_index"] for record in records]
-            if source_indices != [spec.source_index for spec in specs]:
-                raise RuntimeError("source shard record order does not match manifest specs")
+            for start in range(0, len(unfinished), self.concurrency):
+                microbatch = unfinished[start : start + self.concurrency]
+                self._collect_microbatch(
+                    microbatch,
+                    max_steps=max_steps,
+                    root=staging,
+                    image_namespace=attempt_namespace,
+                    attempt_id=attempt_id,
+                    on_record=lambda row: self._write_checkpoint(
+                        staging,
+                        record=row,
+                        collection_payload_sha256=collection_hash,
+                    ),
+                )
+            completed = self._load_completed_checkpoints(
+                staging,
+                specs=specs,
+                collection_payload_sha256=collection_hash,
+            )
+            if set(completed) != set(source_indices):
+                raise RuntimeError("source shard checkpoint coverage is incomplete")
+            records = [completed[spec.source_index] for spec in specs]
+            raw_path = staging / "raw.jsonl"
+            raw_bytes = b"".join(
+                (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+                for record in records
+            )
+            _write_finalization_artifact(raw_path, raw_bytes)
             image_artifacts = [
                 artifact
                 for record in records
@@ -1066,35 +1543,39 @@ class SourceShardCollector:
                 ],
                 "format_failure_policy": self.format_failure_policy,
             }
-            _write_json_atomic(partial / "shard_manifest.json", manifest)
-            marker = {
-                "format": COMPLETE_MARKER_FORMAT,
-                "manifest_sha256": _file_sha256(partial / "shard_manifest.json"),
-            }
-            _write_json_atomic(partial / "COMPLETE", marker)
+            _write_json_finalization_artifact(
+                staging / "shard_manifest.json", manifest
+            )
+            _write_json_finalization_artifact(
+                staging / "COMPLETE",
+                {
+                    "format": COMPLETE_MARKER_FORMAT,
+                    "manifest_sha256": _file_sha256(staging / "shard_manifest.json"),
+                },
+            )
             validate_complete_shard(
-                partial,
-                expected_source_indices=set(source_indices),
+                staging, expected_source_indices=set(source_indices)
             )
             publish_reserved_directory(
-                partial,
-                output_dir,
-                readiness_marker="COMPLETE",
+                staging, output_dir, readiness_marker="COMPLETE"
             )
             return validate_complete_shard(
-                output_dir,
-                expected_source_indices=set(source_indices),
+                output_dir, expected_source_indices=set(source_indices)
             )
         except Exception as error:
-            if partial.exists():
-                error_path = partial / "FAILED.json"
-            else:
-                error_path = output_dir / "FAILED_VALIDATION.json"
-            if error_path.parent.exists() and not error_path.exists():
-                _write_json_atomic(
-                    error_path,
-                    {"error_type": type(error).__name__, "error": str(error)},
-                )
+            # Publication moves the complete staging tree. Never obscure the
+            # original post-publication error or mutate marker-complete output.
+            if attempt_dir.is_dir():
+                failure_path = attempt_dir / "FAILED.json"
+                if not failure_path.exists():
+                    try:
+                        _write_json_atomic(
+                            failure_path,
+                            {"error_type": type(error).__name__, "error": str(error)},
+                        )
+                    except Exception:  # noqa: BLE001,S110
+                        # Failure diagnostics are best-effort and secondary.
+                        pass
             raise
 
 
@@ -1477,6 +1958,11 @@ def main() -> int:
     parser.add_argument("--tensor-parallel-size", type=int, required=True)
     parser.add_argument("--gpu-memory-utilization", type=float, required=True)
     parser.add_argument("--engine-seed", type=int, required=True)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume only a validated stable <output-dir>.inprogress shard.",
+    )
     args = parser.parse_args()
     args.output_dir = lexical_absolute_path(args.output_dir)
     if args.output_dir.exists() or args.output_dir.is_symlink():
@@ -1499,10 +1985,6 @@ def main() -> int:
             shard_size=args.shard_size,
         )
     )
-    client = LegacyVAGENBatchClient(args.env_url, timeout=500)
-    health = client.check_server_health()
-    if health.get("status") != "ok":
-        raise RuntimeError(f"source environment server is unhealthy: {health!r}")
     source_runtime_evidence = json.loads(
         args.source_runtime_contract.read_text(encoding="utf-8")
     )
@@ -1510,16 +1992,6 @@ def main() -> int:
         args.expected_runtime_contract_payload_sha256
     ):
         raise ValueError("runtime contract differs from approved payload hash")
-    validate_service_runtime_identity(
-        client.get_reconstruction_identity(),
-        contract=source_runtime_evidence,
-    )
-    policy = VLLMSourcePolicy(
-        model_path=args.model_path,
-        tensor_parallel_size=args.tensor_parallel_size,
-        gpu_memory_utilization=args.gpu_memory_utilization,
-        engine_seed=args.engine_seed,
-    )
     reconstruction_identity = reconstruction_git_identity(
         args.source_runtime_root,
         base_commit=RECONSTRUCTION_BASE_COMMIT,
@@ -1553,9 +2025,16 @@ def main() -> int:
         expected_reconstruction_identity=expected_identity,
         expected_runtime_root=args.source_runtime_root,
     )
+    inspected_policy_contract = VLLMSourcePolicy.inspect_runtime_contract(
+        model_path=args.model_path,
+        tensor_parallel_size=args.tensor_parallel_size,
+        gpu_memory_utilization=args.gpu_memory_utilization,
+        engine_seed=args.engine_seed,
+    )
+    client = LegacyVAGENBatchClient(args.env_url, timeout=500)
     collector = SourceShardCollector(
         client=client,
-        policy=policy,
+        policy=InspectedSourcePolicy(inspected_policy_contract),
         run_id=args.run_id,
         shard_index=args.shard_index,
         reconstruction_identity=reconstruction_identity,
@@ -1564,7 +2043,30 @@ def main() -> int:
         format_failure_policy=args.format_failure_policy,
         concurrency=args.concurrency,
     )
-    manifest = collector.collect(specs, output_dir=args.output_dir, max_steps=20)
+    def activate_runtime() -> tuple[SourceEnvironmentClient, SourcePolicy]:
+        health = client.check_server_health()
+        if health.get("status") != "ok":
+            raise RuntimeError(f"source environment server is unhealthy: {health!r}")
+        validate_service_runtime_identity(
+            client.get_reconstruction_identity(),
+            contract=source_runtime_evidence,
+        )
+        policy = VLLMSourcePolicy(
+            model_path=args.model_path,
+            tensor_parallel_size=args.tensor_parallel_size,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+            engine_seed=args.engine_seed,
+            expected_runtime_contract=inspected_policy_contract,
+        )
+        return client, policy
+
+    manifest = collector.collect(
+        specs,
+        output_dir=args.output_dir,
+        max_steps=20,
+        resume=args.resume,
+        activate_runtime=activate_runtime,
+    )
     print(json.dumps(manifest["counts"], indent=2))
     return 0
 

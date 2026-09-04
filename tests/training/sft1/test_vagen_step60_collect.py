@@ -772,6 +772,699 @@ def test_complete_shard_rejects_raw_semantic_tamper_even_if_outer_hashes_change(
         validate_complete_shard(output, expected_source_indices={0})
 
 
+def _patch_prompt_hashes(monkeypatch: pytest.MonkeyPatch, system_prompt: str) -> None:
+    monkeypatch.setattr(
+        collect_module,
+        "SOURCE_SYSTEM_PROMPT_SHA256",
+        hashlib.sha256(system_prompt.encode()).hexdigest(),
+    )
+    monkeypatch.setattr(
+        collect_module,
+        "SOURCE_INITIAL_PROMPT_NORMALIZED_SHA256",
+        hashlib.sha256(_initial_prompt("<INSTRUCTION>").encode()).hexdigest(),
+    )
+    monkeypatch.setattr(
+        collect_module,
+        "SOURCE_STEP_PROMPT_NORMALIZED_SHA256",
+        hashlib.sha256(
+            collect_module.normalized_step_prompt(_step_prompt("moveahead")).encode()
+        ).hexdigest(),
+    )
+
+
+class _InterruptSecondEpisodePolicy(_FakePolicy):
+    def generate(self, requests):
+        if len(self.calls) == 2:
+            raise RuntimeError("injected interruption")
+        return super().generate(requests)
+
+
+class _ObserveCheckpointThenInterruptPolicy(_FakePolicy):
+    def __init__(self, checkpoint: Path) -> None:
+        super().__init__()
+        self.checkpoint = checkpoint
+
+    def generate(self, requests):
+        if len(self.calls) == 2:
+            envelope = json.loads(self.checkpoint.read_text(encoding="utf-8"))
+            assert envelope["record"]["source_index"] == 0
+            raise RuntimeError("injected interruption")
+        return super().generate(requests)
+
+
+class _AlwaysSingleEpisodePolicy(_FakePolicy):
+    def generate(self, requests):
+        rows = super().generate(requests)
+        return rows
+
+
+class _ObserveCheckpointDurabilityThenInterruptPolicy(_FakePolicy):
+    def __init__(self, observe) -> None:
+        super().__init__()
+        self.observe = observe
+
+    def generate(self, requests):
+        if len(self.calls) == 2:
+            self.observe()
+            raise RuntimeError("injected interruption after durability check")
+        return super().generate(requests)
+
+
+def _collector(client: _FakeClient, policy: _FakePolicy, *, run_id: str = "resume"):
+    return SourceShardCollector(
+        client=client,
+        policy=policy,
+        run_id=run_id,
+        shard_index=0,
+        reconstruction_identity=_reconstruction_identity(),
+        source_runtime_evidence=_source_runtime_evidence(),
+        policy_artifact_evidence=_policy_artifact_evidence(),
+        format_failure_policy="exclude_trajectory",
+        concurrency=1,
+    )
+
+
+def test_interrupted_shard_checkpoints_completed_rows_and_resumes_only_unfinished(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    system_prompt = "exact source system"
+    _patch_prompt_hashes(monkeypatch, system_prompt)
+    specs = [
+        EpisodeSpec(0, "base", 100, "train", "base:100"),
+        EpisodeSpec(10_000, "common_sense", 100, "train", "common_sense:100"),
+    ]
+    output = tmp_path / "shard_000"
+    first_client = _FakeClient(system_prompt)
+    with pytest.raises(RuntimeError, match="injected interruption"):
+        _collector(
+            first_client,
+            _ObserveCheckpointThenInterruptPolicy(
+                tmp_path / "shard_000.inprogress" / "records" / "00000000.json"
+            ),
+        ).collect(specs, output_dir=output)
+
+    staging = tmp_path / "shard_000.inprogress"
+    checkpoints = sorted((staging / "records").glob("*.json"))
+    assert [path.name for path in checkpoints] == ["00000000.json"]
+    first_record = json.loads(checkpoints[0].read_text(encoding="utf-8"))["record"]
+    assert first_record["source_index"] == 0
+    assert first_record["image_paths"]
+    assert all(path.startswith("attempts/") for path in first_record["image_paths"])
+
+    resumed_client = _FakeClient(system_prompt)
+    manifest = _collector(resumed_client, _AlwaysSingleEpisodePolicy()).collect(
+        specs, output_dir=output, resume=True
+    )
+    assert len(resumed_client.configs) == 1
+    assert next(iter(resumed_client.configs)).startswith(
+        "v60_resume_s000_r10000_common_sense_100_a"
+    )
+    assert manifest["source_indices"] == [0, 10_000]
+    rows = [
+        json.loads(line)
+        for line in (output / "raw.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["source_index"] for row in rows] == [0, 10_000]
+    assert (output / "IN_PROGRESS.json").is_file()
+    assert len(list((output / "attempts").iterdir())) == 2
+
+
+def test_checkpoint_file_and_directory_are_fsynced_before_next_rollout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    system_prompt = "exact source system"
+    _patch_prompt_hashes(monkeypatch, system_prompt)
+    specs = [
+        EpisodeSpec(0, "base", 100, "train", "base:100"),
+        EpisodeSpec(10_000, "common_sense", 100, "train", "common_sense:100"),
+    ]
+    output = tmp_path / "durable"
+    checkpoint = output.with_name("durable.inprogress") / "records" / "00000000.json"
+    events: list[tuple[str, str]] = []
+    real_fsync = collect_module.os.fsync
+    real_link = collect_module.os.link
+
+    def tracked_fsync(descriptor: int) -> None:
+        events.append(("fsync", collect_module.os.readlink(f"/proc/self/fd/{descriptor}")))
+        real_fsync(descriptor)
+
+    def tracked_link(source, destination) -> None:
+        events.append(("link", str(destination)))
+        real_link(source, destination)
+
+    monkeypatch.setattr(collect_module.os, "fsync", tracked_fsync)
+    monkeypatch.setattr(collect_module.os, "link", tracked_link)
+
+    def assert_durable_checkpoint() -> None:
+        checkpoint_link = events.index(("link", str(checkpoint)))
+        checkpoint_file_fsync = max(
+            index
+            for index, event in enumerate(events[:checkpoint_link])
+            if event[0] == "fsync" and ".00000000.json.tmp-" in event[1]
+        )
+        records_directory_fsync = next(
+            index
+            for index, event in enumerate(events[checkpoint_link + 1 :], checkpoint_link + 1)
+            if event == ("fsync", str(checkpoint.parent))
+        )
+        assert checkpoint_file_fsync < checkpoint_link < records_directory_fsync
+        assert checkpoint.is_file()
+
+    policy = _ObserveCheckpointDurabilityThenInterruptPolicy(
+        assert_durable_checkpoint
+    )
+    with pytest.raises(RuntimeError, match="durability check"):
+        _collector(_FakeClient(system_prompt), policy).collect(
+            specs, output_dir=output
+        )
+
+
+def test_fresh_and_resume_modes_fail_closed_before_rollout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    system_prompt = "exact source system"
+    _patch_prompt_hashes(monkeypatch, system_prompt)
+    spec = [EpisodeSpec(0, "base", 100, "train", "base:100")]
+    output = tmp_path / "shard"
+    client = _FakeClient(system_prompt)
+    with pytest.raises(FileNotFoundError, match="in-progress"):
+        _collector(client, _FakePolicy()).collect(spec, output_dir=output, resume=True)
+    assert client.configs == {}
+
+    (tmp_path / "shard.inprogress").mkdir()
+    client = _FakeClient(system_prompt)
+    with pytest.raises(FileExistsError, match="in-progress"):
+        _collector(client, _FakePolicy()).collect(spec, output_dir=output)
+    assert client.configs == {}
+
+    output.mkdir()
+    client = _FakeClient(system_prompt)
+    with pytest.raises(FileExistsError, match="output"):
+        _collector(client, _FakePolicy()).collect(spec, output_dir=output, resume=True)
+    assert client.configs == {}
+
+
+def test_resume_validation_precedes_runtime_activation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    system_prompt = "exact source system"
+    _patch_prompt_hashes(monkeypatch, system_prompt)
+    specs = [
+        EpisodeSpec(0, "base", 100, "train", "base:100"),
+        EpisodeSpec(10_000, "common_sense", 100, "train", "common_sense:100"),
+    ]
+    output = tmp_path / "activation-order"
+    with pytest.raises(RuntimeError, match="injected interruption"):
+        _collector(_FakeClient(system_prompt), _InterruptSecondEpisodePolicy()).collect(
+            specs, output_dir=output
+        )
+    metadata_path = output.with_name(f"{output.name}.inprogress") / "IN_PROGRESS.json"
+    metadata_path.write_text("{}", encoding="utf-8")
+    activated = False
+
+    def activate_runtime():
+        nonlocal activated
+        activated = True
+        raise AssertionError("runtime activation must follow resume validation")
+
+    with pytest.raises(ValueError, match="metadata"):
+        _collector(_FakeClient(system_prompt), _FakePolicy()).collect(
+            specs,
+            output_dir=output,
+            resume=True,
+            activate_runtime=activate_runtime,
+        )
+    assert not activated
+
+
+def test_resume_rejects_identity_checkpoint_and_image_drift_before_rollout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    system_prompt = "exact source system"
+    _patch_prompt_hashes(monkeypatch, system_prompt)
+    specs = [
+        EpisodeSpec(0, "base", 100, "train", "base:100"),
+        EpisodeSpec(10_000, "common_sense", 100, "train", "common_sense:100"),
+    ]
+
+    def interrupted(name: str) -> tuple[Path, Path]:
+        output = tmp_path / name
+        with pytest.raises(RuntimeError, match="injected interruption"):
+            _collector(_FakeClient(system_prompt), _InterruptSecondEpisodePolicy()).collect(
+                specs, output_dir=output
+            )
+        return output, tmp_path / f"{name}.inprogress"
+
+    output, staging = interrupted("identity")
+    metadata_path = staging / "IN_PROGRESS.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["payload"]["max_steps"] = 19
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    client = _FakeClient(system_prompt)
+    with pytest.raises(ValueError, match="metadata"):
+        _collector(client, _FakePolicy()).collect(specs, output_dir=output, resume=True)
+    assert client.configs == {}
+
+    output, staging = interrupted("truncated")
+    checkpoint = next((staging / "records").glob("*.json"))
+    checkpoint.write_text("{", encoding="utf-8")
+    client = _FakeClient(system_prompt)
+    with pytest.raises(ValueError, match="checkpoint JSON"):
+        _collector(client, _FakePolicy()).collect(specs, output_dir=output, resume=True)
+    assert client.configs == {}
+
+    output, staging = interrupted("record-hash")
+    checkpoint = next((staging / "records").glob("*.json"))
+    envelope = json.loads(checkpoint.read_text(encoding="utf-8"))
+    envelope["record"]["seed"] = 999
+    checkpoint_payload = {
+        key: value
+        for key, value in envelope.items()
+        if key != "checkpoint_payload_sha256"
+    }
+    envelope["checkpoint_payload_sha256"] = collect_module._canonical_sha256(
+        checkpoint_payload
+    )
+    checkpoint.write_text(json.dumps(envelope), encoding="utf-8")
+    client = _FakeClient(system_prompt)
+    with pytest.raises(ValueError, match="record hash"):
+        _collector(client, _FakePolicy()).collect(specs, output_dir=output, resume=True)
+    assert client.configs == {}
+
+    output, staging = interrupted("image")
+    checkpoint = next((staging / "records").glob("*.json"))
+    envelope = json.loads(checkpoint.read_text(encoding="utf-8"))
+    image_path = staging / envelope["record"]["image_paths"][0]
+    image_path.write_bytes(b"tampered")
+    client = _FakeClient(system_prompt)
+    with pytest.raises(ValueError, match="image"):
+        _collector(client, _FakePolicy()).collect(specs, output_dir=output, resume=True)
+    assert client.configs == {}
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ["ordered_specs", "runtime", "policy", "max_steps", "format"],
+)
+def test_resume_rejects_collection_contract_drift_before_rollout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+) -> None:
+    system_prompt = "exact source system"
+    _patch_prompt_hashes(monkeypatch, system_prompt)
+    specs = [
+        EpisodeSpec(0, "base", 100, "train", "base:100"),
+        EpisodeSpec(10_000, "common_sense", 100, "train", "common_sense:100"),
+    ]
+    output = tmp_path / f"shard-{drift}"
+    with pytest.raises(RuntimeError, match="injected interruption"):
+        _collector(_FakeClient(system_prompt), _InterruptSecondEpisodePolicy()).collect(
+            specs, output_dir=output
+        )
+
+    client = _FakeClient(system_prompt)
+    policy = _FakePolicy()
+    runtime = _source_runtime_evidence()
+    format_policy = "exclude_trajectory"
+    resumed_specs = specs
+    max_steps = 20
+    if drift == "ordered_specs":
+        resumed_specs = list(reversed(specs))
+    elif drift == "runtime":
+        runtime["runtime_root"] = "/different/source/VAGEN"
+        runtime["contract_payload_sha256"] = (
+            collect_module.source_runtime_contract_payload_sha256(runtime)
+        )
+    elif drift == "policy":
+        policy.runtime_contract["engine_seed"] = 8
+    elif drift == "max_steps":
+        max_steps = 19
+    elif drift == "format":
+        format_policy = "fail_shard"
+    collector = SourceShardCollector(
+        client=client,
+        policy=policy,
+        run_id="resume",
+        shard_index=0,
+        reconstruction_identity=_reconstruction_identity(),
+        source_runtime_evidence=runtime,
+        policy_artifact_evidence=_policy_artifact_evidence(),
+        format_failure_policy=format_policy,
+        concurrency=1,
+    )
+    with pytest.raises(ValueError, match="metadata|exactly 20"):
+        collector.collect(
+            resumed_specs,
+            output_dir=output,
+            max_steps=max_steps,
+            resume=True,
+        )
+    assert client.configs == {}
+
+
+def test_resume_rejects_duplicate_and_unknown_checkpoint_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    system_prompt = "exact source system"
+    _patch_prompt_hashes(monkeypatch, system_prompt)
+    specs = [
+        EpisodeSpec(0, "base", 100, "train", "base:100"),
+        EpisodeSpec(10_000, "common_sense", 100, "train", "common_sense:100"),
+    ]
+    output = tmp_path / "shard"
+    with pytest.raises(RuntimeError, match="injected interruption"):
+        _collector(_FakeClient(system_prompt), _InterruptSecondEpisodePolicy()).collect(
+            specs, output_dir=output
+        )
+    records = tmp_path / "shard.inprogress" / "records"
+    original = next(records.glob("*.json"))
+    (records / "99999999.json").write_bytes(original.read_bytes())
+    client = _FakeClient(system_prompt)
+    with pytest.raises(ValueError, match="unknown checkpoint"):
+        _collector(client, _FakePolicy()).collect(specs, output_dir=output, resume=True)
+    assert client.configs == {}
+
+
+@pytest.mark.parametrize(
+    "artifact_name",
+    ["raw.jsonl", "shard_manifest.json", "COMPLETE"],
+)
+def test_resume_never_overwrites_tampered_finalization_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    artifact_name: str,
+) -> None:
+    system_prompt = "exact source system"
+    _patch_prompt_hashes(monkeypatch, system_prompt)
+    specs = [EpisodeSpec(0, "base", 100, "train", "base:100")]
+    output = tmp_path / f"shard-{artifact_name.replace('.', '-')}"
+    original_publish = collect_module.publish_reserved_directory
+
+    def interrupt_publication(*_args, **_kwargs):
+        raise RuntimeError("injected publication interruption")
+
+    monkeypatch.setattr(
+        collect_module,
+        "publish_reserved_directory",
+        interrupt_publication,
+    )
+    with pytest.raises(RuntimeError, match="publication interruption"):
+        _collector(_FakeClient(system_prompt), _FakePolicy()).collect(
+            specs, output_dir=output
+        )
+
+    staging = output.with_name(f"{output.name}.inprogress")
+    artifact = staging / artifact_name
+    artifact.write_bytes(b"tampered-finalization-evidence\n")
+    client = _FakeClient(system_prompt)
+    monkeypatch.setattr(
+        collect_module,
+        "publish_reserved_directory",
+        original_publish,
+    )
+    def unexpected_activation():
+        raise AssertionError("complete resume must validate/finalize without runtime activation")
+
+    with pytest.raises(ValueError, match="finalization artifact"):
+        _collector(client, _FakePolicy()).collect(
+            specs,
+            output_dir=output,
+            resume=True,
+            activate_runtime=unexpected_activation,
+        )
+    assert artifact.read_bytes() == b"tampered-finalization-evidence\n"
+    assert client.configs == {}
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("entry", ["IN_PROGRESS.json", "records", "attempts"])
+def test_resume_rejects_symlinked_control_entries_before_rollout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entry: str,
+) -> None:
+    system_prompt = "exact source system"
+    _patch_prompt_hashes(monkeypatch, system_prompt)
+    specs = [
+        EpisodeSpec(0, "base", 100, "train", "base:100"),
+        EpisodeSpec(10_000, "common_sense", 100, "train", "common_sense:100"),
+    ]
+    output = tmp_path / f"symlink-{entry.replace('.', '-')}"
+    with pytest.raises(RuntimeError, match="injected interruption"):
+        _collector(_FakeClient(system_prompt), _InterruptSecondEpisodePolicy()).collect(
+            specs, output_dir=output
+        )
+    staging = output.with_name(f"{output.name}.inprogress")
+    path = staging / entry
+    backup = staging / f"{entry}.real"
+    path.rename(backup)
+    path.symlink_to(backup, target_is_directory=backup.is_dir())
+
+    client = _FakeClient(system_prompt)
+    with pytest.raises((ValueError, FileNotFoundError), match="symlink|real|invalid"):
+        _collector(client, _FakePolicy()).collect(specs, output_dir=output, resume=True)
+    assert client.configs == {}
+
+
+@pytest.mark.parametrize("entry", ["IN_PROGRESS.json", "records", "attempts"])
+def test_complete_validation_rejects_symlinked_control_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entry: str,
+) -> None:
+    system_prompt = "exact source system"
+    _patch_prompt_hashes(monkeypatch, system_prompt)
+    output = tmp_path / f"final-control-{entry.replace('.', '-')}"
+    _collector(_FakeClient(system_prompt), _FakePolicy()).collect(
+        [EpisodeSpec(0, "base", 100, "train", "base:100")],
+        output_dir=output,
+    )
+    path = output / entry
+    backup = output / f"{entry}.real"
+    path.rename(backup)
+    path.symlink_to(backup, target_is_directory=backup.is_dir())
+    with pytest.raises(ValueError, match="symlink"):
+        validate_complete_shard(output, expected_source_indices={0})
+
+
+def test_resume_and_complete_validation_reject_symlinked_image_ancestor(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    system_prompt = "exact source system"
+    _patch_prompt_hashes(monkeypatch, system_prompt)
+    specs = [
+        EpisodeSpec(0, "base", 100, "train", "base:100"),
+        EpisodeSpec(10_000, "common_sense", 100, "train", "common_sense:100"),
+    ]
+    interrupted_output = tmp_path / "resume-image-ancestor"
+    with pytest.raises(RuntimeError, match="injected interruption"):
+        _collector(_FakeClient(system_prompt), _InterruptSecondEpisodePolicy()).collect(
+            specs, output_dir=interrupted_output
+        )
+    staging = interrupted_output.with_name(f"{interrupted_output.name}.inprogress")
+    checkpoint = next((staging / "records").glob("*.json"))
+    relative = Path(
+        json.loads(checkpoint.read_text(encoding="utf-8"))["record"]["image_paths"][0]
+    )
+    ancestor = staging / relative.parts[0] / relative.parts[1]
+    backing = ancestor.with_name(f"{ancestor.name}.real")
+    ancestor.rename(backing)
+    ancestor.symlink_to(backing, target_is_directory=True)
+    client = _FakeClient(system_prompt)
+    with pytest.raises(ValueError, match="symlink"):
+        _collector(client, _FakePolicy()).collect(
+            specs, output_dir=interrupted_output, resume=True
+        )
+    assert client.configs == {}
+
+    final_output = tmp_path / "final-image-ancestor"
+    manifest = _collector(_FakeClient(system_prompt), _FakePolicy()).collect(
+        [specs[0]], output_dir=final_output
+    )
+    relative = Path(manifest["images"][0]["path"])
+    ancestor = final_output / relative.parts[0] / relative.parts[1]
+    backing = ancestor.with_name(f"{ancestor.name}.real")
+    ancestor.rename(backing)
+    ancestor.symlink_to(backing, target_is_directory=True)
+    with pytest.raises(ValueError, match="symlink"):
+        validate_complete_shard(final_output, expected_source_indices={0})
+
+
+def test_resume_uses_attempt_unique_service_id_but_stable_record_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    system_prompt = "exact source system"
+    _patch_prompt_hashes(monkeypatch, system_prompt)
+    specs = [
+        EpisodeSpec(0, "base", 100, "train", "base:100"),
+        EpisodeSpec(10_000, "common_sense", 100, "train", "common_sense:100"),
+    ]
+    output = tmp_path / "attempt-identities"
+    first_client = _FakeClient(system_prompt)
+    with pytest.raises(RuntimeError, match="injected interruption"):
+        _collector(first_client, _InterruptSecondEpisodePolicy()).collect(
+            specs, output_dir=output
+        )
+    first_ids = set(first_client.configs)
+    resumed_client = _FakeClient(system_prompt)
+    _collector(resumed_client, _FakePolicy()).collect(specs, output_dir=output, resume=True)
+    resumed_ids = set(resumed_client.configs)
+    assert first_ids.isdisjoint(resumed_ids)
+    rows = [
+        json.loads(line)
+        for line in (output / "raw.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["id"] for row in rows] == [
+        "v60_resume_s000_r00000_base_100",
+        "v60_resume_s000_r10000_common_sense_100",
+    ]
+    assert all(row["id"] not in first_ids | resumed_ids for row in rows)
+
+
+def test_staging_creation_fsyncs_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    system_prompt = "exact source system"
+    _patch_prompt_hashes(monkeypatch, system_prompt)
+    calls: list[Path] = []
+    original = collect_module._fsync_directory
+
+    def observe(path: Path) -> None:
+        calls.append(path)
+        original(path)
+
+    monkeypatch.setattr(collect_module, "_fsync_directory", observe)
+    with pytest.raises(RuntimeError, match="injected interruption"):
+        _collector(_FakeClient(system_prompt), _InterruptSecondEpisodePolicy()).collect(
+            [
+                EpisodeSpec(0, "base", 100, "train", "base:100"),
+                EpisodeSpec(10_000, "common_sense", 100, "train", "common_sense:100"),
+            ],
+            output_dir=tmp_path / "fsync-parent",
+        )
+    assert calls[0] == tmp_path
+
+
+def test_failure_recording_io_never_obscures_original_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    system_prompt = "exact source system"
+    _patch_prompt_hashes(monkeypatch, system_prompt)
+    original = collect_module._write_json_atomic
+
+    def fail_only_for_failure_marker(path: Path, payload: dict[str, object]) -> None:
+        if path.name == "FAILED.json":
+            raise OSError("injected failure-recording I/O")
+        original(path, payload)
+
+    monkeypatch.setattr(collect_module, "_write_json_atomic", fail_only_for_failure_marker)
+    with pytest.raises(RuntimeError, match="injected interruption"):
+        _collector(_FakeClient(system_prompt), _InterruptSecondEpisodePolicy()).collect(
+            [
+                EpisodeSpec(0, "base", 100, "train", "base:100"),
+                EpisodeSpec(10_000, "common_sense", 100, "train", "common_sense:100"),
+            ],
+            output_dir=tmp_path / "failure-io",
+        )
+
+
+def test_checkpoint_atomic_writer_never_replaces_existing_path(tmp_path: Path) -> None:
+    path = tmp_path / "checkpoint.json"
+    path.write_bytes(b"winner")
+    with pytest.raises(FileExistsError):
+        collect_module._write_json_exclusive_atomic(path, {"loser": True})
+    assert path.read_bytes() == b"winner"
+
+
+def test_collection_lock_rejects_concurrent_owner_before_rollout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    system_prompt = "exact source system"
+    _patch_prompt_hashes(monkeypatch, system_prompt)
+    output = tmp_path / "locked"
+    client = _FakeClient(system_prompt)
+    with (
+        collect_module._exclusive_collection_lock(output),
+        pytest.raises(RuntimeError, match="locked|collector"),
+    ):
+        _collector(client, _FakePolicy()).collect(
+            [EpisodeSpec(0, "base", 100, "train", "base:100")],
+            output_dir=output,
+        )
+    assert client.configs == {}
+
+
+def test_collection_lock_is_held_through_publication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    system_prompt = "exact source system"
+    _patch_prompt_hashes(monkeypatch, system_prompt)
+    output = tmp_path / "locked-through-publication"
+    original_publish = collect_module.publish_reserved_directory
+
+    def assert_locked(source: Path, target: Path, *, readiness_marker: str) -> None:
+        with (
+            pytest.raises(RuntimeError, match="locked|collector"),
+            collect_module._exclusive_collection_lock(output),
+        ):
+            raise AssertionError("concurrent lock unexpectedly acquired")
+        original_publish(source, target, readiness_marker=readiness_marker)
+
+    monkeypatch.setattr(collect_module, "publish_reserved_directory", assert_locked)
+    _collector(_FakeClient(system_prompt), _FakePolicy()).collect(
+        [EpisodeSpec(0, "base", 100, "train", "base:100")],
+        output_dir=output,
+    )
+    assert (output / "COMPLETE").is_file()
+
+
+def test_post_publication_validation_error_is_not_obscured_or_mutated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    system_prompt = "exact source system"
+    _patch_prompt_hashes(monkeypatch, system_prompt)
+    spec = [EpisodeSpec(0, "base", 100, "train", "base:100")]
+    output = tmp_path / "published-then-invalid"
+    original_validate = collect_module.validate_complete_shard
+
+    def fail_only_after_publication(shard_dir, *, expected_source_indices):
+        result = original_validate(
+            shard_dir,
+            expected_source_indices=expected_source_indices,
+        )
+        if Path(shard_dir) == output:
+            raise ValueError("injected post-publication validation failure")
+        return result
+
+    monkeypatch.setattr(
+        collect_module,
+        "validate_complete_shard",
+        fail_only_after_publication,
+    )
+    with pytest.raises(ValueError, match="post-publication validation failure"):
+        _collector(_FakeClient(system_prompt), _FakePolicy()).collect(
+            spec, output_dir=output
+        )
+    assert output.is_dir()
+    assert (output / "COMPLETE").is_file()
+    assert not list(output.glob("**/FAILED.json"))
+    assert not (output / "FAILED_VALIDATION.json").exists()
+
+
 def test_collector_rejects_reconstruction_identity_relabel() -> None:
     relabeled = _reconstruction_identity()
     relabeled["runtime_head"] = collect_module.SOURCE_VAGEN_COMMIT
