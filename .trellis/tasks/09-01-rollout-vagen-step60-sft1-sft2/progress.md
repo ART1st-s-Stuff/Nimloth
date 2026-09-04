@@ -396,3 +396,9 @@ Commit gate:
 - Exact R11 used docs commit `6c7879726d353c7a000b9f6344d6ffc061473fe3`, contract blob `3ab56624fcb0e0fbe86407e3e2d03a7bddf3628f`, contract SHA256 `96364182c73be8183fa20a3093d4abab9ebeb829477aac5fecd9e818ecb16ebe`, and main script SHA256 `25181411ed092162e47562fd21afd185af7efa3abba9bd547c43bd29574109e0`.
 - After SSH recovered, the detached single-snapshot preempt gate found no four-GPU candidate; two subsequent normal/preempt queries showed zero free GPUs. The launcher exited before run-root creation or `sbatch`; no job/allocation/experiment exists.
 - Retained R11 launcher log/PID SHA256 values are `32ad87c2fc006423c56cbe3f8cf521fc2caa888ee3b1ba65b1255754cae414c7` and `5029f7d0ecf48ef6714e23ae6723ea4c80a3cbea39e7f92f467c9a2003c980bb`. Human then selected submitting to `normal` and waiting at most 24 hours rather than requiring immediate free GPUs.
+
+### 2026-09-04 normal-queue R12 — detached shell lacked module environment
+
+- R12 was bound to docs commit `905f94d716d6a297d739423887c3877b436442cf`, contract blob `2be159511520851a832b842c015fd222db60fd93`, contract SHA256 `bf1a668526ba4e68db25464bc160fbed2c8da77991f6f197a50d88d09857962e`, and main-script SHA256 `afaa97add79c8827f7388db5cf4e052c850ea553ad31a7fdfdbe9286e56ab99e`.
+- The detached bootstrap used `nohup bash`, unlike the earlier login-shell execution. Identity/import/fetch gates passed, then the script stopped exactly at `module load slurm 2>/dev/null`: the non-login shell did not initialize the module function, and stderr was intentionally suppressed. No run root or Slurm job existed.
+- Retained launcher script/log/PID SHA256 values are `afaa97add79c8827f7388db5cf4e052c850ea553ad31a7fdfdbe9286e56ab99e`, `3364c0f2492252dc5331ac3a1bb0b4109c08d52d47b08f3caf22f1e62b0e87e4`, and `9840ee78fe85ce8bff7c6c99ae945c5b1ee3b22cbfc41c9f5f1a892dd3a9484e`. R13 must launch the same detached script through `bash -l` before queue submission.
