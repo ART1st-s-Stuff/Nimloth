@@ -3,7 +3,7 @@
   "name": "rebuild-trellis-baseline-policy",
   "title": "恢复Trellis基线并重建Nimloth政策层",
   "description": "恢复发布版Trellis 0.6.16通用文件，建立薄AGENTS.md、scoped specs和project-local skills。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

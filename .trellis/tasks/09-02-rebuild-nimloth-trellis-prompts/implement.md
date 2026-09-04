@@ -15,23 +15,23 @@
 
 ### RED — 固定上游边界和prompt基线
 
-- [ ] 增加focused contract tests：列出必须与`0.6.16`一致的workflow/scripts/Pi prompts/agents/extension，并让当前本地分叉首先失败。
-- [ ] 增加prompt/context测量fixture，记录恢复前后主session与subagent的bytes、重复artifact读取和自动注入来源；测试只测量，不规定新的压缩方案。
-- [ ] 为薄`AGENTS.md`、skill路由、per-task branch、canonical主槽位、remote-only实验及15分钟总deadline补充静态合同测试；先证明当前规则分散或冲突。
+- [x] 增加focused contract tests：列出必须与`0.6.16`一致的workflow/scripts/Pi prompts/agents/extension，并让当前本地分叉首先失败。
+- [x] 增加prompt/context测量fixture，记录恢复前后主session与subagent的bytes、重复artifact读取和自动注入来源；测试只测量，不规定新的压缩方案。
+- [x] 为薄`AGENTS.md`、skill路由、per-task branch、canonical主槽位、remote-only实验及15分钟总deadline补充静态合同测试；先证明当前规则分散或冲突。
 
 ### GREEN — 恢复上游并建立项目覆盖层
 
-- [ ] 使用发布包逐文件恢复template-managed Trellis `0.6.16`；禁止repository-wide force。对`.trellis/config.yaml`、`AGENTS.md`和project-local skills/specs只做明确的项目层改动。
-- [ ] 从上游所有的`.trellis/scripts/task.py`、`.pi/extensions/trellis/index.ts`及其测试中移除本地typed approval、dashboard、execution和work-item能力；额外custom modules只在确认不再被引用后进入删除清单。
-- [ ] 将`AGENTS.md`重写为已确认的薄安全内核；把实现合同迁入scoped specs，把操作步骤迁入project-local skills/references，并保留不可遗漏的高风险skill路由。
-- [ ] 将Git合同改为“每task独立branch；单一主task使用canonical directory；额外并行task使用worktree”；开发branch只作为task branch的base。
-- [ ] 将实验合同改为remote-only、`meta.kind=experiment`、短实验十分钟估算与从成功提交起十五分钟总deadline，并明确deadline取消后的defer/blocker路由。
-- [ ] 逐项确认上游generated files与发布包一致；记录允许保持project-owned的精确例外。运行恢复后context测量并保存原始结果，不在本child继续优化。
+- [x] 使用发布包逐文件恢复template-managed Trellis `0.6.16`；禁止repository-wide force。对`.trellis/config.yaml`、`AGENTS.md`和project-local skills/specs只做明确的项目层改动。
+- [x] 从上游所有的`.trellis/scripts/task.py`、`.pi/extensions/trellis/index.ts`及其测试中移除本地typed approval、dashboard、execution和work-item能力；额外custom modules只在确认不再被引用后进入删除清单。
+- [x] 将`AGENTS.md`重写为已确认的薄安全内核；把实现合同迁入scoped specs，把操作步骤迁入project-local skills/references，并保留不可遗漏的高风险skill路由。
+- [x] 将Git合同改为“每task独立branch；单一主task使用canonical directory；额外并行task使用worktree”；开发branch只作为task branch的base。
+- [x] 将实验合同改为remote-only、`meta.kind=experiment`、短实验十分钟估算与从成功提交起十五分钟总deadline，并明确deadline取消后的defer/blocker路由。
+- [x] 逐项确认上游generated files与发布包一致；记录允许保持project-owned的精确例外。运行恢复后context测量并保存原始结果，不在本child继续优化。
 
 ### 本child验证和审查
 
-- [ ] 运行上游一致性、task lifecycle、prompt/context及project contract focused tests；运行`git diff --check`。
-- [ ] 单独展示本child的spec diff、理由和影响；拒绝时只回退spec改动。获准后再进入该child的commit review。
+- [x] 运行上游一致性、task lifecycle、prompt/context及project contract focused tests；运行`git diff --check`。
+- [x] 单独展示本child的spec diff、理由和影响；拒绝时只回退spec改动。获准后再进入该child的commit review。
 
 ## 2. Child：独立work-item可见性
 
