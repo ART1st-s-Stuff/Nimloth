@@ -1,1 +1,12 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file":".trellis/tasks/09-03-extract-nimloth-work-item-visibility/prd.md","reason":"已确认的透明identity、动态激活、独立runtime和只读pi-app边界。"}
+{"file":".trellis/tasks/09-03-extract-nimloth-work-item-visibility/design.md","reason":"parser/runtime/projection、Pi tool和pi-app consumer技术设计。"}
+{"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/prd.md","reason":"parent R6/R7/R9的独立可见性和Trellis唯一权威合同。"}
+{"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/design.md","reason":"跨repository branch/worktree与integration顺序。"}
+{"file":".trellis/spec/governance/platform-integration.md","reason":"Pi/desktop trusted workspace、source session和降级边界。"}
+{"file":".trellis/spec/governance/tasks-progress-and-memory.md","reason":"Trellis task artifact唯一权威及可选visibility语义。"}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"双仓库worktree、common-dir和mutation绑定安全合同。"}
+{"file":".trellis/tasks/08-31-trellis-work-item-runtime-producer/design.md","reason":"旧prototype parser/runtime设计仅作待重新验证的实现线索。"}
+{"file":".trellis/tasks/08-31-pi-app-trellis-task-tree-consumer/design.md","reason":"旧consumer数据流仅作待拆除approval/dashboard耦合的线索。"}
+{"file":".trellis/tasks/09-04-pi-app-trellis-task-browser/research/final-validation-and-review-2026-09-04.md","reason":"稳定Trellis side panel、registered worktree source和验证基线。"}
+{"file":"ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md","reason":"跨repo修改绑定精确worktree。"}
+{"file":".trellis/tasks/09-03-extract-nimloth-work-item-visibility/research/final-validation-and-review-2026-09-04.md","reason":"首次review、remediation、最终验证和APPROVED复审证据。"}

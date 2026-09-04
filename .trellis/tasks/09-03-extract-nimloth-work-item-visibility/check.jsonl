@@ -1,1 +1,10 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file":".trellis/tasks/09-03-extract-nimloth-work-item-visibility/prd.md","reason":"逐项核验权威、identity、activation、runtime、projection和UI验收标准。"}
+{"file":".trellis/tasks/09-03-extract-nimloth-work-item-visibility/design.md","reason":"核验唯一parser/projection、bounds、降级和双仓库数据流。"}
+{"file":".trellis/tasks/09-03-extract-nimloth-work-item-visibility/implement.md","reason":"核验TDD顺序、验证和commit/merge门禁。"}
+{"file":".trellis/spec/governance/platform-integration.md","reason":"检查Pi与pi-app没有越过trusted workspace或session边界。"}
+{"file":".trellis/spec/governance/tasks-progress-and-memory.md","reason":"检查runtime和pi-app没有成为第二task authority。"}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"检查所有跨repo/worktree操作绑定正确目标。"}
+{"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/prd.md","reason":"核验child没有放宽parent R6/R7/R9。"}
+{"file":".trellis/tasks/09-04-pi-app-trellis-task-browser/research/final-validation-and-review-2026-09-04.md","reason":"复核stable panel、source identity和clean-base验证经验。"}
+{"file":"ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md","reason":"核验mutation命令的cwd/root/branch。"}
+{"file":".trellis/tasks/09-03-extract-nimloth-work-item-visibility/research/final-validation-and-review-2026-09-04.md","reason":"核对双仓最终验证、baseline例外和无P0–P2复审结论。"}
