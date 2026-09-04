@@ -1,0 +1,32 @@
+{
+  "id": "pi-app-trellis-task-browser",
+  "name": "pi-app-trellis-task-browser",
+  "title": "改进pi-app Trellis任务浏览",
+  "description": "将未完成与已完成Trellis任务分开展示，并提供独立只读任务文档选项卡。",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-09-04",
+  "completedAt": null,
+  "branch": "task/pi-app-trellis-task-browser",
+  "base_branch": "task/rebuild-nimloth-trellis-prompts",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "09-02-rebuild-nimloth-trellis-prompts",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "repositories": "pi-app@task/rebuild-nimloth-trellis-prompts:task/pi-app-trellis-task-browser",
+    "exclusions": "read-only task browsing; no Trellis lifecycle mutation, typed approval redesign, TaskTree removal, or generic question transport",
+    "worktree_sources": "registered worktrees in the current Git common directory; duplicate task refs remain separate by source",
+    "planned_worktree": "/workspace/pi-app/.worktree/task-pi-app-trellis-task-browser",
+    "base_commit": "f84406aa49b3f533d0740fb9740313f73b88bcbe"
+  }
+}

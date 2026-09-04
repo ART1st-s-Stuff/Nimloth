@@ -1,0 +1,11 @@
+{"file":".trellis/tasks/09-04-pi-app-trellis-task-browser/prd.md","reason":"已确认的生命周期tabs、artifact浏览、只读边界和多worktree聚合需求。"}
+{"file":".trellis/tasks/09-04-pi-app-trellis-task-browser/design.md","reason":"source/instance identity、lazy archive、allowlist、IPC、UI和测试设计。"}
+{"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/prd.md","reason":"parent中Trellis唯一权威、pi-app只读投影和typed approval退出边界。"}
+{"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/design.md","reason":"跨repository child隔离、pi-app后续cleanup兼容性和集成顺序。"}
+{"file":".trellis/spec/governance/platform-integration.md","reason":"ctx.cwd/trusted workspace、跨worktree平台隔离和普通问题transport边界。"}
+{"file":".trellis/spec/governance/tasks-progress-and-memory.md","reason":"Trellis task artifacts唯一权威、可选只读visibility和TaskTree absence。"}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"registered worktree、common-dir、并发dirty与跨repo mutation安全合同。"}
+{"file":".trellis/tasks/09-03-pi-app-cross-worktree-review/design.md","reason":"可复用的worktree发现、realpath/common-dir校验和快速切换identity。"}
+{"file":".trellis/tasks/09-03-pi-app-cross-worktree-review/research/remediation-and-final-review-2026-09-04.md","reason":"pi-app worktree discovery的WSL、安全和clean-base验证经验。"}
+{"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/research/validation-cost-and-boundary-audit-2026-09-03.md","reason":"pi-app focused/final验证成本及已知clean-base失败。"}
+{"file":"ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md","reason":"所有pi-app child修改必须绑定精确目标worktree。"}

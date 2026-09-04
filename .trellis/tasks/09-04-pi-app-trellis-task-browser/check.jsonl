@@ -1,0 +1,9 @@
+{"file":".trellis/tasks/09-04-pi-app-trellis-task-browser/prd.md","reason":"逐项核验生命周期分类、artifact入口、多worktree聚合和只读验收标准。"}
+{"file":".trellis/tasks/09-04-pi-app-trellis-task-browser/design.md","reason":"核验Main/IPC/Renderer实现遵守source identity、allowlist和fail-closed设计。"}
+{"file":".trellis/tasks/09-04-pi-app-trellis-task-browser/implement.md","reason":"核验TDD顺序、范围纪律和最终检查完成。"}
+{"file":".trellis/spec/governance/platform-integration.md","reason":"检查trusted workspace、source session和平台边界无越权。"}
+{"file":".trellis/spec/governance/tasks-progress-and-memory.md","reason":"检查pi-app未成为task authority或第二状态存储。"}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"检查source只来自同common-dir registered worktrees。"}
+{"file":".trellis/tasks/09-03-pi-app-cross-worktree-review/research/remediation-and-final-review-2026-09-04.md","reason":"复核WSL路径、realpath和快速切换已知风险。"}
+{"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/research/validation-cost-and-boundary-audit-2026-09-03.md","reason":"区分feature回归与clean-base失败。"}
+{"file":"ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md","reason":"核验所有跨repository mutation命令使用正确cwd/root/branch。"}
