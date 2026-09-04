@@ -1,9 +1,9 @@
-# Exact detached R9 launch contract — step60 actor merge + one-row GPU smoke
+# Exact single-snapshot R10 launch contract — step60 actor merge + one-row GPU smoke
 
 Date: 2026-09-04
-Status: **terminal pre-root resource snapshot race; no job/run; never reuse launcher paths**
+Status: **candidate exact contract; not launch authorization**
 
-This contract replaces terminal R8 with the same reviewed 96G/80GiB resource envelope, stdin-closed `srun` calls, pipeline/accounting gates and a fresh run identity. R8 proved merge and both pipeline components but was cancelled when the interactive tool disconnected during post-merge validation. R9 installs the hash-bound main script into a unique remote `.local/tmp` path and starts it with `nohup`, stdin `/dev/null`, and a separate launcher log/PID; monitoring uses independent SSH calls and cannot terminate execution. It authorizes nothing until exact review/commit/push and separate launch approval; the 100-row gate and all later stages remain excluded.
+This contract replaces terminal pre-root R9 with the same detached execution, 96G/80GiB envelope, stdin-closed `srun` calls and validation gates. R9 used separate scheduler snapshots for its printable report and eligibility decision; capacity changed across observations and the launcher exited before run creation. R10 calls `parse_nodes()` exactly once, derives both retained report and selected node from that single snapshot, and otherwise changes only fresh identities. It authorizes nothing until exact review/commit/push and separate launch approval; the 100-row gate and all later stages remain excluded.
 
 Remote CPU evidence before this draft: affected suite `125 passed`; all three readiness-marker variants passed NFSv3 success, existing-target preservation, concurrent single-winner, final-marker ordering and both interruption rejection gates at `/project/peilab/atst/nimloth/.local/tmp/step60-nfs-publication-probe-20260902T121624Z-32bcc045` (summary SHA256 `aa63a9a8851a6e2df0960b896fad0d08c98d167155d82d3119eedcb051db1d5f`). A real pinned-source partition was published and all ten sibling parquets rehashed at `/project/peilab/atst/nimloth/.local/tmp/step60-cpu-preflight-20260902T122133Z-32bcc045/partition`; manifest SHA256 `be7db7ea975927bc176186bcb51a202b3be191196ced26e043a57add5f99b87c`. Regenerated continuation evidence under `/project/peilab/atst/nimloth/.local/tmp/step60-cpu-preflight-cont-20260902T122241Z-32bcc045` is runtime-contract file SHA256 `7b9184b8e33d76c0d410b141d4cff9ea993bef43708f5f9d16e7b2972718e9e8` (payload `cbb30382ffa5170daba37458f182d472e63b46c97f9fe588c6ce565214e6fcbf`), checkpoint inspection SHA256 `a819cbef1fafd5b9b9ef391b546ec092fa7a2193cd656d461ec258afe17ab500`, and inert merge-plan SHA256 `5e9472705ac54bbe75bbe6c1688c26fc8ef530291ae268565f78db0495732c05`.
 
@@ -30,7 +30,7 @@ No module is trainable; no optimizer or objective exists. Actor, vision encoder,
 
 Unique run root; it and all launcher paths must be absent at exact launch, with executable fail-closed checks:
 
-`/project/peilab/atst/nimloth/outputs/experiments/training/sft1-vagen-step60/20260904T190000Z_step60_batch1_v3_venv_r9_7dac687b`
+`/project/peilab/atst/nimloth/outputs/experiments/training/sft1-vagen-step60/20260904T193000Z_step60_batch1_v3_venv_r10_7dac687b`
 
 Allowed children: `partition/`, `runtime_contract.json`, `merge/hf_actor/`, `smoke/source-index-00000/`, failed `smoke/source-index-00000.partial-<12 hex>/`, `logs/`, `control/`, `metadata.json`, `LAUNCH_CONTRACT.md`, `RESOLVED_LAUNCH_CONTRACT.md`, `README.md`, and `END.json`. Existing paths are never reused or removed. W&B is disabled.
 
@@ -44,19 +44,19 @@ Immediately before the remote script, run and enforce the repository resource qu
 bash /workspace/remote2/nimloth/.local/scripts/query-resources.sh --partition normal --min-free-gpu 4
 ```
 
-After exact experiment-launch approval, replace `<EXACT_APPROVED_DOCS_COMMIT>` below with its literal approved hash and execute this bootstrap exactly. It extracts the largest bash block byte-for-byte, verifies SHA256 `b837ede685a7a48502421b402c77dcca5f16bf3a0092c3f720837e3e435ae77c`, reserves the remote temporary script with shell noclobber, atomically links it to the final script without overwrite, and starts detached execution with stdin `/dev/null`. All local/remote launcher paths and the run root must be absent; no retry occurs.
+After exact experiment-launch approval, replace `<EXACT_APPROVED_DOCS_COMMIT>` below with its literal approved hash and execute this bootstrap exactly. It extracts the largest bash block byte-for-byte, verifies SHA256 `2f6badca838b000a957daa9ec6c82cbf4cd7a2d02e1dff477f22756f28a28327`, reserves the remote temporary script with shell noclobber, atomically links it to the final script without overwrite, and starts detached execution with stdin `/dev/null`. All local/remote launcher paths and the run root must be absent; no retry occurs.
 
 ```bash
 set -euo pipefail
 DOCS_COMMIT=<EXACT_APPROVED_DOCS_COMMIT>
 WT=/workspace/remote2/nimloth/.worktree/rollout-vagen-step60-docs-clean
-DOC=.trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2/research/exact-merge-smoke-launch-contract-venv-r9-2026-09-04.md
-LOCAL=/tmp/nimloth-approved-step60-r9-main.sh
-SHA=b837ede685a7a48502421b402c77dcca5f16bf3a0092c3f720837e3e435ae77c
+DOC=.trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2/research/exact-merge-smoke-launch-contract-venv-r10-2026-09-04.md
+LOCAL=/tmp/nimloth-approved-step60-r10-main.sh
+SHA=2f6badca838b000a957daa9ec6c82cbf4cd7a2d02e1dff477f22756f28a28327
 test ! -e "$LOCAL" && test ! -L "$LOCAL"
 git -C "$WT" show "$DOCS_COMMIT:$DOC" | python3 -c 'import re,sys,pathlib; blocks=re.findall(r"```bash\n(.*?)\n```",sys.stdin.read(),re.S); main=max(blocks,key=len)+"\n"; pathlib.Path(sys.argv[1]).open("x").write(main)' "$LOCAL"
 test "$(sha256sum "$LOCAL" | awk '{print $1}')" = "$SHA"
-ssh superpod-csejzhang "set -euo pipefail; TMP=/project/peilab/atst/nimloth/.local/tmp/step60-r9-launch-20260904T190000Z.sh.tmp; SCRIPT=/project/peilab/atst/nimloth/.local/tmp/step60-r9-launch-20260904T190000Z.sh; LOG=/project/peilab/atst/nimloth/.local/tmp/step60-r9-launch-20260904T190000Z.log; PIDFILE=/project/peilab/atst/nimloth/.local/tmp/step60-r9-launch-20260904T190000Z.pid; for p in \"\$TMP\" \"\$SCRIPT\" \"\$LOG\" \"\$PIDFILE\"; do test ! -e \"\$p\" && test ! -L \"\$p\"; done; umask 077; set -o noclobber; cat > \"\$TMP\"; chmod 0500 \"\$TMP\"; test \"\$(sha256sum \"\$TMP\" | awk '{print \$1}')\" = $SHA; ln \"\$TMP\" \"\$SCRIPT\"; rm \"\$TMP\"; nohup bash \"\$SCRIPT\" $DOCS_COMMIT </dev/null >\"\$LOG\" 2>&1 & pid=\$!; printf '%s\\n' \"\$pid\" > \"\$PIDFILE\"; kill -0 \"\$pid\"; printf 'R9_LAUNCHER_PID=%s\\n' \"\$pid\"" < "$LOCAL"
+ssh superpod-csejzhang "set -euo pipefail; TMP=/project/peilab/atst/nimloth/.local/tmp/step60-r10-launch-20260904T193000Z.sh.tmp; SCRIPT=/project/peilab/atst/nimloth/.local/tmp/step60-r10-launch-20260904T193000Z.sh; LOG=/project/peilab/atst/nimloth/.local/tmp/step60-r10-launch-20260904T193000Z.log; PIDFILE=/project/peilab/atst/nimloth/.local/tmp/step60-r10-launch-20260904T193000Z.pid; RUN=/project/peilab/atst/nimloth/outputs/experiments/training/sft1-vagen-step60/20260904T193000Z_step60_batch1_v3_venv_r10_7dac687b; for p in \"\$TMP\" \"\$SCRIPT\" \"\$LOG\" \"\$PIDFILE\" \"\$RUN\"; do test ! -e \"\$p\" && test ! -L \"\$p\"; done; umask 077; set -o noclobber; cat > \"\$TMP\"; chmod 0500 \"\$TMP\"; test \"\$(sha256sum \"\$TMP\" | awk '{print \$1}')\" = $SHA; ln \"\$TMP\" \"\$SCRIPT\"; rm \"\$TMP\"; nohup bash \"\$SCRIPT\" $DOCS_COMMIT </dev/null >\"\$LOG\" 2>&1 & pid=\$!; printf '%s\\n' \"\$pid\" > \"\$PIDFILE\"; kill -0 \"\$pid\"; printf 'R10_LAUNCHER_PID=%s\\n' \"\$pid\"" < "$LOCAL"
 ```
 
 Inside the detached main script `$1` is mandatory and hash-checked. Any error after `HOLD` is assigned triggers exact cancellation and a terminal Slurm state.
@@ -67,11 +67,11 @@ ROOT=/project/peilab/atst/nimloth
 NWT=$ROOT/.worktree/rollout-vagen-step60-sft1-sft2
 VWT=$ROOT/.worktree/vagen-step60-runtime-reconstruction-vagen
 PY=$ROOT/.venv/bin/python3
-RUN=$ROOT/outputs/experiments/training/sft1-vagen-step60/20260904T190000Z_step60_batch1_v3_venv_r9_7dac687b
+RUN=$ROOT/outputs/experiments/training/sft1-vagen-step60/20260904T193000Z_step60_batch1_v3_venv_r10_7dac687b
 ACTOR=/project/peilab/hligb/vagen-navigation/checkpoints/vagen_navigation_repro/navigation_vagen1_native_8gpu_rmb4_ppo16_val5_save5_lightckpt_48h_20260813T011326Z/global_step_60/actor
 SOURCE=/project/peilab/hligb/vagen-navigation/data/navigation_vagen1_native_8gpu_rmb4_ppo16_val5_save5_lightckpt_48h_20260813T011326Z/train.parquet
 TASK_REF=refs/remotes/origin/task/rollout-vagen-step60-sft1-sft2
-TASK_DOC=.trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2/research/exact-merge-smoke-launch-contract-venv-r9-2026-09-04.md
+TASK_DOC=.trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2/research/exact-merge-smoke-launch-contract-venv-r10-2026-09-04.md
 APPROVED_DOCS_COMMIT=${1:?missing-approved-docs-commit}
 HOLD=
 NODE=
@@ -128,7 +128,7 @@ for module, expected in ((vagen,root/'external/VAGEN'),(verl,root/'external/VAGE
     actual=Path(module.__file__).resolve()
     assert actual.is_relative_to(expected), (module.__name__,actual,expected)
 PY
-PREFLIGHT_TARGET=$ROOT/.local/tmp/step60-r9-inert-target-20260904T190000Z-7dac687b
+PREFLIGHT_TARGET=$ROOT/.local/tmp/step60-r10-inert-target-20260904T193000Z-7dac687b
 test -d "$ROOT/.local/tmp"
 test ! -e "$PREFLIGHT_TARGET" && test ! -L "$PREFLIGHT_TARGET"
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT/external/VAGEN/verl:$NWT/external/VAGEN:$NWT/src:$NWT" "$PY" - "$ACTOR" "$PREFLIGHT_TARGET" "$PY" "$NWT/external/VAGEN/verl/scripts/legacy_model_merger.py" <<'PY'
@@ -168,21 +168,24 @@ test "$(git -C "$ROOT" rev-parse "$TASK_REF")" = "$APPROVED_DOCS_COMMIT"
 
 # Complete live resource gate occurs immediately before run-root creation and submission.
 module load slurm 2>/dev/null
-RESOURCE_REPORT=$(python3 "$NWT/experiments/training/baseline/slurm_gpu_resources.py" --partition normal --min-free-gpu 4)
-ELIGIBLE_JSON=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT" python3 - <<'PY'
+RESOURCE_JSON=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT" python3 - <<'PY'
 import json
 from experiments.training.baseline.slurm_gpu_resources import parse_nodes
-eligible=[]
+snapshot=[]; eligible=[]
 for row in parse_nodes():
-    scheduler_free=(row.real_mem_mb or 0)-(row.alloc_mem_mb or 0)
-    if row.partition=="normal" and row.node!="dgx-51" and row.state in {"IDLE","MIXED"} and row.free_gpu>=4 and row.free_cpu>=112 and scheduler_free>=96*1024 and (row.free_mem_mb or 0)>=80*1024:
-        eligible.append({"node":row.node,"free_gpu":row.free_gpu,"free_cpu":row.free_cpu,"scheduler_free_mem_mb":scheduler_free,"observed_free_mem_mb":row.free_mem_mb})
+    if row.partition!="normal": continue
+    item={"node":row.node,"state":row.state,"free_gpu":row.free_gpu,"free_cpu":row.free_cpu,"scheduler_free_mem_mb":(row.real_mem_mb or 0)-(row.alloc_mem_mb or 0),"observed_free_mem_mb":row.free_mem_mb}
+    snapshot.append(item)
+    if row.node!="dgx-51" and row.state in {"IDLE","MIXED"} and row.free_gpu>=4 and row.free_cpu>=112 and item["scheduler_free_mem_mb"]>=96*1024 and (row.free_mem_mb or 0)>=80*1024:
+        eligible.append(item)
+snapshot.sort(key=lambda item:item["node"])
 eligible.sort(key=lambda item:(-item["free_gpu"],-item["free_cpu"],-item["observed_free_mem_mb"],item["node"]))
 assert eligible, "no one-node normal topology satisfies 4 GPU / 112 CPU / 96G scheduler / 80GiB observed memory"
-print(json.dumps(eligible,sort_keys=True))
+print(json.dumps({"snapshot":snapshot,"eligible":eligible},sort_keys=True))
 PY
 )
-ELIGIBLE_NODE=$("$PY" -c 'import json,sys; print(json.load(sys.stdin)[0]["node"])' <<< "$ELIGIBLE_JSON")
+ELIGIBLE_JSON=$("$PY" -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["eligible"],sort_keys=True))' <<< "$RESOURCE_JSON")
+ELIGIBLE_NODE=$("$PY" -c 'import json,sys; print(json.load(sys.stdin)["eligible"][0]["node"])' <<< "$RESOURCE_JSON")
 test -n "$ELIGIBLE_NODE"
 test ! -e "$RUN" && test ! -L "$RUN"
 
@@ -199,10 +202,10 @@ PY
 
 
 # Persist the already-completed pre-root live resource decision without reselecting topology.
-printf '%s\n' "$RESOURCE_REPORT" > "$RUN/control/resources-immediately-before-sbatch.txt"
+printf '%s\n' "$RESOURCE_JSON" > "$RUN/control/resources-immediately-before-sbatch.json"
 printf '%s\n' "$ELIGIBLE_JSON" > "$RUN/control/eligible-nodes-immediately-before-sbatch.json"
 printf '%s\n' "$ELIGIBLE_NODE" > "$RUN/control/eligible-node"
-HOLD=$(sbatch --parsable --account=peilab --partition=normal --nodelist="$ELIGIBLE_NODE" --nodes=1 --ntasks=1 --cpus-per-task=112 --gres=gpu:4 --mem=96G --time=03:00:00 --job-name=step60-b1-v3venv9-smoke --output="$RUN/logs/hold_%j.out" --error="$RUN/logs/hold_%j.err" --wrap='sleep infinity')
+HOLD=$(sbatch --parsable --account=peilab --partition=normal --nodelist="$ELIGIBLE_NODE" --nodes=1 --ntasks=1 --cpus-per-task=112 --gres=gpu:4 --mem=96G --time=03:00:00 --job-name=step60-b1-v3venv10-smoke --output="$RUN/logs/hold_%j.out" --error="$RUN/logs/hold_%j.err" --wrap='sleep infinity')
 printf '%s\n' "$HOLD" > "$RUN/control/hold_job_id"
 for _ in $(seq 1 180); do
   state=$(squeue -h -j "$HOLD" -o '%T')
@@ -262,8 +265,8 @@ ROOT=/project/peilab/atst/nimloth
 NWT=$ROOT/.worktree/rollout-vagen-step60-sft1-sft2
 VWT=$ROOT/.worktree/vagen-step60-runtime-reconstruction-vagen
 PY=$ROOT/.venv/bin/python3
-RUN=$ROOT/outputs/experiments/training/sft1-vagen-step60/20260904T190000Z_step60_batch1_v3_venv_r9_7dac687b
-PORT=18610
+RUN=$ROOT/outputs/experiments/training/sft1-vagen-step60/20260904T193000Z_step60_batch1_v3_venv_r10_7dac687b
+PORT=18620
 IFS=',' read -r -a ALLOCATED_GPUS <<< "${CUDA_VISIBLE_DEVICES:-}"
 test "${#ALLOCATED_GPUS[@]}" -eq 4
 test "$(printf '%s\n' "${ALLOCATED_GPUS[@]}" | sort -u | wc -l)" -eq 4
@@ -284,7 +287,7 @@ ready=0
 for _ in $(seq 1 167); do if curl -fsS "http://127.0.0.1:$PORT/health" > "$RUN/control/smoke-health.json"; then ready=1; break; fi; if ! kill -0 "$SERVER_PID" 2>/dev/null; then break; fi; sleep 3; done
 test "$ready" -eq 1
 cd "$NWT"
-CUDA_VISIBLE_DEVICES="$POLICY_GPUS" "$PY" experiments/training/sft1/vagen_step60_collect.py --model-path "$RUN/merge/hf_actor" --partition-manifest "$RUN/partition/partition_manifest.json" --source-index 0 --shard-index 0 --shard-size 100 --output-dir "$RUN/smoke/source-index-00000" --env-url "http://127.0.0.1:$PORT" --run-id step60-b1-v3venv9-smoke-source-00000 --source-runtime-root "$VWT" --source-runtime-contract "$RUN/runtime_contract.json" --expected-reconstruction-head 170a673d1bf5855fc0ea6fbed0744b3d7168f8f0 --expected-reconstruction-tree 58ef0eb66ad0bef7587c253c5c643af572c1d3a7 --expected-reconstruction-diff-sha256 7f025476657de1289cf84b61d7702de26d248cd196412e9374a15e6de62730e9 --expected-runtime-contract-payload-sha256 cbb30382ffa5170daba37458f182d472e63b46c97f9fe588c6ce565214e6fcbf --format-failure-policy fail_shard --concurrency 1 --tensor-parallel-size 2 --gpu-memory-utilization 0.35 --engine-seed 0 2>&1 | tee "$RUN/logs/smoke.log"
+CUDA_VISIBLE_DEVICES="$POLICY_GPUS" "$PY" experiments/training/sft1/vagen_step60_collect.py --model-path "$RUN/merge/hf_actor" --partition-manifest "$RUN/partition/partition_manifest.json" --source-index 0 --shard-index 0 --shard-size 100 --output-dir "$RUN/smoke/source-index-00000" --env-url "http://127.0.0.1:$PORT" --run-id step60-b1-v3venv10-smoke-source-00000 --source-runtime-root "$VWT" --source-runtime-contract "$RUN/runtime_contract.json" --expected-reconstruction-head 170a673d1bf5855fc0ea6fbed0744b3d7168f8f0 --expected-reconstruction-tree 58ef0eb66ad0bef7587c253c5c643af572c1d3a7 --expected-reconstruction-diff-sha256 7f025476657de1289cf84b61d7702de26d248cd196412e9374a15e6de62730e9 --expected-runtime-contract-payload-sha256 cbb30382ffa5170daba37458f182d472e63b46c97f9fe588c6ce565214e6fcbf --format-failure-policy fail_shard --concurrency 1 --tensor-parallel-size 2 --gpu-memory-utilization 0.35 --engine-seed 0 2>&1 | tee "$RUN/logs/smoke.log"
 SMOKE
 chmod 0555 "$RUN/control/smoke-step.sh"
 set +e
@@ -330,9 +333,9 @@ ssh superpod-csejzhang 'bash -l -s' <<'MONITOR'
 set -euo pipefail
 module load slurm 2>/dev/null
 ROOT=/project/peilab/atst/nimloth
-RUN=$ROOT/outputs/experiments/training/sft1-vagen-step60/20260904T190000Z_step60_batch1_v3_venv_r9_7dac687b
-PIDFILE=$ROOT/.local/tmp/step60-r9-launch-20260904T190000Z.pid
-LOG=$ROOT/.local/tmp/step60-r9-launch-20260904T190000Z.log
+RUN=$ROOT/outputs/experiments/training/sft1-vagen-step60/20260904T193000Z_step60_batch1_v3_venv_r10_7dac687b
+PIDFILE=$ROOT/.local/tmp/step60-r10-launch-20260904T193000Z.pid
+LOG=$ROOT/.local/tmp/step60-r10-launch-20260904T193000Z.log
 test -f "$PIDFILE" && test ! -L "$PIDFILE"
 pid=$(cat "$PIDFILE"); case "$pid" in ''|*[!0-9]*) exit 1;; esac
 if kill -0 "$pid" 2>/dev/null; then echo "LAUNCHER=RUNNING PID=$pid"; else echo "LAUNCHER=EXITED PID=$pid"; fi
