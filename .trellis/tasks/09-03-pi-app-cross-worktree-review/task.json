@@ -1,0 +1,29 @@
+{
+  "id": "pi-app-cross-worktree-review",
+  "name": "pi-app-cross-worktree-review",
+  "title": "实现pi-app Commit Review与Merge Review",
+  "description": "在不切换逻辑workspace/session/worker cwd的情况下，分离worktree staged Commit Review与branch committed Merge Review。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-09-03",
+  "completedAt": "2026-09-04",
+  "branch": "task/pi-app-cross-worktree-review",
+  "base_branch": "task/rebuild-nimloth-trellis-prompts",
+  "worktree_path": "/workspace/pi-app/.worktree/task-pi-app-cross-worktree-review",
+  "commit": "f84406aa49b3f533d0740fb9740313f73b88bcbe",
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "09-02-rebuild-nimloth-trellis-prompts",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "repositories": "pi-app@task/rebuild-nimloth-trellis-prompts:task/pi-app-cross-worktree-review",
+    "exclusions": "non-current worktrees and Merge Review are read-only; no workspace/session switch; no cross-worktree stage/unstage/discard/commit"
+  }
+}

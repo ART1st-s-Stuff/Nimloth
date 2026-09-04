@@ -23,7 +23,8 @@
     "09-03-extract-nimloth-work-item-visibility",
     "09-03-simplify-pi-app-trellis-interaction",
     "09-03-archive-legacy-trellis-knowledge",
-    "09-03-integrate-trellis-prompt-rebuild"
+    "09-03-integrate-trellis-prompt-rebuild",
+    "09-03-pi-app-cross-worktree-review"
   ],
   "parent": "09-02-reduce-trellis-prompt-overhead",
   "relatedFiles": [],

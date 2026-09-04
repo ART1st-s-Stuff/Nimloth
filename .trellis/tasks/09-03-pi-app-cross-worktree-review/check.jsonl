@@ -1,0 +1,9 @@
+{"file":".trellis/tasks/09-03-pi-app-cross-worktree-review/prd.md","reason":"逐项核验两个Review模式、只读边界和验收标准。"}
+{"file":".trellis/tasks/09-03-pi-app-cross-worktree-review/design.md","reason":"核验实现与已批准数据流、安全校验和回滚设计一致。"}
+{"file":".trellis/tasks/09-03-pi-app-cross-worktree-review/implement.md","reason":"核验TDD顺序、work-item边界和最终验证均已落实。"}
+{"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/research/validation-cost-and-boundary-audit-2026-09-03.md","reason":"区分本child回归与pi-app既有clean-base失败。"}
+{"file":"ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md","reason":"检查所有跨repository修改和验证命令绑定正确worktree。"}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"检查分支、worktree、commit与cleanup安全合同。"}
+{"file":".trellis/tasks/09-03-pi-app-cross-worktree-review/research/w1-isolation-and-clean-base-2026-09-03.md","reason":"核验exact base、隔离状态与clean-base证据未被后续实现混淆。"}
+{"file":".trellis/tasks/09-03-pi-app-cross-worktree-review/research/precommit-review-findings-2026-09-04.md","reason":"确认五项P1均有回归测试或明确处置，TS2742归因没有被错误降级。"}
+{"file":".trellis/tasks/09-03-pi-app-cross-worktree-review/research/remediation-and-final-review-2026-09-04.md","reason":"W8-W10修复、最终验证、环境例外与独立APPROVED复审证据。"}

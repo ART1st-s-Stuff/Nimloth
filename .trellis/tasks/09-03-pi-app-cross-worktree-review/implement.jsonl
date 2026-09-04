@@ -1,0 +1,10 @@
+{"file":".trellis/tasks/09-03-pi-app-cross-worktree-review/prd.md","reason":"经人类确认的Commit Review与Merge Review需求、权限和验收边界。"}
+{"file":".trellis/tasks/09-03-pi-app-cross-worktree-review/design.md","reason":"经人类确认的UI、Main、IPC、Renderer、身份校验和测试设计。"}
+{"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/prd.md","reason":"parent目标及pi-app只承担显示/通用交互、不成为Trellis权威的边界。"}
+{"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/design.md","reason":"跨repository child隔离、分批审查和最终集成设计。"}
+{"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/research/validation-cost-and-boundary-audit-2026-09-03.md","reason":"pi-app focused与最终验证的成本和已知clean-base问题。"}
+{"file":"ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md","reason":"跨repository mutation必须绑定精确cwd/root/branch/status。"}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"Nimloth侧worktree隔离、不覆盖并发dirty内容及cleanup门禁。"}
+{"file":".trellis/tasks/09-03-pi-app-cross-worktree-review/research/w1-isolation-and-clean-base-2026-09-03.md","reason":"pi-app child exact base、隔离路径、focused baseline和实际代码边界。"}
+{"file":".trellis/tasks/09-03-pi-app-cross-worktree-review/research/precommit-review-findings-2026-09-04.md","reason":"独立review发现的五项P1、验证归因及经人类确认的W8-W10 replan。"}
+{"file":".trellis/tasks/09-03-pi-app-cross-worktree-review/research/remediation-and-final-review-2026-09-04.md","reason":"后续工作复用已修复边界、验证例外与第二次独立复审结论。"}
