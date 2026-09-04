@@ -1,9 +1,9 @@
-# Exact stdin-closed R8 launch contract — step60 actor merge + one-row GPU smoke
+# Exact detached R9 launch contract — step60 actor merge + one-row GPU smoke
 
 Date: 2026-09-04
-Status: **terminal cancelled by client disconnect before smoke; never reuse**
+Status: **candidate exact contract; not launch authorization**
 
-This contract replaces terminal R7 with the same reviewed 96G/80GiB resource envelope, pipeline/accounting gates and a fresh run identity. R7 job `546235` proved the lower memory gate and actor merge/load path, but merge `srun` inherited the SSH stream and consumed the unparsed remainder of the outer script. R8 adds `--input=none` to every `srun`, so no child can consume launcher stdin; all other source-index-0 semantics remain unchanged. It authorizes nothing until exact review/commit/push and separate launch approval; the 100-row gate and all later stages remain excluded.
+This contract replaces terminal R8 with the same reviewed 96G/80GiB resource envelope, stdin-closed `srun` calls, pipeline/accounting gates and a fresh run identity. R8 proved merge and both pipeline components but was cancelled when the interactive tool disconnected during post-merge validation. R9 installs the hash-bound main script into a unique remote `.local/tmp` path and starts it with `nohup`, stdin `/dev/null`, and a separate launcher log/PID; monitoring uses independent SSH calls and cannot terminate execution. It authorizes nothing until exact review/commit/push and separate launch approval; the 100-row gate and all later stages remain excluded.
 
 Remote CPU evidence before this draft: affected suite `125 passed`; all three readiness-marker variants passed NFSv3 success, existing-target preservation, concurrent single-winner, final-marker ordering and both interruption rejection gates at `/project/peilab/atst/nimloth/.local/tmp/step60-nfs-publication-probe-20260902T121624Z-32bcc045` (summary SHA256 `aa63a9a8851a6e2df0960b896fad0d08c98d167155d82d3119eedcb051db1d5f`). A real pinned-source partition was published and all ten sibling parquets rehashed at `/project/peilab/atst/nimloth/.local/tmp/step60-cpu-preflight-20260902T122133Z-32bcc045/partition`; manifest SHA256 `be7db7ea975927bc176186bcb51a202b3be191196ced26e043a57add5f99b87c`. Regenerated continuation evidence under `/project/peilab/atst/nimloth/.local/tmp/step60-cpu-preflight-cont-20260902T122241Z-32bcc045` is runtime-contract file SHA256 `7b9184b8e33d76c0d410b141d4cff9ea993bef43708f5f9d16e7b2972718e9e8` (payload `cbb30382ffa5170daba37458f182d472e63b46c97f9fe588c6ce565214e6fcbf`), checkpoint inspection SHA256 `a819cbef1fafd5b9b9ef391b546ec092fa7a2193cd656d461ec258afe17ab500`, and inert merge-plan SHA256 `5e9472705ac54bbe75bbe6c1688c26fc8ef530291ae268565f78db0495732c05`.
 
@@ -28,13 +28,13 @@ No module is trainable; no optimizer or objective exists. Actor, vision encoder,
 
 ## Output and resource contract
 
-Unique run root, absent at 2026-09-02 preflight:
+Unique run root; it and all launcher paths must be absent at exact launch, with executable fail-closed checks:
 
-`/project/peilab/atst/nimloth/outputs/experiments/training/sft1-vagen-step60/20260904T181500Z_step60_batch1_v3_venv_r8_7dac687b`
+`/project/peilab/atst/nimloth/outputs/experiments/training/sft1-vagen-step60/20260904T190000Z_step60_batch1_v3_venv_r9_7dac687b`
 
 Allowed children: `partition/`, `runtime_contract.json`, `merge/hf_actor/`, `smoke/source-index-00000/`, failed `smoke/source-index-00000.partial-<12 hex>/`, `logs/`, `control/`, `metadata.json`, `LAUNCH_CONTRACT.md`, `RESOLVED_LAUNCH_CONTRACT.md`, `README.md`, and `END.json`. Existing paths are never reused or removed. W&B is disabled.
 
-Slurm: account `peilab`, partition `normal`, any healthy single node, one task, four GPUs, 112 CPUs, 96 GiB scheduler memory, walltime `03:00:00`. The one smoke step receives all four GPUs and fails unless its initial `CUDA_VISIBLE_DEVICES` resolves to four distinct entries. Policy is restricted to logical `0,1` with TP2; service is restricted to logical `2,3`, exposing its two devices internally as `[0,1]`, `max_workers=2`. The 2026-09-02 pre-contract snapshot found `dgx-14` and `dgx-35` satisfying the four-GPU/112-CPU/96-GiB scheduler and 80-GiB observed-memory gates; this is transient evidence only. `dgx-51` is excluded because two prior navigation runs passed HTTP health but timed out the first real AI2-THOR prewarm, and it has not been requalified. Availability and requested CPU/memory must be rechecked immediately before submission. Expected duration is under two hours, including repeated source hashing, merge and startup margin.
+Slurm: account `peilab`, partition `normal`, any healthy single node, one task, four GPUs, 112 CPUs, 96 GiB scheduler memory, walltime `03:00:00`. The one smoke step receives all four GPUs and fails unless its initial `CUDA_VISIBLE_DEVICES` resolves to four distinct entries. Policy is restricted to logical `0,1` with TP2; service is restricted to logical `2,3`, exposing its two devices internally as `[0,1]`, `max_workers=2`. R8 proved this lower envelope allocatable on `dgx-28`; that is historical evidence only. `dgx-51` remains excluded because it has not been requalified after prior AI2-THOR prewarm failures. Availability and requested CPU/memory are rechecked immediately before submission. Expected duration is under two hours.
 
 ## Exact execution script
 
@@ -44,7 +44,22 @@ Immediately before the remote script, run and enforce the repository resource qu
 bash /workspace/remote2/nimloth/.local/scripts/query-resources.sh --partition normal --min-free-gpu 4
 ```
 
-Then this entire script runs through `ssh superpod-csejzhang 'bash -l -s -- <EXACT_APPROVED_DOCS_COMMIT>'` in one login shell after exact experiment-launch approval, replacing the displayed angle-bracket argument with the literal pushed docs commit from that approval receipt. Inside the script `$1` is mandatory and hash-checked before use. Any error after `HOLD` is assigned triggers cancellation and proves a terminal Slurm state. The metadata copy is read from the hash-checked approved task ref, never from a mutable working tree.
+After exact experiment-launch approval, replace `<EXACT_APPROVED_DOCS_COMMIT>` below with its literal approved hash and execute this bootstrap exactly. It extracts the largest bash block byte-for-byte, verifies SHA256 `b837ede685a7a48502421b402c77dcca5f16bf3a0092c3f720837e3e435ae77c`, reserves the remote temporary script with shell noclobber, atomically links it to the final script without overwrite, and starts detached execution with stdin `/dev/null`. All local/remote launcher paths and the run root must be absent; no retry occurs.
+
+```bash
+set -euo pipefail
+DOCS_COMMIT=<EXACT_APPROVED_DOCS_COMMIT>
+WT=/workspace/remote2/nimloth/.worktree/rollout-vagen-step60-docs-clean
+DOC=.trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2/research/exact-merge-smoke-launch-contract-venv-r9-2026-09-04.md
+LOCAL=/tmp/nimloth-approved-step60-r9-main.sh
+SHA=b837ede685a7a48502421b402c77dcca5f16bf3a0092c3f720837e3e435ae77c
+test ! -e "$LOCAL" && test ! -L "$LOCAL"
+git -C "$WT" show "$DOCS_COMMIT:$DOC" | python3 -c 'import re,sys,pathlib; blocks=re.findall(r"```bash\n(.*?)\n```",sys.stdin.read(),re.S); main=max(blocks,key=len)+"\n"; pathlib.Path(sys.argv[1]).open("x").write(main)' "$LOCAL"
+test "$(sha256sum "$LOCAL" | awk '{print $1}')" = "$SHA"
+ssh superpod-csejzhang "set -euo pipefail; TMP=/project/peilab/atst/nimloth/.local/tmp/step60-r9-launch-20260904T190000Z.sh.tmp; SCRIPT=/project/peilab/atst/nimloth/.local/tmp/step60-r9-launch-20260904T190000Z.sh; LOG=/project/peilab/atst/nimloth/.local/tmp/step60-r9-launch-20260904T190000Z.log; PIDFILE=/project/peilab/atst/nimloth/.local/tmp/step60-r9-launch-20260904T190000Z.pid; for p in \"\$TMP\" \"\$SCRIPT\" \"\$LOG\" \"\$PIDFILE\"; do test ! -e \"\$p\" && test ! -L \"\$p\"; done; umask 077; set -o noclobber; cat > \"\$TMP\"; chmod 0500 \"\$TMP\"; test \"\$(sha256sum \"\$TMP\" | awk '{print \$1}')\" = $SHA; ln \"\$TMP\" \"\$SCRIPT\"; rm \"\$TMP\"; nohup bash \"\$SCRIPT\" $DOCS_COMMIT </dev/null >\"\$LOG\" 2>&1 & pid=\$!; printf '%s\\n' \"\$pid\" > \"\$PIDFILE\"; kill -0 \"\$pid\"; printf 'R9_LAUNCHER_PID=%s\\n' \"\$pid\"" < "$LOCAL"
+```
+
+Inside the detached main script `$1` is mandatory and hash-checked. Any error after `HOLD` is assigned triggers exact cancellation and a terminal Slurm state.
 
 ```bash
 set -euo pipefail
@@ -52,11 +67,11 @@ ROOT=/project/peilab/atst/nimloth
 NWT=$ROOT/.worktree/rollout-vagen-step60-sft1-sft2
 VWT=$ROOT/.worktree/vagen-step60-runtime-reconstruction-vagen
 PY=$ROOT/.venv/bin/python3
-RUN=$ROOT/outputs/experiments/training/sft1-vagen-step60/20260904T181500Z_step60_batch1_v3_venv_r8_7dac687b
+RUN=$ROOT/outputs/experiments/training/sft1-vagen-step60/20260904T190000Z_step60_batch1_v3_venv_r9_7dac687b
 ACTOR=/project/peilab/hligb/vagen-navigation/checkpoints/vagen_navigation_repro/navigation_vagen1_native_8gpu_rmb4_ppo16_val5_save5_lightckpt_48h_20260813T011326Z/global_step_60/actor
 SOURCE=/project/peilab/hligb/vagen-navigation/data/navigation_vagen1_native_8gpu_rmb4_ppo16_val5_save5_lightckpt_48h_20260813T011326Z/train.parquet
 TASK_REF=refs/remotes/origin/task/rollout-vagen-step60-sft1-sft2
-TASK_DOC=.trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2/research/exact-merge-smoke-launch-contract-venv-r8-2026-09-04.md
+TASK_DOC=.trellis/tasks/09-01-rollout-vagen-step60-sft1-sft2/research/exact-merge-smoke-launch-contract-venv-r9-2026-09-04.md
 APPROVED_DOCS_COMMIT=${1:?missing-approved-docs-commit}
 HOLD=
 NODE=
@@ -113,7 +128,7 @@ for module, expected in ((vagen,root/'external/VAGEN'),(verl,root/'external/VAGE
     actual=Path(module.__file__).resolve()
     assert actual.is_relative_to(expected), (module.__name__,actual,expected)
 PY
-PREFLIGHT_TARGET=$ROOT/.local/tmp/step60-r8-inert-target-20260904T181500Z-7dac687b
+PREFLIGHT_TARGET=$ROOT/.local/tmp/step60-r9-inert-target-20260904T190000Z-7dac687b
 test -d "$ROOT/.local/tmp"
 test ! -e "$PREFLIGHT_TARGET" && test ! -L "$PREFLIGHT_TARGET"
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$NWT/external/VAGEN/verl:$NWT/external/VAGEN:$NWT/src:$NWT" "$PY" - "$ACTOR" "$PREFLIGHT_TARGET" "$PY" "$NWT/external/VAGEN/verl/scripts/legacy_model_merger.py" <<'PY'
@@ -187,7 +202,7 @@ PY
 printf '%s\n' "$RESOURCE_REPORT" > "$RUN/control/resources-immediately-before-sbatch.txt"
 printf '%s\n' "$ELIGIBLE_JSON" > "$RUN/control/eligible-nodes-immediately-before-sbatch.json"
 printf '%s\n' "$ELIGIBLE_NODE" > "$RUN/control/eligible-node"
-HOLD=$(sbatch --parsable --account=peilab --partition=normal --nodelist="$ELIGIBLE_NODE" --nodes=1 --ntasks=1 --cpus-per-task=112 --gres=gpu:4 --mem=96G --time=03:00:00 --job-name=step60-b1-v3venv8-smoke --output="$RUN/logs/hold_%j.out" --error="$RUN/logs/hold_%j.err" --wrap='sleep infinity')
+HOLD=$(sbatch --parsable --account=peilab --partition=normal --nodelist="$ELIGIBLE_NODE" --nodes=1 --ntasks=1 --cpus-per-task=112 --gres=gpu:4 --mem=96G --time=03:00:00 --job-name=step60-b1-v3venv9-smoke --output="$RUN/logs/hold_%j.out" --error="$RUN/logs/hold_%j.err" --wrap='sleep infinity')
 printf '%s\n' "$HOLD" > "$RUN/control/hold_job_id"
 for _ in $(seq 1 180); do
   state=$(squeue -h -j "$HOLD" -o '%T')
@@ -247,8 +262,8 @@ ROOT=/project/peilab/atst/nimloth
 NWT=$ROOT/.worktree/rollout-vagen-step60-sft1-sft2
 VWT=$ROOT/.worktree/vagen-step60-runtime-reconstruction-vagen
 PY=$ROOT/.venv/bin/python3
-RUN=$ROOT/outputs/experiments/training/sft1-vagen-step60/20260904T181500Z_step60_batch1_v3_venv_r8_7dac687b
-PORT=18600
+RUN=$ROOT/outputs/experiments/training/sft1-vagen-step60/20260904T190000Z_step60_batch1_v3_venv_r9_7dac687b
+PORT=18610
 IFS=',' read -r -a ALLOCATED_GPUS <<< "${CUDA_VISIBLE_DEVICES:-}"
 test "${#ALLOCATED_GPUS[@]}" -eq 4
 test "$(printf '%s\n' "${ALLOCATED_GPUS[@]}" | sort -u | wc -l)" -eq 4
@@ -269,7 +284,7 @@ ready=0
 for _ in $(seq 1 167); do if curl -fsS "http://127.0.0.1:$PORT/health" > "$RUN/control/smoke-health.json"; then ready=1; break; fi; if ! kill -0 "$SERVER_PID" 2>/dev/null; then break; fi; sleep 3; done
 test "$ready" -eq 1
 cd "$NWT"
-CUDA_VISIBLE_DEVICES="$POLICY_GPUS" "$PY" experiments/training/sft1/vagen_step60_collect.py --model-path "$RUN/merge/hf_actor" --partition-manifest "$RUN/partition/partition_manifest.json" --source-index 0 --shard-index 0 --shard-size 100 --output-dir "$RUN/smoke/source-index-00000" --env-url "http://127.0.0.1:$PORT" --run-id step60-b1-v3venv8-smoke-source-00000 --source-runtime-root "$VWT" --source-runtime-contract "$RUN/runtime_contract.json" --expected-reconstruction-head 170a673d1bf5855fc0ea6fbed0744b3d7168f8f0 --expected-reconstruction-tree 58ef0eb66ad0bef7587c253c5c643af572c1d3a7 --expected-reconstruction-diff-sha256 7f025476657de1289cf84b61d7702de26d248cd196412e9374a15e6de62730e9 --expected-runtime-contract-payload-sha256 cbb30382ffa5170daba37458f182d472e63b46c97f9fe588c6ce565214e6fcbf --format-failure-policy fail_shard --concurrency 1 --tensor-parallel-size 2 --gpu-memory-utilization 0.35 --engine-seed 0 2>&1 | tee "$RUN/logs/smoke.log"
+CUDA_VISIBLE_DEVICES="$POLICY_GPUS" "$PY" experiments/training/sft1/vagen_step60_collect.py --model-path "$RUN/merge/hf_actor" --partition-manifest "$RUN/partition/partition_manifest.json" --source-index 0 --shard-index 0 --shard-size 100 --output-dir "$RUN/smoke/source-index-00000" --env-url "http://127.0.0.1:$PORT" --run-id step60-b1-v3venv9-smoke-source-00000 --source-runtime-root "$VWT" --source-runtime-contract "$RUN/runtime_contract.json" --expected-reconstruction-head 170a673d1bf5855fc0ea6fbed0744b3d7168f8f0 --expected-reconstruction-tree 58ef0eb66ad0bef7587c253c5c643af572c1d3a7 --expected-reconstruction-diff-sha256 7f025476657de1289cf84b61d7702de26d248cd196412e9374a15e6de62730e9 --expected-runtime-contract-payload-sha256 cbb30382ffa5170daba37458f182d472e63b46c97f9fe588c6ce565214e6fcbf --format-failure-policy fail_shard --concurrency 1 --tensor-parallel-size 2 --gpu-memory-utilization 0.35 --engine-seed 0 2>&1 | tee "$RUN/logs/smoke.log"
 SMOKE
 chmod 0555 "$RUN/control/smoke-step.sh"
 set +e
@@ -308,7 +323,28 @@ PY
 srun --input=none --jobid="$HOLD" --overlap --nodes=1 --ntasks=1 -w "$NODE" nvidia-smi > "$RUN/control/nvidia-smi-final.txt"
 ```
 
-The outer trap then cancels the hold, waits for a terminal state and prints final `sacct`. During execution the session records `squeue -j "$HOLD"`, `sacct`, `scontrol`, merge/service/smoke logs, service health and node `nvidia-smi`; it remains attached until success or terminal failure.
+The detached main script's outer trap cancels only its recorded hold, waits for terminal state and prints final `sacct` to the launcher log. Monitoring is read-only and independent; use the exact command below. It proves launcher PID state, binds scheduler queries to `control/hold_job_id`, and reads only this run's evidence. Monitoring never sends a signal or cancellation.
+
+```bash
+ssh superpod-csejzhang 'bash -l -s' <<'MONITOR'
+set -euo pipefail
+module load slurm 2>/dev/null
+ROOT=/project/peilab/atst/nimloth
+RUN=$ROOT/outputs/experiments/training/sft1-vagen-step60/20260904T190000Z_step60_batch1_v3_venv_r9_7dac687b
+PIDFILE=$ROOT/.local/tmp/step60-r9-launch-20260904T190000Z.pid
+LOG=$ROOT/.local/tmp/step60-r9-launch-20260904T190000Z.log
+test -f "$PIDFILE" && test ! -L "$PIDFILE"
+pid=$(cat "$PIDFILE"); case "$pid" in ''|*[!0-9]*) exit 1;; esac
+if kill -0 "$pid" 2>/dev/null; then echo "LAUNCHER=RUNNING PID=$pid"; else echo "LAUNCHER=EXITED PID=$pid"; fi
+if test -f "$RUN/control/hold_job_id"; then
+  job=$(cat "$RUN/control/hold_job_id"); case "$job" in ''|*[!0-9]*) exit 1;; esac
+  squeue -j "$job" -o '%.18i %.28j %.10T %.10M %.20N %.8C %.12m %b'
+  sacct -j "$job" --format=JobIDRaw,JobName,State,Elapsed,ExitCode,NodeList,AllocTRES,MaxRSS -P
+fi
+tail -n 80 "$LOG"
+find "$RUN/control" "$RUN/logs" "$RUN/smoke" -maxdepth 2 -type f -printf '%p %s\n' 2>/dev/null | sort
+MONITOR
+```
 
 ## Resume, cancellation and mandatory end record
 
