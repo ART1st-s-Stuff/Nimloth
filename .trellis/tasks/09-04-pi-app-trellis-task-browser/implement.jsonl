@@ -9,3 +9,4 @@
 {"file":".trellis/tasks/09-03-pi-app-cross-worktree-review/research/remediation-and-final-review-2026-09-04.md","reason":"pi-app worktree discovery的WSL、安全和clean-base验证经验。"}
 {"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/research/validation-cost-and-boundary-audit-2026-09-03.md","reason":"pi-app focused/final验证成本及已知clean-base失败。"}
 {"file":"ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md","reason":"所有pi-app child修改必须绑定精确目标worktree。"}
+{"file":".trellis/tasks/09-04-pi-app-trellis-task-browser/research/final-validation-and-review-2026-09-04.md","reason":"实现边界、预算/identity安全、验证例外及四轮独立review结论。"}

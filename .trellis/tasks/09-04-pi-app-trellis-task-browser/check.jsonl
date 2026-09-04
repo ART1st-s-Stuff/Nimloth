@@ -7,3 +7,4 @@
 {"file":".trellis/tasks/09-03-pi-app-cross-worktree-review/research/remediation-and-final-review-2026-09-04.md","reason":"复核WSL路径、realpath和快速切换已知风险。"}
 {"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/research/validation-cost-and-boundary-audit-2026-09-03.md","reason":"区分feature回归与clean-base失败。"}
 {"file":"ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md","reason":"核验所有跨repository mutation命令使用正确cwd/root/branch。"}
+{"file":".trellis/tasks/09-04-pi-app-trellis-task-browser/research/final-validation-and-review-2026-09-04.md","reason":"核对最终实现、预算、已知验证例外和APPROVED复审证据。"}
