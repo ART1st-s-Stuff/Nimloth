@@ -3,11 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import stat
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[3]
+FIXTURE = ROOT / ".trellis/scripts/tests/fixtures/upstream-trellis-0.6.16-manifest.json"
+PROJECT_OWNED_EXCEPTIONS = {".trellis/config.yaml"}
 
 
 def _trellis_package_root() -> Path:
@@ -24,8 +27,39 @@ def _trellis_package_root() -> Path:
     return package_root
 
 
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 class UpstreamTrellisBaselineTest(unittest.TestCase):
-    def test_upstream_owned_files_match_release_0_6_16(self) -> None:
+    def test_every_managed_file_matches_fixed_release_manifest(self) -> None:
+        _trellis_package_root()
+        manifest = json.loads(FIXTURE.read_text())
+        self.assertEqual(manifest["release"], "@mindfoldhq/trellis@0.6.16")
+        self.assertEqual(set(manifest["projectOwnedExceptions"]), PROJECT_OWNED_EXCEPTIONS)
+
+        registry = json.loads((ROOT / ".trellis/.template-hashes.json").read_text())["hashes"]
+        expected_paths = set(registry) - PROJECT_OWNED_EXCEPTIONS
+        managed = manifest["managedFiles"]
+        self.assertGreaterEqual(len(managed), 140)
+        self.assertEqual(set(managed), expected_paths)
+
+        failures: list[str] = []
+        for relative, expected in managed.items():
+            actual = ROOT / relative
+            if not actual.is_file():
+                failures.append(f"{relative}: missing")
+                continue
+            actual_hash = _sha256(actual)
+            if actual_hash != expected["sha256"]:
+                failures.append(f"{relative}: content {actual_hash}")
+            executable = bool(actual.stat().st_mode & stat.S_IXUSR)
+            if executable != expected["executable"]:
+                failures.append(f"{relative}: executable={executable}")
+
+        self.assertEqual(failures, [], "managed Trellis drift:\n" + "\n".join(failures))
+
+    def test_direct_release_sources_and_version_match_0_6_16(self) -> None:
         package_root = _trellis_package_root()
         templates = package_root / "dist" / "templates"
         direct_pairs = {
@@ -33,31 +67,13 @@ class UpstreamTrellisBaselineTest(unittest.TestCase):
             ROOT / ".trellis/scripts/task.py": templates / "trellis/scripts/task.py",
             ROOT / ".pi/extensions/trellis/index.ts": templates / "pi/extensions/trellis/index.ts.txt",
         }
-        registry = json.loads((ROOT / ".trellis/.template-hashes.json").read_text())["hashes"]
-        generated_paths = (
-            ".pi/agents/trellis-check.md",
-            ".pi/agents/trellis-implement.md",
-            ".pi/agents/trellis-research.md",
-            ".pi/prompts/trellis-start.md",
-            ".pi/prompts/trellis-continue.md",
-            ".pi/prompts/trellis-finish-work.md",
-        )
-
-        mismatches = []
-        for actual, expected in direct_pairs.items():
-            if actual.read_bytes() != expected.read_bytes():
-                mismatches.append(actual.relative_to(ROOT).as_posix())
-        for relative in generated_paths:
-            actual = (ROOT / relative).read_bytes()
-            actual_hash = hashlib.sha256(actual).hexdigest()
-            if actual_hash != registry.get(relative):
-                mismatches.append(relative)
-
-        self.assertEqual(
-            mismatches,
-            [],
-            "upstream-owned Trellis files diverge from rendered 0.6.16: " + ", ".join(mismatches),
-        )
+        mismatches = [
+            actual.relative_to(ROOT).as_posix()
+            for actual, expected in direct_pairs.items()
+            if actual.read_bytes() != expected.read_bytes()
+        ]
+        self.assertEqual(mismatches, [])
+        self.assertEqual((ROOT / ".trellis/.version").read_text().strip(), "0.6.16")
 
 
 if __name__ == "__main__":

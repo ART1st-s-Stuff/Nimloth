@@ -11,7 +11,7 @@ A Trellis task is mandatory for:
 - experiments, GPU work, Slurm/remote long jobs, collection, evaluation, or rollout-train;
 - work needing durable design, handoff, or multi-session progress.
 
-An explicit human request to implement a goal authorizes creating the task needed to plan that goal; do not ask separately for task creation. If task/implementation intent is unclear, ask once. After task or implementation consent is declined, only a one-reply explanation, read-only lookup with no durable decision, or clearly bounded low-risk small edit may remain inline. Experiments still require a separate launch approval.
+When there is no active task, follow upstream task-creation consent even for simple or trivial code work: ask whether to create the task before creating it. An implementation request does not silently supply task-creation consent. If the human declines, only a one-reply explanation, read-only lookup with no durable decision, or clearly bounded low-risk inline edit may proceed. Experiment launch follows the scoped short/long rules in the experiment contract.
 
 A tightly related low-risk correction inside an existing reviewed scope uses the Fast path and does not create another task. Multi-file/public-contract work uses the Standard path; experiments, remote/destructive operations, protected data and push/merge use the High-risk path.
 

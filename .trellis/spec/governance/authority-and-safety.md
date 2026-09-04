@@ -7,8 +7,8 @@ Nimloth is a Python machine-learning project building a World Model Agent. Apply
 1. the current direct human prompt;
 2. the safety kernel in [`AGENTS.md`](../../../AGENTS.md);
 3. [`.trellis/workflow.md`](../../workflow.md) for lifecycle;
-4. the active task's reviewed requirements, design, and plan;
-5. `.trellis/spec/` contracts;
+4. `.trellis/spec/` contracts;
+5. the active task's reviewed requirements, design, and plan;
 6. current source, configuration, module documentation, and task-relevant known errors;
 7. verified curated memory after its evidence is rechecked;
 8. historical context, raw dialogue recall, and tool-private memory.

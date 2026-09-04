@@ -25,8 +25,17 @@ class NimlothPolicyOverlayTest(unittest.TestCase):
             "on-progress",
         ):
             self.assertIn(skill, agents)
-        for procedural_detail in ("heartbeat", ".trellis/.runtime", "[W-", "focused RED/GREEN"):
-            self.assertNotIn(procedural_detail, agents)
+        for excluded_detail in (
+            "heartbeat",
+            ".trellis/.runtime",
+            "[W-",
+            "focused RED/GREEN",
+            "fixed CoT",
+            "CoT-conditioned",
+            "cot-and-state.md",
+        ):
+            self.assertNotIn(excluded_detail, agents)
+        self.assertLess(agents.index("[项目spec]"), agents.index("当前Trellis task"))
 
     def test_git_contract_uses_per_task_branches_and_one_canonical_slot(self) -> None:
         contract = text(".trellis/spec/governance/git-worktrees-and-protected-files.md")
@@ -44,6 +53,13 @@ class NimlothPolicyOverlayTest(unittest.TestCase):
         self.assertRegex(combined, r"(?i)(15|十五).{0,24}(minute|分钟).{0,40}(deadline|总)")
         self.assertRegex(combined, r"(?i)pending.{0,40}running|排队.{0,40}运行")
         self.assertRegex(combined, r"(?i)(cancel|取消).{0,80}(defer|blocker|阻断)")
+        self.assertRegex(combined, r"10分钟.{0,80}(无需额外询问|without additional approval)")
+        self.assertRegex(combined, r"超过10分钟.{0,80}(明确批准|explicit approval)")
+
+    def test_task_creation_requires_upstream_consent(self) -> None:
+        contract = text(".trellis/spec/governance/tasks-progress-and-memory.md")
+        self.assertRegex(contract, r"(?i)(task.creation consent|task创建.{0,24}同意|创建task.{0,24}同意)")
+        self.assertNotRegex(contract, r"明确.{0,20}实施.{0,40}授权.{0,20}创建")
 
     def test_project_skills_describe_their_safety_triggers(self) -> None:
         expected = {

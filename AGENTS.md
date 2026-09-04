@@ -13,8 +13,8 @@
 1. 人类当前直接prompt；
 2. 本文件的安全内核；
 3. [Trellis workflow](.trellis/workflow.md)；
-4. 当前Trellis task中经人类审查的需求、设计和计划；
-5. [项目spec](.trellis/spec/)；
+4. [项目spec](.trellis/spec/)；
+5. 当前Trellis task中经人类审查的需求、设计和计划；
 6. 当前源码、配置、模块README及相关known error；
 7. 经当前证据重新核验的curated memory；
 8. 历史记录、对话召回和工具私有记忆。
@@ -32,7 +32,6 @@ Trellis是唯一task authority；不得在Pi TaskTree或其他系统复制可写
 
 ## 不可放宽的安全边界
 
-- 禁止AI自行发明或填充fixed CoT；CoT-conditioned state只使用对应observation的真实CoT。详见[CoT合同](.trellis/spec/governance/cot-and-state.md)。
 - 修改前核验实际cwd、Git root、branch和status；保留不相关或并发dirty changes，不得据目录名推断repository状态。
 - 未经批准不得修改人类只读文件、archive、`qc_*.md`、大型数据、权重、checkpoint或实验输出；不得手工编辑memory JSONL、template hashes或session pointer。
 - 日常根、per-task branch、canonical主槽位、worktree和cleanup规则以[Git合同](.trellis/spec/governance/git-worktrees-and-protected-files.md)为准；禁止自动force fallback。
