@@ -39,7 +39,7 @@ Do not exceed the current prompt or reviewed task scope. Stop and ask the human 
 
 Research locally before asking when evidence can answer the question without mutation. Never infer a missing mechanism or parameter merely because one choice looks plausible.
 
-Authorization is scoped and reusable. A direct human prompt or validated receipt remains effective for the same repository, target, scope, risk class, and exclusions until one of those materially changes. Do not ask again for read-only research, local tests, internal bookkeeping, or edits already covered by that authorization. Aggregate unresolved decisions into one request; a repeated request is itself a workflow defect unless the prior grant expired or changed scope.
+Authorization is scoped and reusable. A direct human prompt or explicit conversational grant remains effective for the same repository, target, scope, risk class, and exclusions until one of those materially changes. Trellis task status records lifecycle only and never manufactures approval. Do not ask again for read-only research, local tests, internal bookkeeping, or edits already covered by that authorization. Aggregate unresolved decisions into one request; a repeated request is itself a workflow defect unless the prior grant expired or changed scope.
 
 ## Proportional workflow and evidence
 

@@ -9,6 +9,13 @@ Apply the repository `on-experiment-start` skill in the current conversation:
 3. Confirm local changes are committed and record the exact Git commit in the experiment description. The server worktree must use that commit; do not edit code on the server.
 4. For work estimated over three minutes or otherwise expensive, present train/freeze modules, each objective, checkpoint initialization, output, resume, resource/time estimate, and final command to the human. Launch only after explicit approval of that exact contract.
 5. Verify output/run identity is unused and checkpoint/data paths exist with compatible metadata.
+6. Confirm the command will execute remotely from the declared committed source. Do not launch real experiment work on the local development machine.
+
+## Short experiment deadline
+
+A short experiment is one expected to complete within 10 minutes. From successful scheduler submission it has a 15-minute total deadline covering both pending and running states; queue time is not free. Monitor elapsed wall time from the recorded submission event.
+
+At the deadline, cancel the job and verify its terminal scheduler/process state. Record partial outputs as partial evidence only, then either defer the experiment or mark the task blocked with the concrete resource/runtime blocker. Cancellation, a smoke substitute, or a later unrelated run must not be reported as successful validation of the expired experiment.
 
 ## W&B naming
 

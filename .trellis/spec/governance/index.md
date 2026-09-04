@@ -24,7 +24,7 @@ This layer applies to every Nimloth task and every supported AI platform. It own
 
 - [Authority, honesty, authorization, and platform entry](authority-and-safety.md)
 - [CoT and state semantics](cot-and-state.md)
-- [Tasks, progress, TaskTree, and curated memory](tasks-progress-and-memory.md)
+- [Tasks, progress, and curated memory](tasks-progress-and-memory.md)
 - [Git, worktrees, protected files, and review](git-worktrees-and-protected-files.md)
 - [Pi/Claude/Codex platform integration contract](platform-integration.md)
 
