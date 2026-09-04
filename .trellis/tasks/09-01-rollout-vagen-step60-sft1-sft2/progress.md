@@ -389,4 +389,10 @@ Commit gate:
 - Exact detached R10 used docs commit `cb4f1bd08425083ad5dfaf0ff06a7bc3489b4864`, contract blob `f16b0d02e31cae1dda78e748755746f4e2c6b52b`, contract SHA256 `0e85d1529dfce596b35cd01fb99d6f9e52ff3108faf4c1ef42191c4e1d557a60`, and main-script SHA256 `2f6badca838b000a957daa9ec6c82cbf4cd7a2d02e1dff477f22756f28a28327`.
 - One exact `parse_nodes()` snapshot found no `normal` node with four free GPUs and the 112CPU/96G/80GiB gates. The detached launcher exited before run-root creation or `sbatch`; a subsequent snapshot also showed zero free GPUs across normal. No job, allocation or experiment output exists.
 - Retained launcher log/PID SHA256 values are `a92f8a867bbff99e3431e248a5f98687cbfffaa5c78fdb87b2f3ae8fd2ac641e` and `dee118d58829129c2470752a1b992162ba3ecde9fb74c2ae68411f5be6d0b064`. R10 launcher paths are terminal/non-reusable.
-- A subsequent live snapshot found `preempt/dgx-55` with 4 free GPUs, 192 free CPUs and about 1.21TiB observed-free memory. Human explicitly selected switching the source-index-0 smoke to `preempt`; R11 retains 96G/80GiB and treats `PREEMPTED` as terminal invalid with no within-run retry.
+- A subsequent live snapshot found `preempt/dgx-55` with 4 free GPUs, 192 free CPUs and about 1.21TiB observed-free memory. Human explicitly selected switching the source-index-0 smoke to `preempt`; R11 retained 96G/80GiB and treated `PREEMPTED` as terminal invalid with no within-run retry.
+
+### 2026-09-04 preempt R11 — capacity gone before launch
+
+- Exact R11 used docs commit `6c7879726d353c7a000b9f6344d6ffc061473fe3`, contract blob `3ab56624fcb0e0fbe86407e3e2d03a7bddf3628f`, contract SHA256 `96364182c73be8183fa20a3093d4abab9ebeb829477aac5fecd9e818ecb16ebe`, and main script SHA256 `25181411ed092162e47562fd21afd185af7efa3abba9bd547c43bd29574109e0`.
+- After SSH recovered, the detached single-snapshot preempt gate found no four-GPU candidate; two subsequent normal/preempt queries showed zero free GPUs. The launcher exited before run-root creation or `sbatch`; no job/allocation/experiment exists.
+- Retained R11 launcher log/PID SHA256 values are `32ad87c2fc006423c56cbe3f8cf521fc2caa888ee3b1ba65b1255754cae414c7` and `5029f7d0ecf48ef6714e23ae6723ea4c80a3cbea39e7f92f467c9a2003c980bb`. Human then selected submitting to `normal` and waiting at most 24 hours rather than requiring immediate free GPUs.
