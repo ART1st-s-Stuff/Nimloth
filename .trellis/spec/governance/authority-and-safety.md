@@ -7,8 +7,8 @@ Nimloth is a Python machine-learning project building a World Model Agent. Apply
 1. the current direct human prompt;
 2. the safety kernel in [`AGENTS.md`](../../../AGENTS.md);
 3. [`.trellis/workflow.md`](../../workflow.md) for lifecycle;
-4. the active task's reviewed requirements, design, and plan;
-5. `.trellis/spec/` contracts;
+4. `.trellis/spec/` contracts;
+5. the active task's reviewed requirements, design, and plan;
 6. current source, configuration, module documentation, and task-relevant known errors;
 7. verified curated memory after its evidence is rechecked;
 8. historical context, raw dialogue recall, and tool-private memory.
@@ -39,7 +39,7 @@ Do not exceed the current prompt or reviewed task scope. Stop and ask the human 
 
 Research locally before asking when evidence can answer the question without mutation. Never infer a missing mechanism or parameter merely because one choice looks plausible.
 
-Authorization is scoped and reusable. A direct human prompt or validated receipt remains effective for the same repository, target, scope, risk class, and exclusions until one of those materially changes. Do not ask again for read-only research, local tests, internal bookkeeping, or edits already covered by that authorization. Aggregate unresolved decisions into one request; a repeated request is itself a workflow defect unless the prior grant expired or changed scope.
+Authorization is scoped and reusable. A direct human prompt or explicit conversational grant remains effective for the same repository, target, scope, risk class, and exclusions until one of those materially changes. Trellis task status records lifecycle only and never manufactures approval. Do not ask again for read-only research, local tests, internal bookkeeping, or edits already covered by that authorization. Aggregate unresolved decisions into one request; a repeated request is itself a workflow defect unless the prior grant expired or changed scope.
 
 ## Proportional workflow and evidence
 

@@ -1,7 +1,7 @@
 ---
 name: git-worktree
 description: >-
-  在Nimloth canonical root直接开发；仅在确需隔离时创建、验证和clean cleanup nested child worktree，并共享机器专用.local状态。
+  在Nimloth按per-task branch和canonical单槽合同创建、验证或cleanup并行/隔离worktree，并共享机器专用.local状态。
 ---
 
 # Git Worktree
@@ -20,13 +20,16 @@ description: >-
 
 固定合同：
 
-- canonical root为`/workspace/remote2/nimloth`，批准的日常branch为`dev`；默认直接在该根开发，不为每个task自动创建worktree；
-- 迁移完成前若canonical root实际不是`dev`，停止，不能根据目录名假设cutover已经完成；
+- canonical root为`/workspace/remote2/nimloth`；`dev`是integration/base branch，每个修改repository的task使用自己记录的专用branch；
+- canonical只提供一个主task槽位；额外并行task、实验exact-source或危险集成使用独立child worktree；
+- canonical有任何未归属tracked/untracked变化时禁止切branch、stash、reset、clean或覆盖；
 - 除非人类prompt明确允许，否则禁止修改实际持有`main`的worktree；
 - 每条仓库mutation必须在同一次调用中绑定精确目标cwd，并核验`pwd -P`、`git rev-parse --show-toplevel`、实际branch和status；
 - `.agents/skills/`下的可移植项目skills是Git跟踪实体，禁止使用指向其他clone/worktree的符号链接；只有机器专用状态可以位于ignored `.local/`。
 
-## 默认：直接在canonical root开发
+## 选择canonical主槽位或child
+
+先核验canonical的实际branch和完整status，不根据目录名猜测：
 
 ```bash
 ROOT=/workspace/remote2/nimloth
@@ -34,14 +37,13 @@ ROOT=/workspace/remote2/nimloth
   cd "$ROOT" &&
   test "$(pwd -P)" = "$ROOT" &&
   test "$(git rev-parse --show-toplevel)" = "$ROOT" &&
-  test "$(git branch --show-current)" = dev &&
   pwd -P &&
   git branch --show-current &&
-  git status --short --branch
+  git status --short --branch --untracked-files=all
 )
 ```
 
-任一核验失败都停止。不得通过切branch、覆盖dirty内容或改Git metadata来自行“修复”迁移状态。
+只有一个主task、canonical clean且人类已确认task branch/base时，才可在canonical创建或checkout该专用branch。已有主task或dirty state时保留现场，为新增并行task创建child worktree。任一归属、branch或base不明确都停止。
 
 ## 何时允许child worktree
 
@@ -60,19 +62,21 @@ ROOT=/workspace/remote2/nimloth
 
 ```bash
 ROOT=/workspace/remote2/nimloth
+CONTROLLER=<verified-canonical-or-integration-worktree>
 BRANCH=feat/my-feature
 START_POINT=<approved-exact-ref-or-commit>
 SLUG=$(printf '%s' "$BRANCH" | tr '/' '-')
 WT_DIR="$ROOT/.worktree/$SLUG"
 
 (
-  cd "$ROOT" &&
-  test "$(pwd -P)" = "$ROOT" &&
-  test "$(git rev-parse --show-toplevel)" = "$ROOT" &&
-  test "$(git branch --show-current)" = dev &&
+  cd "$CONTROLLER" &&
+  test "$(pwd -P)" = "$CONTROLLER" &&
+  test "$(git rev-parse --show-toplevel)" = "$CONTROLLER" &&
+  test "$(git rev-parse --path-format=absolute --git-common-dir)" = "$ROOT/.git" &&
+  git status --short --branch --untracked-files=all &&
   test ! -e "$WT_DIR" &&
   test ! -L "$WT_DIR" &&
-  git status --short --branch &&
+  git rev-parse --verify "$START_POINT^{commit}" >/dev/null &&
   git worktree add -b "$BRANCH" "$WT_DIR" "$START_POINT"
 )
 ```
@@ -81,13 +85,14 @@ WT_DIR="$ROOT/.worktree/$SLUG"
 
 ```bash
 (
-  cd "$ROOT" &&
-  test "$(pwd -P)" = "$ROOT" &&
-  test "$(git rev-parse --show-toplevel)" = "$ROOT" &&
-  test "$(git branch --show-current)" = dev &&
+  cd "$CONTROLLER" &&
+  test "$(pwd -P)" = "$CONTROLLER" &&
+  test "$(git rev-parse --show-toplevel)" = "$CONTROLLER" &&
+  test "$(git rev-parse --path-format=absolute --git-common-dir)" = "$ROOT/.git" &&
+  git status --short --branch --untracked-files=all &&
   test ! -e "$WT_DIR" &&
   test ! -L "$WT_DIR" &&
-  git status --short --branch &&
+  git rev-parse --verify "$BRANCH^{commit}" >/dev/null &&
   git worktree add "$WT_DIR" "$BRANCH"
 )
 ```
@@ -122,7 +127,9 @@ Canonical root保留真实`.local/`。Child中只有确认`.local`尚不存在�
 
 ```bash
 (
-  cd "$ROOT" &&
+  cd "$CONTROLLER" &&
+  test "$(pwd -P)" = "$CONTROLLER" &&
+  test "$(git rev-parse --path-format=absolute --git-common-dir)" = "$ROOT/.git" &&
   git worktree list --porcelain &&
   test "$(git -C "$WT_DIR" rev-parse --show-toplevel)" = "$WT_DIR" &&
   test "$(git -C "$WT_DIR" branch --show-current)" = "$BRANCH"
@@ -139,6 +146,7 @@ Cleanup必须有精确child path。先检查tracked、untracked、ignored和recu
 
 ```bash
 ROOT=/workspace/remote2/nimloth
+CONTROLLER=<verified-canonical-or-integration-worktree>
 BRANCH=feat/my-feature
 SLUG=$(printf '%s' "$BRANCH" | tr '/' '-')
 WT_DIR="$ROOT/.worktree/$SLUG"
@@ -174,11 +182,11 @@ WT_DIR="$ROOT/.worktree/$SLUG"
   unlink .local
 ) &&
 (
-  cd "$ROOT" &&
-  test "$(pwd -P)" = "$ROOT" &&
-  test "$(git rev-parse --show-toplevel)" = "$ROOT" &&
-  test "$(git branch --show-current)" = dev &&
-  git status --short --branch &&
+  cd "$CONTROLLER" &&
+  test "$(pwd -P)" = "$CONTROLLER" &&
+  test "$(git rev-parse --show-toplevel)" = "$CONTROLLER" &&
+  test "$(git rev-parse --path-format=absolute --git-common-dir)" = "$ROOT/.git" &&
+  git status --short --branch --untracked-files=all &&
   if ! git worktree remove "$WT_DIR"; then
     test -d "$WT_DIR" &&
       (

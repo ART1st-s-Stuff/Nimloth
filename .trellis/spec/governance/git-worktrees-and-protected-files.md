@@ -1,14 +1,18 @@
 # Git, Worktrees, and Protected Files
 
-## Canonical root and worktree boundary
+## Task branches and the canonical slot
 
-The sole daily local development root is `/workspace/remote2/nimloth`, and its approved daily branch is `dev`. Work directly there by default; a task does not by itself justify a worktree. During migration, stop if the canonical root has not actually cut over to `dev`. Never infer branch, repository, or cutover state from a directory name, and do not modify a worktree that actually holds `main` unless the current human prompt explicitly permits it.
+`dev` is Nimloth's integration branch and the base for new task branches; it is not the default implementation surface. Every task that changes a repository records and uses its own `task/*`, `feat/*`, `fix/*`, or `exp/*` branch. Different tasks must not share one implementation branch, and a task is not complete while its accepted changes exist only as uncommitted state on `dev`.
 
-A child worktree is justified only by approved concurrent modifications, experiment exact-source isolation, risky integration/regression isolation, or an explicit human request. Its path is:
+The canonical root `/workspace/remote2/nimloth` provides one primary task slot. When no other task owns that slot, one selected task may work there on its dedicated branch. Switching the canonical root from `dev` requires a clean tracked/untracked state and the exact approved task branch/base; if migration-era or concurrent dirty state is present, stop rather than stash, reset, clean, or overwrite it.
+
+Additional parallel tasks use independent child worktrees. Experiment exact-source runs, risky integration/regression work, or explicit human review targets use the same isolation when needed. Their path is:
 
 ```text
 /workspace/remote2/nimloth/.worktree/<branch-name-with-slashes-replaced-by-hyphens>
 ```
+
+A worktree is an isolated execution directory, not a second task authority. Task artifacts remain authoritative, while review tools may read another registered worktree without switching the active workspace, session, worker cwd, or Git checkout.
 
 Before every repository mutation, bind the command to the intended worktree in the same invocation (explicit tool cwd or `cd "$WT_DIR" && ...`) and verify the command cwd, `git rev-parse --show-toplevel`, actual branch, and `git status --short --branch`. See known error [`E0094`](../../../ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md).
 

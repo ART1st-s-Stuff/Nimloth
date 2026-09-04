@@ -1,0 +1,23 @@
+{
+  "main": {
+    "bytes": 1750,
+    "prdOccurrences": 1,
+    "designOccurrences": 1,
+    "planOccurrences": 1,
+    "specOccurrences": 1
+  },
+  "trellis-implement": {
+    "bytes": 3822,
+    "prdOccurrences": 1,
+    "designOccurrences": 1,
+    "planOccurrences": 1,
+    "specOccurrences": 1
+  },
+  "trellis-check": {
+    "bytes": 3766,
+    "prdOccurrences": 1,
+    "designOccurrences": 1,
+    "planOccurrences": 1,
+    "specOccurrences": 1
+  }
+}

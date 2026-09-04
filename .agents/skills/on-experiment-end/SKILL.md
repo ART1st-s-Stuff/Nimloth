@@ -13,7 +13,7 @@ description: >-
 ## 必须执行
 
 1. 阅读[启动/生命周期](../../../.trellis/spec/experiments/launch-and-lifecycle.md)、[输出/checkpoint证据](../../../.trellis/spec/experiments/outputs-checkpoints-and-evidence.md)和[任务/进度/memory](../../../.trellis/spec/governance/tasks-progress-and-memory.md)。
-2. 更新运行README/metadata，记录状态、调度器/runtime证据、实际命令/config/commit、数据/split/checkpoint/output来源、W&B标识和train/freeze/objective边界。
+2. 更新运行README/metadata，记录状态、调度器/runtime证据、实际命令/config/commit、数据/split/checkpoint/output来源、W&B标识和train/freeze/objective边界；短实验还记录提交时间、pending/running耗时、deadline及取消终态。
 3. 记录关键指标/异常、失败/取消原因、目标是否达成、有效性限制和下一步建议。
 4. 记录最新checkpoint和精确恢复方法；若无法忠实恢复，必须说明原因。
 5. 使用该参数设置的最新**有效**结果更新`outputs/experiments/<group>/progress.md`；禁止提升无效重试的结果。

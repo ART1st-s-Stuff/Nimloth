@@ -23,11 +23,12 @@ SSH/服务器访问、Slurm资源查询/提交、hold allocation、`srun`、远�
 
 ## 拒绝门禁
 
-- 远程/GPU/Slurm工作必须使用含有`task.json.meta.kind = "experiment"`的Trellis实验任务。
+- 所有真实实验remote-only执行；远程/GPU/Slurm工作必须使用含有`task.json.meta.kind = "experiment"`的Trellis实验任务。
 - 必须执行`on-experiment-start`；参数或数据/checkpoint/output语义缺失时必须停止操作。
-- 必须请人类确认partition和GPU资源总量。
-- 必须展示精确命令、train/freeze/objectives、checkpoint、output、恢复方式、监控方式以及资源/时间估算，并取得单独的启动审批。
+- 任务必须声明允许的partition和GPU资源总量；已审查的短复现可复用该范围，超过10分钟、实质性新实验或资源范围变化必须重新确认。
+- 必须记录精确命令、train/freeze/objectives、checkpoint、output、恢复方式、监控方式以及资源/时间估算；qualifying短复现无需额外启动询问，其他实验取得单独启动审批。
 - 本地修改必须已经commit，远程worktree必须指向该精确commit。禁止直接在服务器上修改生产代码。
+- 短实验从成功提交起执行15分钟总deadline并同时计入pending/running；到期取消并核验终态，然后记录defer或blocker。
 
 ## 连接与资源
 

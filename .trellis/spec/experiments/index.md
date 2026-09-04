@@ -6,12 +6,13 @@ This layer applies before or after any training, evaluation, data collection, ca
 
 ## Pre-Development Checklist
 
-- Use a dedicated Trellis task with `task.json.meta.kind = "experiment"`.
+- Use a dedicated Trellis task with `task.json.meta.kind = "experiment"`; all real experiment execution is remote-only.
 - Complete the [experiment task contract](task-contract.md); do not infer missing values.
 - Verify [data and split evidence](data-and-splits.md) from actual data/config/code/metadata.
 - Define [outputs, checkpoint ownership, resume, and evidence](outputs-checkpoints-and-evidence.md).
+- For work expected within 10 minutes, bind a 15-minute total deadline from successful submission across pending and running, with cancellation and defer/blocker handling.
 - Read relevant known errors, module/config READMEs, `.local/SERVER.md` when remote, and the `on-experiment-start`/`slurm` skills.
-- Obtain implementation approval, then obtain separate explicit launch approval after presenting the final launch contract.
+- Obtain implementation approval. A qualifying short reproduction/partial rerun uses its reviewed exemption; longer or materially new work requires separate explicit launch approval after presenting the final contract.
 
 ## Quality Check
 
