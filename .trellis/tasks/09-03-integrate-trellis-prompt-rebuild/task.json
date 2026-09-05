@@ -3,7 +3,7 @@
   "name": "integrate-trellis-prompt-rebuild",
   "title": "集成并清理Trellis prompt重建",
   "description": "集成各child，执行两仓库最终检查，并在独立门禁后处理旧approval runtime。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,

@@ -61,6 +61,11 @@ def tracked_paths(root: Path, prefix: str) -> list[str]:
     return sorted(line for line in output.splitlines() if line)
 
 
+def indexed_paths(root: Path, prefix: str) -> list[str]:
+    output = run_git(root, "ls-files", "--", prefix)
+    return sorted(line for line in output.splitlines() if line)
+
+
 def load_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
@@ -93,9 +98,16 @@ def worktree_blob_id(root: Path, path: str) -> str:
     return run_git(root, "hash-object", "--", path).strip()
 
 
-def expected_known_errors(root: Path) -> list[str]:
+def expected_known_errors(root: Path, *, mode: str) -> list[str]:
+    if mode == "pre":
+        candidates = tracked_paths(root, "ai_rules/known_errors")
+        return [
+            path for path in candidates
+            if Path(path).name.startswith("E") and Path(path).suffix == ".md"
+        ]
+    candidates = indexed_paths(root, "ai_rules/archive/known_errors")
     return [
-        path for path in tracked_paths(root, "ai_rules/known_errors")
+        "ai_rules/known_errors/" + Path(path).name for path in candidates
         if Path(path).name.startswith("E") and Path(path).suffix == ".md"
     ]
 
@@ -136,7 +148,7 @@ def validate_audit(root: Path, rows: list[dict[str, Any]], *, mode: str = "pre")
         "destination", "notes",
     }
     sources = [row.get("source") for row in rows]
-    expected = expected_known_errors(root)
+    expected = expected_known_errors(root, mode=mode)
     if sources != expected:
         errors.append("audit source order/union differs from the full sorted tracked E-file set")
     if len(set(sources)) != len(sources):
@@ -191,16 +203,27 @@ def validate_audit(root: Path, rows: list[dict[str, Any]], *, mode: str = "pre")
     return errors
 
 
-def expected_moves(root: Path) -> list[tuple[str, str, str]]:
+def expected_moves(root: Path, *, mode: str = "pre") -> list[tuple[str, str, str]]:
     rows: list[tuple[str, str, str]] = []
-    for source in tracked_paths(root, "ai_rules/known_errors"):
-        rows.append((source, "ai_rules/archive/known_errors/" + Path(source).name, "known-errors"))
-    for source in tracked_paths(root, "ai_tasks"):
-        if source.startswith(DESTINATION_PREFIX):
-            continue
-        rows.append((source, DESTINATION_PREFIX + source.removeprefix("ai_tasks/"), "ai-tasks"))
-    for source in ("AI_branch_progress.md", "AI_issues.md"):
-        rows.append((source, DESTINATION_PREFIX + "root/" + source, "root-history"))
+    if mode == "pre":
+        for source in tracked_paths(root, "ai_rules/known_errors"):
+            rows.append((source, "ai_rules/archive/known_errors/" + Path(source).name, "known-errors"))
+        for source in tracked_paths(root, "ai_tasks"):
+            if source.startswith(DESTINATION_PREFIX):
+                continue
+            rows.append((source, DESTINATION_PREFIX + source.removeprefix("ai_tasks/"), "ai-tasks"))
+        for source in ("AI_branch_progress.md", "AI_issues.md"):
+            rows.append((source, DESTINATION_PREFIX + "root/" + source, "root-history"))
+        return sorted(rows)
+
+    for destination in indexed_paths(root, "ai_rules/archive/known_errors"):
+        rows.append(("ai_rules/known_errors/" + Path(destination).name, destination, "known-errors"))
+    for destination in indexed_paths(root, DESTINATION_PREFIX):
+        suffix = destination.removeprefix(DESTINATION_PREFIX)
+        if suffix in {"root/AI_branch_progress.md", "root/AI_issues.md"}:
+            rows.append((Path(suffix).name, destination, "root-history"))
+        else:
+            rows.append(("ai_tasks/" + suffix, destination, "ai-tasks"))
     return sorted(rows)
 
 
@@ -270,7 +293,7 @@ def prepare_destination_directories(root: Path, rows: list[dict[str, Any]]) -> N
 
 def validate_move_manifest(root: Path, rows: list[dict[str, Any]], *, mode: str = "pre") -> list[str]:
     errors: list[str] = []
-    expected = expected_moves(root)
+    expected = expected_moves(root, mode=mode)
     triples = [(row.get("source"), row.get("destination"), row.get("group")) for row in rows]
     if triples != expected:
         errors.append("move manifest order/union differs from tracked source inventory")
@@ -318,20 +341,24 @@ def load_rewrite_patch() -> dict[str, Any]:
     return json.loads(REWRITE_PATCH.read_text(encoding="utf-8"))
 
 
-def active_task_context_files(root: Path) -> list[Path]:
+def task_context_files(root: Path, statuses: set[str]) -> list[Path]:
     result: list[Path] = []
     for task_json in sorted((root / ".trellis/tasks").glob("**/task.json")):
         try:
             task = json.loads(task_json.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if task.get("status") != "in_progress":
+        if task.get("status") not in statuses:
             continue
         for name in ("implement.jsonl", "check.jsonl"):
             path = task_json.parent / name
             if path.is_file():
                 result.append(path)
     return result
+
+
+def active_task_context_files(root: Path) -> list[Path]:
+    return task_context_files(root, {"in_progress"})
 
 
 def _legacy_occurrences(path: Path) -> list[str]:
@@ -368,7 +395,10 @@ def validate_rewrite_patch(root: Path, patch: dict[str, Any], *, mode: str) -> l
         errors.append("rewrite patch contains duplicate file entries")
     kinds = Counter()
     covered_pre: dict[str, list[str]] = {}
-    current_context_paths = {str(path.relative_to(root)) for path in active_task_context_files(root)}
+    eligible_context_paths = {
+        str(path.relative_to(root))
+        for path in task_context_files(root, {"in_progress", "completed"})
+    }
     for entry in files:
         if not isinstance(entry, dict):
             errors.append("rewrite patch file entry is not an object")
@@ -397,8 +427,8 @@ def validate_rewrite_patch(root: Path, patch: dict[str, Any], *, mode: str) -> l
                 errors.append(f"invalid rewrite replacement: {relative}")
                 continue
             kinds[kind] += 1
-            if kind == "active-context" and relative not in current_context_paths:
-                errors.append(f"active-context rewrite no longer belongs to an in_progress task: {relative}")
+            if kind == "active-context" and relative not in eligible_context_paths:
+                errors.append(f"active-context rewrite is outside an active or completed task: {relative}")
             needle = old if mode == "pre" else new
             if text.count(needle) != 1:
                 errors.append(f"rewrite {mode} text is not exact and unique: {relative}: {needle}")

@@ -153,6 +153,8 @@ class LegacyArchivePlanTest(unittest.TestCase):
                     cwd=root, check=True,
                 )
             self.assertEqual([], self.tool.validate_move_manifest(root, rows, mode="post"))
+            subprocess.run(["git", "commit", "-qm", "archive"], cwd=root, check=True)
+            self.assertEqual([], self.tool.validate_move_manifest(root, rows, mode="post"))
 
     def test_execute_gate_rejects_each_self_consistent_changed_artifact_before_validator(self) -> None:
         for changed_artifact in ("manifest", "patch"):

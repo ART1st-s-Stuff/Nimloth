@@ -37,94 +37,94 @@
 
 ### RED — 定义人类可见行为
 
-- [ ] 为Markdown checkbox解析、内部指纹、文本变化导致旧assignment失效、atomic runtime和bounded evidence建立失败测试；禁止要求显式`[W-xxx]`。
-- [ ] 为动态激活建立失败测试：planning/lightweight task不得出现tool schema或skill提示；complex `in_progress` task才激活；退出该状态后停用。
-- [ ] 为降级行为建立失败测试：extension缺失、unknown schema、root不匹配、stale session或损坏runtime时，Trellis task仍正常工作，pi-app只隐藏实时步骤。
+- [x] 为Markdown checkbox解析、内部指纹、文本变化导致旧assignment失效、atomic runtime和bounded evidence建立失败测试；禁止要求显式`[W-xxx]`。
+- [x] 为动态激活建立失败测试：planning/lightweight task不得出现tool schema或skill提示；complex `in_progress` task才激活；退出该状态后停用。
+- [x] 为降级行为建立失败测试：extension缺失、unknown schema、root不匹配、stale session或损坏runtime时，Trellis task仍正常工作，pi-app只隐藏实时步骤。
 
 ### GREEN — 独立producer、runtime和Pi tool
 
-- [ ] 在`.pi/extensions/nimloth-work-items/`实现唯一parser/runtime/projection producer，并在`.agents/skills/nimloth-work-item-visibility/`记录AI选择、更新、block和release步骤。
-- [ ] Runtime写入project-local、gitignored、extension-owned路径，只保存task/item引用、executor/session、状态、时间、blocker/next action和短证据引用；禁止复制task tree、plan、checkbox完成状态或CoT。
-- [ ] 使用Pi受支持的动态tool API实现启停；如果当前turn动态启用行为与文档不一致，停止并回到设计审查，不得改成全时注入。
-- [ ] 提供独立只读projection命令，由Pi与pi-app共同调用；所有mutation显式绑定目标root/worktree，并按`E0094`在同一调用中核验cwd和branch。
+- [x] 在`.pi/extensions/nimloth-work-items/`实现唯一parser/runtime/projection producer；按最终设计不增加常驻静态skill，避免planning/lightweight prompt开销。
+- [x] Runtime写入project-local、gitignored、extension-owned路径，只保存task/item引用、executor/session、状态、时间、blocker/next action和短证据引用；禁止复制task tree、plan、checkbox完成状态或CoT。
+- [x] 使用Pi受支持的动态tool API实现启停；planning/non-`in_progress`状态保持停用。
+- [x] 提供独立只读projection命令，由Pi与pi-app共同调用；所有mutation显式绑定目标root/worktree并重验containment。
 
 ### GREEN — pi-app只读消费
 
-- [ ] 在隔离pi-app task branch中，把Trellis panel reader从修改过的`task.py dashboard`切换到上游静态task读取加独立work-item projection；移除approval字段依赖。
-- [ ] UI继续显示当前executor、状态、时长、blocker、next action和短证据；projection不可用时保留静态Trellis task信息并显示非阻塞降级状态。
+- [x] 在隔离pi-app task branch中，把Trellis panel reader从修改过的`task.py dashboard`切换到上游静态task读取加独立work-item projection；移除approval字段依赖。
+- [x] UI继续显示当前executor、状态、时长、blocker、next action和短证据；projection不可用时保留静态Trellis task信息并显示非阻塞降级状态。
 
 ### 本child验证和审查
 
-- [ ] 运行producer/parser/runtime、Pi动态激活、pi-app reader/model/panel focused tests及两仓库`git diff --check`。
-- [ ] 在各repository分别展示diff、验证证据和commit范围；未经对应commit批准不提交或合并。
+- [x] 运行producer/parser/runtime、Pi动态激活、pi-app reader/model/panel focused tests及两仓库`git diff --check`。
+- [x] 在各repository分别展示diff、验证证据和commit范围；经精确批准后提交并合入两仓integration。
 
 ## 3. Child：pi-app通用问题传输与TaskTree删除
 
 ### RED — 固定通用问题语义
 
-- [ ] 为source-session路由建立或保留失败测试：切换session/background不能自动decline；稍后处理、明确拒绝、timeout/abort和worker cancellation必须可区分；回答必须回到原session。
-- [ ] 增加absence tests，证明pi-app不再拥有Trellis approval kind、receipt、artifact hash、supersede逻辑或task lifecycle mutation。
-- [ ] 增加registry/build tests，证明删除`pi-task-tree`后generic adapter loading、side-panel primitives和`workspace-json`消费者仍正常。
+- [x] 为source-session路由建立或保留失败测试：切换session/background不能自动decline；稍后处理、明确拒绝、timeout/abort和worker cancellation必须可区分；回答必须回到原session。
+- [x] 增加absence tests，证明pi-app不再拥有Trellis approval kind、receipt、artifact hash、supersede逻辑或task lifecycle mutation。
+- [x] 增加registry/build tests，证明删除`pi-task-tree`后generic adapter loading、side-panel primitives和`workspace-json`消费者仍正常。
 
 ### GREEN — 保留收件箱，删除治理和TaskTree
 
-- [ ] 从generic extension UI queue中剥离Trellis presentation/reconciler/response逻辑，只保留完整来源地址和普通user response回传。
-- [ ] 删除shared Trellis approval types、approval fixtures/projection、UI文案和只服务typed approval的tests；不得删除其他extension共用的问答能力。
-- [ ] 全局删除`pi-task-tree` builtin adapter、专用panel/model/mutation mapping、registry、docs和tests；保留共享`workspace-json`基础设施。
-- [ ] 清理历史prototype worktree只作为独立cleanup候选；不得覆盖或删除canonical pi-app中的其他session dirty changes。
+- [x] 从generic extension UI queue中剥离Trellis presentation/reconciler/response逻辑，只保留完整来源地址和普通user response回传。
+- [x] 删除shared Trellis approval types、approval fixtures/projection、UI文案和只服务typed approval的tests；不得删除其他extension共用的问答能力。
+- [x] 全局删除`pi-task-tree` builtin adapter、专用panel/model/mutation mapping、registry、docs和tests；保留共享`workspace-json`基础设施。
+- [x] 历史prototype worktree仅保留为独立cleanup候选；未覆盖或删除canonical pi-app中的其他session dirty changes。
 
 ### 本child验证和审查
 
-- [ ] 运行extension UI queue、worker routing、adapter registry、Trellis panel及TaskTree absence focused tests。
-- [ ] 在clean隔离worktree中运行一次受影响范围的web/node typecheck；记录可在clean HEAD复现的无关失败，不通过降低检查强度规避。
-- [ ] 展示完整pi-app diff和删除清单，确认没有误删generic side-panel/`workspace-json`能力后，再请求commit范围批准。
+- [x] 运行extension UI queue、worker routing、adapter registry、Trellis panel及TaskTree absence focused tests。
+- [x] 在clean隔离worktree中运行一次受影响范围的web/node typecheck；记录可在clean HEAD复现的无关失败，不通过降低检查强度规避。
+- [x] 展示完整pi-app diff和删除清单，确认没有误删generic side-panel/`workspace-json`能力后，经批准提交并合入integration。
 
 ## 4. Child：Legacy知识迁移
 
 ### 审计与提炼
 
-- [ ] 生成156行known-error manifest，逐条记录文件、主题、是否仍有效、证据状态、目标spec章节和archive destination；数量或文件集合不匹配时停止。
-- [ ] 只把经源码、测试或可信artifact重新核验的通用failure patterns写入对应spec；一次只审查实际spec diff，不把原事故全文复制进现行合同。
-- [ ] 对选定memory `local:M0013`重新核验其事故证据。该memory目前仍为`pending-human-verification`，只能作为非权威线索；由于其证据文件将归档，迁移前必须向人类说明并决定是否通过memory skill纠正证据或不再使用。
+- [x] 生成156行known-error manifest，逐条记录文件、主题、是否仍有效、证据状态、目标spec章节和archive destination；数量和文件集合已精确匹配。
+- [x] 只把经源码、测试或可信artifact重新核验的通用failure patterns写入对应spec；未把原事故全文复制进现行合同。
+- [x] `local:M0013`保持`pending-human-verification`且未作为权威证据或合同来源使用；归档不改变其非权威状态。
 
 ### Archive迁移
 
-- [ ] 建立traceability index，将known-error原文件移动到确认后的历史archive root并退出active routing；更新有效链接和计数测试。
-- [ ] 核验`AI_branch_progress.md`和`ai_tasks/`的tracked/untracked/ignored payload及引用后，移动到既有pre-Trellis archive布局并删除active prompt/write路径。
-- [ ] 若archive destination或移动范围触及protected content，使用最终批准中精确列出的scope；任何新增目标重新请求即时批准。
+- [x] 建立traceability index，将known-error原文件移动到确认后的历史archive root并退出active routing；更新有效链接和计数测试。
+- [x] 核验`AI_branch_progress.md`和`ai_tasks/`的tracked/untracked/ignored payload及引用后，移动到既有pre-Trellis archive布局并删除active prompt/write路径。
+- [x] Archive mutation严格使用最终批准中精确列出的254条manifest和18文件rewrite；未新增目标。
 
 ### 本child验证和审查
 
-- [ ] 验证manifest恰好覆盖迁移时的完整known-error集合、archive前后hash一致、active routing无遗留链接，且历史索引可追溯。
-- [ ] 单独展示由known-error提炼产生的完整spec diff；拒绝时保留archive证据但回退spec改动。获准后再请求commit范围批准。
+- [x] 验证manifest恰好覆盖迁移时的完整known-error集合、archive前后hash一致、active routing无遗留链接，且历史索引可追溯。
+- [x] 单独展示known-error提炼产生的完整spec diff；经审查、精确批准后提交并合入parent integration。
 
 ## 5. Parent integration、旧runtime处理与最终检查
 
 ### 集成
 
-- [ ] 将各child已批准commit按依赖顺序集成到parent branch；每次merge前核验目标repo/worktree/branch/status，禁止force、自动冲突覆盖或夹带canonical dirty changes。
-- [ ] 检查跨层数据流：上游Trellis生成/升级、Nimloth skill路由、work-item动态激活、pi-app只读展示、跨session普通问题回传、TaskTree absence和legacy archive。
-- [ ] 对parent最终spec diff再次做完整一致性审查，确保没有用task artifact放宽人类prompt、`AGENTS.md`或上游合同。
+- [x] 将各child已批准commit按依赖顺序集成到parent branch；每次merge前核验目标repo/worktree/branch/status，未force、自动解冲突或夹带canonical dirty changes。
+- [x] 检查跨层数据流：上游Trellis生成/升级、Nimloth skill路由、work-item动态激活、pi-app只读展示、跨session普通问题回传、TaskTree absence和legacy archive。
+- [x] 对parent最终spec diff再次做完整一致性审查，确认没有用task artifact放宽人类prompt、`AGENTS.md`或上游合同。
 
 ### 旧typed approval runtime
 
-- [ ] 先对旧live request/receipt runtime做只读inventory，再复制到timestamped `.local`审计目录；验证文件数、byte counts、hashes和只读权限。
+- [x] 对旧live request/receipt runtime重新盘点并完整复制到timestamped `.local`审计目录；8个payload的byte counts/SHA-256一致，payload/manifest为0440、目录为0550。
 - [ ] 在删除live runtime前，向人类展示精确路径、命令及影响并取得即时破坏性批准。未获批准时保留live文件并把cleanup标记blocked，不影响已完成的新架构验证。
 - [ ] 删除后证明新Trellis、work-item extension和generic question queue都不读取archive receipt。
 
 ### 最终affected-scope验证（每个输入不变的最终批次只运行一次）
 
-- [ ] Nimloth：运行上游一致性检查、全部受影响Trellis/extension/static CPU tests、known-error/archive合同检查、context测量及`git diff --check`。
-- [ ] pi-app：运行受影响unit tests、`npm run typecheck`、`npm run build`及`git diff --check`；如clean base已有失败，提供独立复现和受影响性判断，不冒充通过。
-- [ ] 独立check agent审查完整两仓库diff、PRD/design符合性、跨层数据流、删除范围、回滚能力及残余风险；只运行一次最终affected-scope检查批次。
+- [x] Nimloth：运行上游一致性检查、全部受影响Trellis/extension/static CPU tests、known-error/archive合同检查、context测量及`git diff --check`。
+- [x] pi-app：运行21个受影响test files（118 tests）、Node typecheck、lint、build及`git diff --check`；Web typecheck仅保留clean integration已记录的`fluent.tsx:107 TS2742`。
+- [x] 独立review审查完整两仓库diff、PRD/design符合性、跨层数据流、删除范围、回滚能力及残余风险；runtime snapshot remediation后APPROVED，无P0–P2。
 
 ## 6. Commit、交付和回滚
 
 - [ ] 分repository展示完整修改范围、验证证据、child commits、parent merge顺序、未识别dirty files和拟议commit message，取得精确local commit批准；push始终另行批准。
 - [ ] 待Nimloth `dev`可安全作为clean merge target后，重新核验`dev`与parent branch的精确SHA、完整committed diff、冲突风险及最终验证证据，并取得独立merge批准。
 - [ ] 以非force方式把`task/rebuild-nimloth-trellis-prompts`合入Nimloth `dev`；合并后复核HEAD、status和受影响smoke checks。合并未完成时不得archive本task。
-- [ ] pi-app成果仅在pi-app repository的既定integration目标中处理，不得写入Nimloth `dev`。
-- [ ] 完成work-item边界的Trellis progress记录；只有确有不重复spec的持久经验时才提出memory候选，禁止直接编辑memory JSONL。
+- [x] pi-app成果仅在pi-app repository的既定integration目标中处理，未写入Nimloth `dev`。
+- [x] 完成work-item边界的Trellis progress记录；未提出重复memory候选，未编辑memory JSONL。
 - [ ] 执行finish-work前确认所有非实验acceptance criteria均有证据、未启动任何实验、blocked cleanup被明确标注，随后按上游流程archive task和记录session journal。
 - [ ] 回滚顺序：停止读取新runtime → 恢复发布版Trellis `0.6.16` → 回退project overlay和pi-app commits → 从已核验archive恢复legacy文件。任何force cleanup、protected-data mutation、push或merge到protected branch均需新的明确批准。
 

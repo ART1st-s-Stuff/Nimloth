@@ -1,1 +1,7 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file":".trellis/tasks/09-03-integrate-trellis-prompt-rebuild/prd.md","reason":"最终两仓集成目标、完成标准和排除项。"}
+{"file":".trellis/tasks/09-03-integrate-trellis-prompt-rebuild/design.md","reason":"集成顺序、验证复用和dirty dev保护。"}
+{"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/implement.md","reason":"parent child集成与最终merge合同。"}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"integration和dev merge安全边界。"}
+{"file":".trellis/spec/governance/platform-integration.md","reason":"Trellis/pi-app只读数据流与generic transport边界。"}
+{"file":".trellis/tasks/09-03-integrate-trellis-prompt-rebuild/research/legacy-approval-runtime-snapshot-2026-09-05.md","reason":"完整只读runtime快照的路径、bytes、hash和权限验证。"}
+{"file":".trellis/tasks/09-03-integrate-trellis-prompt-rebuild/research/final-validation-2026-09-05.md","reason":"两仓最终checks、review结论及dirty dev blocker。"}
