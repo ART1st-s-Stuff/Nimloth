@@ -412,26 +412,54 @@ def validate_rewrite_patch(root: Path, patch: dict[str, Any], *, mode: str) -> l
             errors.append(f"rewrite target missing, non-file, or symlink: {relative}")
             continue
         payload = path.read_bytes()
-        expected_hash = entry.get("pre_sha256" if mode == "pre" else "post_sha256")
-        if sha256_bytes(payload) != expected_hash:
-            errors.append(f"rewrite {mode} hash mismatch: {relative}")
-            continue
         text = payload.decode("utf-8")
         replacements = entry.get("replacements")
         if not isinstance(replacements, list) or not replacements:
             errors.append(f"rewrite entry has no replacements: {relative}")
             continue
+        valid_replacements = []
         for replacement in replacements:
             old, new, kind = replacement.get("old"), replacement.get("new"), replacement.get("kind")
             if not all(isinstance(value, str) and value for value in (old, new, kind)):
                 errors.append(f"invalid rewrite replacement: {relative}")
                 continue
+            valid_replacements.append((old, new, kind))
             kinds[kind] += 1
+        expected_hash = entry.get("pre_sha256" if mode == "pre" else "post_sha256")
+        hash_matches = sha256_bytes(payload) == expected_hash
+        evolved_context = (
+            mode == "post"
+            and bool(valid_replacements)
+            and all(kind == "active-context" for _, _, kind in valid_replacements)
+        )
+        if not hash_matches and not evolved_context:
+            errors.append(f"rewrite {mode} hash mismatch: {relative}")
+        selected_files: set[str] = set()
+        if evolved_context and not hash_matches:
+            for line in text.splitlines():
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                selected = row.get("file") if isinstance(row, dict) else None
+                if isinstance(selected, str):
+                    selected_files.add(selected)
+        for old, new, kind in valid_replacements:
             if kind == "active-context" and relative not in eligible_context_paths:
                 errors.append(f"active-context rewrite is outside an active or completed task: {relative}")
-            needle = old if mode == "pre" else new
-            if text.count(needle) != 1:
-                errors.append(f"rewrite {mode} text is not exact and unique: {relative}: {needle}")
+            if evolved_context and not hash_matches:
+                if old in text:
+                    errors.append(f"evolved active context restored legacy rewrite text: {relative}: {old}")
+                try:
+                    expected_file = json.loads(new).get("file")
+                except (json.JSONDecodeError, AttributeError):
+                    expected_file = None
+                if not isinstance(expected_file, str) or expected_file not in selected_files:
+                    errors.append(f"evolved active context lost replacement target: {relative}: {new}")
+            else:
+                needle = old if mode == "pre" else new
+                if text.count(needle) != 1:
+                    errors.append(f"rewrite {mode} text is not exact and unique: {relative}: {needle}")
             if mode == "pre":
                 covered_pre.setdefault(relative, []).append(old)
     if kinds != Counter({"active-context": 19, "eval-provenance": 4, "slurm-provenance": 5}):
@@ -488,8 +516,8 @@ def validate_active_contexts(root: Path) -> list[str]:
                 errors.append(f"invalid active context JSONL: {path.relative_to(root)}:{number}: {exc}")
                 continue
             selected = row.get("file")
-            if selected and not (root / selected).is_file():
-                errors.append(f"active context file does not exist: {path.relative_to(root)}:{number}: {selected}")
+            if isinstance(selected, str) and LEGACY_PATTERN.search(selected):
+                errors.append(f"active context retains legacy path: {path.relative_to(root)}:{number}: {selected}")
     return errors
 
 

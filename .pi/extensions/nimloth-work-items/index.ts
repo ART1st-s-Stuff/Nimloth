@@ -103,7 +103,6 @@ export default function nimlothWorkItemsExtension(pi) {
       return result(output);
     },
   });
-  setToolActive(pi, false);
   pi.on?.('session_start', async (_event, ctx) => { await reconcileTool(pi, { cwd: ctx?.cwd, ctx }); });
   pi.on?.('before_agent_start', async (_event, ctx) => { await reconcileTool(pi, { cwd: ctx?.cwd, ctx }); });
 }

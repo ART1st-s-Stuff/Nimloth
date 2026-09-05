@@ -87,6 +87,7 @@ class LegacyArchivePlanTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as repo_dir:
             root = Path(repo_dir)
             subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            evolved_context = False
             for entry in patch["files"]:
                 source = ROOT / entry["path"]
                 target = root / entry["path"]
@@ -95,6 +96,11 @@ class LegacyArchivePlanTest(unittest.TestCase):
                 text = target.read_text(encoding="utf-8")
                 for replacement in entry["replacements"]:
                     text = text.replace(replacement["old"], replacement["new"], 1)
+                if not evolved_context and any(
+                    row["kind"] == "active-context" for row in entry["replacements"]
+                ):
+                    text += '{"file":"later.md","reason":"legitimate later task context"}\n'
+                    evolved_context = True
                 target.write_text(text, encoding="utf-8")
                 if any(row["kind"] == "active-context" for row in entry["replacements"]):
                     source_task = source.parent / "task.json"

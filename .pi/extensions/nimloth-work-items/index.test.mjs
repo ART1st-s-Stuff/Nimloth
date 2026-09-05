@@ -51,6 +51,14 @@ test('visibility guidance has no auto-discovered project skill metadata', () => 
   assert.equal(existsSync(path.resolve('.agents/skills/nimloth-work-item-visibility/SKILL.md')), false);
 });
 
+test('extension does not mutate active tools during extension loading', async () => {
+  const h = harness(['read','nimloth_work_item']);
+  extension(h.pi);
+  assert.deepEqual(h.tools, ['read','nimloth_work_item']);
+  await h.handlers.get('session_start')({}, {cwd:os.tmpdir(), sessionManager:{getSessionId(){return 's1'}}});
+  assert.deepEqual(h.tools, ['read']);
+});
+
 test('extension registers no prompt snippet/guidelines and reconciles lifecycle events', async () => {
   const h = harness(); extension(h.pi);
   assert.equal(h.registered.name, 'nimloth_work_item');
