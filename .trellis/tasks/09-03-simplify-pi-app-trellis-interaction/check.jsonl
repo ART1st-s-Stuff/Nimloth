@@ -1,1 +1,9 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file":".trellis/tasks/09-03-simplify-pi-app-trellis-interaction/prd.md","reason":"逐项核验删除与generic能力保留标准。"}
+{"file":".trellis/tasks/09-03-simplify-pi-app-trellis-interaction/design.md","reason":"核验registration、transport、adapter和删除数据流。"}
+{"file":".trellis/tasks/09-03-simplify-pi-app-trellis-interaction/implement.md","reason":"核验TDD顺序、absence和commit门禁。"}
+{"file":".trellis/spec/governance/platform-integration.md","reason":"检查跨session问题回传和trusted workspace不退化。"}
+{"file":".trellis/spec/governance/tasks-progress-and-memory.md","reason":"检查TaskTree与typed approval不再形成第二authority。"}
+{"file":".trellis/tasks/09-04-pi-app-trellis-task-browser/research/final-validation-and-review-2026-09-04.md","reason":"复核stable panel和Task Browser不回归。"}
+{"file":".trellis/tasks/09-03-extract-nimloth-work-item-visibility/research/final-validation-and-review-2026-09-04.md","reason":"复核Activity consumer和baseline例外。"}
+{"file":"ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md","reason":"核验所有pi-app mutation命令目标。"}
+{"file":".trellis/tasks/09-03-simplify-pi-app-trellis-interaction/research/final-review-2026-09-05.md","reason":"核对generic transport、absence、验证例外和最终复审。"}

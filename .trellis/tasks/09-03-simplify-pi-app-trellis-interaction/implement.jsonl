@@ -1,1 +1,10 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file":".trellis/tasks/09-03-simplify-pi-app-trellis-interaction/prd.md","reason":"generic question transport、typed approval/dashboard/TaskTree删除和保留边界。"}
+{"file":".trellis/tasks/09-03-simplify-pi-app-trellis-interaction/design.md","reason":"renderer-owned provider、分层删除顺序和TDD设计。"}
+{"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/prd.md","reason":"parent R9/R10及跨session transport权威要求。"}
+{"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/design.md","reason":"pi-app串行child及最终integration边界。"}
+{"file":".trellis/spec/governance/platform-integration.md","reason":"普通问题来源session、trusted workspace和pi-app只读边界。"}
+{"file":".trellis/spec/governance/tasks-progress-and-memory.md","reason":"Trellis唯一task authority和TaskTree absence。"}
+{"file":".trellis/tasks/09-04-pi-app-trellis-task-browser/research/final-validation-and-review-2026-09-04.md","reason":"stable Trellis panel和Task Browser验证基线。"}
+{"file":".trellis/tasks/09-03-extract-nimloth-work-item-visibility/research/final-validation-and-review-2026-09-04.md","reason":"Work-item Activity及pi-app baseline例外。"}
+{"file":"ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md","reason":"跨repo实施绑定精确pi-app worktree。"}
+{"file":".trellis/tasks/09-03-simplify-pi-app-trellis-interaction/research/final-review-2026-09-05.md","reason":"删除范围、remediation、验证及APPROVED复审证据。"}

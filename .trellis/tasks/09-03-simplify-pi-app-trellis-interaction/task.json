@@ -3,7 +3,7 @@
   "name": "simplify-pi-app-trellis-interaction",
   "title": "简化pi-app Trellis交互并删除TaskTree",
   "description": "保留通用跨session问题transport，删除typed approval治理和全局TaskTree专用能力。",
-  "status": "planning",
+  "status": "completed",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -11,11 +11,11 @@
   "creator": "ARTI5T",
   "assignee": "ARTI5T",
   "createdAt": "2026-09-03",
-  "completedAt": null,
+  "completedAt": "2026-09-05",
   "branch": "task/simplify-pi-app-trellis-interaction",
   "base_branch": "task/rebuild-nimloth-trellis-prompts",
-  "worktree_path": null,
-  "commit": null,
+  "worktree_path": "/workspace/pi-app/.worktree/task-simplify-pi-app-trellis-interaction",
+  "commit": "87629bae2dfca0bf4335c95c030efa4e5e9ce0cd",
   "pr_url": null,
   "subtasks": [],
   "children": [],
@@ -23,7 +23,7 @@
   "relatedFiles": [],
   "notes": "",
   "meta": {
-    "repositories": "pi-app@task/rebuild-nimloth-trellis-prompts:task/simplify-pi-app-trellis-interaction",
+    "repositories": "pi-app@475c06bcdcf48b28499d59550082b02342545041:task/simplify-pi-app-trellis-interaction",
     "exclusions": "preserve generic question UI and workspace-json; no canonical dirty cleanup",
     "worktree_paths": "/workspace/pi-app/.worktree/task-simplify-pi-app-trellis-interaction"
   }
