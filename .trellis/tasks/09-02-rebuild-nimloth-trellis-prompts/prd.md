@@ -104,20 +104,20 @@
 
 ## Acceptance Criteria
 
-- [ ] `trellis update --dry-run`表明通用Trellis workflow/scripts/Pi prompts/agents/extension已恢复发布版`0.6.16`，没有Nimloth私有语义混入template-managed文件。
-- [ ] `AGENTS.md`只含R2定义的薄内核与R11高风险路由，不含实现规范或流程副本；其精确diff经过本task审查。
-- [ ] 对话式task/implementation/commit门禁符合上游；不存在active typed-approval tool、kind、receipt或授权投影。
-- [ ] pi-app标准问题在session切换、background、later、explicit decline及worker cancellation下保持source correlation，且不生成Trellis授权状态。
-- [ ] 实验预算、10分钟估算/从提交起15分钟总deadline（覆盖pending+running）、deadline取消后的defer/blocker路由、remote、Git同步、destructive/protected-data、per-task branch和worktree合同均可由spec/skill执行并有边界测试。
-- [ ] 独立work-item extension在复杂task实施时展示当前item/executor/state，重启可恢复，plan变化会过期；缺失或失败时Trellis正常工作。
-- [ ] 上游context恢复后的prompt体积和重复读取有测量记录；本task不以未验证的compact补丁替代基线。
-- [ ] focused迭代检查、独立最终affected-scope检查和真实实验验证三者在spec与task报告中明确区分。
-- [ ] 156个known-error文件均有核验处置记录；有效通用pattern进入spec，原文件移入可追溯archive且不再自动加载。
-- [ ] `AI_branch_progress.md`和旧`ai_tasks/`归档并退出active prompt。
-- [ ] pi-app不再注册、显示、读写或文档化TaskTree专用能力，共享`workspace-json`回归通过。
+- [x] 发布版manifest、direct-source及`trellis update --dry-run`差异分类证明通用Trellis workflow/scripts/Pi prompts/agents/extension恢复`0.6.16`；project-owned overlay未混入template-managed文件。
+- [x] `AGENTS.md`只含R2定义的薄内核与R11高风险路由，不含实现规范或流程副本；其精确diff经过本task审查。
+- [x] 对话式task/implementation/commit门禁符合上游；不存在active typed-approval tool、kind、receipt或授权投影。
+- [x] pi-app标准问题在session切换、background、later、explicit decline及worker cancellation下保持source correlation，且不生成Trellis授权状态。
+- [x] 实验预算、10分钟估算/从提交起15分钟总deadline（覆盖pending+running）、deadline取消后的defer/blocker路由、remote、Git同步、destructive/protected-data、per-task branch和worktree合同均可由spec/skill执行并有边界测试。
+- [x] 独立work-item extension在复杂task实施时展示当前item/executor/state，重启可恢复，plan变化会过期；缺失或失败时Trellis正常工作。
+- [x] 上游context恢复后的prompt体积和重复读取有测量记录；本task未以未验证的compact补丁替代基线。
+- [x] focused迭代检查、独立最终affected-scope检查和真实实验验证三者在spec与task报告中明确区分。
+- [x] 156个known-error文件均有核验处置记录；有效通用pattern进入spec，原文件移入可追溯archive且不再自动加载。
+- [x] `AI_branch_progress.md`和旧`ai_tasks/`归档并退出active prompt。
+- [x] pi-app不再注册、显示、读写或文档化TaskTree专用能力，共享`workspace-json`回归通过。
 - [x] legacy approval runtime已完整归档为只读`.local`快照；live文件保持不变，只有取得执行时精确批准后才删除。
-- [ ] Nimloth受影响的静态/CPU测试、Trellis validation/update dry-run、pi-app受影响测试/typecheck/build及完整diff检查通过；未启动未经预算授权的实验。
-- [ ] 所有已验收Nimloth child成果汇入`task/rebuild-nimloth-trellis-prompts`；在最终diff审查和独立merge批准后，该parent branch以非force方式合并到Nimloth `dev`并完成合并后验证。未进入`dev`时本task不得宣称完成或archive。
+- [x] Nimloth受影响的静态/CPU测试、Trellis validation、pi-app受影响测试/typecheck/build及完整diff检查完成；Web TS仅有已独立复现的外部worktree-layout基线，未启动未经预算授权的实验。
+- [x] 所有已验收Nimloth child成果已汇入`task/rebuild-nimloth-trellis-prompts`，并在最终复审APPROVED后以非force fast-forward合入Nimloth `dev`；post-merge smoke通过。
 
 ## Out of Scope
 

@@ -11,4 +11,7 @@
 - 首次Nimloth final check暴露archive validator只适用于staged post-move树；补充“post-move commit后仍通过”RED，并改为post模式读取index/archive inventory、允许hash-bound历史rewrite属于completed task。11/11 archive tests重新通过。
 - 首次最终review确认架构与检查通过，但发现P1：旧approval runtime仅有metadata inventory。已从当前8个live files生成完整只读`.local`快照，逐文件验证bytes/SHA-256；manifest hash `81ff75a98a6a7e9ee15256eef0caf3d13fd46fa1df6796333a42faf2ad667f16`。Live source未改动。
 - Canonical `dev`仍有其他session大量dirty/untracked内容；parent与dev无分叉，可最终fast-forward，但当前429-file最终范围中的15条路径与dirty worktree重叠，未经安全清空不得在该worktree merge、stash、reset或update-ref。
-- Work-item tool在当前integration worktree仍错误报告`unknown active task`（它从canonical `dev`解析）；未手改gitignored runtime，task/progress artifact继续作为权威记录。
+- Work-item tool在integration worktree先因canonical尚无task报`unknown active task`；合入原版Trellis后旧`task.py work-item`入口按设计不存在。未手改gitignored runtime，task/progress artifact继续作为权威记录。
+- 用户确认无其他活跃session、两个training `spec.md`为未完成草稿，并要求删除旧approval、必要内容保留。执行前把453个必要文件（7,455,663 bytes）复制到`.local/audit/pre-dev-merge-preservation/20260905T071522Z`，manifest SHA `eb5227cff3d438bd52b8f089d097cee36b4fd82f443ee6bf59f601a3bb735d7b`。
+- 精确清除10个旧approval tracked changes、旧parent/approval task副本、`.until-done`、15MB session HTML及3个submodule pyc；canonical clean后从`cbd05e5d`fast-forward到`0232b763`。
+- Post-merge：18 Python、28 work-item Node、archive post validator、4 launcher/static、integration context和diff checks通过。下一步从已核验快照恢复用户两个spec、protected memory及有效任务记录，并把新增`AI_branch_progress.md`历史内容放入archive路径；不恢复旧approval。

@@ -14,7 +14,7 @@
 
 ## W4 — 最终review与merge
 - [x] 独立review两仓完整committed diff和跨层数据流；snapshot remediation后最终APPROVED，无P0–P2。
-- [ ] 展示最终SHA/diff/验证；仅在`dev`目标安全时非force合入并做post-merge smoke。
+- [x] 展示最终SHA/diff/验证；必要dirty内容hash-bound保护后，`dev`非force fast-forward到`0232b763`并通过post-merge smoke。
 
 ## Guardrails
 - 不push、不force、不cleanup worktrees、不删除live runtime或修改memory JSONL。

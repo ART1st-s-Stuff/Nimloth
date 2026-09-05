@@ -120,13 +120,13 @@
 
 ## 6. Commit、交付和回滚
 
-- [ ] 分repository展示完整修改范围、验证证据、child commits、parent merge顺序、未识别dirty files和拟议commit message，取得精确local commit批准；push始终另行批准。
-- [ ] 待Nimloth `dev`可安全作为clean merge target后，重新核验`dev`与parent branch的精确SHA、完整committed diff、冲突风险及最终验证证据，并取得独立merge批准。
-- [ ] 以非force方式把`task/rebuild-nimloth-trellis-prompts`合入Nimloth `dev`；合并后复核HEAD、status和受影响smoke checks。合并未完成时不得archive本task。
+- [x] 分repository展示完整修改范围、验证证据、child commits、parent merge顺序和dirty files；所有local commits均按精确范围授权，未push。
+- [x] `dev`从394-entry dirty状态先对必要内容做hash-bound `.local`保护并精确清空；重新核验`dev@cbd05e5d`与parent `0232b763`为fast-forward关系后执行用户批准的merge。
+- [x] 以非force fast-forward把`task/rebuild-nimloth-trellis-prompts`合入Nimloth `dev`；HEAD=`0232b763`，post-merge 18 Python、28 Node、archive/launcher/context/diff checks通过。
 - [x] pi-app成果仅在pi-app repository的既定integration目标中处理，未写入Nimloth `dev`。
 - [x] 完成work-item边界的Trellis progress记录；未提出重复memory候选，未编辑memory JSONL。
 - [ ] 执行finish-work前确认所有非实验acceptance criteria均有证据、未启动任何实验、blocked cleanup被明确标注，随后按上游流程archive task和记录session journal。
-- [ ] 回滚顺序：停止读取新runtime → 恢复发布版Trellis `0.6.16` → 回退project overlay和pi-app commits → 从已核验archive恢复legacy文件。任何force cleanup、protected-data mutation、push或merge到protected branch均需新的明确批准。
+- [x] 回滚顺序已由task设计、legacy byte/hash manifest和只读runtime snapshot验证：停止读取新runtime → 恢复`0.6.16` → 回退overlay/pi-app commits → 从archive恢复legacy；未执行force cleanup或push。
 
 ## 7. 已选择的规划证据
 
