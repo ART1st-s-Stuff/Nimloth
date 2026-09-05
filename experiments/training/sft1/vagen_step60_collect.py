@@ -20,6 +20,7 @@ import json
 import math
 import os
 import re
+import stat
 import subprocess
 import uuid
 from collections.abc import Callable, Sequence
@@ -612,23 +613,14 @@ class VLLMSourcePolicy:
     """Frozen source policy with explicit step60 sampling and history window."""
 
     @staticmethod
-    def inspect_runtime_contract(
+    def _runtime_contract(
         *,
         model_path: Path,
+        processor: Any,
         tensor_parallel_size: int,
         gpu_memory_utilization: float,
         engine_seed: int,
     ) -> dict[str, Any]:
-        """Inspect exact policy identity without constructing a GPU engine."""
-
-        from transformers import AutoProcessor
-
-        model_path = model_path.resolve()
-        processor = AutoProcessor.from_pretrained(
-            model_path,
-            trust_remote_code=True,
-            local_files_only=True,
-        )
         package_versions = {
             "vllm": importlib.metadata.version("vllm"),
             "transformers": importlib.metadata.version("transformers"),
@@ -653,6 +645,32 @@ class VLLMSourcePolicy:
             **SOURCE_SAMPLING_CONTRACT,
         }
 
+    @staticmethod
+    def inspect_runtime_contract(
+        *,
+        model_path: Path,
+        tensor_parallel_size: int,
+        gpu_memory_utilization: float,
+        engine_seed: int,
+    ) -> dict[str, Any]:
+        """Inspect exact policy identity without constructing a GPU engine."""
+
+        from transformers import AutoProcessor
+
+        model_path = model_path.resolve()
+        processor = AutoProcessor.from_pretrained(
+            model_path,
+            trust_remote_code=True,
+            local_files_only=True,
+        )
+        return VLLMSourcePolicy._runtime_contract(
+            model_path=model_path,
+            processor=processor,
+            tensor_parallel_size=tensor_parallel_size,
+            gpu_memory_utilization=gpu_memory_utilization,
+            engine_seed=engine_seed,
+        )
+
     def __init__(
         self,
         *,
@@ -666,14 +684,6 @@ class VLLMSourcePolicy:
         from vllm import LLM, SamplingParams
 
         model_path = model_path.resolve()
-        inspected = self.inspect_runtime_contract(
-            model_path=model_path,
-            tensor_parallel_size=tensor_parallel_size,
-            gpu_memory_utilization=gpu_memory_utilization,
-            engine_seed=engine_seed,
-        )
-        if expected_runtime_contract is not None and inspected != expected_runtime_contract:
-            raise ValueError("policy runtime changed after CPU-only inspection")
         self.processor = AutoProcessor.from_pretrained(
             model_path,
             trust_remote_code=True,
@@ -693,6 +703,17 @@ class VLLMSourcePolicy:
             enable_chunked_prefill=False,
             seed=int(engine_seed),
         )
+        # Verify the handed-off CPU identity against the live process only after the
+        # engine has successfully bound its GPU/runtime configuration.
+        inspected = self._runtime_contract(
+            model_path=model_path,
+            processor=self.processor,
+            tensor_parallel_size=tensor_parallel_size,
+            gpu_memory_utilization=gpu_memory_utilization,
+            engine_seed=engine_seed,
+        )
+        if expected_runtime_contract is not None and inspected != expected_runtime_contract:
+            raise ValueError("policy runtime changed after GPU engine construction")
         self.sampling_params = SamplingParams(
             max_tokens=SOURCE_SAMPLING_CONTRACT["max_response_tokens"],
             temperature=SOURCE_SAMPLING_CONTRACT["temperature"],
@@ -1389,6 +1410,94 @@ class SourceShardCollector:
         envelope["checkpoint_payload_sha256"] = _canonical_sha256(envelope)
         _write_json_exclusive_atomic(path, envelope)
 
+    def _validate_complete_output(
+        self,
+        output_dir: Path,
+        *,
+        specs: Sequence[EpisodeSpec],
+    ) -> dict[str, Any]:
+        source_indices = [spec.source_index for spec in specs]
+        manifest = validate_complete_shard(
+            output_dir, expected_source_indices=set(source_indices)
+        )
+        expected = {
+            "run_id": self.run_id,
+            "shard_index": self.shard_index,
+            "unavailable_source_commit": SOURCE_VAGEN_COMMIT,
+            "reconstruction_identity": self.reconstruction_identity,
+            "source_runtime_contract": self.source_runtime_evidence,
+            "policy_artifact": self.policy_artifact_evidence,
+            "source_indices": source_indices,
+            "source_keys": [spec.source_key for spec in specs],
+            "policy_runtime_contract": self.policy.runtime_contract,
+            "environment_contract": self.source_runtime_evidence["environment_config"],
+            "format_failure_policy": self.format_failure_policy,
+        }
+        for key, value in expected.items():
+            if manifest.get(key) != value:
+                raise ValueError(f"complete shard current collection identity mismatch: {key}")
+        raw_specs = []
+        with (output_dir / "raw.jsonl").open("r", encoding="utf-8") as handle:
+            for line in handle:
+                record = json.loads(line)
+                raw_specs.append(
+                    {
+                        "source_index": record.get("source_index"),
+                        "eval_set": record.get("eval_set"),
+                        "seed": record.get("seed"),
+                        "dataset_split": record.get("split"),
+                        "source_key": record.get("source_key"),
+                    }
+                )
+        if raw_specs != [self._spec_payload(spec) for spec in specs]:
+            raise ValueError("complete shard current ordered source spec mismatch")
+        return manifest
+
+    def inspect_output_state(
+        self,
+        specs: Sequence[EpisodeSpec],
+        *,
+        output_dir: Path,
+        max_steps: int = 20,
+    ) -> str:
+        """Classify only after validating the exact current collection identity."""
+        output_dir = lexical_absolute_path(output_dir)
+        staging = output_dir.with_name(f"{output_dir.name}.inprogress")
+        if output_dir.exists() or output_dir.is_symlink():
+            if staging.exists() or staging.is_symlink():
+                raise ValueError("complete and in-progress paths cannot coexist")
+            self._validate_complete_output(output_dir, specs=specs)
+            return "complete"
+        if staging.exists() or staging.is_symlink():
+            if staging.is_symlink() or not staging.is_dir():
+                raise ValueError(f"in-progress path must be a real directory: {staging}")
+            collection_payload = self._collection_payload(specs, max_steps=max_steps)
+            self._validate_staging_layout(staging)
+            collection_hash = self._validate_staging_metadata(
+                staging, expected_payload=collection_payload
+            )
+            self._load_completed_checkpoints(
+                staging,
+                specs=specs,
+                collection_payload_sha256=collection_hash,
+            )
+            return "resume"
+        return "fresh"
+
+    def validate_output(
+        self,
+        specs: Sequence[EpisodeSpec],
+        *,
+        output_dir: Path,
+    ) -> dict[str, Any]:
+        output_dir = lexical_absolute_path(output_dir)
+        staging = output_dir.with_name(f"{output_dir.name}.inprogress")
+        if staging.exists() or staging.is_symlink():
+            raise ValueError("complete and in-progress paths cannot coexist")
+        if not output_dir.exists() and not output_dir.is_symlink():
+            raise FileNotFoundError(f"complete shard output is absent: {output_dir}")
+        return self._validate_complete_output(output_dir, specs=specs)
+
     def collect(
         self,
         specs: Sequence[EpisodeSpec],
@@ -1579,15 +1688,11 @@ class SourceShardCollector:
             raise
 
 
-def load_batch1_shard_specs(
-    partition_manifest: Path,
-    *,
-    shard_index: int,
-    shard_size: int,
+def batch1_shard_specs_from_manifest(
+    manifest: dict[str, Any], *, shard_index: int, shard_size: int
 ) -> list[EpisodeSpec]:
     if shard_size < 2 or shard_size % 2:
         raise ValueError("source shard_size must be a positive even number")
-    manifest = load_published_partition_manifest(partition_manifest)
     rows = [row for row in manifest.get("rows", []) if int(row["batch"]) == 1]
     by_category = {
         category: sorted(
@@ -1625,12 +1730,22 @@ def load_batch1_shard_specs(
     ]
 
 
-def load_batch1_smoke_spec(
+def load_batch1_shard_specs(
     partition_manifest: Path,
     *,
-    source_index: int,
+    shard_index: int,
+    shard_size: int,
+) -> list[EpisodeSpec]:
+    return batch1_shard_specs_from_manifest(
+        load_published_partition_manifest(partition_manifest),
+        shard_index=shard_index,
+        shard_size=shard_size,
+    )
+
+
+def batch1_smoke_spec_from_manifest(
+    manifest: dict[str, Any], *, source_index: int
 ) -> EpisodeSpec:
-    manifest = load_published_partition_manifest(partition_manifest)
     matches = [
         row
         for row in manifest.get("rows", [])
@@ -1645,6 +1760,16 @@ def load_batch1_smoke_spec(
         seed=int(row["seed"]),
         dataset_split=str(row["dataset_split"]),
         source_key=str(row["source_key"]),
+    )
+
+
+def load_batch1_smoke_spec(
+    partition_manifest: Path,
+    *,
+    source_index: int,
+) -> EpisodeSpec:
+    return batch1_smoke_spec_from_manifest(
+        load_published_partition_manifest(partition_manifest), source_index=source_index
     )
 
 
@@ -1937,6 +2062,300 @@ def validate_reconstruction_git_identity(
     return dict(actual)
 
 
+def prepare_collection_inspection_context(
+    *,
+    model_path: Path,
+    source_runtime_root: Path,
+    source_runtime_contract: Path,
+    expected_reconstruction_head: str,
+    expected_reconstruction_tree: str,
+    expected_reconstruction_diff_sha256: str,
+    expected_runtime_contract_payload_sha256: str,
+    tensor_parallel_size: int,
+    gpu_memory_utilization: float,
+    engine_seed: int,
+) -> dict[str, Any]:
+    """Inspect immutable actor/runtime identity once for a batch of outputs."""
+    policy_artifact_evidence = validate_policy_artifact(model_path)
+    source_runtime_evidence = json.loads(
+        source_runtime_contract.read_text(encoding="utf-8")
+    )
+    if source_runtime_contract_payload_sha256(source_runtime_evidence) != (
+        expected_runtime_contract_payload_sha256
+    ):
+        raise ValueError("runtime contract differs from approved payload hash")
+    reconstruction_identity = reconstruction_git_identity(
+        source_runtime_root, base_commit=RECONSTRUCTION_BASE_COMMIT
+    )
+    approved_literals = {
+        "runtime_head": APPROVED_RECONSTRUCTION_HEAD,
+        "runtime_tree": APPROVED_RECONSTRUCTION_TREE,
+        "diff_sha256": APPROVED_RECONSTRUCTION_DIFF_SHA256,
+    }
+    supplied_literals = {
+        "runtime_head": expected_reconstruction_head,
+        "runtime_tree": expected_reconstruction_tree,
+        "diff_sha256": expected_reconstruction_diff_sha256,
+    }
+    if supplied_literals != approved_literals:
+        raise ValueError("CLI reconstruction literals differ from approved values")
+    expected_identity = {
+        **reconstruction_identity,
+        "base_commit": RECONSTRUCTION_BASE_COMMIT,
+        "runtime_parent": RECONSTRUCTION_BASE_COMMIT,
+        **approved_literals,
+        "commit_count": 1,
+        "parent_count": 1,
+    }
+    validate_reconstruction_git_identity(reconstruction_identity, expected=expected_identity)
+    validate_source_runtime_contract(
+        source_runtime_evidence,
+        expected_reconstruction_identity=expected_identity,
+        expected_runtime_root=source_runtime_root,
+    )
+    inspected_policy_contract = VLLMSourcePolicy.inspect_runtime_contract(
+        model_path=model_path,
+        tensor_parallel_size=tensor_parallel_size,
+        gpu_memory_utilization=gpu_memory_utilization,
+        engine_seed=engine_seed,
+    )
+    return {
+        "policy_artifact_evidence": policy_artifact_evidence,
+        "source_runtime_evidence": source_runtime_evidence,
+        "reconstruction_identity": reconstruction_identity,
+        "inspected_policy_contract": inspected_policy_contract,
+    }
+
+
+def build_inspected_collector(
+    context: dict[str, Any],
+    *,
+    shard_index: int,
+    run_id: str,
+    format_failure_policy: str,
+    concurrency: int,
+) -> SourceShardCollector:
+    """Build one collector identity from a previously inspected common context."""
+    return SourceShardCollector(
+        client=LegacyVAGENBatchClient("http://127.0.0.1", timeout=500),
+        policy=InspectedSourcePolicy(context["inspected_policy_contract"]),
+        run_id=run_id,
+        shard_index=shard_index,
+        reconstruction_identity=context["reconstruction_identity"],
+        source_runtime_evidence=context["source_runtime_evidence"],
+        policy_artifact_evidence=context["policy_artifact_evidence"],
+        format_failure_policy=format_failure_policy,
+        concurrency=concurrency,
+    )
+
+
+INSPECTION_HANDOFF_FORMAT = "vagen_step60_gate_inspection_handoff_v1"
+_MAX_INSPECTION_HANDOFF_BYTES = 16 * 1024 * 1024
+
+
+def load_inspection_handoff(
+    path: Path,
+    *,
+    expected_file_sha256: str,
+    expected_bindings: dict[str, Any],
+) -> dict[str, Any]:
+    """Load only a canonical, hash-bound preflight handoff for this exact CLI."""
+    path = path.absolute()
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError("inspection handoff must be a real regular file") from exc
+    try:
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("inspection handoff must be a real regular file")
+        if metadata.st_size <= 0 or metadata.st_size > _MAX_INSPECTION_HANDOFF_BYTES:
+            raise ValueError("inspection handoff size is invalid")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            content = stream.read(_MAX_INSPECTION_HANDOFF_BYTES + 1)
+    finally:
+        os.close(descriptor)
+    if len(content) != metadata.st_size:
+        raise ValueError("inspection handoff changed while being read")
+    if hashlib.sha256(content).hexdigest() != expected_file_sha256:
+        raise ValueError("inspection handoff file SHA256 mismatch")
+    try:
+        envelope = json.loads(content)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("inspection handoff JSON is invalid") from exc
+    if set(envelope) != {"format", "payload", "payload_sha256"}:
+        raise ValueError("inspection handoff envelope fields are invalid")
+    if envelope["format"] != INSPECTION_HANDOFF_FORMAT:
+        raise ValueError("inspection handoff schema mismatch")
+    payload = envelope["payload"]
+    if _canonical_sha256(payload) != envelope["payload_sha256"]:
+        raise ValueError("inspection handoff payload hash mismatch")
+    canonical = json.dumps(
+        envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8") + b"\n"
+    if content != canonical:
+        raise ValueError("inspection handoff is not canonical JSON")
+    if payload.get("bindings") != expected_bindings:
+        raise ValueError("inspection handoff CLI/input binding mismatch")
+    if set(payload) != {"bindings", "inspection_context", "items"}:
+        raise ValueError("inspection handoff payload fields are invalid")
+    context = payload["inspection_context"]
+    if set(context) != {
+        "policy_artifact_evidence",
+        "source_runtime_evidence",
+        "reconstruction_identity",
+        "inspected_policy_contract",
+    }:
+        raise ValueError("inspection handoff context fields are invalid")
+    if not isinstance(payload["items"], list) or not payload["items"]:
+        raise ValueError("inspection handoff items are invalid")
+    item_fields = {
+        "label",
+        "output_dir",
+        "run_id",
+        "selector",
+        "index",
+        "format_failure_policy",
+        "concurrency",
+        "ordered_episode_specs",
+    }
+    spec_fields = {
+        "source_index",
+        "eval_set",
+        "seed",
+        "dataset_split",
+        "source_key",
+    }
+    for item in payload["items"]:
+        if not isinstance(item, dict) or set(item) != item_fields:
+            raise ValueError("inspection handoff item schema is invalid")
+        specs = item["ordered_episode_specs"]
+        if not isinstance(specs, list) or not specs:
+            raise ValueError("inspection handoff item specs are invalid")
+        if any(not isinstance(spec, dict) or set(spec) != spec_fields for spec in specs):
+            raise ValueError("inspection handoff episode spec schema is invalid")
+    return payload
+
+
+def build_collection_from_inspection_handoff(
+    *,
+    path: Path,
+    expected_file_sha256: str,
+    expected_bindings: dict[str, Any],
+    output_dir: Path,
+    run_id: str,
+    selector: str,
+    index: int,
+    shard_index: int,
+    format_failure_policy: str,
+    concurrency: int,
+) -> tuple[SourceShardCollector, list[EpisodeSpec]]:
+    """Select one exact preflight-validated output without repeating inspection."""
+    handoff = load_inspection_handoff(
+        path,
+        expected_file_sha256=expected_file_sha256,
+        expected_bindings=expected_bindings,
+    )
+    expected_item = {
+        "output_dir": str(output_dir.absolute()),
+        "run_id": run_id,
+        "selector": selector,
+        "index": index,
+        "format_failure_policy": format_failure_policy,
+        "concurrency": concurrency,
+    }
+    matches = [
+        item
+        for item in handoff["items"]
+        if all(item.get(key) == value for key, value in expected_item.items())
+    ]
+    if len(matches) != 1:
+        raise ValueError("inspection handoff does not bind this collector output")
+    specs = [EpisodeSpec(**value) for value in matches[0]["ordered_episode_specs"]]
+    collector = build_inspected_collector(
+        handoff["inspection_context"],
+        shard_index=shard_index,
+        run_id=run_id,
+        format_failure_policy=format_failure_policy,
+        concurrency=concurrency,
+    )
+    return collector, specs
+
+
+def build_inspected_collection(
+    context: dict[str, Any],
+    *,
+    partition_manifest: Path,
+    shard_index: int,
+    source_index: int | None,
+    shard_size: int,
+    run_id: str,
+    format_failure_policy: str,
+    concurrency: int,
+) -> tuple[SourceShardCollector, list[EpisodeSpec]]:
+    """Build one output identity from a previously inspected common context."""
+    specs = (
+        [load_batch1_smoke_spec(partition_manifest, source_index=source_index)]
+        if source_index is not None
+        else load_batch1_shard_specs(
+            partition_manifest, shard_index=shard_index, shard_size=shard_size
+        )
+    )
+    return build_inspected_collector(
+        context,
+        shard_index=shard_index,
+        run_id=run_id,
+        format_failure_policy=format_failure_policy,
+        concurrency=concurrency,
+    ), specs
+
+
+def prepare_inspected_collection(
+    *,
+    model_path: Path,
+    partition_manifest: Path,
+    shard_index: int,
+    source_index: int | None,
+    shard_size: int,
+    run_id: str,
+    source_runtime_root: Path,
+    source_runtime_contract: Path,
+    expected_reconstruction_head: str,
+    expected_reconstruction_tree: str,
+    expected_reconstruction_diff_sha256: str,
+    expected_runtime_contract_payload_sha256: str,
+    format_failure_policy: str,
+    concurrency: int,
+    tensor_parallel_size: int,
+    gpu_memory_utilization: float,
+    engine_seed: int,
+) -> tuple[SourceShardCollector, list[EpisodeSpec]]:
+    """Build the same CPU-inspected collection identity used before activation."""
+    context = prepare_collection_inspection_context(
+        model_path=model_path,
+        source_runtime_root=source_runtime_root,
+        source_runtime_contract=source_runtime_contract,
+        expected_reconstruction_head=expected_reconstruction_head,
+        expected_reconstruction_tree=expected_reconstruction_tree,
+        expected_reconstruction_diff_sha256=expected_reconstruction_diff_sha256,
+        expected_runtime_contract_payload_sha256=expected_runtime_contract_payload_sha256,
+        tensor_parallel_size=tensor_parallel_size,
+        gpu_memory_utilization=gpu_memory_utilization,
+        engine_seed=engine_seed,
+    )
+    return build_inspected_collection(
+        context,
+        partition_manifest=partition_manifest,
+        shard_index=shard_index,
+        source_index=source_index,
+        shard_size=shard_size,
+        run_id=run_id,
+        format_failure_policy=format_failure_policy,
+        concurrency=concurrency,
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model-path", type=Path, required=True)
@@ -1958,6 +2377,8 @@ def main() -> int:
     parser.add_argument("--tensor-parallel-size", type=int, required=True)
     parser.add_argument("--gpu-memory-utilization", type=float, required=True)
     parser.add_argument("--engine-seed", type=int, required=True)
+    parser.add_argument("--inspection-handoff", type=Path)
+    parser.add_argument("--expected-inspection-handoff-sha256")
     parser.add_argument(
         "--resume",
         action="store_true",
@@ -1970,86 +2391,70 @@ def main() -> int:
             f"source shard output already exists: {args.output_dir}"
         )
 
-    policy_artifact_evidence = validate_policy_artifact(args.model_path)
-    specs = (
-        [
-            load_batch1_smoke_spec(
-                args.partition_manifest,
-                source_index=args.source_index,
-            )
-        ]
-        if args.source_index is not None
-        else load_batch1_shard_specs(
-            args.partition_manifest,
+    if bool(args.inspection_handoff) != bool(args.expected_inspection_handoff_sha256):
+        parser.error("inspection handoff path and expected SHA256 must be supplied together")
+    if args.inspection_handoff:
+        bindings = {
+            "partition_manifest": str(args.partition_manifest.absolute()),
+            "partition_manifest_file_sha256": _file_sha256(args.partition_manifest),
+            "shard_size": args.shard_size,
+            "source_runtime_root": str(args.source_runtime_root.absolute()),
+            "source_runtime_contract": str(args.source_runtime_contract.absolute()),
+            "source_runtime_contract_file_sha256": _file_sha256(args.source_runtime_contract),
+            "model_path": str(args.model_path.absolute()),
+            "expected_runtime_contract_payload_sha256": args.expected_runtime_contract_payload_sha256,
+            "expected_reconstruction_head": args.expected_reconstruction_head,
+            "expected_reconstruction_tree": args.expected_reconstruction_tree,
+            "expected_reconstruction_diff_sha256": args.expected_reconstruction_diff_sha256,
+            "tensor_parallel_size": args.tensor_parallel_size,
+            "gpu_memory_utilization": args.gpu_memory_utilization,
+            "engine_seed": args.engine_seed,
+        }
+        selector = "source-index" if args.source_index is not None else "shard-index"
+        index = args.source_index if args.source_index is not None else args.shard_index
+        collector, specs = build_collection_from_inspection_handoff(
+            path=args.inspection_handoff,
+            expected_file_sha256=args.expected_inspection_handoff_sha256,
+            expected_bindings=bindings,
+            output_dir=args.output_dir,
+            run_id=args.run_id,
+            selector=selector,
+            index=index,
             shard_index=args.shard_index,
-            shard_size=args.shard_size,
+            format_failure_policy=args.format_failure_policy,
+            concurrency=args.concurrency,
         )
-    )
-    source_runtime_evidence = json.loads(
-        args.source_runtime_contract.read_text(encoding="utf-8")
-    )
-    if source_runtime_contract_payload_sha256(source_runtime_evidence) != (
-        args.expected_runtime_contract_payload_sha256
-    ):
-        raise ValueError("runtime contract differs from approved payload hash")
-    reconstruction_identity = reconstruction_git_identity(
-        args.source_runtime_root,
-        base_commit=RECONSTRUCTION_BASE_COMMIT,
-    )
-    approved_literals = {
-        "runtime_head": APPROVED_RECONSTRUCTION_HEAD,
-        "runtime_tree": APPROVED_RECONSTRUCTION_TREE,
-        "diff_sha256": APPROVED_RECONSTRUCTION_DIFF_SHA256,
-    }
-    supplied_literals = {
-        "runtime_head": args.expected_reconstruction_head,
-        "runtime_tree": args.expected_reconstruction_tree,
-        "diff_sha256": args.expected_reconstruction_diff_sha256,
-    }
-    if supplied_literals != approved_literals:
-        raise ValueError("CLI reconstruction literals differ from approved values")
-    expected_identity = {
-        **reconstruction_identity,
-        "base_commit": RECONSTRUCTION_BASE_COMMIT,
-        "runtime_parent": RECONSTRUCTION_BASE_COMMIT,
-        **approved_literals,
-        "commit_count": 1,
-        "parent_count": 1,
-    }
-    validate_reconstruction_git_identity(
-        reconstruction_identity,
-        expected=expected_identity,
-    )
-    validate_source_runtime_contract(
-        source_runtime_evidence,
-        expected_reconstruction_identity=expected_identity,
-        expected_runtime_root=args.source_runtime_root,
-    )
-    inspected_policy_contract = VLLMSourcePolicy.inspect_runtime_contract(
-        model_path=args.model_path,
-        tensor_parallel_size=args.tensor_parallel_size,
-        gpu_memory_utilization=args.gpu_memory_utilization,
-        engine_seed=args.engine_seed,
-    )
+    else:
+        collector, specs = prepare_inspected_collection(
+            model_path=args.model_path,
+            partition_manifest=args.partition_manifest,
+            shard_index=args.shard_index,
+            source_index=args.source_index,
+            shard_size=args.shard_size,
+            run_id=args.run_id,
+            source_runtime_root=args.source_runtime_root,
+            source_runtime_contract=args.source_runtime_contract,
+            expected_reconstruction_head=args.expected_reconstruction_head,
+            expected_reconstruction_tree=args.expected_reconstruction_tree,
+            expected_reconstruction_diff_sha256=args.expected_reconstruction_diff_sha256,
+            expected_runtime_contract_payload_sha256=args.expected_runtime_contract_payload_sha256,
+            format_failure_policy=args.format_failure_policy,
+            concurrency=args.concurrency,
+            tensor_parallel_size=args.tensor_parallel_size,
+            gpu_memory_utilization=args.gpu_memory_utilization,
+            engine_seed=args.engine_seed,
+        )
+    inspected_policy_contract = dict(collector.policy.runtime_contract)
     client = LegacyVAGENBatchClient(args.env_url, timeout=500)
-    collector = SourceShardCollector(
-        client=client,
-        policy=InspectedSourcePolicy(inspected_policy_contract),
-        run_id=args.run_id,
-        shard_index=args.shard_index,
-        reconstruction_identity=reconstruction_identity,
-        source_runtime_evidence=source_runtime_evidence,
-        policy_artifact_evidence=policy_artifact_evidence,
-        format_failure_policy=args.format_failure_policy,
-        concurrency=args.concurrency,
-    )
+    collector.client = client
+
     def activate_runtime() -> tuple[SourceEnvironmentClient, SourcePolicy]:
         health = client.check_server_health()
         if health.get("status") != "ok":
             raise RuntimeError(f"source environment server is unhealthy: {health!r}")
         validate_service_runtime_identity(
             client.get_reconstruction_identity(),
-            contract=source_runtime_evidence,
+            contract=collector.source_runtime_evidence,
         )
         policy = VLLMSourcePolicy(
             model_path=args.model_path,

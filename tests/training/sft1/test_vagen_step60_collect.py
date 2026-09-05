@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
+import types
 from dataclasses import replace
 from pathlib import Path
 
@@ -23,6 +25,162 @@ def _image(offset: int) -> Image.Image:
     image = Image.new("RGB", (4, 4), color=(offset, 0, 0))
     image.putpixel((0, 0), (255, 255, 255))
     return image
+
+
+def _write_inspection_handoff(
+    path: Path, *, bindings: dict[str, object], output_dir: Path
+) -> str:
+    payload = {
+        "bindings": bindings,
+        "inspection_context": {
+            "policy_artifact_evidence": _policy_artifact_evidence(),
+            "source_runtime_evidence": _source_runtime_evidence(),
+            "reconstruction_identity": _reconstruction_identity(),
+            "inspected_policy_contract": _FakePolicy().runtime_contract,
+        },
+        "items": [
+            {
+                "label": "shard-0",
+                "output_dir": str(output_dir.absolute()),
+                "run_id": "gate-0",
+                "selector": "shard-index",
+                "index": 0,
+                "format_failure_policy": "exclude_trajectory",
+                "concurrency": 4,
+                "ordered_episode_specs": [
+                    {
+                        "source_index": 0,
+                        "eval_set": "base",
+                        "seed": 100,
+                        "dataset_split": "train",
+                        "source_key": "base:100",
+                    }
+                ],
+            }
+        ],
+    }
+    envelope = {
+        "format": collect_module.INSPECTION_HANDOFF_FORMAT,
+        "payload": payload,
+        "payload_sha256": collect_module._canonical_sha256(payload),
+    }
+    content = (
+        json.dumps(envelope, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + "\n"
+    ).encode()
+    path.write_bytes(content)
+    return hashlib.sha256(content).hexdigest()
+
+
+def test_inspection_handoff_is_hash_schema_cli_and_output_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bindings = {"model_path": str((tmp_path / "model").absolute())}
+    output = tmp_path / "shard"
+    handoff = tmp_path / "handoff.json"
+    digest = _write_inspection_handoff(handoff, bindings=bindings, output_dir=output)
+    monkeypatch.setattr(
+        collect_module,
+        "prepare_collection_inspection_context",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("inspection repeated")),
+    )
+    collector, specs = collect_module.build_collection_from_inspection_handoff(
+        path=handoff,
+        expected_file_sha256=digest,
+        expected_bindings=bindings,
+        output_dir=output,
+        run_id="gate-0",
+        selector="shard-index",
+        index=0,
+        shard_index=0,
+        format_failure_policy="exclude_trajectory",
+        concurrency=4,
+    )
+    assert [spec.source_index for spec in specs] == [0]
+    assert collector.policy.runtime_contract == _FakePolicy().runtime_contract
+
+    with pytest.raises(ValueError, match="output"):
+        collect_module.build_collection_from_inspection_handoff(
+            path=handoff,
+            expected_file_sha256=digest,
+            expected_bindings=bindings,
+            output_dir=tmp_path / "wrong-output",
+            run_id="gate-0",
+            selector="shard-index",
+            index=0,
+            shard_index=0,
+            format_failure_policy="exclude_trajectory",
+            concurrency=4,
+        )
+    with pytest.raises(ValueError, match="binding"):
+        collect_module.load_inspection_handoff(
+            handoff,
+            expected_file_sha256=digest,
+            expected_bindings={"model_path": "stale"},
+        )
+    symlink = tmp_path / "handoff-link.json"
+    symlink.symlink_to(handoff)
+    with pytest.raises(ValueError, match="regular file"):
+        collect_module.load_inspection_handoff(
+            symlink,
+            expected_file_sha256=digest,
+            expected_bindings=bindings,
+        )
+    handoff.write_bytes(handoff.read_bytes() + b" ")
+    with pytest.raises(ValueError, match="SHA256"):
+        collect_module.load_inspection_handoff(
+            handoff,
+            expected_file_sha256=digest,
+            expected_bindings=bindings,
+        )
+
+
+def test_gpu_engine_is_constructed_before_live_runtime_contract_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+
+    class AutoProcessor:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            return object()
+
+    class LLM:
+        def __init__(self, **kwargs):
+            events.append("engine")
+
+    class SamplingParams:
+        def __init__(self, **kwargs):
+            events.append("sampling")
+
+    monkeypatch.setitem(
+        sys.modules, "transformers", types.SimpleNamespace(AutoProcessor=AutoProcessor)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm",
+        types.SimpleNamespace(LLM=LLM, SamplingParams=SamplingParams),
+    )
+    expected = {"verified": True}
+
+    def runtime_contract(**kwargs):
+        assert events == ["engine"]
+        return expected
+
+    monkeypatch.setattr(
+        collect_module.VLLMSourcePolicy,
+        "_runtime_contract",
+        staticmethod(runtime_contract),
+    )
+    policy = collect_module.VLLMSourcePolicy(
+        model_path=tmp_path,
+        tensor_parallel_size=1,
+        gpu_memory_utilization=0.8,
+        engine_seed=42,
+        expected_runtime_contract=expected,
+    )
+    assert policy.runtime_contract == expected
+    assert events == ["engine", "sampling"]
 
 
 def test_collector_rejects_dangling_output_before_rollout(tmp_path: Path) -> None:
@@ -888,6 +1046,56 @@ def test_interrupted_shard_checkpoints_completed_rows_and_resumes_only_unfinishe
     assert [row["source_index"] for row in rows] == [0, 10_000]
     assert (output / "IN_PROGRESS.json").is_file()
     assert len(list((output / "attempts").iterdir())) == 2
+
+
+def test_orchestrator_state_inspection_reuses_full_resume_and_complete_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    system_prompt = "exact source system"
+    _patch_prompt_hashes(monkeypatch, system_prompt)
+    specs = [
+        EpisodeSpec(0, "base", 100, "train", "base:100"),
+        EpisodeSpec(10_000, "common_sense", 100, "train", "common_sense:100"),
+    ]
+    interrupted = tmp_path / "inspected-interrupted"
+    collector = _collector(_FakeClient(system_prompt), _InterruptSecondEpisodePolicy())
+    with pytest.raises(RuntimeError, match="injected interruption"):
+        collector.collect(specs, output_dir=interrupted)
+    assert collector.inspect_output_state(specs, output_dir=interrupted) == "resume"
+
+    checkpoint = next(
+        interrupted.with_name("inspected-interrupted.inprogress")
+        .joinpath("records")
+        .glob("*.json")
+    )
+    envelope = json.loads(checkpoint.read_text(encoding="utf-8"))
+    image = interrupted.with_name("inspected-interrupted.inprogress") / envelope[
+        "record"
+    ]["image_paths"][0]
+    image.write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="image"):
+        collector.inspect_output_state(specs, output_dir=interrupted)
+
+    complete = tmp_path / "inspected-complete"
+    complete_collector = _collector(_FakeClient(system_prompt), _FakePolicy())
+    complete_collector.collect(specs, output_dir=complete)
+    assert complete_collector.inspect_output_state(specs, output_dir=complete) == "complete"
+    changed_artifact = _policy_artifact_evidence()
+    changed_artifact["artifact_manifest_sha256"] = "f" * 64
+    mismatched = SourceShardCollector(
+        client=_FakeClient(system_prompt),
+        policy=_FakePolicy(),
+        run_id="resume",
+        shard_index=0,
+        reconstruction_identity=_reconstruction_identity(),
+        source_runtime_evidence=_source_runtime_evidence(),
+        policy_artifact_evidence=changed_artifact,
+        format_failure_policy="exclude_trajectory",
+        concurrency=1,
+    )
+    with pytest.raises(ValueError, match="policy_artifact"):
+        mismatched.inspect_output_state(specs, output_dir=complete)
 
 
 def test_checkpoint_file_and_directory_are_fsynced_before_next_rollout(
