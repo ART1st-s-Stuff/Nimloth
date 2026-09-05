@@ -4,7 +4,7 @@ Nimloth is a Python machine-learning project for building a **World Model Agent*
 
 ## AI development workflow
 
-Repository AI work uses [Trellis](.trellis/workflow.md) as its only live development task system. All platforms enter through [AGENTS.md](AGENTS.md), load task-selected contracts from [`.trellis/spec/`](.trellis/spec/), and share project capabilities from [`.agents/skills/`](.agents/skills/). Existing `ai_tasks/`, `AI_issues.md`, and older `AI_branch_progress.md` entries are historical evidence; new task details belong in `.trellis/tasks/`.
+Repository AI work uses [Trellis](.trellis/workflow.md) as its only live development task system. All platforms enter through [AGENTS.md](AGENTS.md), load task-selected contracts from [`.trellis/spec/`](.trellis/spec/), and share project capabilities from [`.agents/skills/`](.agents/skills/). Pre-Trellis task and progress records are historical evidence only; new task details belong in `.trellis/tasks/`.
 
 Pi TaskTree is intentionally unused and must remain empty. Experiments and remote jobs require the dedicated [experiment contract](.trellis/spec/experiments/index.md) and explicit launch approval.
 

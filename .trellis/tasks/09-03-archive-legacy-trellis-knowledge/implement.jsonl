@@ -1,1 +1,10 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file":".trellis/tasks/09-03-archive-legacy-trellis-knowledge/prd.md","reason":"156项审计、spec提炼、已选archive路径和破坏门禁。"}
+{"file":".trellis/tasks/09-03-archive-legacy-trellis-knowledge/design.md","reason":"两阶段迁移、strict retain mapping、hash-bound rewrite、pre/post validation和rollback策略。"}
+{"file":".trellis/tasks/09-03-archive-legacy-trellis-knowledge/research/review-remediation.md","reason":"审查finding的保守分类、exact operation和未执行边界。"}
+{"file":".trellis/tasks/09-03-archive-legacy-trellis-knowledge/research/approved-rewrite-patch.json","reason":"绑定move manifest与18文件28处post-move exact rewrite。"}
+{"file":".trellis/tasks/09-02-rebuild-nimloth-trellis-prompts/prd.md","reason":"parent R8 legacy知识与progress迁移合同。"}
+{"file":".trellis/spec/governance/tasks-progress-and-memory.md","reason":"历史证据、active authority和memory边界。"}
+{"file":".trellis/spec/guides/known-error-routing.md","reason":"当前known-error active routing待迁移基线。"}
+{"file":".trellis/spec/governance/authority-and-safety.md","reason":"不确定性、protected mutation和替代机制边界。"}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"archive/protected文件和worktree mutation合同。"}
+{"file":".trellis/tasks/09-03-archive-legacy-trellis-knowledge/research/final-post-move-validation-2026-09-05.md","reason":"精确move/rewrite结果、post验证及最终APPROVED复审。"}

@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SLURM = ROOT / "experiments/training/reconstruction/id54_id189_source20_base2_id45cfm.slurm"
 RUNNER = ROOT / "experiments/training/reconstruction/run_id54_id189_source20_base2_id45cfm.sh"
-CONTRACT = ROOT / "ai_tasks/id54_id189_source20_base2_id45cfm_contract.md"
+CONTRACT = ROOT / "ai_tasks/archive/pre-trellis/id54_id189_source20_base2_id45cfm_contract.md"
 
 
 def test_id54_is_frozen_pre_rl_cfm_derived_browser() -> None:

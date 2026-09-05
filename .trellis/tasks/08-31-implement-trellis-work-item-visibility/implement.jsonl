@@ -4,5 +4,5 @@
 {"file": ".trellis/tasks/08-31-implement-trellis-work-item-visibility/research/ask-user-question-cross-session-correlation-2026-08-31.md", "reason": "提供background/session-switch自动取消与Renderer correlation缺口的源码证据。"}
 {"file": ".trellis/spec/governance/platform-integration.md", "reason": "约束ctx.cwd、root/session隔离和Pi adapter验证。"}
 {"file": ".trellis/spec/governance/tasks-progress-and-memory.md", "reason": "约束Trellis任务权威、进度与TaskTree边界。"}
-{"file": "ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md", "reason": "约束跨仓库实施必须显式绑定目标worktree。"}
+{"file": ".trellis/spec/governance/git-worktrees-and-protected-files.md", "reason": "约束跨仓库实施必须显式绑定目标worktree。"}
 {"file": ".agents/skills/trellis-meta/references/local-architecture/task-system.md", "reason": "提供task tree、implement.md和active pointer现有合同。"}

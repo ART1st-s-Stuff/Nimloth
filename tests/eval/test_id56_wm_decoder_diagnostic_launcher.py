@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SLURM = ROOT / "experiments/training/reconstruction/id56_id189_wm_decoder_diagnostic.slurm"
 RUNNER = ROOT / "experiments/training/reconstruction/run_id56_id189_wm_decoder_diagnostic.sh"
-CONTRACT = ROOT / "ai_tasks/id56_id189_wm_decoder_diagnostic_contract.md"
+CONTRACT = ROOT / "ai_tasks/archive/pre-trellis/id56_id189_wm_decoder_diagnostic_contract.md"
 
 
 def test_id56_is_readonly_full_wm_decoder_separation() -> None:

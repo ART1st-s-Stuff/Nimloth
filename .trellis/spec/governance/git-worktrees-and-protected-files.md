@@ -14,7 +14,7 @@ Additional parallel tasks use independent child worktrees. Experiment exact-sour
 
 A worktree is an isolated execution directory, not a second task authority. Task artifacts remain authoritative, while review tools may read another registered worktree without switching the active workspace, session, worker cwd, or Git checkout.
 
-Before every repository mutation, bind the command to the intended worktree in the same invocation (explicit tool cwd or `cd "$WT_DIR" && ...`) and verify the command cwd, `git rev-parse --show-toplevel`, actual branch, and `git status --short --branch`. See known error [`E0094`](../../../ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md).
+Before every repository mutation, bind the command to the intended worktree in the same invocation (explicit tool cwd or `cd "$WT_DIR" && ...`) and verify the command cwd, `git rev-parse --show-toplevel`, actual branch, and `git status --short --branch`.
 
 Use the repository-owned [`git-worktree` skill](../../../.agents/skills/git-worktree/SKILL.md) for creation, setup, verification, and cleanup. The canonical root owns the real ignored, machine-specific `.local/` directory; each child uses a verified symlink to `/workspace/remote2/nimloth/.local`. Project-local portable skills remain tracked entities in `.agents/skills/` and must not be replaced by absolute symlinks.
 

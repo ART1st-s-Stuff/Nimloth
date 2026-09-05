@@ -375,7 +375,7 @@ run_split() {
 {
   echo "=== SFT1 VAGEN baseline rollout collection starting at $(date) ==="
   echo "Job ID: ${SLURM_JOB_ID}"
-  echo "Purpose: rollout-only data collection for ai_tasks/sft1_exp.md; no actor/critic update."
+  echo "Purpose: rollout-only data collection for ai_tasks/archive/pre-trellis/sft1_exp.md; no actor/critic update."
   echo "Checkpoint source run: ${BASE_RUN_NAME}"
   echo "Original best checkpoint source: ${BASE_RUN_DIR}/checkpoints/global_step_${CHECKPOINT_STEP}/actor/huggingface"
   echo "Converted world_size=2 checkpoint path: ${CHECKPOINT_DIR}/global_step_${CHECKPOINT_STEP}/actor"

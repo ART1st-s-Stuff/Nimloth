@@ -1,6 +1,6 @@
 # Phase 1 — format SFT (SFT1)
 
-Canonical location for SFT1 per `ai_tasks/sft1_exp.md`.
+Canonical SFT1 entrypoints; rollout/state semantics follow [the Agent, Rollout, and State contract](../../../.trellis/spec/domains/agent-rollout-and-state.md).
 
 | File | Purpose |
 |------|---------|

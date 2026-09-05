@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SLURM = ROOT / "experiments/training/reconstruction/id55_id189_source20_all120_id45cfm.slurm"
 RUNNER = ROOT / "experiments/training/reconstruction/run_id55_id189_source20_all120_id45cfm.sh"
-CONTRACT = ROOT / "ai_tasks/id55_id189_source20_all120_id45cfm_contract.md"
+CONTRACT = ROOT / "ai_tasks/archive/pre-trellis/id55_id189_source20_all120_id45cfm_contract.md"
 
 
 def test_id55_full_cfm_is_frozen_exact_and_complete() -> None:

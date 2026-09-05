@@ -38,7 +38,7 @@
 3. 在 `experiments/training/baseline/`（或 phase 子目录）放**少量通用模板**（环境变量 / yaml 区分变体）；
 4. 把单次运行的命令、commit、结果写入 `outputs/experiments/<实验组>/`，而不是写进 git 脚本名。
 
-迁移映射见 `ai_tasks/sft2_phase2_plan.md` 与 `experiments/training/README.md`。
+当前目录映射见 `experiments/training/README.md`，阶段合同见 [World Model and Training](../.trellis/spec/domains/world-model-and-training.md)。
 
 ---
 
@@ -50,7 +50,7 @@
 | 稳定、高频、可复用的操作模板 | 专用 markdown（如 `experiments/training/*/README.md`、`.local/SERVER.md`） | 经人类确认后写入；写通用步骤，不写单次 job 参数 |
 | 有效期短的环境/集群经验 | **memory skill**（`./skill memory`） | 例如某分区资源查询习惯、SSH 重试策略；需经常更新，过期则 archive |
 | 单次实验的过程与结论 | `outputs/experiments/<name>/` + `progress.md` | 不提交到 `experiments/` 脚本树 |
-| 架构与模块边界 | `src/nimloth/*/README.md`、`ai_tasks/*_exp.md` | 设计与 phase 规格 |
+| 架构与模块边界 | `src/nimloth/*/README.md`、[`.trellis/spec/domains/`](../.trellis/spec/domains/index.md) | 设计与 phase 规格 |
 
 **禁止**在 `experiments/` 里堆积仅对一次运行有效的命令副本。若某条经验两周后仍频繁用到，再提炼进 markdown 模板；否则只留在 memory 或当次 output README。
 
