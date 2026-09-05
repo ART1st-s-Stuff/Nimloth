@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=vagen-k8-full-6g
+#SBATCH --job-name=vagen-k8-full-8g
 #SBATCH --output=/project/peilab/atst/nimloth/outputs/experiments/training/sft1/slurm/%x_%j.out
 #SBATCH --error=/project/peilab/atst/nimloth/outputs/experiments/training/sft1/slurm/%x_%j.err
 #SBATCH --time=08:00:00
@@ -8,7 +8,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=224
-#SBATCH --gres=gpu:6
+#SBATCH --gres=gpu:8
 #SBATCH --mem=180G
 
 set -euo pipefail
@@ -16,7 +16,7 @@ set -euo pipefail
 REPO=${REPO:-/project/peilab/atst/nimloth}
 SCRIPTDIR=${REPO}/experiments/training/sft1
 RUN_DIR=${ROLLOUT_RUN_DIR:?ROLLOUT_RUN_DIR required}
-LOG=${RUN_DIR}/preempt_6gpu_${SLURM_JOB_ID}.log
+LOG=${RUN_DIR}/preempt_8gpu_${SLURM_JOB_ID}.log
 # The copied source-checkpoint runtime has the required Transformers version;
 # the worktree-local .venv is older and cannot instantiate this checkpoint.
 export PYTHON_ENV=${PYTHON_ENV:-/project/peilab/atst/nimloth/.venv-vagen-main}
@@ -27,15 +27,15 @@ fi
 mkdir -p "${RUN_DIR}" "${REPO}/outputs/experiments/training/sft1/slurm"
 
 IFS=',' read -r -a ALLOCATED_GPUS <<< "${CUDA_VISIBLE_DEVICES:?CUDA_VISIBLE_DEVICES required}"
-if [ "${#ALLOCATED_GPUS[@]}" -ne 6 ]; then
-  echo "ERROR expected exactly 6 allocated GPUs, got ${#ALLOCATED_GPUS[@]}: ${CUDA_VISIBLE_DEVICES}" | tee -a "${LOG}"
+if [ "${#ALLOCATED_GPUS[@]}" -ne 8 ]; then
+  echo "ERROR expected exactly 8 allocated GPUs, got ${#ALLOCATED_GPUS[@]}: ${CUDA_VISIBLE_DEVICES}" | tee -a "${LOG}"
   exit 2
 fi
 ENV_GPUS=""
 POLICY_GPUS=""
 ENV_PID=""
-ENV_GPU_COUNT=${ENV_GPU_COUNT:-2}
-POLICY_GPU_COUNT=$((6 - ENV_GPU_COUNT))
+ENV_GPU_COUNT=${ENV_GPU_COUNT:-4}
+POLICY_GPU_COUNT=$((8 - ENV_GPU_COUNT))
 if [ "${ENV_GPU_COUNT}" -lt 1 ] || [ "${POLICY_GPU_COUNT}" -lt 1 ]; then
   echo "ERROR invalid ENV_GPU_COUNT=${ENV_GPU_COUNT}" >&2
   exit 2
@@ -55,7 +55,7 @@ trap cleanup EXIT
 trap on_signal TERM INT
 
 {
-  echo "=== full rollout 6-GPU preempt orchestration ==="
+  echo "=== full rollout 8-GPU preempt orchestration ==="
   echo "time=$(date -Is) job=${SLURM_JOB_ID} node=${SLURM_JOB_NODELIST}"
   echo "commit=$(git -C "${REPO}" rev-parse HEAD)"
   echo "python_env=${PYTHON_ENV}"
@@ -64,8 +64,8 @@ trap on_signal TERM INT
 } | tee -a "${LOG}"
 
 # AI2-THOR needs working Vulkan/CloudRendering GPUs, while policy vLLM only
-# needs CUDA. Probe all six first, then use two env GPUs and four policy GPUs by
-# default to reproduce the source checkpoint's four-worker validation topology.
+# needs CUDA. Probe all eight first, then use four environment GPUs and four
+# policy GPUs by default to reproduce the source checkpoint's four-worker topology.
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"
 # shellcheck disable=SC1091
@@ -109,7 +109,7 @@ PY
   fi
 done
 if [ "${#GOOD_ENV_GPUS[@]}" -lt "${ENV_GPU_COUNT}" ]; then
-  echo "ERROR need at least ${ENV_GPU_COUNT} AI2-THOR-good GPUs among six, got ${#GOOD_ENV_GPUS[@]}" | tee -a "${LOG}"
+  echo "ERROR need at least ${ENV_GPU_COUNT} AI2-THOR-good GPUs among eight, got ${#GOOD_ENV_GPUS[@]}" | tee -a "${LOG}"
   exit 4
 fi
 SELECTED_ENV=("${GOOD_ENV_GPUS[@]:0:${ENV_GPU_COUNT}}")
@@ -174,7 +174,7 @@ while read -r url; do
   echo "healthy ${url}" | tee -a "${LOG}"
 done < "${URLS}"
 
-# One 2-GPU policy task runs at a time. Completed non-empty shards are skipped
+# One policy task uses all selected policy GPUs at a time. Completed non-empty shards are skipped
 # by rollouts_greedy_parallel.slurm, so a later retry preserves shard progress.
 if [ "${ROLLOUT_SMOKE:-0}" = "1" ] || [ "${ROLLOUT_SOURCE_PARITY:-0}" = "1" ]; then
   TASK_IDS=(0)
@@ -205,12 +205,12 @@ for task_id in "${TASK_IDS[@]}"; do
 done
 
 if [ "${ROLLOUT_SMOKE:-0}" = "1" ]; then
-  touch "${RUN_DIR}/preempt_6gpu_smoke_done.flag"
+  touch "${RUN_DIR}/preempt_8gpu_smoke_done.flag"
   echo "=== rollout smoke completed at $(date -Is) ===" | tee -a "${LOG}"
 elif [ "${ROLLOUT_SOURCE_PARITY:-0}" = "1" ]; then
-  touch "${RUN_DIR}/preempt_6gpu_source_parity_done.flag"
+  touch "${RUN_DIR}/preempt_8gpu_source_parity_done.flag"
   echo "=== source validation parity replay completed at $(date -Is) ===" | tee -a "${LOG}"
 else
-  touch "${RUN_DIR}/preempt_6gpu_rollout_done.flag"
+  touch "${RUN_DIR}/preempt_8gpu_rollout_done.flag"
   echo "=== all rollout tasks completed at $(date -Is) ===" | tee -a "${LOG}"
 fi
