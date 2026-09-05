@@ -18,7 +18,7 @@ ROOT=${REPO:-/project/peilab/atst/nimloth}
 SCRIPTDIR=${ROOT}/experiments/training/sft1
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"
-BASEDIR=${VAGEN_DIR:-${ROOT}/external/VAGEN}
+BASEDIR=${ROOT}/external/VAGEN
 EXPERIMENT_NAME=${ROLLOUT_RUN_NAME}
 RUN_DIR=${ROLLOUT_RUN_DIR}
 CONTROL_DIR=${RUN_DIR}/external_env_4gpu
@@ -40,8 +40,11 @@ export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
 export TMPDIR=/tmp/vagen-env-sft1v79-${USER}-${SLURM_JOB_ID}
 mkdir -p "$TMPDIR"
 
-# common_env.sh loads credentials and then restores the caller-selected
-# PYTHON_ENV, PATH, and VIRTUAL_ENV. Do not source credentials a second time.
+if [ -f /project/peilab/atst/flower/.env ]; then
+  set -a; source /project/peilab/atst/flower/.env; set +a
+elif [ -f /project/peilab/atst/.env ]; then
+  set -a; source /project/peilab/atst/.env; set +a
+fi
 export VIRTUAL_ENV=${PYTHON_ENV}
 hash -r
 # shellcheck disable=SC1091

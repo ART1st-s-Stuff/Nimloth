@@ -87,24 +87,10 @@
   - Re-run remote inert merge planning and require both `command[0]` and `python_executable` to equal `/project/peilab/atst/nimloth/.venv/bin/python3`; verify `torch`, `torch.utils`, `accelerate` and merger imports under that interpreter before any new launch approval.
   - Preserve failed run `20260902T123000Z_step60_batch1_v3_nfs_32bcc045`; retry only with a fresh run root, refreshed exact code commit and fresh launch approval.
 
-- [x] [W-015] **Add per-trajectory durable checkpoints and explicit interrupted-shard resume**
-  - Add RED tests proving each completed trajectory is atomically checkpointed and fsynced before the next trajectory completes, an interruption preserves completed rows, and explicit resume invokes policy/environment only for unfinished source rows.
-  - Add RED cases for fresh-vs-resume mode, stable staging identity, changed ordered specs/runtime/policy/max-step/format contract, corrupt/truncated checkpoint JSON, record-hash drift, missing/tampered image evidence, duplicate/unknown source rows and an existing final output; all must fail before rollout calls.
-  - Implement a stable direct-sibling in-progress directory with immutable hash-bound collection metadata, per-trajectory checkpoint files and attempt-unique image namespaces. Preserve incomplete attempt evidence; never infer or resume half an environment trajectory.
-  - On complete coverage, regenerate `raw.jsonl` deterministically in requested source-spec order, retain resume audit evidence, produce the existing strict manifest/COMPLETE marker and publish marker-last. Keep final v3 raw/shard/conversion semantics unchanged.
-  - Add CLI `--resume` fail-closed behavior, document the exact fresh/resume commands, run focused collector/data/converter tests and then one final affected SFT1 suite plus Ruff/compile/shell/diff checks. Obtain implementation approval before code edits and separate commit/push approvals; do not launch GPU work in this item.
-
-- [x] [W-016] **Implement the eight-GPU preempt collection orchestrator**
-  - Add RED static/integration tests for a one-node eight-GPU batch script that assigns four isolated environment GPUs and four independent TP1 policy collectors, uses the existing environment-service entrypoint, and never shares one allocated GPU between roles.
-  - Run source-index-0 smoke on one pair, validate the complete v3 shard, then and only then launch four distinct 100-row shard collectors in parallel on the four pairs. Any smoke/shard failure must fail the job and block later work.
-  - Detect each output as exactly one of absent (fresh), valid complete (skip), or matching in-progress (explicit `--resume`); reject every other state. Preserve per-shard logs, PIDs/status, cancellation cleanup and attempt evidence.
-  - Require exact code/runtime/model/partition/contract paths through environment variables; do not merge actors, repartition data, convert datasets or launch beyond four gate shards.
-  - Run focused RED/GREEN tests, shell syntax, affected SFT1 tests and read-only review. Obtain separate commit/push and launch approvals; no GPU/remote launch occurs in this item.
-
 - [ ] [W-010] **Launch and monitor checkpoint merge, smoke and production-concurrency gate**
   - Run the approved merge/load preflight.
-  - Run one-trajectory TP1 smoke and validate prompt hashes, parser/reward/runtime contract, transcript/image alignment and terminal non-execution.
-  - If smoke passes, run four production-size shards in parallel using four environment/policy pairs; inspect scheduler/log/GPU/resource/output evidence until healthy or terminal.
+  - Run one-trajectory smoke and validate prompt hashes, parser/reward/runtime contract, transcript/image alignment and terminal non-execution.
+  - Run one production-size shard; inspect scheduler/log/GPU/resource/output evidence until healthy or terminal.
   - On any terminal event, run `on-experiment-end`; retry only after root-cause review and fresh approval if the contract changes.
 
 - [ ] [W-011] **Launch, monitor and finalize batch1**

@@ -46,10 +46,8 @@
 - 从 step60 的真实 source config/log/runtime transcript/W&B evidence 核验 prompt、action parser、environment dynamics/reward、sampling、turn/token limits 和 split identity。
 - reconstruction runtime 必须使用独立 clean VAGEN worktree/branch和可审计 patch commit；manifest 同时记录 unavailable source commit、reconstruction base/patch commits、精确 diff/hash、证据映射和已知限制。任何未被证据覆盖的语义必须在 smoke 前停止，禁止继承未核实的默认值。
 - rollout 只做冻结推理，不训练任何模块。
-- 正式采集前运行有界 smoke/concurrency gate；smoke 只能证明被测路径，不替代正式数据。用户为高效利用 preempt 八卡节点选择四环境 GPU + 四个独立 TP1 policy collector；source-index-0 TP1 smoke 通过后，同一获批 allocation 最多并行启动四个 100-row shard 作为完整八卡并发 gate，任一失败均阻断剩余 batch1。
+- 正式采集前运行有界 smoke/concurrency gate；smoke 只能证明被测路径，不替代正式数据。
 - 每个 shard 使用唯一输出，保留 JSONL、图像、resolved config、record counts、split/seed identity 和错误状态；不得把 partial/non-empty JSONL 当成完成 shard。
-- 收集必须在每条 trajectory 完整终止（含真实 terminal generation 且未执行 draft action）后立即原子持久化并 fsync 一个 hash-bound record checkpoint。进程、Slurm 或节点中断后，只能通过显式 resume 重新验证 immutable collection identity、已保存 record/hash/image/runtime/spec 前缀并跳过已完成 source rows；未完成 trajectory 从同一 source row 重新开始，禁止从半条环境轨迹猜测 state 或 action。
-- Resume staging 使用由目标 shard 唯一确定的稳定路径，首次启动与恢复必须区分；已有 staging 时普通启动 fail closed，缺少 staging 时 resume fail closed。中断尝试及未被 checkpoint 引用的图像证据必须保留，不得静默删除或当作已完成记录。
 
 ### R3 — SFT1 dataset
 
@@ -90,7 +88,6 @@
 - [ ] step60 actor 已用来源兼容且可审计的方式恢复/导出，并通过 tokenizer/config/weight/load smoke。
 - [ ] evidence-backed reconstruction 有独立 VAGEN base/patch commits、golden prompt/parser/reward/API tests、diff/hash manifest和明确的非-exact-source限制；Nimloth collector 验证真实 clean runtime identity而不接受 metadata relabel。
 - [ ] 精确 rollout contract 与 source/reconstruction evidence、split/seed范围、资源、时间、输出、恢复和监控方式均写入任务并获得单独 launch approval。
-- [ ] Collector 在每条完成 trajectory 后持久化并 fsync 可独立验证的 checkpoint；测试证明中断后显式 resume 只跳过 hash/image/runtime/spec 全部匹配的完成 rows，损坏或身份漂移 fail closed，最终 COMPLETE shard 与无中断收集语义一致。
 - [ ] 20,000-row partition manifest 证明 10 个 batch 各 2,000、互不重叠且并集覆盖全部 source train rows；本次 batch 1 的全部计划 shard 达到完整性 gate，partial/failed shard 被隔离且未进入数据集。
 - [ ] SFT1 输出通过 transcript/action/image/split/schema validation，并有原子 manifest、hash、counts 和 rejection sidecar。
 - [ ] SFT2 trajectory 输出通过 `nimloth_trajectory_v1` validation，真实 CoT/action/reward provenance 未被合成或猜测。
