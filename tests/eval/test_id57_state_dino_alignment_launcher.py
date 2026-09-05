@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SLURM = ROOT / "experiments/training/reconstruction/id57_id189_state_dino_alignment.slurm"
 RUNNER = ROOT / "experiments/training/reconstruction/run_id57_id189_state_dino_alignment.sh"
-CONTRACT = ROOT / "ai_tasks/id57_id189_state_dino_alignment_contract.md"
+CONTRACT = ROOT / "ai_tasks/archive/pre-trellis/id57_id189_state_dino_alignment_contract.md"
 
 
 def test_id57_is_readonly_state_dino_alignment() -> None:

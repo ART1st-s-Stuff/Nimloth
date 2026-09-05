@@ -5,4 +5,4 @@
 {"file":".trellis/spec/governance/platform-integration.md","reason":"canonical root cutover后的Pi ctx.cwd、cache与task解析验证合同。"}
 {"file":".trellis/spec/guides/investigation-and-uncertainty.md","reason":"dirty payload、branch/ref和destructive disposition不明确时的停止/研究规则。"}
 {"file":".trellis/tasks/08-28-refactor-local-worktree-layout/research/local-worktree-audit-2026-08-28.md","reason":"39个worktree拓扑、11个dirty worktree、active task路径与main/dev冲突基线。"}
-{"file":"ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md","reason":"每条仓库mutation必须在同一调用绑定精确目标cwd，防止再次写错worktree。"}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"每条仓库mutation必须在同一调用绑定精确目标cwd，防止再次写错worktree。"}

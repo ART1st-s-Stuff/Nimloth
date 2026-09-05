@@ -21,5 +21,4 @@ These guides help investigation and context selection across governance, experim
 ## Guides
 
 - [Investigation and uncertainty](investigation-and-uncertainty.md)
-- [Known-error routing](known-error-routing.md)
-- [Known-errors categorized index](../../../ai_rules/known_errors/README.md)
+- [Historical failure evidence routing](known-error-routing.md)

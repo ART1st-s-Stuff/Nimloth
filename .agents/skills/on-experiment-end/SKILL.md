@@ -17,5 +17,5 @@ description: >-
 3. 记录关键指标/异常、失败/取消原因、目标是否达成、有效性限制和下一步建议。
 4. 记录最新checkpoint和精确恢复方法；若无法忠实恢复，必须说明原因。
 5. 使用该参数设置的最新**有效**结果更新`outputs/experiments/<group>/progress.md`；禁止提升无效重试的结果。
-6. 更新当前Trellis任务证据/检查清单；branch级状态发生变化时，再添加一条简短`AI_branch_progress.md`里程碑。禁止创建新的旧式进度文件。
+6. 更新当前Trellis任务证据/检查清单；不写入pre-Trellis branch进度文件。
 7. 执行`on-progress`的memory评估：只有实际使用过的memory经重新核验且确实有帮助时才upvote；只添加不重复且可复用的经验；禁止运行human-only审批命令。

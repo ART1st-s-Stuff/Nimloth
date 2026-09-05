@@ -8,5 +8,5 @@
 {"file":".trellis/tasks/08-31-trellis-work-item-runtime-producer/design.md","reason":"旧prototype parser/runtime设计仅作待重新验证的实现线索。"}
 {"file":".trellis/tasks/08-31-pi-app-trellis-task-tree-consumer/design.md","reason":"旧consumer数据流仅作待拆除approval/dashboard耦合的线索。"}
 {"file":".trellis/tasks/09-04-pi-app-trellis-task-browser/research/final-validation-and-review-2026-09-04.md","reason":"稳定Trellis side panel、registered worktree source和验证基线。"}
-{"file":"ai_rules/known_errors/E0094_bind_repo_mutations_to_the_target_worktree.md","reason":"跨repo修改绑定精确worktree。"}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"跨repo修改绑定精确worktree。"}
 {"file":".trellis/tasks/09-03-extract-nimloth-work-item-visibility/research/final-validation-and-review-2026-09-04.md","reason":"首次review、remediation、最终验证和APPROVED复审证据。"}

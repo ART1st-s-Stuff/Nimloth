@@ -3,7 +3,7 @@
   "name": "archive-legacy-trellis-knowledge",
   "title": "归档legacy Trellis知识和进度系统",
   "description": "审计156个known errors，提炼通用spec合同，并归档legacy known errors、progress和ai_tasks。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -23,7 +23,7 @@
   "relatedFiles": [],
   "notes": "",
   "meta": {
-    "repositories": "nimloth@task/rebuild-nimloth-trellis-prompts:task/archive-legacy-trellis-knowledge",
+    "repositories": "nimloth@698fd357de77f8f0039d6ab2670f356adc77d546:task/archive-legacy-trellis-knowledge",
     "exclusions": "no memory JSONL mutation; no live approval runtime deletion without separate gate",
     "worktree_paths": "/workspace/remote2/nimloth/.worktree/task-archive-legacy-trellis-knowledge"
   }

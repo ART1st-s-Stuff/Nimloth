@@ -1,1 +1,9 @@
-{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file":".trellis/tasks/09-03-archive-legacy-trellis-knowledge/prd.md","reason":"核验覆盖、路径、引用和门禁标准。"}
+{"file":".trellis/tasks/09-03-archive-legacy-trellis-knowledge/design.md","reason":"核验manifest union、证据、spec和move安全。"}
+{"file":".trellis/tasks/09-03-archive-legacy-trellis-knowledge/implement.md","reason":"核验TDD、破坏审批、post validator和rollback边界。"}
+{"file":".trellis/tasks/09-03-archive-legacy-trellis-knowledge/research/review-remediation.md","reason":"核验156项分类摘要、exact contract mapping策略、hash-bound operation和rollback边界。"}
+{"file":".trellis/tasks/09-03-archive-legacy-trellis-knowledge/research/approved-rewrite-patch.json","reason":"核验manifest hash binding、active contexts、4 eval和5 Slurm rewrites。"}
+{"file":".trellis/spec/governance/tasks-progress-and-memory.md","reason":"检查历史内容不再成为active authority。"}
+{"file":".trellis/spec/governance/authority-and-safety.md","reason":"检查无未经证据支持的规则提炼。"}
+{"file":".trellis/spec/governance/git-worktrees-and-protected-files.md","reason":"检查archive mutation符合protected边界。"}
+{"file":".trellis/tasks/09-03-archive-legacy-trellis-knowledge/research/final-post-move-validation-2026-09-05.md","reason":"核对254个R100、28项rewrite、post checks和最终复审。"}

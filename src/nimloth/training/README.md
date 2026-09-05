@@ -1,6 +1,6 @@
 # Training module
 
-Unified training logic for Nimloth phases. See `ai_tasks/sft2_phase2_plan.md`.
+Unified training logic for Nimloth phases. Ownership and stage contracts are defined in [World Model and Training](../../../.trellis/spec/domains/world-model-and-training.md).
 
 | Package / subpackage | Purpose |
 |----------------------|---------|

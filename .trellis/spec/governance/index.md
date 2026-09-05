@@ -32,4 +32,4 @@ This layer applies to every Nimloth task and every supported AI platform. It own
 
 - [Trellis workflow](../../workflow.md)
 - [Project-local skills](../../../.agents/skills/README.md)
-- [Known-errors index](../../../ai_rules/known_errors/README.md)
+- [Historical failure evidence routing](../guides/known-error-routing.md)

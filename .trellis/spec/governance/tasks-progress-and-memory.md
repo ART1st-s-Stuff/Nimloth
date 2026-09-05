@@ -27,12 +27,11 @@ A tightly related low-risk correction inside an existing reviewed scope uses the
 
 - `.trellis/tasks/`: current requirements, design, plan, research, checks, unresolved decisions, and execution state.
 - `.trellis/workspace/`: per-session journal written during wrap-up.
-- `AI_branch_progress.md`: concise migration-period branch milestones, not detailed task state.
-- `ai_tasks/` and `AI_issues.md`: historical evidence only; do not create new `ai_tasks/ai_progress/` records or add new live issues there.
+- Pre-Trellis task, issue, and branch-progress records: immutable historical evidence only; do not add live state to them. Their archive migration is governed by the dedicated Trellis task and destructive gate.
 - `trellis mem`: read-only raw dialogue recall; never verified truth.
 - `.memory/` and `.local/memory/`: compact, evidence-backed, human-reviewed reusable lessons.
 
-Apply `on-progress` when a work-item completes, risk/design changes, experiment state changes, or a cross-session handoff is needed. Consecutive fixes within one work-item are consolidated; they do not each create progress prose, memory review, or bookkeeping commits. Update a branch milestone only when branch-level state actually changes.
+Apply `on-progress` when a work-item completes, risk/design changes, experiment state changes, or a cross-session handoff is needed. Consecutive fixes within one work-item are consolidated; they do not each create progress prose, memory review, or bookkeeping commits.
 
 ## Curated memory contract
 
@@ -52,4 +51,4 @@ When pending memory was added or revised, remind the human that approval is avai
 
 ## Historical evidence
 
-Do not rewrite existing `ai_tasks/`, `AI_issues.md`, or old `AI_branch_progress.md` entries for style. Historical references to the pre-Trellis paths remain evidence of what happened at that time and do not restore their authority for new work.
+Do not rewrite pre-Trellis task, issue, or branch-progress entries for style. Historical references remain evidence of what happened at that time and do not restore their authority for new work.

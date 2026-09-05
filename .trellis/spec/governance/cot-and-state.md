@@ -24,7 +24,6 @@ Before generating terminal CoT, the checkpoint, sampling parameters, and generat
 - [`src/nimloth/agent/README.md`](../../../src/nimloth/agent/README.md) owns Agent prompt/runtime behavior.
 - [`src/nimloth/rollout/README.md`](../../../src/nimloth/rollout/README.md) owns persisted trajectory and terminal-state requirements.
 - [`src/nimloth/training/rl/README.md`](../../../src/nimloth/training/rl/README.md) owns current RL replay/training semantics.
-- Known error [`E0045_do_not_invent_fixed_cot.md`](../../../ai_rules/known_errors/E0045_do_not_invent_fixed_cot.md) records the confirmed failure pattern.
 
 ## Verification
 

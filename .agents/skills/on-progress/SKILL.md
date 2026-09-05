@@ -22,6 +22,6 @@ description: >-
 1. 使用当前已加载的task context；仅当artifact hash变化时重读对应文件。
 2. 完成项经验证后更新`implement.md`checkbox；可选live visibility缺失或失败不得阻塞Trellis记录。
 3. 把同一item的修改、证据和残余风险合并为一条简洁task记录，不为每个小修创建progress或记账commit。
-4. 只有branch级状态变化时更新一条`AI_branch_progress.md`里程碑。
+4. 不写入pre-Trellis branch进度文件；跨session状态只进入当前Trellis任务或workspace journal。
 5. 仅当本次实际使用memory或产生spec尚未表达的跨任务经验时执行memory评估；禁止直接编辑JSONL或运行human-only命令。
 6. 实验仍必须执行专用start/end skill，不由本skill替代。
