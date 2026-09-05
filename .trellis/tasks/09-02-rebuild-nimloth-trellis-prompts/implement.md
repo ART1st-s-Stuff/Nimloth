@@ -1,6 +1,6 @@
 # 执行计划 — 重建 Nimloth Trellis prompts
 
-> 本文件只定义获批后的执行顺序。当前task仍为`planning`；在最终明确批准前，不创建实施branch/worktree、不运行`task.py start`、不修改产品代码。
+> Sections 0–8 preserve the previous delivery record. The task was reopened by the human on 2026-09-05; section 9 is the current execution plan.
 
 ## 0. 启动前冻结范围与建立隔离
 
@@ -158,3 +158,39 @@
 - 不自动清理其他session的Nimloth/pi-app dirty changes或旧worktrees。
 - 不手工修改`.memory/memories.jsonl`、`.local/memory/memories.jsonl`、`.trellis/.template-hashes.json`或Trellis runtime session pointer。
 - 不在本task继续优化恢复后的上游context；只测量并记录后续候选。
+
+## 9. 2026-09-05 authorized prompt rewrite
+
+- [x] Verify canonical dirty state and reuse the clean existing task branch/worktree; retrieve the linked article and original requirements.
+- [ ] Rewrite AGENTS and project-owned governance/guides/indexes/quality guidance; preserve ML semantics and upstream workflow.
+- [ ] Align experiment authorization and project-local skill routing/progressive disclosure with R1–R11.
+- [ ] Check all affected links, manifests, skill frontmatter and existing policy/upstream tests; review decision scenarios independently.
+- [ ] Present the full spec diff and validation evidence for commit/integration review; keep parent in_progress while required review or delivery work remains.
+
+No new Trellis task, experimental run, pi-app change, protected payload deletion, commit, push or merge is part of this edit batch.
+
+### Human steering: incremental review
+
+The human now requires a few files per batch, followed by review before further edits. Batch 1 is only `AGENTS.md` and `.trellis/spec/governance/authority-and-safety.md`. The skill worker was stopped before any skill file changed. Other prompt/spec edits wait for review of this batch. The earlier four task-artifact edits only reopened the task and recorded resumed scope.
+
+### 本轮人类审核与下一批
+
+- 人类明确回复“这几个规则我已审核通过”：Git/worktree、任务与知识记录、实验规则的跨开发者版本已审核通过。这是规则内容审核，不是 commit、push 或 merge 授权。
+- 后续 spec 使用简体中文、适用于其他开发者环境；继续小批次修改和审查。
+- 本批只同步 `git-worktree/SKILL.md` 和 `slurm/SKILL.md`，另记录本条审核事实。其他 skill、旧 spec 的合并和移除仍待后续批次，任务不能据此标为完成。
+
+- 人类随后回复“通过”：`git-worktree`、`slurm` 两个 skill 已审核通过，未授权提交或远程操作。下一批仅同步 `on-experiment-start`、`on-experiment-end`，待人类审查。
+
+- 人类回复“可以”：实验 start/end skill 已审核通过。下一批仅同步 `on-progress` 与 `memory`；本批不读取或修改 memory 存储，不运行 memory 命令。
+
+### 人类变更：取消项目 memory 人类审批
+
+人类明确要求暂时取消 memory 的人类审批和“人类已审批”等级，改由 AI 自主维护，内容不保证经过人类审核。此最新要求取代旧 R8 中逐条审批的相关约束。首批同步 AGENTS、权限 spec、任务知识 spec 与 memory skill；后续小批次改造 CLI、封装入口和兼容测试，保留现有数据。其他系统 memory 不在范围内。本批不执行迁移，不将旧命令标为已支持新语义；on-progress 及 end skill 的相关引用留待同步。
+
+### 当前交付：人类授权合并到 dev
+
+人类明确回复“可以，现在可以合并到dev”，授权提交并合并已审查的本批提示词与规则。此指令替代前文各草稿批次的“不提交、不合并”说明。本批包含 AGENTS、人类修订的权限规则、Git/worktree、任务与知识、实验规则、六个项目 skill、任务恢复记录及与新政策一致的现有静态测试断言。未 push。
+
+验证：规则测试 5 项通过，上游一致性 2 项通过，任务上下文 10/9 条引用通过；链接和差异格式检查通过。标准 skill 校验脚本缺 PyYAML，未运行，已完成基础 frontmatter 检查。独立审查无新增阻断问题；end/progress 中残留的 memory 审批措辞已按最新人类指令同步。
+
+此次不纳入《调查与不确定性》的新重写。该冗余文件的删除和引用整理、其他旧 spec 合并、memory CLI/封装和旧数据兼容，以及完整任务最终验收仍未完成。任务保持 in_progress，不归档，保留当前 worktree 供继续处理。

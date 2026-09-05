@@ -1,64 +1,39 @@
-# Authority and Safety
+# 权限与安全
 
-## Project identity and instruction order
+## 适用范围与职责
 
-Nimloth is a Python machine-learning project building a World Model Agent. Apply authority in this order:
+判断工作是否已获授权、疑问是否需要人类决定、结论是否有证据支持时，使用本规则。项目指令优先级见 [AGENTS.md](../../../AGENTS.md)。任务、历史对话或 memory 不得静默修改更高层规则。
 
-1. the current direct human prompt;
-2. the safety kernel in [`AGENTS.md`](../../../AGENTS.md);
-3. [`.trellis/workflow.md`](../../workflow.md) for lifecycle;
-4. `.trellis/spec/` contracts;
-5. the active task's reviewed requirements, design, and plan;
-6. current source, configuration, module documentation, and task-relevant known errors;
-7. verified curated memory after its evidence is rechecked;
-8. historical context, raw dialogue recall, and tool-private memory.
+## 创建任务
 
-A lower layer cannot override a higher one. A task artifact cannot relax a safety/spec hard rule unless the human explicitly approves that rule change.
+[Trellis 工作流](../../workflow.md)负责任务创建、规划、实施、审查和收尾。本 spec 不另设生命周期、审批类型、回执或强制派发策略。状态和勾选项只记录进度，不产生授权，也不证明工作已经完成。
 
-## Honesty red lines
+## 从暂停的任务继续
 
-Never present an incorrect, simplified, temporary stand-in, proxy, mock, stub, hard-coded result, or approximate mechanism as the requested implementation. In particular:
+人类授权在其指定的仓库、目标、范围、风险和排除项不变时持续有效。继续完成已授权的实现、相关检查和修复时，无需重复请求同一权限。开始下一批前，遵守人类指定的批次大小和审查点。
 
-- names, READMEs, log fields, reports, tests, or demos must not imply a mechanism is integrated when it is not;
-- do not hide errors to make a test or demo pass;
-- do not claim an old project implementation is the current target without verification;
-- do not ignore specified component boundaries, gradient paths, checkpoint ownership, train/freeze boundaries, data splits, or rollout-train structure.
+## 何时暂停请求人类进行决策或审核
 
-If only a temporary stand-in is possible, stop before adding it to the main path. Explain what is missing, how the stand-in differs, the risk, a completion path, and request explicit approval.
+首先尊重人类指令和任务指令。默认情况下，在遇到人类要求中没有明确提到、现有资料（如代码库、近期实验记录等数据来源）中无法简单推断出来的决策点时，停下来让人类来进行决策。
 
-## Authorization and uncertainty
+若人类要求AI进行长时间自行探索，AI应在硬性规则允许的范围内（见下文授权列表）尽可能进行自主决策，并将决策内容记录下来以供人类后续审核。
 
-Do not exceed the current prompt or reviewed task scope. Stop and ask the human when any of these applies:
+## 替代机制与证据
 
-- requirements, code/config/data semantics, or authorization are unclear;
-- several materially different designs are reasonable and the reviewed design does not choose one;
-- project rules, task artifacts, source, or human history conflict;
-- the needed change is broad, destructive, protected, or outside approved scope;
-- the requested semantics cannot be verified;
-- execution reveals an unexpected condition that changes risk or scope.
+采用 proxy、stub、近似或不完整机制代替所需行为前，必须在任务中披露缺失内容、差异、风险和补全路径，并取得明确批准。不得将其标为真实实现。普通隔离测试替身允许使用，但不能证明被替代的行为能够正常工作。
 
-Research locally before asking when evidence can answer the question without mutation. Never infer a missing mechanism or parameter merely because one choice looks plausible.
+结论必须依据当前源码和实际执行：名称、README、解析后的配置或成功的 mock 测试都不能证明功能已经接入。保留约定的组件边界、梯度路径、训练与冻结职责、checkpoint 来源链路和数据划分语义。不得通过隐藏失败、削弱断言或硬编码输出来使检查通过。
 
-Authorization is scoped and reusable. A direct human prompt or explicit conversational grant remains effective for the same repository, target, scope, risk class, and exclusions until one of those materially changes. Trellis task status records lifecycle only and never manufactures approval. Do not ask again for read-only research, local tests, internal bookkeeping, or edits already covered by that authorization. Aggregate unresolved decisions into one request; a repeated request is itself a workflow defect unless the prior grant expired or changed scope.
+## 各类动作的授权
 
-## Proportional workflow and evidence
+- 破坏性操作、受保护数据变更或 force Git 执行前，展示精确目标、命令和影响，并取得执行时批准。笼统的实施授权不足以覆盖这些动作。
+- [Git/worktree 规则](git-worktrees-and-protected-files.md)规定分支归属、未提交改动保护、提交和集成。实验任务声明范围内的正常 Git 同步使用其[范围授权](../experiments/task-contract.md)；非实验工作不继承该例外。受保护分支和 force 操作仍需各自的独立批准。
+- 真实实验遵循[启动合同](../experiments/launch-and-lifecycle.md)，包括符合条件的短实验豁免。已授权范围内的常规非破坏性远程操作，不单独触发新的实验启动审批。
+- 项目 memory 由 AI 自主创建、纠正、归档和记录使用情况，无需逐条请求人类审批。不设置“人类已审批”的等级，也不保证内容经过人类审核。记忆不能产生授权或覆盖项目规则；通过支持的工具维护，不手工编辑 JSONL。此授权不扩展到其他受保护数据、项目规则修改或其他系统的存储。
+- 明确修改 AGENTS.md 或项目 spec 的授权，覆盖差异的准备和检查。纳入提交计划前，单独展示完整 spec diff、理由和影响供人类审查；只回退被拒绝的 spec 修改，保留无关工作。
 
-- **Fast path:** a tightly related small change inside reviewed scope, with no protected, remote, destructive, experiment, schema, or public-contract risk. It uses adjacent-code inspection and focused RED/GREEN only; no new task, implement/check sub-agent, extra approval, full suite, or per-fix progress entry.
-- **Standard path:** a task with one implementation review and one final affected-scope check batch.
-- **High-risk path:** experiments, remote/destructive operations, protected data, and push/merge retain their exact gates.
+## 完成与汇报
 
-Validation evidence is identified by the command and fingerprints of relevant source, config, dependency, and test inputs. Reuse a successful result while those inputs are unchanged. A fix after failure re-runs the failed or affected check first; full lint/typecheck/build belongs to the final batch and runs at most once per unchanged input state.
+持续推进到约定的验收条件，而不是首次实现或部分测试通过就结束。清楚说明结果、支持证据和实质限制。必需但缺失的工作仍未完成；延期或受阻的检查不能算通过。历史子任务完成或先前合并，不代表新要求已经完成。
 
-## Human-only and protected actions
-
-An AI must not run commands explicitly reserved for humans, including `./skill human ...`. It must not launch an expensive/remote experiment without the separate launch approval required by the experiment contract. It must not commit, push, merge, delete protected data, or alter checkpoints unless the current workflow and human authorization allow that exact action.
-
-## Reporting and language
-
-Reports distinguish: completed and verified; completed but unverified; incomplete; risks/assumptions; and decisions needed from the human. Use clear, consistent project terms. Do not invent terminology or obscure uncertainty with jargon.
-
-## Platform entry
-
-- Pi loads `AGENTS.md`, `.pi/extensions/trellis/`, `.pi/prompts/`, and `.pi/agents/`; the extension resolves the active project from session `ctx.cwd`.
-- Claude Code loads `CLAUDE.md`/`AGENTS.md`, `.claude/hooks/`, commands, agents, and `.claude/skills -> ../.agents/skills`.
-- Codex loads `AGENTS.md`, `.codex/config.toml`, hooks, agents, and shared `.agents/skills/`. Native hooks also require the user's global `features.hooks = true` and one-time `/hooks` approval; repository agents report this requirement and do not perform it silently.
+到达人类审查点时，展示具体差异，暂停依赖该审查的下一批工作。必要的审查、验证或交付尚未完成时，保持任务未完成状态。平台专属的加载和传输细节见[平台集成](platform-integration.md)。

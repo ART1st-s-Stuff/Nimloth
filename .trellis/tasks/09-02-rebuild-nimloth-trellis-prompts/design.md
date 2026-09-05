@@ -188,3 +188,9 @@ Trellis面板保持task权威只读。它消费上游静态task数据；独立wo
 - 每次迁移或删除前记录精确source hashes和destination manifest。
 - 所有Nimloth child先汇入parent integration branch；待`dev`可安全作为clean merge target时，重新核验两端SHA、完整merge diff和最终验证证据，取得独立merge批准后再以非force方式合入`dev`。pi-app成果只在pi-app repository中集成。
 - 回滚时，发布版Trellis文件从`0.6.16` package恢复，project文件从task diff恢复，legacy runtime/data从已核验archive恢复。删除独立extension后，上游Trellis必须仍可正常使用。
+
+## 2026-09-05 prompt-layer revision
+
+Apply the linked article's progressive disclosure and decision-boundary guidance within R1–R11: AGENTS owns short invariants; each topic spec owns its detailed contract; local skills own execution procedures. Remove blanket loading and progress rituals. Keep model-neutral guidance and real ML safety boundaries. Preserve upstream generated files and current domain contracts; this revision is not a runtime rewrite. Reuse the existing clean task worktree at 6693e75c; canonical dev has concurrent changes.
+
+The observable failure is contradictory instructions: AGENTS/skills force routine progress, broad uncertainty language stops reversible work, and indexes route archive history as routine context. Completion is the consistent, reviewed prompt set plus valid references and checks, not earlier child status or passing wording tests.

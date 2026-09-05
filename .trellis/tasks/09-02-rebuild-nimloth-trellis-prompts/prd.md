@@ -102,7 +102,7 @@
 - `AGENTS.md`只点名绝不能漏掉的高风险路由：实验、Slurm/remote GPU、worktree cleanup、memory mutation及长job/跨session交接。
 - 生命周期skill继续由不修改的上游workflow breadcrumb路由；具体步骤和参数仅位于`SKILL.md`及references。
 
-## Acceptance Criteria
+## Previous delivery checklist (historical; not current acceptance)
 
 - [x] 发布版manifest、direct-source及`trellis update --dry-run`差异分类证明通用Trellis workflow/scripts/Pi prompts/agents/extension恢复`0.6.16`；project-owned overlay未混入template-managed文件。
 - [x] `AGENTS.md`只含R2定义的薄内核与R11高风险路由，不含实现规范或流程副本；其精确diff经过本task审查。
@@ -134,3 +134,17 @@
 - `research/validation-cost-and-boundary-audit-2026-09-03.md`
 - Pi skills documentation: `/workspace/pi-app/node_modules/@earendil-works/pi-coding-agent/docs/skills.md`
 - Published Trellis `0.6.16` workflow and `trellis-meta` architecture references under `/home/user/.local/share/npm/lib/node_modules/@mindfoldhq/trellis/dist/templates/`
+
+## 2026-09-05 resumed scope and acceptance
+
+The human explicitly rejected the previous completion and requested rewriting this repository's AGENTS.md, Trellis specs and related prompts using the original requirements and https://x.com/pvncher/status/2095991462416490862. The subsequent “继续” continues this authorized work. R1–R11 remain the source requirements; historical checked boxes above do not prove this revision complete.
+
+This revision changes the project-owned prompt layer, preserves domain semantics and upstream-managed runtime/workflow, and does not reopen pi-app implementation or delete legacy runtime. Existing grants cover drafting and checking these changes; committing and integration remain separate review boundaries.
+
+- [ ] AGENTS.md is a thin safety kernel with explicit autonomy inside authorized scope and proportional stop conditions.
+- [ ] Topic indexes route by intent; no mandatory whole-library/incident reading or duplicate lifecycle.
+- [ ] Governance, experiment and quality contracts agree with R1–R11, including short-run deadline, scoped Git sync, progress and memory consent.
+- [ ] Project skill descriptions are precise; substantial mode-specific procedures load on demand.
+- [ ] Current-source links and task context validate; upstream runtime and domain semantics remain unchanged.
+- [ ] Independent review and affected checks complete; complete spec diff is available for human review.
+- [ ] Human-reviewed commit/integration and remaining parent completion criteria are resolved before marking this task complete.

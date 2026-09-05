@@ -1,59 +1,42 @@
 ---
 name: slurm
-description: >-
-  按机器专用的.local服务器合同指导Nimloth Slurm与远程GPU操作。资源查询、hold allocation、srun、远程worktree或任何Slurm实验均须使用。
+description: 在 Slurm 环境查询资源、提交或监控 job，以及管理 allocation 时使用。
 ---
 
-# Slurm
+# Slurm 操作
 
-## 触发条件
+先读取当前开发者的 `.local/SERVER.md`，取得连接方式、调度器、账号、路径和可用操作入口。配置缺失或实际环境不符时先确认；不使用历史主机别名、其他开发者账号或固定服务器路径。
 
-SSH/服务器访问、Slurm资源查询/提交、hold allocation、`srun`、远程GPU/长job或远程worktree同步均须使用本skill。
+本 skill 只提供 Slurm 操作指导。其他调度环境使用其已确认的本地入口，仍遵守[实验规则](../../../.trellis/spec/experiments/task-contract.md)；不得直接套用 Slurm 命令。
 
-## 权威合同与机器边界
+## 连接与只读查询
 
-执行任何远程操作前，必须阅读：
+已有授权范围内的连接诊断、资源或 job 状态查询，不要求新建实验任务，也不触发 `on-experiment-start`。只读命令仍须绑定正确集群、用户或 job 范围。
 
-- [实验索引](../../../.trellis/spec/experiments/index.md)；
-- [启动/生命周期合同](../../../.trellis/spec/experiments/launch-and-lifecycle.md)；
-- [实验任务合同](../../../.trellis/spec/experiments/task-contract.md)；
-- `.local/SERVER.md`，获取当前主机别名、远程路径、凭据、partitions和机器专用命令。
+优先使用本地文档指定的查询入口，先确认脚本和参数存在；否则使用该环境支持的 Slurm 查询命令。不要假设每台机器都有 `.local/scripts/query-resources.sh` 或相同参数。
 
-本仓库skill只包含可移植行为。禁止把主机名、绝对服务器路径、凭据、当前节点清单或临时集群事实复制到本文件；这些信息必须留在`.local/`下。
+连接失败时检查现有连接配置和错误证据；若需要人类恢复 VPN、凭据或网络，报告后暂停相关操作，不反复重试，也不擅自修改系统配置。提交或替换 job 前刷新资源状态，不能用旧查询结果证明当前可用性。
 
-## 拒绝门禁
+## 提交实验
 
-- 所有真实实验remote-only执行；远程/GPU/Slurm工作必须使用含有`task.json.meta.kind = "experiment"`的Trellis实验任务。
-- 必须执行`on-experiment-start`；参数或数据/checkpoint/output语义缺失时必须停止操作。
-- 任务必须声明允许的partition和GPU资源总量；已审查的短复现可复用该范围，超过10分钟、实质性新实验或资源范围变化必须重新确认。
-- 必须记录精确命令、train/freeze/objectives、checkpoint、output、恢复方式、监控方式以及资源/时间估算；qualifying短复现无需额外启动询问，其他实验取得单独启动审批。
-- 本地修改必须已经commit，远程worktree必须指向该精确commit。禁止直接在服务器上修改生产代码。
-- 短实验从成功提交起执行15分钟总deadline并同时计入pending/running；到期取消并核验终态，然后记录defer或blocker。
+准备真实实验时，使用 `on-experiment-start`，对照已审查的实验任务核验命令、源码、输入输出、预算、次数和监控安排。已获得的同范围授权继续有效；短实验豁免和长实验审批均按实验规则处理。
 
-## 连接与资源
+远程 worktree 必须对应任务记录的已提交 commit。修复在开发仓库完成再同步；Git 同步权限不代替启动批准或受保护数据变更批准。
 
-使用`.local/SERVER.md`当前记录的命令/别名。如果连接超时，且本地文档指出VPN可能是原因，必须停止并请人类恢复连接；禁止循环重试。
+根据当前集群政策、可用资源和任务拓扑选择提交方式。使用本地约定支持的批处理或 allocation；不默认要求所有开发者都先申请 hold。需要在已获 allocation 内执行时，绑定其 job ID，并核验 allocation 归属、资源和剩余时长。
 
-提交前以及替换或启动等待中job的紧邻时刻，必须查询集群状态。存在仓库本地封装脚本时优先使用：
+例如，在已核验的 allocation 中启动步骤时可使用 `srun --jobid "$experiment_job_id" <本次命令>`；具体资源选项来自当前配置，不自动添加 `--overlap`、节点名或交互终端。创建新 allocation 前先检查已有分配，避免重复占用或 QoS 争用。
 
-```bash
-.local/scripts/query-resources.sh
-.local/scripts/query-resources.sh --only-free-gpu
-```
+提交成功后记录返回的 job ID、集群、提交时间、实际源码和输出身份。范围或预算实质改变时按权限规则处理，不自动扩大资源或重复提交。
 
-禁止根据过期记录或先前命令推断当前可用性。
+## 短实验截止时间
 
-## Hold allocation 与执行
+预计不超过 10 分钟的合资格短实验，从成功提交起执行 15 分钟总截止时间，包含排队和运行。启动前确认监控能覆盖该期限；Slurm 的运行时长限制不能替代排队加运行的总期限。
 
-除非获批任务要求其他拓扑，否则优先申请一个bash/hold allocation，并通过`srun`在其中启动工作。单个hold可减少脚本失败后的requeue浪费；多个并发hold可能触发QoS争用。
-
-```bash
-srun --jobid <approved-job-id> --pty <command>
-srun --jobid="${HOLD_JOB}" --overlap --nodes=1 --ntasks=1 -w <allocated-node> bash -lc '<approved-command>'
-```
-
-禁止仅为方便而硬编码节点或固定拓扑。必须使用人类批准的资源总量和当前可用资源，同时保持训练/runtime拓扑合同。
+到期时核对精确 job 的身份，取消仍在 pending 或 running 的该 job，并确认终止。不得取消同一用户的其他 job。记录取消原因及部分结果，按实验规则在延期与依赖阻塞之间处理；不能自动重提来重置预算。
 
 ## 监控与结束
 
-必须监控调度器状态、日志、资源、指标、输出创建和实验标识，直到job健康运行或进入终止状态。完成、失败、取消或暂停必须立即触发`on-experiment-end`；在当前对话中记录调度器/runtime证据、输出、指标/限制、checkpoint/恢复方式、任务进度和实验组进度。
+核对调度状态、日志、资源、指标、产物和异常，确认运行健康或建立失败证据。长 job 保持监控或留下可接手的交接，短实验的截止监控不能因健康运行而停止。
+
+观察到完成、失败、取消或暂停，包括发现先前会话的实验已结束时，使用 `on-experiment-end`。保留实际运行、结果限制和恢复位置；聊天阶段反馈与持久记录分别遵循已审查的任务和实验规则。

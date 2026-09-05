@@ -1,27 +1,31 @@
 ---
 name: on-progress
-description: >-
-  在work-item完成、风险/设计变化、实验状态变化或跨session交接时合并记录Trellis进展。
+description: 外部长 job 状态变化、跨会话交接或即将中断时，保存可接手的任务进度。
 ---
 
-# 进度记录
+# 进度与交接记录
 
-## 触发条件
+遵循[任务、进度与知识记录](../../../.trellis/spec/governance/tasks-progress-and-memory.md)。本 skill 用于需要持久保存的交接信息；日常聊天反馈遵循[权限与安全](../../../.trellis/spec/governance/authority-and-safety.md)，无需每次调用本 skill。
 
-只在以下边界触发：
+## 何时记录
 
-1. `implement.md`中的work-item完成；
-2. 风险、scope或设计决定实质变化；
-3. 实验启动、健康、结束、失败、取消或暂停；
-4. 工作需要跨session交接。
+外部长 job 状态变化、工作交给另一会话，或即将中断时，合并保存一次有用的进度。普通工作项完成后更新任务计划即可；连续小修、单次检查和普通提交不单独产生进度文件或记录提交。
 
-同一work-item内连续小修、重复验证、单次命令成功或普通commit不单独触发。
+## 记录到当前任务
 
-## 执行
+复用仍有效的任务上下文，只核对发生变化的材料。记录接手者需要知道的信息：
 
-1. 使用当前已加载的task context；仅当artifact hash变化时重读对应文件。
-2. 完成项经验证后更新`implement.md`checkbox；可选live visibility缺失或失败不得阻塞Trellis记录。
-3. 把同一item的修改、证据和残余风险合并为一条简洁task记录，不为每个小修创建progress或记账commit。
-4. 不写入pre-Trellis branch进度文件；跨session状态只进入当前Trellis任务或workspace journal。
-5. 仅当本次实际使用memory或产生spec尚未表达的跨任务经验时执行memory评估；禁止直接编辑JSONL或运行human-only命令。
-6. 实验仍必须执行专用start/end skill，不由本skill替代。
+- 已完成什么，证据或产物在哪里；
+- 哪些未完成、尚未验证，以及具体问题；
+- 当前人类决定、仍有效的授权范围和审查点；
+- 下一步及其前置条件。
+
+涉及长 job 时，加上环境、任务或 job 身份、最近核验时刻、状态和监控入口。跨开发者交接时说明路径所属环境，不能让接手者直接照用本机绝对路径或凭据。
+
+验证支持后才更新完成项。旧进度、扩展显示或他人的完成标记不代替证据；可选显示工具失效不阻塞任务记录。已有同一阶段的记录可补充，不另造第二份计划或任务状态。
+
+## 与其他记录配合
+
+实验启动、完成、失败、取消和暂停仍使用对应 start/end skill；其已有记录足够交接时直接引用，不重复整份运行信息。短实验截止监控不能因写完交接记录而停止，必须有明确接手安排。
+
+普通任务记录保留在 Trellis 任务中，session journal 按上游收尾流程写入。不得更新旧分支进度系统，也不自动创建 memory、upvote 或记录提交。需要保存跨任务经验时，按 [memory skill](../memory/SKILL.md)自主维护；项目 spec 的修改仍须审查。

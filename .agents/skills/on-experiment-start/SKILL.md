@@ -1,24 +1,30 @@
 ---
 name: on-experiment-start
-description: >-
-  强制执行Nimloth实验启动合同。在任何训练、评估、收集、校准、rollout-train、远程长job、Slurm任务或GPU/昂贵计算之前立即使用。
+description: 真实实验、远程长 job、GPU 或昂贵计算启动前核验范围、输入输出、预算和授权。
 ---
 
-# 实验启动门禁
+# 实验启动
 
-## 触发条件
+以[实验规则](../../../.trellis/spec/experiments/task-contract.md)为准。启动前使用本 skill，不等于每次都重新请求批准。普通只读查询、静态检查和隔离 CPU 单元测试不触发本流程。
 
-任何实验或昂贵/远程job的启动命令执行前都必须暂停；即使实施准备已经获批，也不能跳过本门禁。
+## 核验本次运行
 
-## 必须执行
+使用当前任务中已审查的需求和运行方案，确认 `task.json.meta.kind = "experiment"`。按实验规则的“启动前应确定的内容”核验本次命令、参数、数据、模型、产物、恢复、预算、次数和授权；不重新抄写保持不变的材料。
 
-1. 阅读[实验索引](../../../.trellis/spec/experiments/index.md)、[任务合同](../../../.trellis/spec/experiments/task-contract.md)、[数据/split规则](../../../.trellis/spec/experiments/data-and-splits.md)、[启动/生命周期](../../../.trellis/spec/experiments/launch-and-lifecycle.md)和[输出/checkpoint证据](../../../.trellis/spec/experiments/outputs-checkpoints-and-evidence.md)。
-2. 确认当前任务含有`task.json.meta.kind = "experiment"`，所有真实实验将remote-only执行，并且每个必填字段都已明确、有来源证据支持并已核验。
-3. 搜索相关curated memory。任何会影响启动的memory都必须先执行`get`，再重新阅读其证据。
-4. 阅读与任务相关的known errors；远程工作还必须阅读`.local/SERVER.md`和`slurm` skill。
-5. 确认本地工作已经commit、精确commit已经记录，且远程worktree正在使用该commit。
-6. 核验最终命令/config、完整参数名、数据/split、checkpoint所有权、train/freeze/objectives、唯一输出、恢复方式、指标/有效性门禁、W&B标识和资源/时间估算。
-7. 若预计10分钟内完成，声明为短实验，并固定从成功提交起覆盖pending与running的15分钟总deadline、取消命令及defer/blocker路由。
-8. 若是已审查scope内、预计10分钟内完成的remote reproduction或部分参数重跑，完整记录轻量task后无需额外启动询问；预计超过10分钟或实质性新实验必须展示精确合同并取得单独、明确的启动审批。
-9. 任一项目缺失，或获批后发生变化时，必须停止并重新询问。禁止启动近似替代方案。
-10. 启动后持续监控调度器/进程/日志/资源/指标/输出状态，直到job健康运行或进入终止状态；短实验到达deadline必须取消、核验终态并记录为defer或blocker，不能冒充验证成功。
+只读取本次变化涉及的源码、配置和证据：数据划分或转换有疑问时查[数据规则](../../../.trellis/spec/experiments/data-and-splits.md)；checkpoint、恢复或输出有疑问时查[输出规则](../../../.trellis/spec/experiments/outputs-checkpoints-and-evidence.md)。历史事故和 memory 只在确实需要时查询，使用前核验当前证据，查询不能暗中写入 memory。
+
+在执行前核实远程 worktree 的实际 commit 与任务记录一致、所需输入存在且兼容、输出目录和运行身份未被占用。使用当前开发者 `.local/SERVER.md` 中已确认的执行入口；Slurm 环境使用 [slurm skill](../slurm/SKILL.md)，其他调度环境不能直接套用 Slurm 命令。
+
+## 判断能否启动
+
+- 已审查范围内的远程复现或部分参数重跑，预计不超过 10 分钟且运行信息完整，可以按短实验豁免启动，无需额外询问。
+- 实质性的新实验或预计超过 10 分钟的运行，需要对最终启动内容取得明确批准；已有且仍有效的同范围批准可以复用。
+- 范围、预算或输入语义实质改变时，按[权限规则](../../../.trellis/spec/governance/authority-and-safety.md)确认。资料仍不能确定的决策交给人类；不能用替代实验或猜测补齐。
+
+启动前确认资源可用性和监控安排。短实验须能从成功提交起实施 15 分钟总截止时间，覆盖排队和运行，并能取消、确认精确 job 的终止状态。长 job 须有持续监控或可接手的交接。不能只写下监控计划，却在缺少必要能力时启动。
+
+## 提交后
+
+记录 job 或进程身份、成功提交时刻、实际命令、commit 和输出位置；确认运行健康或查明失败。阶段性在聊天中简短反馈，不把提交成功当作实验完成。
+
+短实验到期仍未结束时，取消并核验终态，使用 [on-experiment-end](../on-experiment-end/SKILL.md)记录。结果暂不阻断当前代码批次时可延期；到阶段边界或结果成为下一步前置条件时报告阻塞。不得自动重提来延长预算，也不得用部分结果代替要求的验证。

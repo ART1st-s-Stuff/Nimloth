@@ -1,21 +1,36 @@
 ---
 name: on-experiment-end
-description: >-
-  在Nimloth实验完成、失败、取消或暂停后记录实验。只要观察到上述终止状态就必须使用，即使该次运行由其他session启动。
+description: 观察到实验完成、失败、取消或暂停时记录结果，包括其他会话启动的运行。
 ---
 
 # 实验结束记录
 
-## 触发条件
+以[实验规则](../../../.trellis/spec/experiments/task-contract.md)为准。观察到实验终止或暂停时执行；普通只读命令结束或 CPU 单元测试完成不触发本流程。
 
-任何训练、评估、收集、校准、rollout-train、远程长job、Slurm任务或其他昂贵计算一旦完成、失败、被取消或暂停，必须立即执行本skill。
+## 确认运行与状态
 
-## 必须执行
+先核验实际 job 或进程身份、所属实验任务、执行环境和输出位置。即使运行由其他会话启动，也不能直接相信历史状态。
 
-1. 阅读[启动/生命周期](../../../.trellis/spec/experiments/launch-and-lifecycle.md)、[输出/checkpoint证据](../../../.trellis/spec/experiments/outputs-checkpoints-and-evidence.md)和[任务/进度/memory](../../../.trellis/spec/governance/tasks-progress-and-memory.md)。
-2. 更新运行README/metadata，记录状态、调度器/runtime证据、实际命令/config/commit、数据/split/checkpoint/output来源、W&B标识和train/freeze/objective边界；短实验还记录提交时间、pending/running耗时、deadline及取消终态。
-3. 记录关键指标/异常、失败/取消原因、目标是否达成、有效性限制和下一步建议。
-4. 记录最新checkpoint和精确恢复方法；若无法忠实恢复，必须说明原因。
-5. 使用该参数设置的最新**有效**结果更新`outputs/experiments/<group>/progress.md`；禁止提升无效重试的结果。
-6. 更新当前Trellis任务证据/检查清单；不写入pre-Trellis branch进度文件。
-7. 执行`on-progress`的memory评估：只有实际使用过的memory经重新核验且确实有帮助时才upvote；只添加不重复且可复用的经验；禁止运行human-only审批命令。
+使用当前环境支持的调度或进程查询，并结合日志和产物确认状态。无法查询时记录最后确认的状态及时间，明确当前未核验；不能凭失联推断实验失败或完成。暂停须区分已确认暂停、进程仍在运行和状态未知。
+
+## 保存结束证据
+
+在实验任务已声明、获准的记录范围内，更新运行记录和任务证据，引用已有信息并补充本次结果：
+
+- 实际状态、命令、配置、commit，以及数据、checkpoint、输出和运行身份；
+- 关键指标、异常、是否回答实验问题，以及有效性限制；
+- 失败或取消原因，区分已证实的原因与推测；
+- 最新可恢复状态和精确恢复方法，或无法忠实恢复的原因；
+- 下一步是完成、等待决定、延期还是被具体前置条件阻塞。
+
+短实验另记录提交时刻、总截止时间、实际排队与运行耗时、取消动作及终态。运行配置中的训练与冻结边界等信息没有变化时可引用，不要求再次复制整份启动方案。
+
+记录结果不授权覆盖数据、checkpoint 或其他受保护产物。所需写入超出已授权的记录范围时，先在当前 Trellis 任务保存证据和待处理事项，再取得对应批准。
+
+## 更新进度与反馈
+
+按当前环境的产物根目录找到实验组 `progress.md`。保留失败和重试的来源，只有有效结果可以成为该参数设置的最新有效结果；不存在新的有效结果时，不覆盖之前的有效结论。
+
+根据证据更新所属 Trellis 任务的验收或执行项。实验结束不等于开发任务全部完成，必要审查和后续交付仍须保留。聊天中简短说明结果、限制和下一步；记录方式遵循[任务与进度规则](../../../.trellis/spec/governance/tasks-progress-and-memory.md)，不写旧分支进度系统。
+
+发现可复用的新经验时可提出建议，不强制每次结束都创建、纠正或 upvote memory。项目 memory 由 AI 按 [memory skill](../memory/SKILL.md)自主维护，不设置人类审批等级。本 skill 不自动重启、恢复或替换实验；后续运行重新适用启动规则及仍有效的授权。

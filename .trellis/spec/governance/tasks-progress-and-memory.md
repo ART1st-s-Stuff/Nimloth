@@ -1,54 +1,37 @@
-# Tasks, Progress, and Curated Memory
+# 任务、进度与知识记录
 
-## One live task authority
+本规则只补充 Nimloth 的记录约定，适用于不同开发者和 AI 客户端。任务创建、规划、实施、审查和收尾使用 [Trellis 工作流](../../workflow.md)；授权、决策和聊天反馈使用[权限与安全](authority-and-safety.md)，不另设流程或审批系统。
 
-Trellis is Nimloth's only development task system. Keep Pi TaskTree empty: do not copy Trellis status, priority, hierarchy, focus, acceptance criteria, or backlog entries into it.
+## 唯一任务来源
 
-A Trellis task is mandatory for:
+Trellis 是唯一可写的任务、计划和验收状态来源。不得在其他任务工具或界面缓存中维护另一份任务状态。
 
-- multi-file or ambiguous implementation;
-- project-rule or workflow changes;
-- experiments, GPU work, Slurm/remote long jobs, collection, evaluation, or rollout-train;
-- work needing durable design, handoff, or multi-session progress.
+- `task.json` 记录任务身份、父子关系、状态和分支等元数据。
+- `prd.md` 记录需求和验收；复杂任务的 `design.md`、`implement.md` 分别记录设计和执行计划。
+- `implement.jsonl`、`check.jsonl` 只选择实施和检查所需的上下文，不复制需求或计划。
 
-When there is no active task, follow upstream task-creation consent even for simple or trivial code work: ask whether to create the task before creating it. An implementation request does not silently supply task-creation consent. If the human declines, only a one-reply explanation, read-only lookup with no durable decision, or clearly bounded low-risk inline edit may proceed. Experiment launch follows the scoped short/long rules in the experiment contract.
+没有活动任务时，按上游规则先取得建任务的同意；创建任务不代表实施已获批准。复杂任务的规划材料经人类审查并收到明确回复后，才进入实施。人类指定恢复现有任务时，沿用有效授权和已有材料，不重复创建任务。真实实验始终使用[实验任务](../experiments/task-contract.md)。
 
-A tightly related low-risk correction inside an existing reviewed scope uses the Fast path and does not create another task. Multi-file/public-contract work uses the Standard path; experiments, remote/destructive operations, protected data and push/merge use the High-risk path.
+## 进度、交接与完成
 
-## Plan authority and optional visibility
+普通工作项完成后，依据实际验证结果更新任务计划即可，不为每个小修或成功命令另写进度文件、评估 memory 或创建记录提交。
 
-- `task.json.parent/children/status` owns task-tree identity and lifecycle; `implement.md` headings, item order/text and checkboxes own the execution plan and done state.
-- Human-readable plan text does not require embedded machine IDs. An optional project extension may derive internal fingerprints for live visibility, but it must not rewrite `implement.md`, copy the plan into another writable store, or make its runtime a prerequisite for ordinary Trellis lifecycle commands.
-- Optional live assignment/progress data is non-authoritative and gitignored. Missing, stale, invalid, or unavailable visibility data degrades only the display; task artifacts and upstream Trellis remain usable.
-- Pi-app and other consumers are read-only projections. They must not mutate task status, synthesize completion, maintain approval receipts, or read/write Pi TaskTree.
-- Task, implementation, commit, and integration decisions remain explicit human conversation at the applicable workflow boundary. Comments, silence, task creation, or lifecycle status do not imply approval.
+聊天中的阶段反馈持续遵循权限规则。额外的 `on-progress` 记录只用于外部长 job 状态变化、跨 session 交接或即将中断；记录足够接手的信息：已经完成的工作、证据位置、未解决问题和下一步。实验终止还须执行 `on-experiment-end`。
 
-## Persistence routing
+任务目录保存需求、决策、执行状态和证据；`.trellis/workspace/` 保存上游收尾流程的 session journal。旧 `AI_branch_progress.md`、`ai_tasks/` 及事故 archive 只作历史证据，不再写入新进度。
 
-- `.trellis/tasks/`: current requirements, design, plan, research, checks, unresolved decisions, and execution state.
-- `.trellis/workspace/`: per-session journal written during wrap-up.
-- Pre-Trellis task, issue, and branch-progress records: immutable historical evidence only; do not add live state to them. Their archive migration is governed by the dedicated Trellis task and destructive gate.
-- `trellis mem`: read-only raw dialogue recall; never verified truth.
-- `.memory/` and `.local/memory/`: compact, evidence-backed, human-reviewed reusable lessons.
+恢复任务时重新核对尚未满足的验收条件。状态和历史勾选项不代替本次证据；被人类否定的完成结论不能继续沿用。必要验证、审查或交付尚未完成时，任务保持未完成，并明确阻塞或延期事项。按人类指定的批次停下审查，不能一次改完后再补审批。
 
-Apply `on-progress` when a work-item completes, risk/design changes, experiment state changes, or a cross-session handoff is needed. Consecutive fixes within one work-item are consolidated; they do not each create progress prose, memory review, or bookkeeping commits.
+## 可选的工作项显示
 
-## Curated memory contract
+独立扩展可以显示当前执行者、工作项和耗时，但 `implement.md` 的正文和勾选项仍是计划与完成状态的来源，不要求嵌入机器编号。
 
-Use [`.agents/skills/memory/SKILL.md`](../../../.agents/skills/memory/SKILL.md) and the `./skill memory ...` wrapper.
+扩展只在复杂任务实施时启用；其运行时只保存关联和显示信息，位于自身拥有、被 Git 忽略的目录，不复制可写任务或计划。计划文字变化后，旧关联失效。扩展缺失、损坏或不可用，只影响显示，不能阻塞 Trellis 或声称工作已经完成。
 
-- Repo memory (`.memory/memories.jsonl`) is environment-independent; local memory (`.local/memory/memories.jsonl`) is machine/server/workspace-specific.
-- Never edit either JSONL manually.
-- Memory stores short reusable lessons, constraints, decisions, or lookup hints. It does not store task logs, TODOs, experiment summaries, rules already clear in specs, or source documentation.
-- AI-created entries remain `pending-human-verification`; only a human may run `./skill human memory-approve`.
-- Do not claim an entry is human-approved unless its level is `verified`.
-- Before relying on an entry, run `get`, re-read its evidence segment, and confirm the evidence still supports it.
-- Upvote only after that verification and only if the memory genuinely helped this task.
-- Correct wrong memory through the skill; do not conceal a stale or conflicting entry. Follow `human_suggestions` before requesting approval again.
-- Stable mandatory rules belong in spec. Do not keep duplicated prose in both spec and memory.
+使用可选界面的环境中，界面只读取这些信息。通用问题队列负责把普通人类回复送回原会话，不定义授权类型、生成回执或决定任务生命周期。
 
-When pending memory was added or revised, remind the human that approval is available; the AI must not run the human-only command.
+## 知识保存到哪里
 
-## Historical evidence
+当前任务的结果、待办、决策和实验记录留在任务中。跨任务必须遵守的项目规则写入对应 spec；修改需单独展示差异供人类审查。模块实现说明留在模块文档中。
 
-Do not rewrite pre-Trellis task, issue, or branch-progress entries for style. Historical references remain evidence of what happened at that time and do not restore their authority for new work.
+项目 memory 由 AI 自主维护，不设置人类审批等级，也不构成授权或项目规则。存储、核验和维护方法统一见 [memory skill](../../../.agents/skills/memory/SKILL.md)。

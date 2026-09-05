@@ -1,56 +1,50 @@
-# Git, Worktrees, and Protected Files
+# Git 与 worktree
 
-## Task branches and the canonical slot
+本规则负责分支归属、工作目录、未提交改动保护和清理。动作授权遵循[权限与安全](authority-and-safety.md)；创建、验证和清理的具体命令见 [git-worktree skill](../../../.agents/skills/git-worktree/SKILL.md)。
 
-`dev` is Nimloth's integration branch and the base for new task branches; it is not the default implementation surface. Every task that changes a repository records and uses its own `task/*`, `feat/*`, `fix/*`, or `exp/*` branch. Different tasks must not share one implementation branch, and a task is not complete while its accepted changes exist only as uncommitted state on `dev`.
+## 每个任务使用独立分支
 
-The canonical root `/workspace/remote2/nimloth` provides one primary task slot. When no other task owns that slot, one selected task may work there on its dedicated branch. Switching the canonical root from `dev` requires a clean tracked/untracked state and the exact approved task branch/base; if migration-era or concurrent dirty state is present, stop rather than stash, reset, clean, or overwrite it.
+开发与集成分支由目标仓库的配置或经确认的开发约定声明，不根据当前机器上的分支名推断，也不直接承载日常任务实施。每个修改仓库的 Trellis 任务在元数据中记录自己的分支、基点和工作目录；不同任务不能共享同一实施分支。已有任务恢复时，先核验记录与实际 Git 状态，再决定是否复用。
 
-Additional parallel tasks use independent child worktrees. Experiment exact-source runs, risky integration/regression work, or explicit human review targets use the same isolation when needed. Their path is:
+受保护分支（包括默认受保护的 `main`）不可直接修改；进入这些分支必须有经审查任务中的明确授权。跨仓库工作分别声明各仓库的开发分支、目标分支和授权范围，不能把一个仓库的许可套用到另一个仓库。
 
-```text
-/workspace/remote2/nimloth/.worktree/<branch-name-with-slashes-replaced-by-hyphens>
-```
+## 主目录与并行工作
 
-A worktree is an isolated execution directory, not a second task authority. Task artifacts remain authoritative, while review tools may read another registered worktree without switching the active workspace, session, worker cwd, or Git checkout.
+主目录是当前开发者为该仓库指定的主要 checkout，以本地配置及 Git worktree 登记核验，不固定绝对路径。每个主目录只提供一个主任务位置。主目录空闲且 tracked、untracked 状态干净时，主任务可在此切换到已确认的专用分支。
 
-Before every repository mutation, bind the command to the intended worktree in the same invocation (explicit tool cwd or `cd "$WT_DIR" && ...`) and verify the command cwd, `git rev-parse --show-toplevel`, actual branch, and `git status --short --branch`.
+出现并行任务时，已有主任务保留原位置，新增任务使用独立 worktree。主目录存在未提交修改时，不得为其他任务切换分支、stash、reset、clean 或覆盖现场。需要固定源码版本的实验或高风险集成，也可在已授权范围内使用隔离 worktree。
 
-Use the repository-owned [`git-worktree` skill](../../../.agents/skills/git-worktree/SKILL.md) for creation, setup, verification, and cleanup. The canonical root owns the real ignored, machine-specific `.local/` directory; each child uses a verified symlink to `/workspace/remote2/nimloth/.local`. Project-local portable skills remain tracked entities in `.agents/skills/` and must not be replaced by absolute symlinks.
+worktree 的存放位置由开发者本地约定确定，可以位于主目录下被 Git 忽略的目录，也可以位于其外。创建前核验目标路径未被占用，并在任务中记录实际位置。任务记录中的绝对路径只描述该次执行环境，其他开发者接手时必须重新解析，不能直接照用。
 
-## Child cleanup boundary
+worktree 是执行目录，不是另一套任务系统。查看其他 worktree 的差异不需要切换当前会话或 checkout。
 
-Before cleanup, inspect the exact child path's tracked, untracked, and recursively enumerated ignored payload, plus every populated recursive submodule's tracked, untracked, and ignored state. A clean parent Git status does not mean ignored or nested-submodule payload is absent. Stop for any unapproved payload or mismatch. Verify that `.local` is a symlink resolving to the canonical owner, unlink only that symlink, then run ordinary `git worktree remove` for the exact path and verify that both path and registration disappeared.
+## 修改前核验与共享状态
 
-Git may reject ordinary removal when a worktree contains submodules even after the tree is clean and submodules are deinitialized. That refusal is a stop condition, not permission to retry with `--force`. Without explicit human approval naming the exact verified path, never use `--force`, an automatic force fallback, manual edits under `.git/worktrees`, recursive filesystem deletion, or a repository-wide prune as a substitute for exact cleanup.
+每次仓库修改都要在同次调用中明确绑定目标 cwd，并核验实际路径、Git root、分支和 status。保留不属于本任务的 tracked、untracked 改动；路径、分支或改动归属不明时，先查明再操作。
 
-## Change discipline
+机器专用配置和凭据放在被 Git 忽略的本地状态中；共享 spec 不保存个人路径、用户名或服务器身份。使用 `.local/` 时明确其实际拥有者，以及各 worktree 如何访问。环境支持时可使用已核验的符号链接；采用其他方式时，同样须保证访问目标正确、已有内容不被覆盖，且清理 worktree 不会删除共享状态。不得自动改造开发者已有的目录布局。项目自有 `.agents/skills/` 保持可移植、受版本控制的实体文件，不链接到其他 worktree。
 
-- Understand adjacent source, tests, config, and module README before editing.
-- Prefer small, verifiable, reversible changes; do not refactor unrelated code.
-- Check for an existing implementation before adding new code. Reuse only when it keeps the design readable.
-- New `src/` modules require a README index; update the owning module README when boundaries change.
-- Keep Python clear and modular, add useful type hints, prefer configuration to hard-coding, and use concise Chinese comments for the reason behind complex logic.
-- Do not hide errors or weaken verification.
+## 提交与集成
 
-## Protected content
+非实验任务的工作提交，按 Trellis 工作流展示修改范围、验证证据、提交分组和未知改动，取得审查批准。push、merge 和历史改写不能由普通实施请求自动推导出授权；不自动 amend。
 
-Do not modify without explicit human approval:
+实验任务使用[实验规则](../experiments/task-contract.md)中声明的 Git 同步授权：在有效范围内可正常 commit、push、merge，不逐次重问。该例外不覆盖 force 或受保护分支，也不允许夹带其他任务的修改。
 
-- `ai_notes/archive/`;
-- `qc_*.md`;
-- files marked human-authored/read-only unless the approved scope names them;
-- large data, model weights, checkpoints, and experiment output;
-- memory JSONL files directly;
-- `.trellis/.template-hashes.json` or runtime session pointers manually.
+集成遵循目标仓库已声明的合并策略；策略不明时先确认，不把当前开发者的 Git 配置当作团队规则。发生冲突或需要改写历史时，按已审查方案和对应授权处理，不自动 force。
 
-If a protected or unrecognized file appears necessary, stop, explain why, and ask before changing it.
+工作提交审查后，显式执行 finish-work 时，上游流程可自动创建任务归档和 session journal 的记录提交。尚未提交的成果、未完成的集成或未解决的验收项必须如实说明，不能仅凭旧完成标记结束任务。
 
-## Git and review
+## worktree 用完后的清理
 
-- Preserve unrelated user/concurrent dirty changes.
-- Do not create, switch, merge, or rewrite important branches when strategy is unclear.
-- Use semi-linear merge policy.
-- Before a work commit, present the full scope, validation evidence, logical commit groups, and unrecognized dirty files for one-shot human approval.
-- Do not amend or push through the Trellis work flow. Automatic task-archive/workspace bookkeeping commits may run only after work commits and finish-work review.
-- Never leave completion claims unsupported by the current working-tree diff and executed checks.
+任务结束后检查其 worktree 是否可清理。自动清理必须同时满足：
+
+- 精确路径、分支和归属已核验；
+- tracked、untracked、ignored 以及已初始化的递归 submodule 均无待保留内容；
+- 共享本地状态的访问方式和拥有者已核验；移除 worktree 不会影响其真实存储或其他 worktree；
+- 普通、非 force 的 `git worktree remove` 足够完成操作。
+
+检查通过后，若存在指向共享状态的链接，只解除已核验的链接，不能删除其目标；再移除精确 worktree，并确认目录和 Git 登记均已消失。发现任何内容，或普通移除因 submodule 等原因失败时，保留现场并说明精确目标和影响，取得批准后再处理。禁止自动改用 `--force`、递归删除、手改 `.git/worktrees` 或全局 prune。
+
+## 受保护内容
+
+archive（包括 `ai_notes/archive/`）、`qc_*.md`、标为人类只读的文件、大型数据、权重、checkpoint 和实验输出，按权限规则保护。只读检查不等于修改许可。禁止手工编辑 memory JSONL、`.trellis/.template-hashes.json` 或运行时 session pointer；使用对应受支持工具，且不能借工具绕过授权。

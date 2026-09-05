@@ -1,33 +1,67 @@
-# Experiment Task Contract
+# 实验规则
 
-Every experiment, evaluation, collection, calibration, rollout-train, GPU/Slurm job, or remote long task has a dedicated Trellis task with:
+本规则适用于真实训练、评估、收集、calibration、rollout、GPU 或昂贵计算，以及远程长 job。执行环境的主机、连接方式、调度器、资源、路径及工具入口来自当前开发者的 `.local/SERVER.md`，不在共享 spec 固定某台服务器或个人账号。配置缺失时先补充确认，不借用其他开发者的环境信息。
+
+## 实验任务与执行位置
+
+真实实验只能在具备所需资源、经确认的远程环境执行；“远程”相对于当前开发环境，不指向某台固定服务器。实验由 Trellis 任务记录：
 
 ```json
 {"meta": {"kind": "experiment"}}
 ```
 
-All real experiment execution is **remote-only**. Local commands may inspect source/config, validate static contracts, or run explicitly scoped CPU unit checks, but must not perform training, evaluation, collection, calibration, rollout generation, GPU work, or an approximate substitute for the approved remote run.
+本地源码检查、静态验证和使用隔离测试数据的 CPU 单元测试不属于真实实验。不能把本地训练、真实 rollout 或近似实验改名为测试来规避规则。常规只读远程检查和资源查询，在现有授权范围内进行，不因建立远程连接就另建实验任务或请求启动审批。
 
-A remote reproduction or partial-parameter rerun expected within 10分钟 may use a lightweight experiment task and launch **无需额外询问** once this contract is complete and its declared scope is unchanged. A materially new experiment or one expected to take 超过10分钟 requires separate explicit approval of the final launch contract.
+## 启动前应确定的内容
 
-Its PRD must explicitly record all fields below before launch:
+任务中记录以下信息；可引用已核验、保持不变的配置和已有材料，明确本次差异，避免反复抄写。运行次数和输出范围必须明确。
 
-1. **Purpose and falsifiable question** — what result would support or reject the claim.
-2. **Exact entry point** — source module/script, complete command, and config files/overrides.
-3. **Full parameter names** — ambiguous human terms must map to exact fields such as `predictor.history_size` or `agent.planning.horizon`; one field must not stand in for another.
-4. **Data source and split evidence** — asset/path/version, transformation lineage, and evidence that train/eval semantics and overlap are understood.
-5. **Checkpoint initialization and ownership** — exact source, component mapping, metadata compatibility, and distinction between initialization, policy artifact, and resumable optimizer state.
-6. **Training boundary** — every trainable and frozen module plus the objective applied to each trainable head/module.
-7. **Output** — stable experiment group, unique run directory, W&B identity when used, and pre-launch non-overwrite check.
-8. **Checkpoint/resume strategy** — cadence, committed state, preemption behavior, exact resume command, or an explicit statement that resume is impossible and a fresh directory is required.
-9. **Metrics and validity gates** — monitoring signals, success/failure criteria, statistical unit, provenance, and what the run cannot establish.
-10. **Resource/time estimate** — partition/topology flexibility, total GPUs/CPUs/memory, wall time, expected cost, and whether the run is a short experiment expected to complete within 10 minutes.
-11. **Short-run deadline** — for a short experiment, record the 15-minute total deadline measured from successful scheduler submission across both pending and running time, plus the exact cancel and defer/blocker route if the deadline expires.
-12. **Git synchronization scope** — declared repository, remote, source/target branches, and the exact committed source used remotely. Normal non-force commit/push/merge within that declared experiment scope remains authorized for the task; force operations and protected-branch integration require separate approval.
-13. **Launch authorization evidence** — either the qualifying short-run exemption and its unchanged reviewed scope, or the human's separate explicit approval for a longer/materially new launch.
+- **问题与验收**：实验要回答什么，哪些指标支持或否定预期，统计单位和结果局限是什么。
+- **源码与参数**：精确 Git commit、入口、完整命令、配置及覆盖项。使用完整参数名，不能把 history、horizon 等不同字段混为一谈。
+- **数据**：来源、版本、划分、筛选或转换过程，以及训练和评估是否重叠的证据。
+- **模型**：checkpoint 精确来源、组件对应关系、元数据兼容性、训练与冻结模块，以及各模块的目标函数；不适用项明确说明。
+- **产物与恢复**：稳定实验组、唯一运行目录、W&B 身份（使用时）、checkpoint 保存频率、恢复边界和命令。无法忠实恢复时须在启动前说明。
+- **预算与监控**：运行次数、资源和时长估算、运行时间限制、健康与失败信号、取消条件、监控及交接安排。
+- **授权范围**：仓库、remote、源分支和目标分支，短实验豁免依据或已取得的明确启动授权。
 
-The design/implementation plan also records preflight, health monitoring, end-recording, and rollback/cancellation actions.
+信息可从当前源码、配置、数据及近期记录确认时先核验；仍缺失或有决策歧义时，按[权限与安全](../governance/authority-and-safety.md)请求人类决定。不能仅凭旧实验名称借用参数，也不能用 smoke 或替代机制冒充所需实验。
 
-## Refusal rule
+## 任务进度反馈
 
-If any field is missing, ambiguous, inconsistent with source, or outside authorization, stop and ask. Do not borrow a value from an old experiment, choose a plausible default, substitute a smoke test, or launch an approximate experiment.
+需要阶段性地在聊天栏内向人类反馈当前任务进度，例如完成了什么、开启了什么新的阶段、当前遇到了什么问题，不需要长篇大论。不能执行一大堆任务不反馈，导致人类不知道发生了什么。
+
+## 短实验与长实验
+
+已审查范围内的远程复现或部分参数重跑，预计不超过 **10 分钟**时，可以使用轻量实验任务；上述信息齐全且范围不变，无需额外询问启动。实质性的新实验或预计超过 10 分钟的实验，需要对最终启动内容取得明确批准；同一有效授权不重复请求。
+
+短实验从成功提交时刻起设置 **15 分钟总截止时间**，排队和运行共同计时。调度器的运行时长限制通常不覆盖排队，因此不能单独代替这个截止时间。记录提交时刻和 job ID，并确保监控能在到期时取消仍为 pending 或 running 的任务，再确认其终止状态。
+
+到期取消后，保留部分结果和取消原因：若实验尚不阻断当前代码批次，记录为延期并继续其他工作；到阶段边界或其结果成为下一步的真实前置条件时，停止相关推进并报告阻塞。取消、延期和缺失结果都不能算验证通过，也不能自动反复重提来延长获准预算。
+
+## 资源与远程源码
+
+提交前查询当前可用资源，不抢占或干扰已有任务。不设通用的 GPU/CPU 数量上限；在任务预算和实现支持的拓扑内灵活选择资源，不为等待假定的整节点而固定节点。范围或预算发生实质变化时重新确认授权。
+
+启动前使用 `on-experiment-start`。采用 Slurm 的环境使用 [slurm skill](../../../.agents/skills/slurm/SKILL.md)；其他调度环境使用本地已确认的操作入口，同样满足预算、截止取消和监控要求，不直接套用 Slurm 命令。必要能力缺失时先解决，不能跳过规则启动。远程 worktree 必须对应记录的已提交源码；代码修复在开发仓库完成并同步，不直接在服务器上修改实验代码。
+
+## 实验任务内的 Git 同步
+
+实验任务在声明的仓库、remote、源分支和目标分支内，获得完成该任务所需的正常 commit、push、merge 权限，包括相关实现、测试和修复的多次同步，直到任务完成。
+
+仓库、remote、目标改变，范围扩大或任务完成后，原授权不再覆盖新动作。非实验任务不继承此权限；force、受保护分支和受保护数据仍遵循独立门禁。每次同步均须保留无关改动，使用[Git/worktree 规则](../governance/git-worktrees-and-protected-files.md)。
+
+## 数据、checkpoint 与输出
+
+训练收集和 rollout-train 只使用已核验的训练划分；泛化评估使用按相关统计单位证明不与训练重叠的验证或测试划分。`train`、`heldout`、场景名或成功子集的名称本身不是证据。转换数据不能凭空补出 CoT、状态、奖励来源或动作映射；详细检查见[数据与划分](data-and-splits.md)。
+
+每次运行使用唯一输出目录。产物根目录由执行环境配置确定，其下按 `experiments/<group>/<唯一运行目录>` 组织；采用仓库默认布局时为 `outputs/experiments/<group>/<唯一运行目录>`。启动前核验目录和身份未被使用，不默认覆盖、截断或复用旧产物。运行记录包含实际命令、配置、源码、数据和 checkpoint 来源；训练保留逐步指标。
+
+区分初始化权重、组件 checkpoint、导出策略和完整恢复状态。长时间或可被抢占的任务需要 checkpoint/恢复能力；恢复从已提交的完整状态开始，核对优化器、调度器、数据位置、随机状态及阶段要求的消费记录。日志或半写入标记不能证明可恢复。不能忠实恢复时，事先披露并使用新的输出目录。详见[输出与恢复](outputs-checkpoints-and-evidence.md)。
+
+## 监控、结束和结果
+
+提交成功不代表实验完成。检查调度状态、日志、资源、指标、NaN/OOM 和产物，确认健康或查明失败；长 job 必须有后续监控或可接手的交接，不能提交后放弃。短实验的总截止时间始终有效。
+
+观察到完成、失败、取消或暂停，包括发现其他会话启动的实验已经结束时，使用 `on-experiment-end`。记录实际状态、命令与 commit、关键指标、失败或取消原因、有效结果范围、最新可恢复位置和下一步。任务证据和实验组 `progress.md` 保留重试来源，只有有效结果可成为该参数设置的最新有效结果。W&B 命名等操作细节见[实验生命周期](launch-and-lifecycle.md)。
+
+指标必须指明划分、checkpoint、样本数、统计单位和聚合方式。训练成功率不是 held-out 成功率，静态数据统计不是模型评估，CPU 或 smoke 检查不是正式训练、分布式执行或模型质量证明。`best` 需要明确验证指标，不能根据 latest 或训练 loss 推断。失败、部分完成和未验证结论必须如实保留。

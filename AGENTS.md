@@ -1,48 +1,41 @@
 --------
-本文为人类编写。如需修改需要得到人类同意。
+本文由人类治理；修改须获人类授权。明确包含本文件的修改授权无需逐次重问。
 --------
 
-# AGENTS.md — Nimloth AI安全入口
+# Nimloth
 
-所有编程AI开始工作前必须阅读本文件。Nimloth是以World Model Agent为目标的Python机器学习项目。
+Nimloth 是以 World Model Agent 为目标的 Python 机器学习项目。
 
-## 权威顺序
+## 权威与范围
 
-低层内容不得覆盖高层合同：
+项目内优先级：当前人类指令 → 本文件 → [Trellis workflow](.trellis/workflow.md) → [项目 spec](.trellis/spec/) → 经审查的 task 需求与设计 → 当前源码、配置和模块文档 → 经核验的 memory → 历史记录。低层材料不得自行放宽高层合同。
 
-1. 人类当前直接prompt；
-2. 本文件的安全内核；
-3. [Trellis workflow](.trellis/workflow.md)；
-4. [项目spec](.trellis/spec/)；
-5. 当前Trellis task中经人类审查的需求、设计和计划；
-6. 当前源码、配置、模块README及相关known error；
-7. 经当前证据重新核验的curated memory；
-8. 历史记录、对话召回和工具私有记忆。
+Trellis 是唯一可写的 task、计划和验收状态来源。按当前任务选择相关文档；历史事故只在需要追溯证据时读取。
 
-Trellis是唯一task authority；不得在Pi TaskTree或其他系统复制可写的task状态、计划或验收标准。Task artifact不得自行放宽人类prompt、本文件或spec。
+## 自主推进与停止边界
 
-## 诚实、范围与不确定性
+在已授权范围内继续实现、检查和修复，直到达到约定验收条件或人类指定的审查点；范围不变时无需重复请求同一权限。
 
-- 禁止以错误、简化、proxy、stub、mock、硬编码或近似机制冒充所需实现；测试隔离替身不得代替被验收行为。
-- 禁止隐藏错误、降低验证强度、伪造证据或夸大实现与实验结论。
-- 只在当前prompt和经审查task范围内行动；遇到语义、授权、设计路线、合同冲突或验证能力不明确时停止并询问。
-- 破坏性操作、protected-data mutation、force Git、push及protected branch merge必须取得精确即时批准。
-- 汇报必须区分已验证、未验证、未完成、风险/假设和待人类决定事项。
-- 调查与升级规则见[不确定性指南](.trellis/spec/guides/investigation-and-uncertainty.md)和[权限合同](.trellis/spec/governance/authority-and-safety.md)。
+默认遇到人类要求未明确提到、也无法从现有资料简单推断的决策点时，暂停并请人类决定。人类明确要求长时间自行探索时，在硬性规则允许的范围内自主决策，并记录供后续审核。具体边界见[权限与安全](.trellis/spec/governance/authority-and-safety.md)。
 
-## 不可放宽的安全边界
+不得把 proxy、stub、mock、硬编码或近似机制冒充所需实现；以替代机制实现所需行为前必须披露差异并获批准。普通隔离测试替身允许使用，但不能作为被替代行为的验收证据。不得隐藏错误、削弱验证或夸大结果；明确报告未完成和未验证部分。
 
-- 修改前核验实际cwd、Git root、branch和status；保留不相关或并发dirty changes，不得据目录名推断repository状态。
-- 未经批准不得修改人类只读文件、archive、`qc_*.md`、大型数据、权重、checkpoint或实验输出；不得手工编辑memory JSONL、template hashes或session pointer。
-- 日常根、per-task branch、canonical主槽位、worktree和cleanup规则以[Git合同](.trellis/spec/governance/git-worktrees-and-protected-files.md)为准；禁止自动force fallback。
-- 实验、数据、state和远程执行必须同时满足对应domain/experiment spec；无法证明满足时停止。
+## 安全边界
 
-## 强制skill路由
+- 修改前核验实际 cwd、Git root、branch 和 status，保留无关或并发改动；每个 task 使用专用 branch，具体规则见 [Git/worktree 合同](.trellis/spec/governance/git-worktrees-and-protected-files.md)。
+- 破坏性操作、受保护数据变更和 force Git 必须执行前取得精确批准；禁止自动 force fallback。其他 Git 操作遵循 scoped 授权，protected branch 默认不可修改。
+- 人类只读文件、archive、`qc_*.md`、大型数据、权重、checkpoint 和实验输出受保护；禁止手工编辑 memory JSONL、template hashes 或 session pointer。
+- 真实实验只能远程执行，并遵循[实验合同](.trellis/spec/experiments/task-contract.md)；静态或 CPU 单元检查不能证明真实 GPU、rollout 或模型质量。
 
-- 任何实验、训练、评估、收集、calibration、rollout、GPU或昂贵计算前使用`on-experiment-start`；观察到完成、失败、取消或暂停时使用`on-experiment-end`。
-- 任何Slurm、远程GPU、资源查询或远程job使用`slurm`，并只从`.local/SERVER.md`读取机器合同。
-- 创建、验证或cleanup worktree时使用`git-worktree`。
-- 搜索、核验、创建、纠正或upvote curated memory时使用`memory`；禁止AI调用human-only memory命令。
-- work-item完成、风险/设计变化、实验状态变化或跨session交接时使用`on-progress`。
+## 任务执行规范
 
-解释应清晰、命名一致，不用术语堆砌掩盖不确定性。
+- 优先复用现有代码或脚本。但是如果你发现如果实现一套新的机制/功能更高效，那么可以告知人类。
+- 与人类沟通时，使用人类可以看懂的语言。人类无法看到AI的全部上下文，而且也不会理解AI自行发明的词，应使用项目约定好的用词。如果必须引入新的术语，必须解释术语具体是什么。
+
+## 不可遗漏的 skill 路由
+
+- 真实实验、GPU 或昂贵计算前：`on-experiment-start`；观察到实验完成、失败、取消或暂停：`on-experiment-end`。
+- Slurm、远程 GPU、资源查询或远程 job：`slurm`；机器合同只读 `.local/SERVER.md`。
+- 创建、验证或清理 worktree：`git-worktree`。
+- 查找或维护项目 memory：`memory`。AI 自主维护，不设置人类审批等级；记忆不代表人类授权，使用前核验当前证据。
+- 外部长 job 状态变化、跨 session 交接或即将中断：`on-progress`。
