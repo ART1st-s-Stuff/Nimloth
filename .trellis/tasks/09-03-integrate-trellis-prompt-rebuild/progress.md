@@ -14,4 +14,8 @@
 - Work-item tool在integration worktree先因canonical尚无task报`unknown active task`；合入原版Trellis后旧`task.py work-item`入口按设计不存在。未手改gitignored runtime，task/progress artifact继续作为权威记录。
 - 用户确认无其他活跃session、两个training `spec.md`为未完成草稿，并要求删除旧approval、必要内容保留。执行前把453个必要文件（7,455,663 bytes）复制到`.local/audit/pre-dev-merge-preservation/20260905T071522Z`，manifest SHA `eb5227cff3d438bd52b8f089d097cee36b4fd82f443ee6bf59f601a3bb735d7b`。
 - 精确清除10个旧approval tracked changes、旧parent/approval task副本、`.until-done`、15MB session HTML及3个submodule pyc；canonical clean后从`cbd05e5d`fast-forward到`0232b763`。
-- Post-merge：18 Python、28 work-item Node、archive post validator、4 launcher/static、integration context和diff checks通过。下一步从已核验快照恢复用户两个spec、protected memory及有效任务记录，并把新增`AI_branch_progress.md`历史内容放入archive路径；不恢复旧approval。
+- Post-merge：18 Python、28 work-item Node、archive post validator、4 launcher/static、integration context和diff checks通过。
+- 从快照恢复373个必要outputs：两个用户spec和protected memory逐hash一致；8个tracked task文件三方无冲突合并；359个独有task artifacts恢复。`AI_branch_progress.md`新增历史保留在完整`.local`快照，hash-bound archive blob保持不变。
+- 14个historical/uncertain known-error和3个legacy ai_tasks自动context项被移除，15个retain-contract引用改指当前spec；active contexts无legacy source路径。
+- 子agent真实启动发现extension load-time `setActiveTools`时序错误；RED后移除加载期mutation，保留`session_start`/`before_agent_start`动态reconcile。29/29 work-item、11/11 archive及post validator通过，独立复审APPROVED。
+- Post-merge修复commit `bf0fa4177999f6a0509deff6be5b3f023aa5bcdb`已同步到`dev`和parent integration。旧approval、临时HTML/Until-done和submodule pyc未恢复；未push、未删除live runtime或cleanup worktrees。
