@@ -18,6 +18,7 @@ ROOT=${REPO:-/project/peilab/atst/nimloth}
 SCRIPTDIR=${ROOT}/experiments/training/sft1
 # Keep the caller-selected reconstruction even when shared credentials set paths.
 ENV_VAGEN_DIR=${VAGEN_DIR:-${ROOT}/external/VAGEN}
+ENV_VERL_DIR=${VERL_DIR:-${ENV_VAGEN_DIR}/verl}
 ENV_PYTHONPATH=${PYTHONPATH:-}
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"
@@ -53,7 +54,8 @@ export PYTHON_ENV=${NIMLOTH_PYTHON_ENV}
 export VIRTUAL_ENV=${PYTHON_ENV}
 export PATH=${PYTHON_ENV}/bin:${ROOT}/.local/bin:$PATH
 export VAGEN_DIR=${ENV_VAGEN_DIR}
-export PYTHONPATH="${VAGEN_DIR}:${VAGEN_DIR}/verl:${ENV_PYTHONPATH}"
+export VERL_DIR=${ENV_VERL_DIR}
+export PYTHONPATH="${VAGEN_DIR}:${VERL_DIR}:${ENV_PYTHONPATH}"
 ENV_PYTHON=${PYTHON_ENV}/bin/python
 hash -r
 # shellcheck disable=SC1091

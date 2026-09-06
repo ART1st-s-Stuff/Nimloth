@@ -27,13 +27,14 @@ export HOME="${REPO}/.home"
 export WANDB_DIR="${REPO}/.cache/wandb"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 NIMLOTH_PYTHON_ENV="${PYTHON_ENV:-${REPO}/.venv}"
+NIMLOTH_VERL_DIR="${VERL_DIR:-}"
 WANDB_PROJECT_REQUESTED="${WANDB_PROJECT:-nimloth-sft1}"
 WANDB_MODE_REQUESTED="${WANDB_MODE_OVERRIDE:-online}"
 export PATH="${NIMLOTH_PYTHON_ENV}/bin:${REPO}/.local/bin:$PATH"
 export HF_HOME=/project/peilab/atst/.cache/huggingface
 export TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface
 export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
-export PYTHONPATH="${REPO}/external/VAGEN:${REPO}/external/VAGEN/verl:${PYTHONPATH:-}"
+export PYTHONPATH="${VERL_DIR:+${VERL_DIR}:}${REPO}/external/VAGEN:${REPO}/external/VAGEN/verl:${PYTHONPATH:-}"
 mkdir -p "$HOME/.ssh" "$WANDB_DIR"
 
 if [ -f /project/peilab/atst/flower/.env ]; then
@@ -52,6 +53,7 @@ fi
 # explicitly selected runtime for this job.
 PYTHON_ENV="${NIMLOTH_PYTHON_ENV}"
 export PYTHON_ENV
+export VERL_DIR="${NIMLOTH_VERL_DIR}"
 export WANDB_PROJECT="${WANDB_PROJECT_REQUESTED}"
 export WANDB_MODE="${WANDB_MODE_REQUESTED}"
 export PATH="${PYTHON_ENV}/bin:${REPO}/.local/bin:$PATH"

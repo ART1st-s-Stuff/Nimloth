@@ -21,6 +21,7 @@ SCRIPTDIR=${ROOT}/experiments/training/sft1
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"
 BASEDIR=${VAGEN_DIR:-${ROOT}/external/VAGEN}
+VERL_DIR=${VERL_DIR:-${BASEDIR}/verl}
 CHECKPOINT_STEP=${INIT_HF_STEP}
 ROLLOUT_DUMP_STEP=${ROLLOUT_DUMP_STEP:-0}
 EXPERIMENT_NAME=${ROLLOUT_RUN_NAME}
@@ -65,7 +66,7 @@ fi
 
 mkdir -p "${RUN_DIR}" "${CONTROL_DIR}" "${RUN_DIR}/validation" "${RUN_DIR}/checkpoints_rollout"
 
-COMMON_ENV="export REPO='${ROOT}'; source '${SCRIPTDIR}/common_env.sh'; export PYTHONPATH='${BASEDIR}:${BASEDIR}/verl:${ROOT}/src'; unset PYTORCH_CUDA_ALLOC_CONF; export FLASHINFER_WORKSPACE_DIR='${ROOT}/.cache/flashinfer'; export TRITON_CACHE_DIR='/tmp/triton_cache_${SLURM_JOB_ID}_$(hostname)'; export XDG_CACHE_HOME='/tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname)'; export TORCH_EXTENSIONS_DIR='/tmp/torch_ext_${SLURM_JOB_ID}_$(hostname)'; mkdir -p \"\$FLASHINFER_WORKSPACE_DIR\" \"\$TORCH_EXTENSIONS_DIR\" \"\$TRITON_CACHE_DIR\" \"\$XDG_CACHE_HOME\"; unset VLLM_ATTENTION_BACKEND 2>/dev/null || true; export VLLM_USE_FLASHINFER_SAMPLER=0; cd '${BASEDIR}'; export RAY_DEDUP_LOGS=0; export HYDRA_FULL_ERROR=1; export TORCHINDUCTOR_DISABLE=1; export TORCH_COMPILE_DISABLE=1; export TORCHDYNAMO_DISABLE=1"
+COMMON_ENV="export REPO='${ROOT}'; source '${SCRIPTDIR}/common_env.sh'; export PYTHONPATH='${BASEDIR}:${VERL_DIR}:${ROOT}/src'; unset PYTORCH_CUDA_ALLOC_CONF; export FLASHINFER_WORKSPACE_DIR='${ROOT}/.cache/flashinfer'; export TRITON_CACHE_DIR='/tmp/triton_cache_${SLURM_JOB_ID}_$(hostname)'; export XDG_CACHE_HOME='/tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname)'; export TORCH_EXTENSIONS_DIR='/tmp/torch_ext_${SLURM_JOB_ID}_$(hostname)'; mkdir -p \"\$FLASHINFER_WORKSPACE_DIR\" \"\$TORCH_EXTENSIONS_DIR\" \"\$TRITON_CACHE_DIR\" \"\$XDG_CACHE_HOME\"; unset VLLM_ATTENTION_BACKEND 2>/dev/null || true; export VLLM_USE_FLASHINFER_SAMPLER=0; cd '${BASEDIR}'; export RAY_DEDUP_LOGS=0; export HYDRA_FULL_ERROR=1; export TORCHINDUCTOR_DISABLE=1; export TORCH_COMPILE_DISABLE=1; export TORCHDYNAMO_DISABLE=1"
 
 cleanup() {
   set +e
@@ -612,7 +613,7 @@ PYPORT
     exit 4
   fi
   export RAY_ADDRESS="${local_ip}:${RAY_PORT}"
-  bash -lc "${COMMON_ENV}; export RAY_ADDRESS='${RAY_ADDRESS}'; python -c \"import ray; ray.init(); print(ray.available_resources())\"" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  bash -lc "${COMMON_ENV}; export RAY_ADDRESS='${RAY_ADDRESS}'; python -c \"import ray; ray.init(); print(ray.available_resources()); runtime=ray.get(ray.remote(lambda: __import__('verl').__file__).remote()); print('RAY_WORKER_VERL=' + runtime); assert runtime.startswith('${VERL_DIR}/verl/'), runtime\"" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 
   if [ "${ROLLOUT_SMOKE}" = "1" ]; then
     if [ "${SLURM_ARRAY_TASK_ID}" != "0" ]; then

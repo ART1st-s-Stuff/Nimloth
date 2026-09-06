@@ -14,7 +14,8 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.mark.parametrize("use_reconstruction", [False, True])
-def test_env_launcher_preserves_runtime_after_credentials(tmp_path, use_reconstruction):
+@pytest.mark.parametrize("explicit_verl", [False, True])
+def test_env_launcher_preserves_runtime_after_credentials(tmp_path, use_reconstruction, explicit_verl):
     repo = tmp_path / "repo"
     scripts = repo / "experiments/training/sft1"
     scripts.mkdir(parents=True)
@@ -22,6 +23,7 @@ def test_env_launcher_preserves_runtime_after_credentials(tmp_path, use_reconstr
     credentials.write_text(
         'export PYTHON_ENV="/wrong/credential/venv"\n'
         'export VAGEN_DIR="/wrong/credential/vagen"\n'
+        'export VERL_DIR="/wrong/credential/verl"\n'
         'export PYTHONPATH="/wrong/credential/imports"\n'
         'export PATH="/wrong/credential/bin:$PATH"\n'
     )
@@ -64,6 +66,7 @@ def test_env_launcher_preserves_runtime_after_credentials(tmp_path, use_reconstr
     job_id = f"test-{tmp_path.parent.name}-{tmp_path.name}"
     env = dict(os.environ)
     env.pop("VAGEN_DIR", None)
+    env.pop("VERL_DIR", None)
     env.update(
         REPO=str(repo), PYTHON_ENV=str(venv), PYTHONPATH="/caller/imports",
         ROLLOUT_RUN_DIR=str(tmp_path / "run"), ROLLOUT_RUN_NAME="routing-test",
@@ -73,6 +76,10 @@ def test_env_launcher_preserves_runtime_after_credentials(tmp_path, use_reconstr
     )
     if use_reconstruction:
         env["VAGEN_DIR"] = str(vagen)
+    selected_verl = repo / "fixed VERL" if explicit_verl else vagen / "verl"
+    if explicit_verl:
+        selected_verl.mkdir()
+        env["VERL_DIR"] = str(selected_verl)
     result = subprocess.run(
         ["bash", str(scripts / "env_external_4gpu.slurm")], env=env,
         capture_output=True, text=True, timeout=15, check=False,
@@ -84,7 +91,7 @@ def test_env_launcher_preserves_runtime_after_credentials(tmp_path, use_reconstr
         assert call["argv"][0] == str(python)
         assert call["python_env"] == call["virtual_env"] == str(venv)
         assert call["vagen_dir"] == str(vagen)
-        assert call["pythonpath"] == f"{vagen}:{vagen}/verl:/caller/imports"
+        assert call["pythonpath"] == f"{vagen}:{selected_verl}:/caller/imports"
     assert calls[-1]["argv"][1:3] == ["-m", "vagen.server.server"]
     assert calls[-1]["cwd"] == str(vagen)
     assert (tmp_path / "run/external_env_4gpu/ready").is_file()
