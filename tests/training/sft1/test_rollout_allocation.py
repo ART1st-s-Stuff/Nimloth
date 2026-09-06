@@ -59,3 +59,17 @@ kill -0 "$unrelated"
     assert result.returncode == 0, result.stderr
     assert 'stop --force' not in source
     assert 'pkill -u' not in source
+
+
+def test_parallel_lanes_use_distinct_runtime_namespaces():
+    rollout = (ROOT / 'experiments/training/sft1/rollouts_greedy_parallel.slurm').read_text()
+    environment = (ROOT / 'experiments/training/sft1/env_external_4gpu.slurm').read_text()
+    namespace = '${SLURM_JOB_ID}_${SLURM_STEP_ID:-batch}_${EXPERIMENT_NAME}'
+    assert namespace in rollout
+    assert namespace in environment
+    assert '/tmp/triton_cache_${RUNTIME_NAMESPACE}_' in rollout
+    assert '/tmp/xdg_cache_${RUNTIME_NAMESPACE}_' in rollout
+    assert '/tmp/torch_ext_${RUNTIME_NAMESPACE}_' in rollout
+    assert 'ENV_PID_FILE=/tmp/vagen_env_sft1v79_${RUNTIME_NAMESPACE}_pids' in environment
+    assert 'vagen-env-sft1v79-${USER}-${RUNTIME_NAMESPACE}' in environment
+    assert '${ROLLOUT_PREPARED_OUTPUT_PREFIX:-source200}_${prepared_name#shard_}' in rollout

@@ -56,6 +56,31 @@ def test_source_identity_mismatch_rejected():
         pilot.select_rows(manifest, batch_rows)
 
 
+def test_batch1_remainder_excludes_pilot_and_preserves_split_counts():
+    rows = _source_rows()
+    manifest = data.build_partition_manifest(
+        rows, source_path='source', source_sha256=data.SOURCE_TRAIN_SHA256
+    )
+    batch = manifest['batches'][0]
+    batch_rows = [copy.deepcopy(rows[index]) for index in batch['source_indices']]
+    _, pilot_identities = pilot.select_rows(manifest, batch_rows)
+    _, remainder = pilot.select_rows(
+        manifest, batch_rows, pilot.BATCH1_REMAINDER_SELECTION
+    )
+
+    assert len(remainder) == 1800
+    assert {row['source_index'] for row in pilot_identities}.isdisjoint(
+        row['source_index'] for row in remainder
+    )
+    assert {row['source_index'] for row in pilot_identities + remainder} == set(
+        batch['source_indices']
+    )
+    assert sum(row['dataset_split'] == 'train' for row in remainder) == 1600
+    assert sum(row['dataset_split'] == 'heldout' for row in remainder) == 200
+    assert sum(row['eval_set'] == 'base' for row in remainder) == 900
+    assert sum(row['eval_set'] == 'common_sense' for row in remainder) == 900
+
+
 def test_verify_selects_exact_prepared_shards(tmp_path, monkeypatch):
     source = tmp_path / 'source.parquet'
     rows = _source_rows()

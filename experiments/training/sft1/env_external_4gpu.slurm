@@ -24,6 +24,7 @@ ENV_PYTHONPATH=${PYTHONPATH:-}
 source "${SCRIPTDIR}/common_env.sh"
 BASEDIR=${ENV_VAGEN_DIR}
 EXPERIMENT_NAME=${ROLLOUT_RUN_NAME}
+RUNTIME_NAMESPACE=$(printf '%s' "${SLURM_JOB_ID}_${SLURM_STEP_ID:-batch}_${EXPERIMENT_NAME}" | tr -c 'A-Za-z0-9_.-' '_')
 RUN_DIR=${ROLLOUT_RUN_DIR}
 CONTROL_DIR=${RUN_DIR}/external_env_4gpu
 mkdir -p "$RUN_DIR" "$CONTROL_DIR"
@@ -41,7 +42,7 @@ export PATH=${PYTHON_ENV}/bin:${ROOT}/.local/bin:$PATH
 export HF_HOME=/project/peilab/atst/.cache/huggingface
 export TRANSFORMERS_CACHE=/project/peilab/atst/.cache/huggingface
 export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
-export TMPDIR=/tmp/vagen-env-sft1v79-${USER}-${SLURM_JOB_ID}
+export TMPDIR=/tmp/vagen-env-sft1v79-${USER}-${RUNTIME_NAMESPACE}
 mkdir -p "$TMPDIR"
 
 if [ -f /project/peilab/atst/flower/.env ]; then
@@ -110,11 +111,12 @@ if [ "${#GOOD_PHYS[@]}" -lt "${ENV_SERVICE_COUNT}" ]; then
   exit 2
 fi
 
-: > "/tmp/vagen_env_sft1v79_${SLURM_JOB_ID}_pids"
+ENV_PID_FILE=/tmp/vagen_env_sft1v79_${RUNTIME_NAMESPACE}_pids
+: > "${ENV_PID_FILE}"
 cleanup() {
   set +e
-  if [ -f "/tmp/vagen_env_sft1v79_${SLURM_JOB_ID}_pids" ]; then
-    xargs -r kill < "/tmp/vagen_env_sft1v79_${SLURM_JOB_ID}_pids" 2>/dev/null || true
+  if [ -f "${ENV_PID_FILE}" ]; then
+    xargs -r kill < "${ENV_PID_FILE}" 2>/dev/null || true
   fi
   # Do not remove shared ready/urls: other eval jobs may still depend on them.
 }
@@ -145,7 +147,7 @@ for env_i in $(seq 0 $((ENV_SERVICE_COUNT - 1))); do
     navigation.devices='[0]' navigation.max_workers=48 \
     > "${RUN_DIR}/env_server_${SLURM_JOB_ID}_${NODE}_${env_i}.log" 2>&1 &
   ENV_SERVER_PIDS+=("$!")
-  echo "${ENV_SERVER_PIDS[-1]}" >> "/tmp/vagen_env_sft1v79_${SLURM_JOB_ID}_pids"
+  echo "${ENV_SERVER_PIDS[-1]}" >> "${ENV_PID_FILE}"
 done
 
 for env_i in $(seq 0 $((ENV_SERVICE_COUNT - 1))); do
@@ -171,4 +173,4 @@ touch "${CONTROL_DIR}/ready"
 echo "${SLURM_JOB_ID}" > "${CONTROL_DIR}/ready_job_id"
 echo "=== env ready ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 cat "${CONTROL_DIR}/env_urls.txt" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
-wait $(cat "/tmp/vagen_env_sft1v79_${SLURM_JOB_ID}_pids")
+wait $(cat "${ENV_PID_FILE}")

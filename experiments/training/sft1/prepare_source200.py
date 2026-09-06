@@ -12,7 +12,9 @@ from experiments.training.sft1.vagen_step60_data import (
     load_published_partition_manifest,
 )
 
-SELECTION = 'batch1 train first 100 source rows per category'
+PILOT_SELECTION = 'batch1 train first 100 source rows per category'
+BATCH1_REMAINDER_SELECTION = 'batch1 excluding the 200-row balanced training pilot'
+SELECTION = PILOT_SELECTION
 OVERRIDES = {'prompt_format': 'source_wm_mode', 'step_length': 0.3, 'success_threshold': 1.0}
 
 
@@ -20,21 +22,50 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def select_rows(manifest: dict, batch_rows: list[dict]) -> tuple[list[dict], list[dict]]:
+def selected_identities(manifest: dict, selection: str) -> list[dict]:
+    train_by_category = {}
+    heldout_by_category = {}
+    for category in ('base', 'common_sense'):
+        train = sorted((row for row in manifest['rows'] if row['batch'] == 1
+                        and row['dataset_split'] == 'train' and row['eval_set'] == category),
+                       key=lambda row: row['source_index'])
+        heldout = sorted((row for row in manifest['rows'] if row['batch'] == 1
+                          and row['dataset_split'] == 'heldout'
+                          and row['eval_set'] == category),
+                         key=lambda row: row['source_index'])
+        if len(train) != 900 or len(heldout) != 100:
+            raise ValueError('expected batch1 900 train and 100 heldout rows per category')
+        train_by_category[category] = train
+        heldout_by_category[category] = heldout
+    if selection == PILOT_SELECTION:
+        identities = [
+            *train_by_category['base'][:100],
+            *train_by_category['common_sense'][:100],
+        ]
+    elif selection == BATCH1_REMAINDER_SELECTION:
+        identities = [
+            *train_by_category['base'][100:],
+            *train_by_category['common_sense'][100:],
+            *heldout_by_category['base'],
+            *heldout_by_category['common_sense'],
+        ]
+    else:
+        raise ValueError('unknown prepared selection')
+    if len({row['source_index'] for row in identities}) != len(identities):
+        raise ValueError('duplicate selected source index')
+    return identities
+
+
+def select_rows(
+    manifest: dict,
+    batch_rows: list[dict],
+    selection: str = PILOT_SELECTION,
+) -> tuple[list[dict], list[dict]]:
     batch = next(b for b in manifest['batches'] if b['batch'] == 1)
     if len(batch_rows) != len(batch['source_indices']):
         raise ValueError('batch1 parquet row count mismatch')
     index_to_row = dict(zip(batch['source_indices'], batch_rows, strict=True))
-    identities = []
-    for category in ('base', 'common_sense'):
-        candidates = sorted((r for r in manifest['rows'] if r['batch'] == 1
-                             and r['dataset_split'] == 'train' and r['eval_set'] == category),
-                            key=lambda r: r['source_index'])
-        if len(candidates) != 900:
-            raise ValueError('expected 900 batch1 training rows per category')
-        identities.extend(candidates[:100])
-    if len({r['source_index'] for r in identities}) != 200:
-        raise ValueError('duplicate selected source index')
+    identities = selected_identities(manifest, selection)
     prepared = []
     for identity in identities:
         row = copy.deepcopy(index_to_row[identity['source_index']])
@@ -48,24 +79,34 @@ def select_rows(manifest: dict, batch_rows: list[dict]) -> tuple[list[dict], lis
     return prepared, identities
 
 
-def prepare(partition_path: Path, output: Path) -> dict:
+def prepare(
+    partition_path: Path,
+    output: Path,
+    selection: str = PILOT_SELECTION,
+) -> dict:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
     manifest = load_published_partition_manifest(partition_path)
     batch = next(b for b in manifest['batches'] if b['batch'] == 1)
-    rows, identities = select_rows(manifest, pq.read_table(partition_path.parent / batch['parquet']).to_pylist())
+    rows, identities = select_rows(
+        manifest,
+        pq.read_table(partition_path.parent / batch['parquet']).to_pylist(),
+        selection,
+    )
     output.mkdir(parents=True, exist_ok=False)
     shards = []
-    for start in range(0, 200, 20):
+    for start in range(0, len(rows), 20):
         path = output / f'shard_{start // 20:02d}.parquet'
         pq.write_table(pa.Table.from_pylist(rows[start:start + 20]), path)
         shards.append({'parquet': path.name, 'sha256': sha256(path), 'count': 20,
                        'rows': identities[start:start + 20]})
-    result = {'format': 'source200_prepared_v1', 'partition_path': str(partition_path.resolve()),
+    prepared_format = ('source200_prepared_v1' if selection == PILOT_SELECTION
+                       else 'source_batch1_remainder_prepared_v1')
+    result = {'format': prepared_format, 'partition_path': str(partition_path.resolve()),
               'partition_sha256': sha256(partition_path), 'source': manifest['source'],
-              'batch1_parquet_sha256': batch['parquet_sha256'], 'count': 200,
-              'selection': SELECTION,
+              'batch1_parquet_sha256': batch['parquet_sha256'], 'count': len(rows),
+              'selection': selection,
               'runtime_overrides': OVERRIDES, 'shards': shards}
     # Marker last: a partial directory is never accepted for rollout.
     (output / 'prepared_manifest.json').write_text(json.dumps(result, indent=2) + '\n')
@@ -88,8 +129,13 @@ def verify(prepared_path: Path, shard_indices: str | None = None) -> list[Path]:
     import pyarrow.parquet as pq
 
     manifest = json.loads(prepared_path.read_text())
-    if manifest['format'] != 'source200_prepared_v1' or manifest['runtime_overrides'] != OVERRIDES:
+    formats = {
+        'source200_prepared_v1': PILOT_SELECTION,
+        'source_batch1_remainder_prepared_v1': BATCH1_REMAINDER_SELECTION,
+    }
+    if manifest['format'] not in formats or manifest['runtime_overrides'] != OVERRIDES:
         raise ValueError('prepared contract mismatch')
+    selection = formats[manifest['format']]
     partition = Path(manifest['partition_path'])
     if sha256(partition) != manifest['partition_sha256']:
         raise ValueError('parent manifest hash mismatch')
@@ -97,11 +143,15 @@ def verify(prepared_path: Path, shard_indices: str | None = None) -> list[Path]:
     batch = next(b for b in parent['batches'] if b['batch'] == 1)
     if (manifest['source'] != parent['source']
             or manifest['batch1_parquet_sha256'] != batch['parquet_sha256']
-            or manifest['selection'] != SELECTION):
+            or manifest['selection'] != selection):
         raise ValueError('prepared source evidence mismatch')
-    expected_rows, identities = select_rows(parent, pq.read_table(partition.parent / batch['parquet']).to_pylist())
-    if manifest['count'] != 200 or len(manifest['shards']) != 10:
-        raise ValueError('expected ten 20-row shards')
+    expected_rows, identities = select_rows(
+        parent,
+        pq.read_table(partition.parent / batch['parquet']).to_pylist(),
+        selection,
+    )
+    if manifest['count'] != len(identities) or len(manifest['shards']) != len(identities) // 20:
+        raise ValueError('prepared shard count mismatch')
     paths = []
     for i, shard in enumerate(manifest['shards']):
         if shard['parquet'] != f'shard_{i:02d}.parquet' or shard['count'] != 20:
@@ -143,6 +193,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--partition', type=Path)
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--selection', choices=('pilot', 'batch1_remainder'), default='pilot')
     parser.add_argument('--verify', type=Path)
     parser.add_argument('--shard-indices')
     parser.add_argument('--validate-output', type=Path)
@@ -153,6 +204,8 @@ if __name__ == '__main__':
     elif args.verify:
         print('\n'.join(str(path) for path in verify(args.verify, args.shard_indices)))
     elif args.partition and args.output:
-        prepare(args.partition, args.output)
+        selection = (PILOT_SELECTION if args.selection == 'pilot'
+                     else BATCH1_REMAINDER_SELECTION)
+        prepare(args.partition, args.output, selection)
     else:
         parser.error('provide --partition and --output, or --verify')

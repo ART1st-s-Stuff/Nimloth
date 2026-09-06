@@ -25,6 +25,7 @@ VERL_DIR=${VERL_DIR:-${BASEDIR}/verl}
 CHECKPOINT_STEP=${INIT_HF_STEP}
 ROLLOUT_DUMP_STEP=${ROLLOUT_DUMP_STEP:-0}
 EXPERIMENT_NAME=${ROLLOUT_RUN_NAME}
+RUNTIME_NAMESPACE=$(printf '%s' "${SLURM_JOB_ID}_${SLURM_STEP_ID:-batch}_${EXPERIMENT_NAME}" | tr -c 'A-Za-z0-9_.-' '_')
 RUN_DIR=${ROLLOUT_RUN_DIR}
 ENV_CONTROL_DIR=${RUN_DIR}/external_env_4gpu
 ENV_URL_FILE=${ENV_CONTROL_DIR}/env_urls.txt
@@ -67,7 +68,7 @@ fi
 
 mkdir -p "${RUN_DIR}" "${CONTROL_DIR}" "${RUN_DIR}/validation" "${RUN_DIR}/checkpoints_rollout"
 
-COMMON_ENV="export REPO='${ROOT}'; source '${SCRIPTDIR}/common_env.sh'; export PYTHONPATH='${BASEDIR}:${VERL_DIR}:${ROOT}/src'; unset PYTORCH_CUDA_ALLOC_CONF; export FLASHINFER_WORKSPACE_DIR='${ROOT}/.cache/flashinfer'; export TRITON_CACHE_DIR='/tmp/triton_cache_${SLURM_JOB_ID}_$(hostname)'; export XDG_CACHE_HOME='/tmp/xdg_cache_${SLURM_JOB_ID}_$(hostname)'; export TORCH_EXTENSIONS_DIR='/tmp/torch_ext_${SLURM_JOB_ID}_$(hostname)'; mkdir -p \"\$FLASHINFER_WORKSPACE_DIR\" \"\$TORCH_EXTENSIONS_DIR\" \"\$TRITON_CACHE_DIR\" \"\$XDG_CACHE_HOME\"; unset VLLM_ATTENTION_BACKEND 2>/dev/null || true; export VLLM_USE_FLASHINFER_SAMPLER=0; cd '${BASEDIR}'; export RAY_DEDUP_LOGS=0; export HYDRA_FULL_ERROR=1; export TORCHINDUCTOR_DISABLE=1; export TORCH_COMPILE_DISABLE=1; export TORCHDYNAMO_DISABLE=1"
+COMMON_ENV="export REPO='${ROOT}'; source '${SCRIPTDIR}/common_env.sh'; export PYTHONPATH='${BASEDIR}:${VERL_DIR}:${ROOT}/src'; unset PYTORCH_CUDA_ALLOC_CONF; export FLASHINFER_WORKSPACE_DIR='${ROOT}/.cache/flashinfer'; export TRITON_CACHE_DIR='/tmp/triton_cache_${RUNTIME_NAMESPACE}_$(hostname)'; export XDG_CACHE_HOME='/tmp/xdg_cache_${RUNTIME_NAMESPACE}_$(hostname)'; export TORCH_EXTENSIONS_DIR='/tmp/torch_ext_${RUNTIME_NAMESPACE}_$(hostname)'; mkdir -p \"\$FLASHINFER_WORKSPACE_DIR\" \"\$TORCH_EXTENSIONS_DIR\" \"\$TRITON_CACHE_DIR\" \"\$XDG_CACHE_HOME\"; unset VLLM_ATTENTION_BACKEND 2>/dev/null || true; export VLLM_USE_FLASHINFER_SAMPLER=0; cd '${BASEDIR}'; export RAY_DEDUP_LOGS=0; export HYDRA_FULL_ERROR=1; export TORCHINDUCTOR_DISABLE=1; export TORCH_COMPILE_DISABLE=1; export TORCHDYNAMO_DISABLE=1"
 
 cleanup() {
   set +e
@@ -646,7 +647,7 @@ PYPORT
     while IFS= read -r prepared_parquet; do
       local prepared_name
       prepared_name=$(basename "${prepared_parquet}" .parquet)
-      run_shard train "source200_${prepared_name#shard_}" source source "${prepared_parquet}"
+      run_shard train "${ROLLOUT_PREPARED_OUTPUT_PREFIX:-source200}_${prepared_name#shard_}" source source "${prepared_parquet}"
     done < "${prepared_list}"
     return 0
   fi
