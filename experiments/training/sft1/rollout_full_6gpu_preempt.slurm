@@ -28,8 +28,8 @@ fi
 mkdir -p "${RUN_DIR}" "${REPO}/outputs/experiments/training/sft1/slurm"
 
 IFS=',' read -r -a ALLOCATED_GPUS <<< "${CUDA_VISIBLE_DEVICES:?CUDA_VISIBLE_DEVICES required}"
-if [[ ! "${TOTAL_GPU_COUNT}" =~ ^(2|8)$ ]] || [ "${#ALLOCATED_GPUS[@]}" -ne "${TOTAL_GPU_COUNT}" ]; then
-  echo "ERROR expected ${TOTAL_GPU_COUNT} allocated GPUs (supported: 2 or 8), got ${#ALLOCATED_GPUS[@]}: ${CUDA_VISIBLE_DEVICES}" | tee -a "${LOG}"
+if [[ ! "${TOTAL_GPU_COUNT}" =~ ^[2-8]$ ]] || [ "${#ALLOCATED_GPUS[@]}" -ne "${TOTAL_GPU_COUNT}" ]; then
+  echo "ERROR expected 2-8 allocated GPUs, got ${#ALLOCATED_GPUS[@]}: ${CUDA_VISIBLE_DEVICES}" | tee -a "${LOG}"
   exit 2
 fi
 ENV_GPUS=""
@@ -49,6 +49,10 @@ fi
 POLICY_CPUS=$((ALLOCATED_CPUS * POLICY_GPU_COUNT / TOTAL_GPU_COUNT))
 if [ "${ENV_GPU_COUNT}" -lt 1 ] || [ "${POLICY_GPU_COUNT}" -lt 1 ]; then
   echo "ERROR invalid ENV_GPU_COUNT=${ENV_GPU_COUNT}" >&2
+  exit 2
+fi
+if [ "${POLICY_GPU_COUNT}" -ne 1 ] && [ "${POLICY_GPU_COUNT}" -ne 2 ] && [ "${POLICY_GPU_COUNT}" -ne 4 ]; then
+  echo "ERROR policy GPU count must be 1, 2, or 4, got ${POLICY_GPU_COUNT}" >&2
   exit 2
 fi
 

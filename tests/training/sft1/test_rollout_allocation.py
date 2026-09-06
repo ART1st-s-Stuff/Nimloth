@@ -12,6 +12,9 @@ SCRIPT = ROOT / 'experiments/training/sft1/rollout_full_6gpu_preempt.slurm'
 
 @pytest.mark.parametrize(('total', 'devices', 'cpus', 'expected'), [
     ('2', '3,6', '56', '1 1 28'),
+    ('3', '0,1,2', '42', '1 2 28'),
+    ('4', '0,1,2,3', '56', '2 2 28'),
+    ('7', '0,1,2,3,4,5,6', '98', '3 4 56'),
     ('8', '0,1,2,3,4,5,6,7', '224', '4 4 112'),
 ])
 def test_allocation_partition(tmp_path, total, devices, cpus, expected):
@@ -28,7 +31,7 @@ def test_allocation_partition(tmp_path, total, devices, cpus, expected):
 
 
 @pytest.mark.parametrize(('total', 'devices', 'cpus'), [
-    ('8', '0,1', '56'), ('2', '0,1', '1'), ('3', '0,1,2', '56'),
+    ('8', '0,1', '56'), ('2', '0,1', '1'), ('6', '0,1,2,3,4,5', '84'),
 ])
 def test_reject_allocation_mismatch(tmp_path, total, devices, cpus):
     source = SCRIPT.read_text().split('cleanup() {')[0]
