@@ -16,9 +16,12 @@ set -euo pipefail
 
 ROOT=${REPO:-/project/peilab/atst/nimloth}
 SCRIPTDIR=${ROOT}/experiments/training/sft1
+# Keep the caller-selected reconstruction even when shared credentials set paths.
+ENV_VAGEN_DIR=${VAGEN_DIR:-${ROOT}/external/VAGEN}
+ENV_PYTHONPATH=${PYTHONPATH:-}
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"
-BASEDIR=${ROOT}/external/VAGEN
+BASEDIR=${ENV_VAGEN_DIR}
 EXPERIMENT_NAME=${ROLLOUT_RUN_NAME}
 RUN_DIR=${ROLLOUT_RUN_DIR}
 CONTROL_DIR=${RUN_DIR}/external_env_4gpu
@@ -45,7 +48,13 @@ if [ -f /project/peilab/atst/flower/.env ]; then
 elif [ -f /project/peilab/atst/.env ]; then
   set -a; source /project/peilab/atst/.env; set +a
 fi
+# common_env saved the requested interpreter before sourcing shared credentials.
+export PYTHON_ENV=${NIMLOTH_PYTHON_ENV}
 export VIRTUAL_ENV=${PYTHON_ENV}
+export PATH=${PYTHON_ENV}/bin:${ROOT}/.local/bin:$PATH
+export VAGEN_DIR=${ENV_VAGEN_DIR}
+export PYTHONPATH="${VAGEN_DIR}:${VAGEN_DIR}/verl:${ENV_PYTHONPATH}"
+ENV_PYTHON=${PYTHON_ENV}/bin/python
 hash -r
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/../baseline/setup_ai2thor_env.sh"
@@ -71,7 +80,7 @@ for idx in "${!GPU_IDS[@]}"; do
   echo "=== AI2-THOR smoke ordinal=${idx} physical=${phys} ===" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
   rm -f "${HOME}/.ai2thor/cuda-vulkan-mapping.json" "${HOME}/cuda-vulkan-mapping.json" 2>/dev/null || true
   set +e
-  CUDA_VISIBLE_DEVICES="$phys" timeout 150s python - <<'PY'
+  CUDA_VISIBLE_DEVICES="$phys" timeout 150s "${ENV_PYTHON}" - <<'PY'
 import time
 import ai2thor.controller
 from ai2thor.platform import CloudRendering
@@ -113,7 +122,7 @@ for env_i in $(seq 0 $((ENV_SERVICE_COUNT - 1))); do
   phys="${GOOD_PHYS[$env_i]}"
   port=$((PORT_BASE + env_i))
   echo "http://${NODE_IP}:${port}" >> "${CONTROL_DIR}/env_urls.txt"
-  CUDA_VISIBLE_DEVICES="$phys" PYTHONUNBUFFERED=1 python -m vagen.server.server \
+  CUDA_VISIBLE_DEVICES="$phys" PYTHONUNBUFFERED=1 "${ENV_PYTHON}" -m vagen.server.server \
     server.host=0.0.0.0 server.port="$port" use_state_reward=False \
     navigation.devices='[0]' navigation.max_workers=48 \
     > "${RUN_DIR}/env_server_${SLURM_JOB_ID}_${NODE}_${env_i}.log" 2>&1 &

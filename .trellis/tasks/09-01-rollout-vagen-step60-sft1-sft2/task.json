@@ -12,7 +12,7 @@
   "assignee": "ARTI5T",
   "createdAt": "2026-09-01",
   "completedAt": null,
-  "branch": null,
+  "branch": "codex/step60-retry-548155",
   "base_branch": "dev",
   "worktree_path": null,
   "commit": null,
@@ -23,6 +23,7 @@
   "relatedFiles": [],
   "notes": "",
   "meta": {
-    "kind": "experiment"
+    "kind": "experiment",
+    "worktree_path": "/workspace/remote2/nimloth/.worktree/step60-retry-548155"
   }
 }
