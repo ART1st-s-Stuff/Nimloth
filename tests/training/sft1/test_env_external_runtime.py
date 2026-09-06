@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import subprocess
 import sys
 from pathlib import Path
@@ -42,11 +43,12 @@ def test_env_launcher_preserves_runtime_after_credentials(tmp_path, use_reconstr
     python = venv / "bin/python"
     python.write_text(
         f"#!{sys.executable}\n"
-        "import json, os, sys\n"
+        "import json, os, sys, time\n"
         "with open(os.environ['CALL_RECORD'], 'a') as out:\n"
         "    out.write(json.dumps({'argv': sys.argv, 'cwd': os.getcwd(), "
         "'python_env': os.environ['PYTHON_ENV'], 'virtual_env': os.environ['VIRTUAL_ENV'], "
         "'vagen_dir': os.environ['VAGEN_DIR'], 'pythonpath': os.environ['PYTHONPATH']}) + '\\n')\n"
+        "if '-m' in sys.argv: time.sleep(0.3)\n"
     )
     python.chmod(0o755)
     curl = venv / "bin/curl"
@@ -77,7 +79,7 @@ def test_env_launcher_preserves_runtime_after_credentials(tmp_path, use_reconstr
     )
     assert result.returncode == 0, result.stdout + result.stderr
     calls = [json.loads(line) for line in record.read_text().splitlines()]
-    assert len(calls) == 3  # setup library check, render smoke, environment server
+    assert len(calls) == 4  # setup library check, render smoke, port probe, server
     for call in calls:
         assert call["argv"][0] == str(python)
         assert call["python_env"] == call["virtual_env"] == str(venv)
@@ -87,3 +89,40 @@ def test_env_launcher_preserves_runtime_after_credentials(tmp_path, use_reconstr
     assert calls[-1]["cwd"] == str(vagen)
     assert (tmp_path / "run/external_env_4gpu/ready").is_file()
     Path(f"/tmp/vagen_env_sft1v79_{job_id}_pids").unlink()
+
+
+def test_env_port_probe_rejects_occupied_port():
+    source = (ROOT / "experiments/training/sft1/env_external_4gpu.slurm").read_text()
+    probe = source.split("<<'PYPORT'\n", 1)[1].split("\nPYPORT", 1)[0]
+    with socket.socket() as occupied:
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen()
+        result = subprocess.run(
+            [sys.executable, "-c", probe, str(occupied.getsockname()[1]), "1"],
+            capture_output=True, text=True, check=False,
+        )
+    assert result.returncode != 0
+    assert "Address already in use" in result.stderr
+
+
+def test_env_health_rejects_dead_owned_server(tmp_path):
+    source = (ROOT / "experiments/training/sft1/env_external_4gpu.slurm").read_text()
+    health = source[source.index('for env_i in $(seq 0 $((ENV_SERVICE_COUNT - 1))); do\n  port='):source.index('touch "${CONTROL_DIR}/ready"')]
+    # An unrelated healthy endpoint must not make our failed process ready.
+    script = r"""
+set -eu
+sleep 0 &
+owned=$!
+wait "$owned"
+ENV_SERVER_PIDS=("$owned")
+ENV_SERVICE_COUNT=1
+PORT_BASE=8400
+curl() { touch "$CONTROL_DIR/curl_called"; return 0; }
+""" + health
+    result = subprocess.run(
+        ["bash", "-c", script], env=dict(os.environ, CONTROL_DIR=str(tmp_path)),
+        capture_output=True, text=True, timeout=5, check=False,
+    )
+    assert result.returncode == 4
+    assert (tmp_path / "failed").is_file()
+    assert not (tmp_path / "curl_called").exists()

@@ -118,6 +118,22 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Refuse occupied ports before starting any service on a shared node.
+"${ENV_PYTHON}" - "${PORT_BASE}" "${ENV_SERVICE_COUNT}" <<'PYPORT'
+import socket
+import sys
+
+sockets = []
+try:
+    for port in range(int(sys.argv[1]), int(sys.argv[1]) + int(sys.argv[2])):
+        probe = socket.socket()
+        sockets.append(probe)
+        probe.bind(("0.0.0.0", port))
+finally:
+    for probe in sockets:
+        probe.close()
+PYPORT
+ENV_SERVER_PIDS=()
 for env_i in $(seq 0 $((ENV_SERVICE_COUNT - 1))); do
   phys="${GOOD_PHYS[$env_i]}"
   port=$((PORT_BASE + env_i))
@@ -126,14 +142,21 @@ for env_i in $(seq 0 $((ENV_SERVICE_COUNT - 1))); do
     server.host=0.0.0.0 server.port="$port" use_state_reward=False \
     navigation.devices='[0]' navigation.max_workers=48 \
     > "${RUN_DIR}/env_server_${SLURM_JOB_ID}_${NODE}_${env_i}.log" 2>&1 &
-  echo $! >> "/tmp/vagen_env_sft1v79_${SLURM_JOB_ID}_pids"
+  ENV_SERVER_PIDS+=("$!")
+  echo "${ENV_SERVER_PIDS[-1]}" >> "/tmp/vagen_env_sft1v79_${SLURM_JOB_ID}_pids"
 done
 
 for env_i in $(seq 0 $((ENV_SERVICE_COUNT - 1))); do
   port=$((PORT_BASE + env_i))
   ok=0
   for i in $(seq 1 120); do
-    if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then ok=1; break; fi
+    if ! kill -0 "${ENV_SERVER_PIDS[$env_i]}" 2>/dev/null; then
+      echo "ERROR environment server ${env_i} exited before ready (port ${port})" >&2
+      touch "${CONTROL_DIR}/failed"
+      exit 4
+    fi
+    if curl -fsS "http://127.0.0.1:${port}/health" >/dev/null 2>&1 &&
+       kill -0 "${ENV_SERVER_PIDS[$env_i]}" 2>/dev/null; then ok=1; break; fi
     sleep 3
   done
   if [ "$ok" -ne 1 ]; then

@@ -30,8 +30,10 @@ ENV_URL_FILE=${ENV_CONTROL_DIR}/env_urls.txt
 CONTROL_DIR=${RUN_DIR}/slurm_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}_control
 MODEL_PATH=${INIT_HF}
 TRAIN_GPUS_PER_NODE=${POLICY_GPU_COUNT:-2}
-RAY_PORT=$((6379 + SLURM_ARRAY_TASK_ID))
-RAY_DASHBOARD_PORT=$((8266 + SLURM_ARRAY_TASK_ID))
+RAY_PORT=${RAY_PORT:-$((20000 + (SLURM_ARRAY_JOB_ID % 10000) * 4 + SLURM_ARRAY_TASK_ID))}
+RAY_DASHBOARD_PORT=${RAY_DASHBOARD_PORT:-0}
+RAY_TEMP_DIR=$(mktemp -d /tmp/nimloth-ray-${SLURM_ARRAY_JOB_ID}-${SLURM_ARRAY_TASK_ID}-XXXXXX)
+RAY_HEAD_PID=""
 RAY_CMD="${PYTHON_ENV}/bin/python3 ${PYTHON_ENV}/bin/ray"
 ROLLOUT_SMOKE=${ROLLOUT_SMOKE:-0}
 ROLLOUT_SOURCE_PARITY=${ROLLOUT_SOURCE_PARITY:-0}
@@ -67,9 +69,18 @@ COMMON_ENV="export REPO='${ROOT}'; source '${SCRIPTDIR}/common_env.sh'; export P
 
 cleanup() {
   set +e
-  bash -lc "${COMMON_ENV}; ${RAY_CMD} stop --force >/dev/null 2>&1 || true"
+  if [ -n "${RAY_HEAD_PID}" ]; then
+    kill -TERM -- "-${RAY_HEAD_PID}" 2>/dev/null || true
+    for _ in $(seq 1 10); do
+      kill -0 -- "-${RAY_HEAD_PID}" 2>/dev/null || break
+      sleep 1
+    done
+    kill -KILL -- "-${RAY_HEAD_PID}" 2>/dev/null || true
+    wait "${RAY_HEAD_PID}" 2>/dev/null || true
+  fi
 }
 trap cleanup EXIT
+trap 'exit 143' TERM INT
 
 write_split_yaml() {
   local split_name=$1
@@ -584,8 +595,22 @@ main() {
 
   local_ip=$(hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
   if [ -z "$local_ip" ]; then local_ip=$(hostname -I | awk '{print $1}'); fi
-  bash -lc "${COMMON_ENV}; ${RAY_CMD} stop --force >/dev/null 2>&1 || true; pkill -u \$(whoami) -f '[r]ay::' >/dev/null 2>&1 || true; sleep 2; ${RAY_CMD} start --head --node-ip-address=${local_ip} --port=${RAY_PORT} --dashboard-port=${RAY_DASHBOARD_PORT} --num-gpus=${TRAIN_GPUS_PER_NODE} --num-cpus=${SLURM_CPUS_PER_TASK}" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  # Refuse an occupied head port; never attach to another job's Ray server.
+  "${PYTHON_ENV}/bin/python3" - "${local_ip}" "${RAY_PORT}" <<'PYPORT'
+import socket
+import sys
+
+with socket.socket() as probe:
+    probe.bind((sys.argv[1], int(sys.argv[2])))
+PYPORT
+  # A private process group and temp directory keep other jobs on this node untouched.
+  setsid bash -lc "${COMMON_ENV}; exec ${RAY_CMD} start --head --block --temp-dir='${RAY_TEMP_DIR}' --node-ip-address=${local_ip} --port=${RAY_PORT} --dashboard-port=${RAY_DASHBOARD_PORT} --num-gpus=${TRAIN_GPUS_PER_NODE} --num-cpus=${SLURM_CPUS_PER_TASK}" >> "${RUN_DIR}/${EXPERIMENT_NAME}.log" 2>&1 &
+  RAY_HEAD_PID=$!
   sleep 20
+  if ! kill -0 "${RAY_HEAD_PID}" 2>/dev/null; then
+    echo "ERROR private Ray head exited; inspect ${RUN_DIR}/${EXPERIMENT_NAME}.log" >&2
+    exit 4
+  fi
   export RAY_ADDRESS="${local_ip}:${RAY_PORT}"
   bash -lc "${COMMON_ENV}; export RAY_ADDRESS='${RAY_ADDRESS}'; python -c \"import ray; ray.init(); print(ray.available_resources())\"" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
 
