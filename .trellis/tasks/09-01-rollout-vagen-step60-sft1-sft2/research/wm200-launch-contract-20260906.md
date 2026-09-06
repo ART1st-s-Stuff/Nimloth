@@ -1,0 +1,11 @@
+# 2026-09-06 WM 200-row pilot: latest human contract
+
+This instruction supersedes earlier runtime/selection assumptions for this pilot. User explicitly selected original source batch1: base/common_sense1000each,1800train+200seed-disjoint internal heldout; execute only train source-order base100+common100, not fullbatch. Use current VAGEN wm prompt (observation,think,action,prediction), step_length0.3m,success_threshold1m,greedy20turn512token. Existing step60 actor remains frozen, TP1, no PPO/backbone training. max_actions_per_step1 retained.
+
+Source partition: remote outputs/experiments/training/sft1-vagen-step60/20260904T181500Z_step60_batch1_v3_venv_r8_7dac687b/partition/partition_manifest.json. Verified original source SHA3c8161bd45adc4cde5d67157cf4db225753ed3925cb9a52e3a57d1dd11dbe9d6 and all10publishedparquet hashes. Select true source row positions after train filtering, preserve category/seed/source_index and source schema audit; source seed integers are not ordinal ranges. Original data/env config audit remains immutable; new runtime overrides recorded separately.
+
+Implementation reuses existing VAGEN rollout runner via explicit prepared-parquet input. Ten20-row shards sequentially, no fallback to legacy full loops. Original same-seed heldout remains untouched. Current legacy wm alias is incompatible (worldmodeling/answer); separate source_wm_mode implements exact currentwm prompt/parser without modifying oldmode. Keep explicit source reward fields; do not silently substitute source_eval reward defaults.
+
+Run within retained hold550857,dgx05,env1GPU/policy1GPU,56CPU/180G,expires08:43:57UTC. Fresh unique output root; no resume from partial rows. Shard outputs validated for exact UID membership/count before marked complete. Retry only diagnosed faults within approved scope/remaining allocation; no fresh2hourhold silently. Greedy config from user confirmation.
+
+Acceptance for healthy start: real wm response/action parsing, both picture input and environment execution succeed, real selected source rows progress and first20-row shard validates; keep200-row run going, do not terminate after smoke. Finalpilot reports completed/incomplete counts and image/data artifacts; ordinary rollout is not terminal-CoT enrichedSFT dataset. This pilot does not authorize remaining1800batchrows or SFTtraining.

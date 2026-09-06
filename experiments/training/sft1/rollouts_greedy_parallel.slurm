@@ -48,6 +48,7 @@ VAL_BATCH_SIZE=${VAL_BATCH_SIZE:-24}
 # max_workers controls environment RPC concurrency; policy topology is set by
 # POLICY_GPU_COUNT.
 AGENT_NUM_WORKERS=${AGENT_NUM_WORKERS:-4}
+ENV_REQUEST_TIMEOUT=120
 AGENT_MAX_CONCURRENT_TRAJECTORIES=${AGENT_MAX_CONCURRENT_TRAJECTORIES:-6}
 VAL_N=${VAL_N:-1}
 if [ "${ROLLOUT_SMOKE}" = "1" ]; then
@@ -442,13 +443,22 @@ run_shard() {
   local split_dir="${RUN_DIR}/validation/${split_name}/${shard_name}"
   local out_jsonl="${split_dir}/${ROLLOUT_DUMP_STEP}.jsonl"
   mkdir -p "${split_dir}"
+  if [ -n "${ROLLOUT_PREPARED_MANIFEST:-}" ] && [ -e "${out_jsonl}" ]; then
+    echo "ERROR prepared shard output already exists: ${out_jsonl}" >&2
+    exit 2
+  fi
   if [ -s "${out_jsonl}" ]; then
     echo "[skip] ${split_name}/${shard_name} already done" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
     return 0
   fi
   local val_parquet="${CONTROL_DIR}/${split_name}_${shard_name}.parquet"
   local train_parquet="${val_parquet}"
-  write_split_parquet "${split_name}" "${val_parquet}" "${seed_start}" "${seed_end}"
+  if [ -n "${5:-}" ]; then
+    val_parquet=$5
+    train_parquet=$5
+  else
+    write_split_parquet "${split_name}" "${val_parquet}" "${seed_start}" "${seed_end}"
+  fi
   if [ "${ROLLOUT_SMOKE}" = "1" ]; then
     # val-only still builds a drop-last train loader. Two deterministic rows
     # satisfy the 2-GPU batch invariant; only val_parquet is rolled out.
@@ -525,7 +535,7 @@ run_shard() {
       rollout_manager.n_trajectory=1 \
       rollout_manager.use_service=True \
       rollout_manager.base_url='${service_base_url}' \
-      rollout_manager.timeout=120 \
+      rollout_manager.timeout=${ENV_REQUEST_TIMEOUT} \
       rollout_manager.max_workers=${AGENT_NUM_WORKERS} \
       rollout_manager.use_multi_turn_reward=False \
       rollout_manager.use_loss_mask=True \
@@ -550,6 +560,9 @@ if set(sizes) != {(expected, expected)}:
     raise RuntimeError(f"rollout PNG size gate failed: expected={expected}, observed={dict(sizes)}")
 print(f"rollout PNG size gate passed: count={len(paths)} size={expected}x{expected}")
 PY
+  fi
+  if [ -n "${5:-}" ]; then
+    PYTHONPATH="${ROOT}:${ROOT}/src:${PYTHONPATH:-}" "${PYTHON_ENV}/bin/python3" -m experiments.training.sft1.prepare_source200 --validate-output "${out_jsonl}" --parquet "${val_parquet}"
   fi
   if [ "${split_name}" = "train120" ]; then
     if [ -z "${EXPECTED_ROLLOUT_PNG_SIZE}" ]; then
@@ -614,6 +627,25 @@ PYPORT
   fi
   export RAY_ADDRESS="${local_ip}:${RAY_PORT}"
   bash -lc "${COMMON_ENV}; export RAY_ADDRESS='${RAY_ADDRESS}'; python -c \"import ray; ray.init(); print(ray.available_resources()); runtime=ray.get(ray.remote(lambda: __import__('verl').__file__).remote()); print('RAY_WORKER_VERL=' + runtime); assert runtime.startswith('${VERL_DIR}/verl/'), runtime\"" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+
+  if [ -n "${ROLLOUT_PREPARED_MANIFEST:-}" ]; then
+    if [ "${SLURM_ARRAY_TASK_ID}" != "0" ] || [ "${ROLLOUT_SMOKE}" != "0" ]; then
+      echo "ERROR prepared collection requires task 0 and smoke disabled" >&2
+      exit 2
+    fi
+    local prepared_list="${CONTROL_DIR}/prepared_paths.txt"
+    PYTHONPATH="${ROOT}:${ROOT}/src:${PYTHONPATH:-}" "${PYTHON_ENV}/bin/python3" -m experiments.training.sft1.prepare_source200 --verify "${ROLLOUT_PREPARED_MANIFEST}" > "${prepared_list}"
+    TRAIN_BATCH_SIZE=20
+    VAL_BATCH_SIZE=20
+    AGENT_NUM_WORKERS=1
+    ENV_REQUEST_TIMEOUT=500
+    local shard_index=0
+    while IFS= read -r prepared_parquet; do
+      run_shard train "source200_$(printf '%02d' "${shard_index}")" source source "${prepared_parquet}"
+      shard_index=$((shard_index + 1))
+    done < "${prepared_list}"
+    return 0
+  fi
 
   if [ "${ROLLOUT_SMOKE}" = "1" ]; then
     if [ "${SLURM_ARRAY_TASK_ID}" != "0" ]; then

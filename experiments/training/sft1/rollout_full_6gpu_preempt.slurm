@@ -187,7 +187,7 @@ done < "${URLS}"
 
 # One policy task uses all selected policy GPUs at a time. Completed non-empty shards are skipped
 # by rollouts_greedy_parallel.slurm, so a later retry preserves shard progress.
-if [ "${ROLLOUT_SMOKE:-0}" = "1" ] || [ "${ROLLOUT_SOURCE_PARITY:-0}" = "1" ]; then
+if [ -n "${ROLLOUT_PREPARED_MANIFEST:-}" ] || [ "${ROLLOUT_SMOKE:-0}" = "1" ] || [ "${ROLLOUT_SOURCE_PARITY:-0}" = "1" ]; then
   TASK_IDS=(0)
 elif [ -n "${ROLLOUT_TASK_IDS:-}" ]; then
   read -r -a TASK_IDS <<< "${ROLLOUT_TASK_IDS//,/ }"
