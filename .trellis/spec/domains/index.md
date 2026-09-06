@@ -25,4 +25,5 @@ This layer routes cross-module World Model Agent contracts and shared terminolog
 - [Terminology and module ownership](terminology-and-ownership.md)
 - [Agent, rollout, and state](agent-rollout-and-state.md)
 - [World model and training](world-model-and-training.md)
+- [Three-stage SFT interfaces](sft-stages.md)
 - [Reconstruction and evaluation](reconstruction-and-evaluation.md)

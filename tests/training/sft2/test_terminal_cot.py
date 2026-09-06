@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from nimloth.training.sft2.data.terminal_cot import (
+from nimloth.training.sft.stage3.data.terminal_cot import (
     _CONTINUATION_PREVIEW_CHARS,
     _StopAfterText,
     TerminalCoTFormatError,

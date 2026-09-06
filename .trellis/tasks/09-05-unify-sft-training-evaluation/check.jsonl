@@ -1,0 +1,5 @@
+{"file": "src/nimloth/training/sft/spec.md", "reason": "人类共同修订的三阶段训练与评估伪代码"}
+{"file": ".trellis/spec/governance/cot-and-state.md", "reason": "真实CoT与观测对齐的硬合同"}
+{"file": ".trellis/spec/python/quality-and-testing.md", "reason": "验证范围与ML证据边界"}
+{"file": ".trellis/tasks/09-05-unify-sft-training-evaluation/design.md", "reason": "迁移边界和阶段语义"}
+{"file": ".trellis/spec/domains/sft-stages.md", "reason": "审核阶段命名、目标与恢复边界"}

@@ -26,9 +26,9 @@ def test_runner_locks_sources_freeze_boundary_and_sequential_identity() -> None:
     assert "train_terminal_cot_migrated.jsonl" in text
     assert "val_terminal_cot_migrated.jsonl" in text
     assert "nimloth.eval.frozen_state_goal_probe" in text
-    assert "nimloth.training.sft2.residual_t1_canary" in text
+    assert "experiments.training.sft.diagnosis.residual_t1_canary" in text
     assert text.index("nimloth.eval.frozen_state_goal_probe") < text.index(
-        "nimloth.training.sft2.residual_t1_canary"
+        "experiments.training.sft.diagnosis.residual_t1_canary"
     )
     assert "nimloth-recon-id60-frozen-state-goal-probe" in text
     assert "nimloth-sft2-id75-frozen-sft1-residual-t1-canary" in text
@@ -52,7 +52,7 @@ def test_retry_runs_only_id75_from_exact_completed_id60_cache() -> None:
     assert "#SBATCH --time=00:30:00" in slurm
     assert "dgx-09,dgx-13,dgx-32,dgx-51" in slurm
     assert "nimloth.eval.frozen_state_goal_probe" not in runner
-    assert "nimloth.training.sft2.residual_t1_canary" in runner
+    assert "experiments.training.sft.diagnosis.residual_t1_canary" in runner
     assert "0fa994139d038d7f89b5a02a83d9036f9367b34a25f25e6b8cb84204f0daf8b6" in runner
     assert "b25163d390930d1ccdc172e4f4401a97cbea3dba561a8ec25ef33b9a09911682" in runner
     assert "37243c37e265691cc0cd3acdbc03a35241661a765ce8efc5fb2b6a7995bcd0ea" in runner

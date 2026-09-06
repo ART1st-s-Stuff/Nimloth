@@ -10,14 +10,14 @@ import torch
 from nimloth.agent import Agent
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
 from nimloth.rollout import TransitionBatch
-import nimloth.training.sft2.dino_grid as dino_grid_module
+import nimloth.training.sft.stage3.dino_grid as dino_grid_module
 from nimloth.training.common import world_model_loss
-from nimloth.training.sft2.algorithm import SFT2Algorithm
-from nimloth.training.sft2.batch import SFT2Batch, SFT2RolloutBatch
-from nimloth.training.sft2.dino_grid import DINOGridBatchAssembler
-from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
-from nimloth.training.sft2.runtime import SFT2ModelRuntime
-from nimloth.training.sft2.trainer import _build_world_model
+from nimloth.training.sft.stage3.algorithm import SFT2Algorithm
+from nimloth.training.sft.stage3.batch import SFT2Batch, SFT2RolloutBatch
+from nimloth.training.sft.stage3.dino_grid import DINOGridBatchAssembler
+from nimloth.training.sft.stage3.history_cache import OnlineHistoryStateCache
+from nimloth.training.sft.stage3.runtime import SFT2ModelRuntime
+from nimloth.training.sft.stage3.trainer import _build_world_model
 from nimloth.wm.grid import (
     GridWorldModel,
     SharedSlotProjector,

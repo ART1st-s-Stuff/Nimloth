@@ -14,7 +14,7 @@
 - `nimloth.rollout` owns cross-stage trajectory schemas/storage/windows and must not import `nimloth.training`.
 - `nimloth.agent` owns model composition, prompts, planning, and episode runtime; it does not own stage optimizers/checkpoints or rollout batch schemas.
 - `nimloth.wm` owns trainable state projection/prediction/value modules; search policy belongs to Agent, and stage-specific loss/gradient/EMA policy belongs to training.
-- `nimloth.training.sft2` and `.rl` own their objective, optimizer, validation, and checkpoint behavior; shared objectives belong in `training/common` only when their semantics are truly shared.
+- `nimloth.training.sft.stage3` (the former WM/value stage) and `.rl` own their objective, optimizer, validation, and checkpoint behavior; shared objectives belong in `training/common` only when their semantics are truly shared.
 - `nimloth.eval` is model-dependent offline evaluation; online environment rollout belongs to the environment/Agent path.
 - `nimloth.recon` consumes frozen state representations for post-hoc diagnostics and does not silently enter SFT2/RL optimization.
 

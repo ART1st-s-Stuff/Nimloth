@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from nimloth.eval.multimodal_feature_location_audit import (
+from experiments.training.sft.diagnosis.multimodal_feature_location_audit import (
     _instruction_span,
     adaptive_pool_image_tokens,
     feature_location_decision,

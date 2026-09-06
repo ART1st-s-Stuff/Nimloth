@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import pytest
 import torch
 
-from nimloth.training.sft2.action_head_repair import (
+from experiments.training.sft.diagnosis.action_head_repair import (
     ActionTokenRowDelta,
     apply_action_row_delta_,
     balanced_action_sample_indices,

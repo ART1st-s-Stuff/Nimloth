@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from nimloth.training.sft2.action_head_repair_cli import (
+from experiments.training.sft.diagnosis.action_head_repair_cli import (
     _HIDDEN_SCHEMA,
     _atomic_csv,
     _atomic_torch_save,
@@ -91,7 +91,7 @@ def test_cli_has_no_joint_training_numeric_defaults() -> None:
         _parse_args([])
 
     source = Path(
-        "src/nimloth/training/sft2/action_head_repair_cli.py"
+        "experiments/training/sft/diagnosis/action_head_repair_cli.py"
     ).read_text(encoding="utf-8")
     for flag in (
         "train-examples-per-action",

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import torch
 import pytest
 
-from nimloth.training.sft2.loop import (
+from nimloth.training.sft.stage3.loop import (
     SFT2LoopState,
     SFT2TrainingLoop,
     load_sft2_loop_state,

@@ -14,7 +14,7 @@ def test_id191_launcher_locks_direction_canary_contract() -> None:
     assert "#SBATCH --gres=gpu:1" in slurm
     assert "#SBATCH --time=00:45:00" in slurm
     assert "dgx-09,dgx-13,dgx-32,dgx-51" in slurm
-    assert "nimloth.training.sft2.id191_state_interface_canary" in runner
+    assert "experiments.training.sft.diagnosis.id191_state_interface_canary" in runner
     assert "191_state_interface_direction_canary" in runner
     assert "nimloth-sft2-id191-state-interface-canary-retry1" in runner
     assert '[[ ! -e "${OUT}" ]]' in runner

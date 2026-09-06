@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from nimloth.training.sft2.evaluate import evaluate
-from nimloth.training.sft2.utils import preserve_module_modes
+from nimloth.training.sft.stage3.evaluate import evaluate
+from nimloth.training.sft.stage3.utils import preserve_module_modes
 
 
 def test_preserve_module_modes_restores_caller_state() -> None:

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from nimloth.training.sft2.cli import parse_sft2_args
+from nimloth.training.sft.stage3.cli import parse_sft2_args
 from nimloth.config.sft2 import flatten_sft2_yaml_config
 from nimloth.config.io import load_yaml_config
 

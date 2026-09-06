@@ -13,6 +13,12 @@ import torch
 from PIL import Image
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
+# 直接执行脚本时也从所属 checkout 加载诊断包。
+_repo_root = Path(__file__).resolve().parents[4]
+for _import_root in (_repo_root, _repo_root / "src"):
+    if str(_import_root) not in sys.path:
+        sys.path.insert(0, str(_import_root))
+
 from nimloth.backbone.qwen25vl.batch import batch_single_encoding, encode_qwen_item
 from nimloth.backbone.qwen25vl.latent import (
     extract_qwen_latents,
@@ -22,7 +28,7 @@ from nimloth.backbone.qwen25vl.monkey_patch import (
     apply_qwen25vl_force_explicit_causal_mask_patch,
 )
 from nimloth.latent import add_special_tokens, special_token_ids
-from nimloth.training.sft2.diagnosis.trajectory_once import (
+from experiments.training.sft.diagnosis.trajectory_once import (
     encode_full_trajectory,
     find_step_latent_indices,
     forward_trajectory_once,

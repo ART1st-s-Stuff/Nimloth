@@ -19,6 +19,7 @@ Example (1 GPU):
 from __future__ import annotations
 
 import argparse
+import sys
 import json
 import random
 from pathlib import Path
@@ -26,25 +27,31 @@ from pathlib import Path
 import torch
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
+# 直接执行脚本时也从所属 checkout 加载诊断包。
+_repo_root = Path(__file__).resolve().parents[4]
+for _import_root in (_repo_root, _repo_root / "src"):
+    if str(_import_root) not in sys.path:
+        sys.path.insert(0, str(_import_root))
+
 from nimloth.backbone.qwen25vl.batch import build_qwen_batch, encode_qwen_item
 from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
 from nimloth.backbone.qwen25vl.model import Qwen25VLBackbone
 from nimloth.backbone.qwen25vl.tuning import configure_qwen_tuning
 from nimloth.latent import add_special_tokens, special_token_ids
-from nimloth.training.sft2.diagnosis.trajectory_equiv import (
+from experiments.training.sft.diagnosis.trajectory_equiv import (
     legacy_record_losses,
     packed_record_losses,
 )
-from nimloth.training.sft2.diagnosis.trajectory_forward import run_equivalence_on_jsonl
-from nimloth.training.sft2.algorithm import SFT2Algorithm
+from experiments.training.sft.diagnosis.trajectory_forward import run_equivalence_on_jsonl
+from nimloth.training.sft.stage3.algorithm import SFT2Algorithm
 from nimloth.util.cache import (
     encode_transition_item,
 )
 from nimloth.backbone.qwen25vl.input import Qwen25VLInputBuilder
-from nimloth.training.sft2.batch import SFT2BatchAssembler
+from nimloth.training.sft.stage3.batch import SFT2BatchAssembler
 from nimloth.agent import Agent
-from nimloth.training.sft2.runtime import SFT2ModelRuntime
-from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
+from nimloth.training.sft.stage3.runtime import SFT2ModelRuntime
+from nimloth.training.sft.stage3.history_cache import OnlineHistoryStateCache
 from nimloth.wm import (
     LatentWMPredictor,
     LeWMConfig,

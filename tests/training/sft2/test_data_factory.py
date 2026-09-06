@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from nimloth.training.sft2.data.factory import _verify_cache_manifest
+from nimloth.training.sft.stage3.data.factory import _verify_cache_manifest
 from nimloth.util.cache import (
     COMPACT_CACHE_FORMAT,
     TRANSITION_EXPANSION_VERSION,

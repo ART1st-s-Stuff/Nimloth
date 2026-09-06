@@ -25,7 +25,7 @@ recorded action sequence递归产生`T`个预测successor state；value的`T`个
 SFT2 不调用 planning policy 或 episode runner。processor、
 cache、EMA、optimizer、checkpoint 与 environment 状态均不进入 `Agent.state_dict()`。
 rollout transition 的 batch 契约属于 `nimloth.rollout`，不属于 Agent 模型接口。
-SFT2 的固定下一状态监督值与 Backbone EMA 策略属于 `training.sft2.runtime`。
+SFT2 的固定下一状态监督值与 Backbone EMA 策略属于 `training.sft.stage3.runtime`。
 Policy replay 接收 `PolicyReplayInput(AgentPrompt, action, sampling config,
 token trace)`。`PolicyTokenTrace` 区分 reasoning、action 与 injected token；
 planner路线不进入policy replay；只有直接由Qwen拥有并执行环境动作的路线可以做PPO。

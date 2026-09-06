@@ -4,12 +4,19 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import json
 from pathlib import Path
 from typing import Any
 
 import torch
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+
+# 直接执行脚本时也从所属 checkout 加载诊断包。
+_repo_root = Path(__file__).resolve().parents[4]
+for _import_root in (_repo_root, _repo_root / "src"):
+    if str(_import_root) not in sys.path:
+        sys.path.insert(0, str(_import_root))
 
 from nimloth.agent import bind_image_placeholders
 from nimloth.backbone.qwen25vl.batch import batch_single_encoding, encode_qwen_item
@@ -26,7 +33,7 @@ from nimloth.rollout.transitions import (
     expand_record_transitions,
     load_jsonl_records,
 )
-from nimloth.training.sft2.diagnosis.trajectory_forward import _prefix_latent
+from experiments.training.sft.diagnosis.trajectory_forward import _prefix_latent
 
 
 def parse_args() -> argparse.Namespace:

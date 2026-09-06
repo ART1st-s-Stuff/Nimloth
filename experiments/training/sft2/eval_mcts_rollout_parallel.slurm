@@ -159,7 +159,7 @@ test -f "${SFT2_CHECKPOINT}/value_head/value_head.pt"
 import json
 import sys
 from pathlib import Path
-from nimloth.training.sft2.mcts_evaluation import load_sft2_mcts_evaluation_contract
+from nimloth.training.sft.stage3.mcts_evaluation import load_sft2_mcts_evaluation_contract
 
 contract = load_sft2_mcts_evaluation_contract(Path(sys.argv[1]))
 if (contract.history_size, contract.prediction_horizon, contract.action_count) != (1, 4, 8):

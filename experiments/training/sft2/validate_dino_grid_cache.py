@@ -18,7 +18,7 @@ from nimloth.rollout.transitions import (
     TransitionJsonlDataset,
     transition_training_item,
 )
-from nimloth.training.sft2.data.samplers import OnlineHistoryBatchSampler
+from nimloth.training.sft.stage3.data.samplers import OnlineHistoryBatchSampler
 from nimloth.util.cache import (
     COMPACT_CACHE_FORMAT,
     DEFAULT_MIN_PIXELS,

@@ -20,8 +20,8 @@ from transformers import AutoProcessor
 from nimloth.backbone import CachedDINOGridTargets, DINOV2_LARGE_IDENTITY
 from nimloth.latent import add_special_tokens
 from nimloth.rollout.transitions import TransitionJsonlDataset
-from nimloth.training.sft2.algorithm import SFT2_VALUE_OBJECTIVE
-from nimloth.training.sft2.data.samplers import FutureRolloutBatchSampler
+from nimloth.training.sft.stage3.algorithm import SFT2_VALUE_OBJECTIVE
+from nimloth.training.sft.stage3.data.samplers import FutureRolloutBatchSampler
 from nimloth.util.cache import (
     COMPACT_CACHE_FORMAT,
     DEFAULT_MIN_PIXELS,

@@ -12,8 +12,8 @@ from experiments.training.sft2.eval_mcts_rollout import (
     parse_args,
     write_or_validate_contract,
 )
-from nimloth.training.sft2.algorithm import SFT2_VALUE_OBJECTIVE
-from nimloth.training.sft2.mcts_evaluation import (
+from nimloth.training.sft.stage3.algorithm import SFT2_VALUE_OBJECTIVE
+from nimloth.training.sft.stage3.mcts_evaluation import (
     load_sft2_mcts_evaluation_contract,
 )
 

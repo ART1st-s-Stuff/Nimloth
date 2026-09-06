@@ -14,7 +14,7 @@ def test_id192_launcher_locks_frozen_same_forward_audit() -> None:
     assert "#SBATCH --gres=gpu:1" in slurm
     assert "#SBATCH --time=00:45:00" in slurm
     assert "dgx-09,dgx-13,dgx-32,dgx-51" in slurm
-    assert "nimloth.eval.multimodal_feature_location_audit" in runner
+    assert "experiments.training.sft.diagnosis.multimodal_feature_location_audit" in runner
     assert "192_frozen_multimodal_feature_location_audit" in runner
     assert "nimloth-recon-id192-feature-location-audit-retry2" in runner
     assert '[[ ! -e "${OUT}" ]]' in runner

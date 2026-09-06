@@ -74,10 +74,10 @@ export WANDB_RUN_ID="${CANARY_WANDB_ID}"
 export WANDB_ENTITY=art2nd-hong-kong-university-of-science-and-technology
 export WANDB_DIR="${CANARY_OUT}/wandb"
 export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPATH="${REPO}/src:${PYTHONPATH:-}"
+export PYTHONPATH="${REPO}:${REPO}/src:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM=false
 
-exec "${PY}" -m nimloth.training.sft2.residual_t1_canary \
+exec "${PY}" -m experiments.training.sft.diagnosis.residual_t1_canary \
   --state-cache "${STATE_CACHE}" \
   --state-cache-metadata "${STATE_METADATA}" \
   --probe-result "${PROBE_RESULT}" \

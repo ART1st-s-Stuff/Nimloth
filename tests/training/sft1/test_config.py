@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from nimloth.training.sft1.config import sft1_yaml_defaults
+from nimloth.training.sft.stage1.config import sft1_yaml_defaults
 
 
 ROOT = Path(__file__).resolve().parents[3]

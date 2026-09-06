@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from nimloth.training.sft2.history_cache import OnlineHistoryStateCache
+from nimloth.training.sft.stage3.history_cache import OnlineHistoryStateCache
 from nimloth.wm.grid import (
     GridPredictorConfig,
     GridWorldModel,

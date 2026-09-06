@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from nimloth.training.sft2.diagnosis.trajectory_once import (
+from experiments.training.sft.diagnosis.trajectory_once import (
     encode_full_trajectory,
     find_step_latent_indices,
     verify_prefix_tokenization,

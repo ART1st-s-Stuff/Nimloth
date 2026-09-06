@@ -284,7 +284,7 @@ def load_rl_wm_checkpoint(
 def load_lora_adapter_state(model: torch.nn.Module, adapter_dir: Path) -> None:
     """把 LoRA adapter 权重加载到已经构造为 PeftModel 的 ``model``。
 
-    行为与 :func:`nimloth.training.sft2.checkpoint.load_lora_adapter_state`
+    行为与 :func:`nimloth.training.sft.stage3.checkpoint.load_lora_adapter_state`
     保持一致。
     """
     adapter_file = adapter_dir / "adapter_model.safetensors"

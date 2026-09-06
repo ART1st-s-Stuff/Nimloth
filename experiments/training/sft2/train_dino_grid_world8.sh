@@ -2,7 +2,7 @@
 
 # Run on one node or once per node inside an already-held Slurm allocation.  This script
 # intentionally contains only launch/runtime wiring; objective semantics live in
-# nimloth.training.sft2.dino_grid and grid modules live in nimloth.wm.grid.
+# nimloth.training.sft.stage3.dino_grid and grid modules live in nimloth.wm.grid.
 
 set -euo pipefail
 

@@ -77,13 +77,13 @@ export WANDB_RUN_ID="${RUN_WANDB_ID}"
 export WANDB_ENTITY=art2nd-hong-kong-university-of-science-and-technology
 export WANDB_DIR="${OUT}/wandb"
 export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPATH="${REPO}/src:${PYTHONPATH:-}"
+export PYTHONPATH="${REPO}:${REPO}/src:${PYTHONPATH:-}"
 export HF_HOME=/project/peilab/atst/.cache/huggingface
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 export TOKENIZERS_PARALLELISM=false
 
-exec "${PY}" -m nimloth.training.sft2.id191_state_interface_canary \
+exec "${PY}" -m experiments.training.sft.diagnosis.id191_state_interface_canary \
   --train-jsonl "${TRAIN_JSONL}" \
   --val-jsonl "${VAL_JSONL}" \
   --state-cache "${STATE_CACHE}" \

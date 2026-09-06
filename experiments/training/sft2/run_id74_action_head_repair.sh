@@ -48,7 +48,7 @@ mkdir -p "${CONTROL}"
 [[ ! -e "${CONTROL}/complete.marker" ]]
 
 export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPATH="${REPO}/src:${REPO}/external/VAGEN:${REPO}/external/VAGEN/verl${PYTHONPATH:+:${PYTHONPATH}}"
+export PYTHONPATH="${REPO}:${REPO}/src:${REPO}/external/VAGEN:${REPO}/external/VAGEN/verl${PYTHONPATH:+:${PYTHONPATH}}"
 export HF_HOME=/project/peilab/atst/flower/hf_cache
 export TRANSFORMERS_CACHE=${HF_HOME}/hub
 export TOKENIZERS_PARALLELISM=false
@@ -58,7 +58,7 @@ export OMP_NUM_THREADS=8
 COMMAND=(
   "${PY}" -m torch.distributed.run
   --standalone --nnodes=1 --nproc_per_node="${EXPECTED_WORLD_SIZE}"
-  -m nimloth.training.sft2.action_head_repair_cli
+  -m experiments.training.sft.diagnosis.action_head_repair_cli
   --model "${MODEL}"
   --train-jsonl "${DATA}/train_terminal_cot_migrated.jsonl"
   --validation-jsonl "${DATA}/val_terminal_cot_migrated.jsonl"

@@ -6,7 +6,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 from nimloth.util.metrics import MetricAccumulator
-from nimloth.training.sft2.evaluate import (
+from nimloth.training.sft.stage3.evaluate import (
     distributed_metric_averages,
     merge_metric_accumulators,
 )

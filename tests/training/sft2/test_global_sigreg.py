@@ -9,7 +9,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from nimloth.training.sft2.algorithm import (
+from nimloth.training.sft.stage3.sigreg import (
     gather_global_sigreg_states,
     shared_sigreg_rng,
 )

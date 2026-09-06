@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from nimloth.training.sft2.cli import parse_sft2_args
+from nimloth.training.sft.stage3.cli import parse_sft2_args
 
 
 def test_parse_sft2_args_applies_yaml_defaults() -> None:

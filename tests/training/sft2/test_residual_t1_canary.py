@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from nimloth.training.sft2.residual_t1_canary import _train_model, residual_t1_metrics
+from experiments.training.sft.diagnosis.residual_t1_canary import _train_model, residual_t1_metrics
 
 
 def test_residual_t1_metrics_gate_is_per_supported_action() -> None:

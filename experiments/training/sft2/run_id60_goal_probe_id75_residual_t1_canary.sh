@@ -58,7 +58,7 @@ set -a
 source /project/peilab/atst/flower/.env
 set +a
 export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPATH="${REPO}/src:${PYTHONPATH:-}"
+export PYTHONPATH="${REPO}:${REPO}/src:${PYTHONPATH:-}"
 export HF_HOME=/project/peilab/atst/.cache/huggingface
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
@@ -122,7 +122,7 @@ export WANDB_PROJECT="${CANARY_WANDB_PROJECT}"
 export WANDB_NAME="${CANARY_WANDB_NAME}"
 export WANDB_RUN_ID="${CANARY_WANDB_ID}"
 export WANDB_DIR="${CANARY_OUT}/wandb"
-"${PY}" -m nimloth.training.sft2.residual_t1_canary \
+"${PY}" -m experiments.training.sft.diagnosis.residual_t1_canary \
   --state-cache "${PROBE_OUT}/frozen_state_cache.npz" \
   --state-cache-metadata "${PROBE_OUT}/frozen_state_cache_metadata.json" \
   --probe-result "${PROBE_OUT}/result.json" \

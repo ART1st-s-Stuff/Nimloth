@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from nimloth.backbone.qwen25vl.input import Qwen25VLInputBuilder
-from nimloth.training.sft2.batch import SFT2BatchAssembler, SFT2RolloutBatch
+from nimloth.training.sft.stage3.batch import SFT2BatchAssembler, SFT2RolloutBatch
 
 
 def _assembler() -> SFT2BatchAssembler:

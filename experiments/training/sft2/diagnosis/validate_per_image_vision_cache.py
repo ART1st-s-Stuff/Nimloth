@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import json
 import tempfile
 from pathlib import Path
@@ -12,6 +13,12 @@ from typing import Any
 import torch
 from PIL import Image
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+
+# 直接执行脚本时也从所属 checkout 加载诊断包。
+_repo_root = Path(__file__).resolve().parents[4]
+for _import_root in (_repo_root, _repo_root / "src"):
+    if str(_import_root) not in sys.path:
+        sys.path.insert(0, str(_import_root))
 
 from nimloth.backbone.qwen25vl.batch import batch_single_encoding, encode_qwen_item
 from nimloth.backbone.qwen25vl.latent import reset_model_rope_state
@@ -24,7 +31,7 @@ from nimloth.latent import (
     find_last_latent_state_index,
     special_token_ids,
 )
-from nimloth.training.sft2.diagnosis.trajectory_once import (
+from experiments.training.sft.diagnosis.trajectory_once import (
     encode_full_trajectory,
     find_step_latent_indices,
 )

@@ -1,5 +1,5 @@
 from nimloth.rollout.transitions import TransitionSample
-from nimloth.training.sft2.data.samplers import (
+from nimloth.training.sft.stage3.data.samplers import (
     FutureRolloutBatchSampler,
     OnlineHistoryBatchSampler,
 )

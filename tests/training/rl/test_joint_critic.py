@@ -11,7 +11,7 @@ from nimloth.training.rl.joint_critic import (
     create_frozen_critic_snapshot,
     load_joint_action_value_critic,
 )
-from nimloth.training.sft2.algorithm import SFT2_VALUE_OBJECTIVE
+from nimloth.training.sft.stage3.algorithm import SFT2_VALUE_OBJECTIVE
 from nimloth.wm.grid import SharedSlotProjector
 from nimloth.wm.value_head import ValueHead
 

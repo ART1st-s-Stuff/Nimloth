@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 RUNNER = ROOT / "experiments/training/sft2/run_id74_action_head_repair.sh"
 SLURM = ROOT / "experiments/training/sft2/id176_action_head_repair.slurm"
-ENTRYPOINT = ROOT / "src/nimloth/training/sft2/action_head_repair_cli.py"
+ENTRYPOINT = ROOT / "experiments/training/sft/diagnosis/action_head_repair_cli.py"
 
 
 def test_id176_launcher_locks_low_cost_repair_contract() -> None:

@@ -14,7 +14,7 @@ Each source module must have a README index. Read and update the owner when its 
 | Latent extraction | [`latent/README.md`](../../../src/nimloth/latent/README.md) |
 | Rollout schema/storage/windows | [`rollout/README.md`](../../../src/nimloth/rollout/README.md) |
 | World model and heads | [`wm/README.md`](../../../src/nimloth/wm/README.md) |
-| Training | [`training/README.md`](../../../src/nimloth/training/README.md), [`common`](../../../src/nimloth/training/common/README.md), [`sft2`](../../../src/nimloth/training/sft2/README.md), [`rl`](../../../src/nimloth/training/rl/README.md), [`reconstruction`](../../../src/nimloth/training/reconstruction/README.md) |
+| Training | [`training/README.md`](../../../src/nimloth/training/README.md), [`common`](../../../src/nimloth/training/common/README.md), [`sft`](../../../src/nimloth/training/sft/README.md), [`stage3`](../../../src/nimloth/training/sft/stage3/README.md), [`rl`](../../../src/nimloth/training/rl/README.md), [`reconstruction`](../../../src/nimloth/training/reconstruction/README.md) |
 | Reconstruction | [`recon/README.md`](../../../src/nimloth/recon/README.md), [`cfm`](../../../src/nimloth/recon/cfm/README.md), [`rcdm`](../../../src/nimloth/recon/rcdm/README.md) |
 | Evaluation and utilities | [`eval/README.md`](../../../src/nimloth/eval/README.md), [`util/README.md`](../../../src/nimloth/util/README.md), [`util/cache/README.md`](../../../src/nimloth/util/cache/README.md) |
 

@@ -8,15 +8,15 @@ import random
 import pytest
 import torch
 
-from nimloth.training.sft2.checkpoint import (
+from nimloth.training.sft.stage3.checkpoint import (
     find_resume_checkpoint,
     is_trainable_checkpoint_dir,
     load_world_model_checkpoint,
     resolve_resume_checkpoint_dir,
     resume_epoch_and_micro_step,
 )
-from nimloth.training.sft2.algorithm import require_sft2_wm_history
-from nimloth.training.sft2.utils import seed_training_micro_step, training_micro_seed
+from nimloth.training.sft.stage3.algorithm import require_sft2_wm_history
+from nimloth.training.sft.stage3.utils import seed_training_micro_step, training_micro_seed
 from nimloth.wm.lewm import LeWMConfig
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.model import WorldModel

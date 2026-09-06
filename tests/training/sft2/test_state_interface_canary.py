@@ -3,8 +3,8 @@ import json
 import numpy as np
 import torch
 
-from nimloth.training.sft2.id191_state_interface_canary import _train_canary
-from nimloth.training.sft2.state_interface_canary import (
+from experiments.training.sft.diagnosis.id191_state_interface_canary import _train_canary
+from experiments.training.sft.diagnosis.state_interface_canary import (
     ResidualStateInterfaceCanary,
     StateInterfaceCanaryConfig,
     canary_gate,

@@ -22,7 +22,7 @@ from transformers import AutoConfig, Qwen2_5_VLForConditionalGeneration
 from nimloth.backbone.qwen25vl.loading import load_qwen_processor
 from nimloth.backbone.qwen25vl.policy import validate_agent_policy_protocol
 from nimloth.rollout.transitions import TERMINAL_ASSISTANT_PREFIX_FIELD
-from nimloth.training.sft2.data.terminal_cot import (
+from nimloth.training.sft.stage3.data.terminal_cot import (
     TerminalCoTFormatError,
     generate_terminal_cot_prefix,
     write_augmented_records,

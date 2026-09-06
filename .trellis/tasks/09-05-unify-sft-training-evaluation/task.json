@@ -1,0 +1,28 @@
+{
+  "id": "unify-sft-training-evaluation",
+  "name": "unify-sft-training-evaluation",
+  "title": "统一SFT三阶段训练与rollout评估",
+  "description": "以sft/spec.md为算法设计，将现有sft1和sft2迁入sft目录，落实三阶段训练及direct/WM评估并改善可读性",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-09-05",
+  "completedAt": null,
+  "branch": "codex/unify-sft-training-evaluation",
+  "base_branch": "dev",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "worktree_path": "/workspace/remote2/nimloth/.worktree/codex-unify-sft"
+  }
+}

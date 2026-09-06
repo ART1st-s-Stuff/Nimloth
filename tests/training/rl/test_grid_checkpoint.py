@@ -11,7 +11,7 @@ import torch
 from nimloth.config.rl import parse_rl_config
 from nimloth.agent.planning import WorldModelPlanner
 from nimloth.training.rl.planning_loader import load_planning_world_model
-from nimloth.training.sft2.algorithm import SFT2_VALUE_OBJECTIVE
+from nimloth.training.sft.stage3.algorithm import SFT2_VALUE_OBJECTIVE
 from nimloth.training.rl.trainer import _build_world_model
 from nimloth.wm.grid import (
     GridPredictorConfig,

@@ -9,7 +9,7 @@ from pathlib import Path
 from transformers import AutoProcessor
 
 from nimloth.latent import add_special_tokens
-from nimloth.training.sft2.cli import parse_sft2_args
+from nimloth.training.sft.stage3.cli import parse_sft2_args
 from nimloth.util.cache import (
     DEFAULT_MIN_PIXELS,
     build_compact_transition_preprocess_cache,

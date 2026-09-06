@@ -4,13 +4,20 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import torch
 from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
 
+# 直接执行脚本时也从所属 checkout 加载诊断包。
+_repo_root = Path(__file__).resolve().parents[4]
+for _import_root in (_repo_root, _repo_root / "src"):
+    if str(_import_root) not in sys.path:
+        sys.path.insert(0, str(_import_root))
+
 from nimloth.latent import add_special_tokens, special_token_ids
-from nimloth.training.sft2.diagnosis.packed_trajectory import (
+from experiments.training.sft.diagnosis.packed_trajectory import (
     TrajectoryStepResult,
     _reset_model_rope_state,
     assert_trajectory_latents_equivalent,

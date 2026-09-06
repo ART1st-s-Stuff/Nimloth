@@ -15,14 +15,17 @@ if str(REPO_ROOT) not in sys.path:
 if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from experiments.training.rl.rollout_env import (  # noqa: E402
+from nimloth.training.sft.evaluation.rollout import (  # noqa: E402
     _NAV_DATASETS,
     main as rollout_main,
 )
-from nimloth.training.sft2.mcts_evaluation import (  # noqa: E402
+from nimloth.training.sft.stage3.mcts_evaluation import (  # noqa: E402
     SFT2MCTSEvaluationContract,
     load_sft2_mcts_evaluation_contract,
 )
+
+
+from nimloth.training.sft.evaluation.cli import write_or_validate_contract
 
 
 _HELD_OUT_DATASETS = tuple(
@@ -152,35 +155,6 @@ def build_rollout_argv(
     if args.resume:
         rollout_args.append("--resume-existing-rollouts")
     return rollout_args
-
-
-def write_or_validate_contract(
-    output_dir: Path,
-    metadata: dict[str, object],
-    *,
-    resume: bool,
-) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    contract_path = output_dir / "evaluation_contract.json"
-    other_entries = [path for path in output_dir.iterdir() if path != contract_path]
-    if contract_path.exists():
-        if not resume:
-            raise FileExistsError(
-                f"refusing to overwrite evaluation output: {output_dir}"
-            )
-        existing = json.loads(contract_path.read_text(encoding="utf-8"))
-        if existing != metadata:
-            raise ValueError("resume evaluation contract does not match requested run")
-        return
-    if other_entries:
-        raise FileExistsError(
-            "evaluation output has artifacts but no contract: "
-            f"{output_dir}"
-        )
-    contract_path.write_text(
-        json.dumps(metadata, indent=2) + "\n",
-        encoding="utf-8",
-    )
 
 
 def main(argv: list[str] | None = None) -> int:

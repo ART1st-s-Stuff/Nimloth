@@ -23,7 +23,7 @@ Do not flatten a multistep WM objective into independent prompts, pre-encode sta
 ## Stage sources
 
 - [`wm/README.md`](../../../src/nimloth/wm/README.md)
-- [`training/sft2/README.md`](../../../src/nimloth/training/sft2/README.md)
+- [`training/sft/README.md`](../../../src/nimloth/training/sft/README.md)
 - [`training/rl/README.md`](../../../src/nimloth/training/rl/README.md)
 - [`training/common/README.md`](../../../src/nimloth/training/common/README.md)
 - [`config/sft2/README.md`](../../../src/nimloth/config/sft2/README.md)
