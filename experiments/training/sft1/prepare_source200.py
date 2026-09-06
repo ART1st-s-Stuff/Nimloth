@@ -72,7 +72,19 @@ def prepare(partition_path: Path, output: Path) -> dict:
     return result
 
 
-def verify(prepared_path: Path) -> list[Path]:
+def parse_shard_indices(value: str, shard_count: int) -> list[int]:
+    try:
+        indices = [int(item) for item in value.split(',')]
+    except ValueError as error:
+        raise ValueError('shard indices must be comma-separated integers') from error
+    if not indices or any(index < 0 or index >= shard_count for index in indices):
+        raise ValueError('prepared shard index out of range')
+    if len(set(indices)) != len(indices):
+        raise ValueError('duplicate prepared shard index')
+    return indices
+
+
+def verify(prepared_path: Path, shard_indices: str | None = None) -> list[Path]:
     import pyarrow.parquet as pq
 
     manifest = json.loads(prepared_path.read_text())
@@ -102,7 +114,9 @@ def verify(prepared_path: Path) -> list[Path]:
         if pq.read_table(path).to_pylist() != expected_rows[i * 20:(i + 1) * 20]:
             raise ValueError('prepared row or runtime override mismatch')
         paths.append(path.resolve())
-    return paths
+    if shard_indices is None:
+        return paths
+    return [paths[index] for index in parse_shard_indices(shard_indices, len(paths))]
 
 
 def validate_output(jsonl: Path, parquet: Path) -> dict:
@@ -130,13 +144,14 @@ if __name__ == '__main__':
     parser.add_argument('--partition', type=Path)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--verify', type=Path)
+    parser.add_argument('--shard-indices')
     parser.add_argument('--validate-output', type=Path)
     parser.add_argument('--parquet', type=Path)
     args = parser.parse_args()
     if args.validate_output and args.parquet:
         validate_output(args.validate_output, args.parquet)
     elif args.verify:
-        print('\n'.join(str(path) for path in verify(args.verify)))
+        print('\n'.join(str(path) for path in verify(args.verify, args.shard_indices)))
     elif args.partition and args.output:
         prepare(args.partition, args.output)
     else:

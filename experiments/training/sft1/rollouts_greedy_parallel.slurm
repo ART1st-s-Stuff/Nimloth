@@ -634,15 +634,19 @@ PYPORT
       exit 2
     fi
     local prepared_list="${CONTROL_DIR}/prepared_paths.txt"
-    PYTHONPATH="${ROOT}:${ROOT}/src:${PYTHONPATH:-}" "${PYTHON_ENV}/bin/python3" -m experiments.training.sft1.prepare_source200 --verify "${ROLLOUT_PREPARED_MANIFEST}" > "${prepared_list}"
+    local prepared_shard_args=()
+    if [ -n "${ROLLOUT_PREPARED_SHARD_INDICES:-}" ]; then
+      prepared_shard_args=(--shard-indices "${ROLLOUT_PREPARED_SHARD_INDICES}")
+    fi
+    PYTHONPATH="${ROOT}:${ROOT}/src:${PYTHONPATH:-}" "${PYTHON_ENV}/bin/python3" -m experiments.training.sft1.prepare_source200 --verify "${ROLLOUT_PREPARED_MANIFEST}" "${prepared_shard_args[@]}" > "${prepared_list}"
     TRAIN_BATCH_SIZE=20
     VAL_BATCH_SIZE=20
     AGENT_NUM_WORKERS=1
     ENV_REQUEST_TIMEOUT=500
-    local shard_index=0
     while IFS= read -r prepared_parquet; do
-      run_shard train "source200_$(printf '%02d' "${shard_index}")" source source "${prepared_parquet}"
-      shard_index=$((shard_index + 1))
+      local prepared_name
+      prepared_name=$(basename "${prepared_parquet}" .parquet)
+      run_shard train "source200_${prepared_name#shard_}" source source "${prepared_parquet}"
     done < "${prepared_list}"
     return 0
   fi

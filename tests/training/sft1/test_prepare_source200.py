@@ -56,6 +56,28 @@ def test_source_identity_mismatch_rejected():
         pilot.select_rows(manifest, batch_rows)
 
 
+def test_verify_selects_exact_prepared_shards(tmp_path, monkeypatch):
+    source = tmp_path / 'source.parquet'
+    rows = _source_rows()
+    pq.write_table(pa.Table.from_pylist(rows), source)
+    digest = pilot.sha256(source)
+    monkeypatch.setattr(data, 'SOURCE_TRAIN_SHA256', digest)
+    partition = tmp_path / 'partition'
+    data.partition_source_parquet(source, partition, expected_sha256=digest)
+    output = tmp_path / 'prepared'
+    pilot.prepare(partition / 'partition_manifest.json', output)
+
+    assert [path.name for path in pilot.verify(
+        output / 'prepared_manifest.json', '7,9'
+    )] == ['shard_07.parquet', 'shard_09.parquet']
+    with pytest.raises(ValueError, match='duplicate'):
+        pilot.verify(output / 'prepared_manifest.json', '7,7')
+    with pytest.raises(ValueError, match='out of range'):
+        pilot.verify(output / 'prepared_manifest.json', '10')
+    with pytest.raises(ValueError, match='comma-separated integers'):
+        pilot.verify(output / 'prepared_manifest.json', 'seven')
+
+
 @pytest.mark.parametrize('error', ['missing', 'duplicate', 'wrong_seed', None])
 def test_output_identity_coverage(tmp_path, error):
     import json
