@@ -108,3 +108,5 @@ SFT1/SFT2共享trainer现支持每5个optimizer step发布原子恢复点，保�
 dgx-55入口固定world4/preempt/requeue/48CPU/240G/6h和持久RUN_ROOT。batch shell只在确认四个训练rank完整时转发USR1；训练在下一完整optimizer边界保存并返回75，控制器记录preempted并执行精确job requeue。已完成stage、模型导出和direct eval均按生产校验跳过或续接；模型导出使用临时目录后原子发布。world4有效batch32，SFT1/SFT2约20/229次更新。
 
 独立trellis-check修复信号误匹配、普通SIGTERM误报、恢复身份缺口、半写epoch、merge中断和best_val落后一轮。最终focused恢复/流水线测试15 passed，相邻SFT回归169 passed；Ruff check/format、bash -n、py_compile和git diff --check通过。未配置type checker，不宣称type check。真实四rank NCCL、Slurm自重排和恢复后的模型一致性仍需dgx-55运行验证。
+
+实现与任务记录提交为 `766017d097f63023bb44113f941d19426b180c7c`。随后按项目指定命令 `ssh -F ~/.ssh/config superpod-csejzhang` 连续两次实时预检，均在VPN跳板 `10.88.0.3` 以 `user@10.88.0.3: Permission denied (publickey)` 失败。未能取得新的dgx-55/Slurm状态，因此没有远程同步或提交作业；此前4张空闲GPU观察已视为过期。需人类恢复VPN跳板SSH认证后，重新查询资源并执行完整远程preflight。
