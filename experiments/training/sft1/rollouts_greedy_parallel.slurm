@@ -68,7 +68,7 @@ fi
 
 mkdir -p "${RUN_DIR}" "${CONTROL_DIR}" "${RUN_DIR}/validation" "${RUN_DIR}/checkpoints_rollout"
 
-COMMON_ENV="export REPO='${ROOT}'; source '${SCRIPTDIR}/common_env.sh'; export PYTHONPATH='${BASEDIR}:${VERL_DIR}:${ROOT}/src'; unset PYTORCH_CUDA_ALLOC_CONF; export FLASHINFER_WORKSPACE_DIR='${ROOT}/.cache/flashinfer'; export TRITON_CACHE_DIR='/tmp/triton_cache_${RUNTIME_NAMESPACE}_$(hostname)'; export XDG_CACHE_HOME='/tmp/xdg_cache_${RUNTIME_NAMESPACE}_$(hostname)'; export TORCH_EXTENSIONS_DIR='/tmp/torch_ext_${RUNTIME_NAMESPACE}_$(hostname)'; mkdir -p \"\$FLASHINFER_WORKSPACE_DIR\" \"\$TORCH_EXTENSIONS_DIR\" \"\$TRITON_CACHE_DIR\" \"\$XDG_CACHE_HOME\"; unset VLLM_ATTENTION_BACKEND 2>/dev/null || true; export VLLM_USE_FLASHINFER_SAMPLER=0; cd '${BASEDIR}'; export RAY_DEDUP_LOGS=0; export HYDRA_FULL_ERROR=1; export TORCHINDUCTOR_DISABLE=1; export TORCH_COMPILE_DISABLE=1; export TORCHDYNAMO_DISABLE=1"
+COMMON_ENV="export REPO='${ROOT}'; source '${SCRIPTDIR}/common_env.sh'; export VAGEN_DIR='${BASEDIR}'; export VERL_DIR='${VERL_DIR}'; export PYTHONPATH='${BASEDIR}:${VERL_DIR}:${ROOT}/src'; unset PYTORCH_CUDA_ALLOC_CONF; export FLASHINFER_WORKSPACE_DIR='${ROOT}/.cache/flashinfer'; export TRITON_CACHE_DIR='/tmp/triton_cache_${RUNTIME_NAMESPACE}_$(hostname)'; export XDG_CACHE_HOME='/tmp/xdg_cache_${RUNTIME_NAMESPACE}_$(hostname)'; export TORCH_EXTENSIONS_DIR='/tmp/torch_ext_${RUNTIME_NAMESPACE}_$(hostname)'; mkdir -p \"\$FLASHINFER_WORKSPACE_DIR\" \"\$TORCH_EXTENSIONS_DIR\" \"\$TRITON_CACHE_DIR\" \"\$XDG_CACHE_HOME\"; unset VLLM_ATTENTION_BACKEND 2>/dev/null || true; export VLLM_USE_FLASHINFER_SAMPLER=0; cd '${BASEDIR}'; export RAY_DEDUP_LOGS=0; export HYDRA_FULL_ERROR=1; export TORCHINDUCTOR_DISABLE=1; export TORCH_COMPILE_DISABLE=1; export TORCHDYNAMO_DISABLE=1"
 
 cleanup() {
   set +e
@@ -627,7 +627,79 @@ PYPORT
     exit 4
   fi
   export RAY_ADDRESS="${local_ip}:${RAY_PORT}"
-  bash -lc "${COMMON_ENV}; export RAY_ADDRESS='${RAY_ADDRESS}'; python -c \"import ray; ray.init(); print(ray.available_resources()); runtime=ray.get(ray.remote(lambda: __import__('verl').__file__).remote()); print('RAY_WORKER_VERL=' + runtime); assert runtime.startswith('${VERL_DIR}/verl/'), runtime\"" | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+  bash -lc "${COMMON_ENV}; export RAY_ADDRESS='${RAY_ADDRESS}'; exec '${PYTHON_ENV}/bin/python3' -" <<'PYRAY' | tee -a "${RUN_DIR}/${EXPERIMENT_NAME}.log"
+import os
+import sys
+from pathlib import Path
+
+worker_env = {name: os.environ[name] for name in ('PYTHONPATH', 'VERL_DIR', 'VAGEN_DIR')}
+if not all(worker_env.values()):
+    raise RuntimeError(f"missing pinned Ray worker environment: {worker_env}")
+worker_env.update({'TOKENIZERS_PARALLELISM': 'true', 'NCCL_DEBUG': 'WARN'})
+for name in (
+    'PYTHONPATH',
+    'VAGEN_DIR',
+    'VERL_DIR',
+    'PATH',
+    'HF_HOME',
+    'TRANSFORMERS_CACHE',
+    'TORCH_HOME',
+    'VLLM_HOST_IP',
+    'NCCL_SOCKET_IFNAME',
+    'GLOO_SOCKET_IFNAME',
+    'NCCL_IB_DISABLE',
+    'CUDA_DEVICE_ORDER',
+    'FLASHINFER_WORKSPACE_DIR',
+    'TRITON_CACHE_DIR',
+    'XDG_CACHE_HOME',
+    'TORCH_EXTENSIONS_DIR',
+    'VLLM_USE_FLASHINFER_SAMPLER',
+    'TORCHINDUCTOR_DISABLE',
+    'TORCH_COMPILE_DISABLE',
+    'TORCHDYNAMO_DISABLE',
+    'PYTHONDONTWRITEBYTECODE',
+):
+    if name in os.environ:
+        worker_env[name] = os.environ[name]
+for module, root in (('verl', 'VERL_DIR'), ('vagen', 'VAGEN_DIR')):
+    package = Path(worker_env[root]) / module / '__init__.py'
+    if not package.is_file():
+        raise RuntimeError(f"missing pinned Ray worker package: {package}")
+
+import ray
+
+ray.init(runtime_env={'env_vars': worker_env})
+try:
+    print(ray.available_resources())
+
+    @ray.remote
+    def worker_runtime():
+        import os
+        import sys
+        import vagen
+        import verl
+
+        return {
+            'verl': verl.__file__,
+            'vagen': vagen.__file__,
+            'executable': sys.executable,
+            'env_vars': {name: os.environ.get(name) for name in worker_env},
+        }
+
+    runtime = ray.get(worker_runtime.remote())
+    print(f"RAY_WORKER_RUNTIME={runtime}", flush=True)
+    for module, root in (('verl', 'VERL_DIR'), ('vagen', 'VAGEN_DIR')):
+        expected = (Path(worker_env[root]) / module).resolve()
+        if Path(runtime[module]).resolve().parent != expected:
+            raise RuntimeError(f"Ray worker {module} import mismatch: {runtime[module]} != {expected}")
+    # 不解析虚拟环境解释器的符号链接，避免把系统 Python 误认为同一运行环境。
+    if os.path.abspath(runtime['executable']) != os.path.abspath(sys.executable):
+        raise RuntimeError(f"Ray worker Python mismatch: {runtime['executable']} != {sys.executable}")
+    if runtime['env_vars'] != worker_env:
+        raise RuntimeError(f"Ray worker environment mismatch: {runtime['env_vars']} != {worker_env}")
+finally:
+    ray.shutdown()
+PYRAY
 
   if [ -n "${ROLLOUT_PREPARED_MANIFEST:-}" ]; then
     if [ "${SLURM_ARRAY_TASK_ID}" != "0" ] || [ "${ROLLOUT_SMOKE}" != "0" ]; then
