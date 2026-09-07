@@ -110,6 +110,122 @@ def prepare(prepared_manifest: Path, output: Path) -> dict:
     return result
 
 
+def _partition_source(manifest_path: Path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    raw = manifest_path.read_bytes()
+    manifest = json.loads(raw)
+    if (manifest.get('format') != 'original_validation200_prepared_v1'
+            or manifest.get('count') != 200):
+        raise ValueError('invalid original validation manifest')
+    identities = _identities(manifest['rows'])
+    name = manifest['parquet']
+    if not isinstance(name, str) or Path(name).name != name:
+        raise ValueError('unsafe source parquet path')
+    parquet = manifest_path.parent / name
+    payload = parquet.read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    if digest != manifest['parquet_sha256']:
+        raise ValueError('validation parquet hash mismatch')
+    table = pq.read_table(pa.BufferReader(payload))
+    rows = table.to_pylist()
+    if len(rows) != 200:
+        raise ValueError('expected exactly 200 parquet rows')
+    for row, identity in zip(rows, identities, strict=True):
+        info = row['extra_info']
+        actual = {key: info[key] for key in IDENTITY_KEYS if key != 'eval_set'}
+        config = info['env_config']
+        actual['eval_set'] = config['eval_set']
+        if actual != identity:
+            raise ValueError('parquet identity/order mismatch')
+        if (config.get('prompt_format') != 'grounding_worldmodeling'
+                or 'success_reward' in config
+                or any(config.get(key) != value for key, value in ENV_CONTRACT.items())):
+            raise ValueError('source environment contract mismatch')
+    binding = {'source_manifest': str(manifest_path.resolve()),
+               'source_manifest_sha256': hashlib.sha256(raw).hexdigest(),
+               'source_parquet_sha256': digest}
+    _check_partition_source_unchanged(manifest_path, parquet, binding)
+    return table, identities, parquet, binding
+
+
+def _check_partition_source_unchanged(manifest_path: Path, parquet: Path, binding: dict) -> None:
+    if (sha256(manifest_path) != binding['source_manifest_sha256']
+            or sha256(parquet) != binding['source_parquet_sha256']):
+        raise ValueError('partition input changed during operation')
+
+
+def verify_partitions(manifest_path: Path, output_dir: Path) -> list[Path]:
+    """Verify exact ordered source slices and hash bindings; return shard paths."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    table, identities, parquet, binding = _partition_source(manifest_path)
+    metadata_path = output_dir / 'partitions.json'
+    raw = metadata_path.read_bytes()
+    metadata = json.loads(raw)
+    if (metadata.get('format') != 'original_validation200_partitions_v1'
+            or metadata.get('count') != 200
+            or any(metadata.get(key) != value for key, value in binding.items())
+            or len(metadata.get('shards', [])) != 3):
+        raise ValueError('invalid partitions manifest/source binding')
+    expected_names = {'partitions.json', *(f'shard_{i}.parquet' for i in range(3))}
+    if {p.name for p in output_dir.iterdir()} != expected_names:
+        raise ValueError('missing or unexpected partition files')
+    paths, hashes = [], []
+    offset = 0
+    for i, count in enumerate((67, 67, 66)):
+        entry = metadata['shards'][i]
+        name = f'shard_{i}.parquet'
+        if (entry.get('parquet') != name or entry.get('count') != count
+                or entry.get('rows') != identities[offset:offset + count]):
+            raise ValueError('partition identity/count/order mismatch')
+        path = output_dir / name
+        if path.is_symlink():
+            raise ValueError('partition must not be a symlink')
+        payload = path.read_bytes()
+        digest = hashlib.sha256(payload).hexdigest()
+        if digest != entry['sha256']:
+            raise ValueError('partition hash mismatch')
+        actual = pq.read_table(pa.BufferReader(payload))
+        if not actual.equals(table.slice(offset, count), check_metadata=True):
+            raise ValueError('partition rows/schema differ from ordered source slice')
+        paths.append(path)
+        hashes.append(digest)
+        offset += count
+    _check_partition_source_unchanged(manifest_path, parquet, binding)
+    if metadata_path.read_bytes() != raw or any(
+            sha256(path) != digest for path, digest in zip(paths, hashes, strict=True)):
+        raise ValueError('partition output changed during verification')
+    return paths
+
+
+def partition(manifest_path: Path, output_dir: Path) -> dict:
+    """Publish contiguous 67/67/66 validation shards without changing any row."""
+    import pyarrow.parquet as pq
+
+    table, identities, parquet, binding = _partition_source(manifest_path)
+    output_dir.mkdir(parents=True, exist_ok=False)
+    shards = []
+    offset = 0
+    for i, count in enumerate((67, 67, 66)):
+        path = output_dir / f'shard_{i}.parquet'
+        pq.write_table(table.slice(offset, count), path)
+        with path.open('rb') as stream:
+            os.fsync(stream.fileno())
+        shards.append({'parquet': path.name, 'count': count,
+                       'rows': identities[offset:offset + count], 'sha256': sha256(path)})
+        offset += count
+    _check_partition_source_unchanged(manifest_path, parquet, binding)
+    result = {'format': 'original_validation200_partitions_v1', 'count': 200,
+              **binding, 'shards': shards}
+    _write_json(output_dir / 'partitions.json', result)
+    verify_partitions(manifest_path, output_dir)
+    _check_partition_source_unchanged(manifest_path, parquet, binding)
+    return result
+
+
 def summarize(manifest_path: Path, output_dir: Path) -> dict:
     manifest = json.loads(manifest_path.read_text())
     if manifest['format'] != 'original_validation200_prepared_v1' or manifest['count'] != 200:
@@ -198,6 +314,9 @@ def main() -> None:
     preparation = commands.add_parser('prepare')
     preparation.add_argument('--source-manifest', required=True, type=Path)
     preparation.add_argument('--output-dir', required=True, type=Path)
+    partitions = commands.add_parser('partition')
+    partitions.add_argument('--manifest', required=True, type=Path)
+    partitions.add_argument('--output-dir', required=True, type=Path)
     summary = commands.add_parser('summarize')
     summary.add_argument('--manifest', required=True, type=Path)
     summary.add_argument('--rollouts-dir', required=True, type=Path)
@@ -206,6 +325,9 @@ def main() -> None:
     if args.command == 'prepare':
         result = prepare(args.source_manifest, args.output_dir)
         print(json.dumps({'count': result['count'], 'parquet_sha256': result['parquet_sha256']}))
+    elif args.command == 'partition':
+        result = partition(args.manifest, args.output_dir)
+        print(json.dumps({'count': result['count'], 'shard_counts': [s['count'] for s in result['shards']]}))
     else:
         result = summarize(args.manifest, args.rollouts_dir)
         _write_json(args.output, result)

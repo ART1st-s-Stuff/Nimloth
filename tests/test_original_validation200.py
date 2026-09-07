@@ -230,3 +230,57 @@ def test_original_validate_hook_does_not_mutate_results(tmp_path, dump, monkeypa
     assert namespace['_validate'](actor) == {'val/success': True}
     assert events == ['reset', 'rollout', 'record']
     assert isinstance(result['image_data'][0], Image.Image)
+
+
+def test_concurrent_dump_never_reads_partially_written_record(tmp_path, dump, monkeypatch):
+    """Hold one JSON write halfway through while another writer scans the root."""
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+
+    rows, identities = fixtures()
+    infos = [row['extra_info'] for row in audit.convert_rows(rows, identities)[:2]]
+    halfway, release = Event(), Event()
+    original_open = Path.open
+
+    class SlowWrite:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            self.stream.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.stream.__exit__(*args)
+
+        def __getattr__(self, key):
+            return getattr(self.stream, key)
+
+        def write(self, text):
+            middle = len(text) // 2
+            self.stream.write(text[:middle])
+            self.stream.flush()
+            halfway.set()
+            assert release.wait(10), 'concurrent writer did not finish'
+            self.stream.write(text[middle:])
+            return len(text)
+
+    def slow_open(path, mode='r', *args, **kwargs):
+        stream = original_open(path, mode, *args, **kwargs)
+        if path.parent.name == 'row_000000' and 'record' in path.name and mode == 'x':
+            return SlowWrite(stream)
+        return stream
+
+    monkeypatch.setattr(Path, 'open', slow_open)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(dump, tmp_path / 'dump', [infos[0]], [recording()])
+        try:
+            assert halfway.wait(10)
+            second = executor.submit(dump, tmp_path / 'dump', [infos[1]], [recording()])
+            second_path = second.result(timeout=10)
+        finally:
+            release.set()
+        first_path = first.result(timeout=10)
+    assert json.loads(first_path.read_text())['source_index'] == 0
+    assert json.loads(second_path.read_text())['source_index'] == 3
+    assert not list((tmp_path / 'dump').glob('row_*/*.tmp'))

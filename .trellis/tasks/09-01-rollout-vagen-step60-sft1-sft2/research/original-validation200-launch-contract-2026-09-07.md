@@ -23,3 +23,13 @@
 Nimloth origin ART1st-s-Stuff/Nimloth，任务分支codex/step60-original-validation200，基点a1892cd1；VAGEN origin ART1st-s-Stuff/VAGEN，分支codex/step60-original-validation，基点787c7e2；verl origin ART1st-s-Stuff/verl，同名专用分支，基点3f55021。按实验合同正常commit/push和自己账号远程worktree同步，不修改dev，不force。
 
 入口 experiments/training/sft1/run_original_validation200.slurm；完整运行参数由脚本固定，并在提交时补录三个commit、解释器、prepared/checkpoint/run路径、SlurmID和完整export。运行启动后持续监控并记录success_summary.json；未完成不报成功率。
+
+## 2026-09-07 用户授权变更：三个节点各自运行模型和环境
+
+用户要求总计6GPU、使用多个2卡节点，并明确沿用每节点独立管理模型与环境的方案。本次据此替换尚未运行的8卡作业557214，采用Slurm array 0-2%3，每个成员1节点×2GPU、28CPU/128GiB、TP2、本地2个policy ranks，最长6小时（总36GPU小时），只替换一次，不自动重试。每个成员均有独立Ray head、环境服务、端口和缓存；不建立跨节点Ray或FSDP通信。调度器独立安排三个成员，不硬性要求同时开始或位于不同物理节点，每个成员始终拥有两张独占分配GPU。
+
+保持同一checkpoint、200条身份、原始随机采样与环境参数、val_batch_size=1、不训练。原200条按照既定顺序连续拆为67/67/66三份，source_index和所有样本内容不变，节点内部按顺序运行。三套进程各自从seed0新初始化；TP及进程拆分改变数值和随机序列，因此不能称为原始8卡逐位复现。每个成员将原始逐条输出写到共享rollouts根下全局唯一row目录，独立日志和SamplingParams审计存于node_0/1/2。
+
+准备阶段生成单独的分片parquet及hash/身份清单，核验互不重复且并集恰为原200条；原prepared数据不修改。训练批次仍32、mini_batch16（val-only不执行训练），rollout_manager padding2。每节点模型和环境共享本地两卡，环境服务仅本地访问；保留原有GPU渲染预检、Git/checkpoint和版本门禁以及实际采样断言。
+
+提交前记录新commit、解释器、完整命令、唯一输出和array job。旧job只在新方案准备完成且重新确认状态后取消；不修改其他job或hligb文件。监控逐个检查三个成员，全部成功后使用原summarize核验exact200唯一身份/图片hash/真实boolsuccess，并写总体和Base100/Common100统计及完成标记；任一失败保留部分产物，不自动重提。
