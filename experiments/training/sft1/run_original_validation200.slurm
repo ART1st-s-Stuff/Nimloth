@@ -27,7 +27,23 @@ export VK_ICD_FILENAMES="${VULKAN_ROOT}/icd.d/nvidia_icd.json" VK_DRIVER_FILES="
 export PATH="${VULKAN_ROOT}/tools/extracted/usr/bin:${PYTHON_ENV}/bin:${PATH}"
 # CPU-only executable/loader check, including the --preflight login path.
 command -v vulkaninfo
-timeout --kill-after=5s 15s vulkaninfo --help >/dev/null
+"$PY" - <<'PY'
+import shutil
+import subprocess
+
+binary = shutil.which('vulkaninfo')
+assert binary is not None, 'vulkaninfo executable not found'
+result = subprocess.run([binary, '--help'], capture_output=True, text=True, timeout=15)
+assert (result.returncode in (0, 1)
+        and 'vulkaninfo - Summarize Vulkan information' in result.stdout
+        and 'USAGE:' in result.stdout
+        and 'error while loading shared libraries' not in result.stderr), (
+            f'vulkaninfo executable/loader check failed: rc={result.returncode}\n'
+            f'stdout={result.stdout}\nstderr={result.stderr}')
+if result.stderr:
+    print(result.stderr, end='')
+print('VULKANINFO_EXECUTABLE_OK', binary, flush=True)
+PY
 export PYTHONPATH="${VAGEN_DIR}:${VERL_DIR}:${REPO}"
 export PYTHONDONTWRITEBYTECODE=1 TOKENIZERS_PARALLELISM=true
 export HF_HOME=/project/peilab/atst/.cache/huggingface
