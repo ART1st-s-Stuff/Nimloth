@@ -115,3 +115,4 @@ RUN_ROOT=`/project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluati
 - Slurm job `557736`：preempt、dgx-55、4GPU、48CPU、240G、6h、Requeue=1；提交后状态 `PENDING(Priority)`，Elapsed=0。
 - 持久输出：`/project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluation/20260907T181900Z_dgx55_world4_9c9d6a9b`。
 - 预检期间dgx-55空闲GPU由4降为2；保持world4合同并排队，未缩减world size。尚无GPU训练或评估结果。
+- 终态：`FAILED / ExitCode 1:0 / elapsed 00:28:14`。SFT1完成20步及epoch_001，val_loss 5.593027114868164、format_correct_rate 0.0；step 5/10/15/20恢复点完整。stage1 export因PEFT同时保存modules_to_save与普通embedding权重别名，被导出器判为歧义而失败。SFT2和两组direct eval均未启动。不是抢占或OOM，未自动重提。

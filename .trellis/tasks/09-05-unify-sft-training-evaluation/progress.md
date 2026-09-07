@@ -118,3 +118,9 @@ SSH详细诊断确认宿主agent的 `art1st@ART1st-NixOS` 密钥被vpn-vm接受�
 完整远程输入preflight再次通过：step79四个shard/825 keys及SHA一致；train 613轨迹/7309回答、val 355轨迹/6054回答；14331个DINO特征无缺失且finite；Base/Common Sense各60任务指纹一致；输出盘free 294064750592 bytes。预检期间dgx-55由4卡空闲变化为2卡空闲，因此仍按固定world4提交并等待，不改变算法或有效batch。
 
 作业 `557736` 于18:19Z提交：preempt、固定dgx-55、4GPU/48CPU/240G/6h、Requeue=1、持久RUN_ROOT `outputs/experiments/training/sft/evaluation/20260907T181900Z_dgx55_world4_9c9d6a9b`。18:19:44Z最新为PENDING(Priority)，零运行时间，尚无训练或评估结果。
+
+### 557736终态与导出失败（2026-09-07T19:07:51Z）
+
+作业在dgx-55实际运行28分14秒，四rank映射通过。SFT1完整执行20个optimizer step，step 5/10/15/20原子恢复点均提交；epoch_001持久checkpoint完成。离线验证为val_loss 5.593027114868164、format_correct_rate 0.0；后者是当前格式诊断结果，不代表held-out rollout质量。
+
+随后stage1模型导出失败，未进入SFT2或direct eval。PEFT 0.19 adapter同时包含 `base_model.model.model.language_model.embed_tokens.modules_to_save.weight` 与 `base_model.model.model.language_model.embed_tokens.weight`，`restore_saved_untied_embeddings` 将其判为歧义并抛出RuntimeError。Slurm终态FAILED/ExitCode 1:0，final_status为failed；不是抢占、OOM或训练失败。SFT1 epoch checkpoint可保留复用。已启动本地根因修复与回归测试，未自动重提。
