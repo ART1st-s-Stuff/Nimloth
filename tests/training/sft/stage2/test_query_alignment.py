@@ -172,7 +172,7 @@ class TextProcessor:
                 if token not in self.vocab:
                     self.vocab[token] = len(self.vocab) + 1
                 ids.append(self.vocab[token])
-            rows.append(ids[:max_length])
+            rows.append(ids[:max_length] if kwargs.get("truncation", True) else ids)
         count = max(map(len, rows))
         return {
             "input_ids": torch.tensor([r + [0] * (count - len(r)) for r in rows]),
@@ -260,6 +260,20 @@ def test_real_collation_masks_prompt_padding_queries_and_repeated_history(tmp_pa
     assert torch.all(result["labels"].gather(1, result["query_positions"]) == -100)
     assert not result["dino_target"].requires_grad
     torch.testing.assert_close(result["dino_target"], features.expand(2, -1, -1))
+    # A sampled answer prefix produces one row, without supervising history again.
+    prefix_collator = QueryAlignmentCollator(
+        processor, 1000, 4, targets, last_answer_only=True
+    )
+    prefixes, _ = answer_examples(batch)
+    for index, prefix in enumerate(prefixes):
+        single = prefix_collator([prefix])
+        assert single["input_ids"].shape[0] == 1
+        width = single["input_ids"].shape[1]
+        for key in ("input_ids", "labels", "attention_mask"):
+            torch.testing.assert_close(single[key][0], result[key][index, :width])
+        torch.testing.assert_close(
+            single["query_positions"][0], result["query_positions"][index]
+        )
     logits = torch.randn(
         *result["labels"].shape, len(processor.vocab) + 1, requires_grad=True
     )
@@ -268,8 +282,51 @@ def test_real_collation_masks_prompt_padding_queries_and_repeated_history(tmp_pa
         result["labels"][:, 1:].reshape(-1),
     ).backward()
     assert torch.all(logits.grad[:, :-1][result["labels"][:, 1:] == -100] == 0)
-    with pytest.raises(ValueError, match="query slots must be complete"):
+    with pytest.raises(ValueError, match="truncation is forbidden"):
         QueryAlignmentCollator(processor, 30, 4, targets)(batch)
+    # Even complete query slots do not make a partially truncated action valid.
+    tail_limit = int(result["query_positions"][0, -1]) + 1
+    with pytest.raises(ValueError, match="truncation is forbidden"):
+        QueryAlignmentCollator(processor, tail_limit, 4, targets)(prefixes[:1])
+
+
+def test_answer_dataset_indexes_every_answer_once_and_preserves_history(tmp_path):
+    import json
+
+    from nimloth.training.sft.stage1.data import NimlothVLSFTDataset
+    from nimloth.training.sft.stage2.data import AnswerPrefixDataset
+
+    messages = [
+        {"role": "system", "content": "navigate"},
+        {"role": "user", "content": "<image>first"},
+        {"role": "assistant", "content": "<think>first</think>answer1"},
+        {"role": "user", "content": "<image>second"},
+        {"role": "assistant", "content": "<think>second</think>answer2"},
+        {"role": "user", "content": "<image>terminal"},
+    ]
+    path = tmp_path / "data.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "id": "episode",
+                "messages": messages,
+                "image_paths": ["first.png", "second.png", "terminal.png"],
+            }
+        )
+        + "\n"
+    )
+    trajectories = NimlothVLSFTDataset(path, None)
+    dataset = AnswerPrefixDataset(trajectories)
+    assert len(dataset) == 2
+    full = trajectories.get_messages(0)
+    assert dataset[0]["messages"] == full[:3]
+    assert dataset[1]["messages"] == full[:5]
+    for index, expected in enumerate(("first.png", "second.png")):
+        examples, paths = answer_examples([dataset[index]], last_answer_only=True)
+        assert len(examples) == 1
+        assert paths == [expected]
+    with pytest.raises(ValueError, match="end at its target"):
+        answer_examples([{"messages": full}], last_answer_only=True)
 
 
 def test_query_state_is_before_action_and_uses_same_teacher_forced_forward():

@@ -17,6 +17,8 @@ python -m nimloth.training.sft.stage2 \
 
 ## 模块职责与计算顺序
 
+`AnswerPrefixDataset` 在采样之前为每个回答建立索引，因此 `--batch-size` 按回答计数，每轮覆盖全部回答。每个样本保留截至目标回答的完整历史；collator 只监督最后一个回答，不再把一条长轨迹的全部前缀塞进同一个 batch。`--max-train-records` 仍先按原始轨迹选择，随后展开其全部回答。
+
 `data.py` 将多轮记录展开为截至每个真实回答的前缀。当前用户轮必须恰好对应一个观测图像，多图歧义会报错。历史轮仅提供上下文，不计算其回答 CE。当前真实非空 CoT、有序连续 query 区间和观测图像必须对齐；缺失或截断回答、query 位置均拒绝，不生成替代思考内容。
 
 `model.py` 在一次 teacher-forcing Qwen 前向中，使用现有 final-norm hook 提取 query hidden states。这些 query 位于真实 CoT 之后、动作之前，按位置经过 `wm.grid.SharedSlotProjector`。CE 监督当前回答，MSE 监督全部投影后的位置。DINO 目标无梯度，形状必须严格相同，不允许广播掩盖错配。

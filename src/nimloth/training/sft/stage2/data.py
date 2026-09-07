@@ -5,20 +5,58 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
+from torch.utils.data import Dataset
 
 from nimloth.latent import (
     latent_state_block,
     latent_state_tokens,
     normalize_latent_state_blocks,
 )
-from nimloth.training.sft.stage1.data import assistant_token_spans, collate_fn
+from nimloth.training.sft.stage1.data import (
+    NimlothVLSFTDataset,
+    assistant_token_spans,
+    collate_fn,
+)
 
 
-def answer_examples(batch: list[dict[str, Any]]) -> tuple[list[dict], list[str]]:
+class AnswerPrefixDataset(Dataset):
+    """Index every recorded answer once, retaining its complete observed history."""
+
+    def __init__(self, trajectories: NimlothVLSFTDataset):
+        if trajectories.use_cache:
+            raise ValueError(
+                "answer prefixes require original messages and image paths"
+            )
+        self.trajectories = trajectories
+        self.index = []
+        for row, record in enumerate(trajectories.records):
+            answers = [
+                (row, index)
+                for index, message in enumerate(record["messages"])
+                if message["role"] == "assistant"
+            ]
+            if not answers:
+                raise ValueError("query-alignment trajectory has no recorded answers")
+            self.index.extend(answers)
+
+    def __len__(self):
+        return len(self.index)
+
+    def __getitem__(self, index):
+        row, answer = self.index[index]
+        messages = self.trajectories.get_messages(row)
+        return {"messages": messages[: answer + 1]}
+
+
+def answer_examples(
+    batch: list[dict[str, Any]], *, last_answer_only: bool = False
+) -> tuple[list[dict], list[str]]:
     """Expand dialogues into prefixes; never borrow a later observation or thought."""
     examples, paths = [], []
     for record in batch:
         messages = record["messages"]
+        if last_answer_only and (not messages or messages[-1]["role"] != "assistant"):
+            raise ValueError("answer prefix must end at its target assistant answer")
         observation = None
         for index, message in enumerate(messages):
             if message["role"] == "user":
@@ -31,6 +69,9 @@ def answer_examples(batch: list[dict[str, Any]]) -> tuple[list[dict], list[str]]
                 # Do not silently choose a view when the record is ambiguous.
                 observation = images[0] if len(images) == 1 else None
             if message["role"] != "assistant":
+                continue
+            if last_answer_only and index != len(messages) - 1:
+                observation = None
                 continue
             if observation is None:
                 raise ValueError(
@@ -59,9 +100,10 @@ class QueryAlignmentCollator:
     query_count: int
     targets: Any
     mask_latent_query_labels: bool = True
+    last_answer_only: bool = False
 
     def __call__(self, batch):
-        examples, paths = answer_examples(batch)
+        examples, paths = answer_examples(batch, last_answer_only=self.last_answer_only)
         for example in examples:
             answer = normalize_latent_state_blocks(
                 example["messages"][-1]["content"], self.query_count
@@ -81,6 +123,7 @@ class QueryAlignmentCollator:
             self.max_length,
             latent_token_count=self.query_count,
             mask_latent_query_labels=self.mask_latent_query_labels,
+            require_complete=True,
         )
         query_ids = [
             self.processor.tokenizer.convert_tokens_to_ids(t)

@@ -153,6 +153,7 @@ def collate_fn(
     *,
     latent_token_count: int = 1,
     mask_latent_query_labels: bool = True,
+    require_complete: bool = False,
 ) -> dict[str, torch.Tensor]:
     texts: list[str] = []
     spans_per_item: list[list[tuple[int, int]]] = []
@@ -178,10 +179,14 @@ def collate_fn(
         text=texts,
         images=all_images,
         padding=True,
-        truncation=True,
+        truncation=not require_complete,
         max_length=max_length,
         return_tensors="pt",
     )
+    if require_complete and enc["input_ids"].shape[1] > max_length:
+        raise ValueError(
+            "complete answer prefix exceeds max_length; truncation is forbidden"
+        )
     labels = enc["input_ids"].clone()
     labels[:] = -100
     image_pad_id = processor.tokenizer.convert_tokens_to_ids("<|image_pad|>")

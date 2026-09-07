@@ -493,24 +493,31 @@ def main(*, stage: str = "format") -> int:
             )
         )
     )
+    format_eval_ds = val_ds
     if query_config is not None:
         from nimloth.backbone.dino_grid import (
             DINOV2_LARGE_IDENTITY,
             CachedDINOGridTargets,
         )
-        from nimloth.training.sft.stage2.data import QueryAlignmentCollator
+        from nimloth.training.sft.stage2.data import (
+            AnswerPrefixDataset,
+            QueryAlignmentCollator,
+        )
 
         targets = CachedDINOGridTargets.from_cache_root(
             args.dino_cache_root,
             identity=DINOV2_LARGE_IDENTITY,
             grid_size=query_config.grid_size,
         )
+        train_ds = AnswerPrefixDataset(train_ds)
+        val_ds = AnswerPrefixDataset(val_ds)
         train_collate = QueryAlignmentCollator(
             processor,
             args.max_length,
             query_config.grid_tokens,
             targets,
             mask_latent_query_labels=args.mask_latent_query_labels,
+            last_answer_only=True,
         )
     loader_workers = args.num_workers if use_cache else 0
     loader_kwargs: dict[str, Any] = {
@@ -798,7 +805,7 @@ def main(*, stage: str = "format") -> int:
         format_rate = evaluate_format(
             model,
             processor,
-            val_ds,
+            format_eval_ds,
             device,
             args.format_eval_samples,
             latent_token_count=args.latent_token_count,

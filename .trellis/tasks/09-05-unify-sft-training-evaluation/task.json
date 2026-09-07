@@ -23,6 +23,9 @@
   "relatedFiles": [],
   "notes": "",
   "meta": {
-    "worktree_path": "/workspace/remote2/nimloth/.worktree/codex-unify-sft"
+    "worktree_path": "/workspace/remote2/nimloth/.worktree/codex-unify-sft",
+    "kind": "experiment",
+    "gpu_test_authorization": "2026-09-06 human approved normal 3-GPU allocation for testing",
+    "legacy_validation_authorization": "Human requested training stage1 then stage2 from the previous checkpoint and old datasets, followed by evaluation of the new outputs; continued 2026-09-07. One epoch per stage, one normal eight-GPU job, six-hour cap; details in research/legacy-train-eval-contract-2026-09-07.md."
   }
 }
