@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import os
 import random
 import re
+import signal
 import time
 from pathlib import Path
 from typing import Any
@@ -37,10 +39,14 @@ from nimloth.latent import (
 )
 
 from .checkpoint import (
+    RESUME_SCHEMA,
     find_latest_resume_dir,
     load_lora_adapter_state,
+    restore_rng_state,
     save_checkpoint,
+    save_resume_checkpoint,
     validate_resume_stage,
+    validate_resume_state,
 )
 from .cli import parse_args
 from .data import (
@@ -331,6 +337,65 @@ def upload_dataset_artifact(
     run.summary["val_records"] = sum(1 for _ in val_jsonl.open() if _.strip())
 
 
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _resume_identity(
+    args: argparse.Namespace, *, stage: str, world: int, train_size: int
+) -> dict[str, Any]:
+    identity: dict[str, Any] = {
+        "stage": stage,
+        "world_size": world,
+        "model": str(Path(args.model).resolve()),
+        "train_jsonl": str(args.train_jsonl.resolve()),
+        "train_jsonl_sha256": _file_sha256(args.train_jsonl),
+        "val_jsonl": str(args.val_jsonl.resolve()),
+        "val_jsonl_sha256": _file_sha256(args.val_jsonl),
+        "train_size": train_size,
+        "max_train_records": args.max_train_records,
+        "max_val_records": args.max_val_records,
+        "max_images_per_record": args.max_images_per_record,
+        "seed": args.seed,
+        "epochs": args.epochs,
+        "batch_size": args.batch_size,
+        "grad_accum": args.grad_accum,
+        "lr": args.lr,
+        "embedding_lr": args.embedding_lr,
+        "weight_decay": args.weight_decay,
+        "warmup_ratio": args.warmup_ratio,
+        "max_length": args.max_length,
+        "max_pixels": args.max_pixels,
+        "min_pixels": args.min_pixels,
+        "latent_token_count": args.latent_token_count,
+        "latent_query_mode": args.latent_query_mode,
+        "gradient_checkpointing": args.gradient_checkpointing,
+        "attn_implementation": args.attn_implementation,
+        "preprocess_cache_fingerprint": args.train_cache_fingerprint,
+        "lora": args.lora,
+        "lora_r": args.lora_r,
+        "lora_alpha": args.lora_alpha,
+        "lora_dropout": args.lora_dropout,
+        "lora_target_modules": args.lora_target_modules,
+    }
+    if stage == "query":
+        identity.update(
+            {
+                "dino_cache_root": str(args.dino_cache_root.resolve()),
+                "dino_cache_fingerprint": args.dino_cache_fingerprint,
+                "grid_size": args.grid_size,
+                "projector_hidden_dim": args.projector_hidden_dim,
+                "weight_lm": args.weight_lm,
+                "weight_dino": args.weight_dino,
+            }
+        )
+    return identity
+
+
 def main(*, stage: str = "format") -> int:
     args, query_config = parse_args(stage=stage)
     random.seed(args.seed)
@@ -409,6 +474,7 @@ def main(*, stage: str = "format") -> int:
     val_cache_dir = (
         cache_root / f"val_{args.val_jsonl.stem}_{val_fp}" if use_cache else None
     )
+    args.train_cache_fingerprint = fp if use_cache else None
 
     train_ds = NimlothVLSFTDataset(
         args.train_jsonl,
@@ -509,6 +575,7 @@ def main(*, stage: str = "format") -> int:
             identity=DINOV2_LARGE_IDENTITY,
             grid_size=query_config.grid_size,
         )
+        args.dino_cache_fingerprint = targets.cache_fingerprint
         train_ds = AnswerPrefixDataset(train_ds)
         val_ds = AnswerPrefixDataset(val_ds)
         train_collate = QueryAlignmentCollator(
@@ -529,12 +596,8 @@ def main(*, stage: str = "format") -> int:
         loader_kwargs["persistent_workers"] = True
         loader_kwargs["prefetch_factor"] = args.prefetch_factor
 
-    train_sampler = (
-        DistributedSampler(
-            train_ds, num_replicas=world, rank=rank, shuffle=True, seed=args.seed
-        )
-        if world > 1
-        else None
+    train_sampler = DistributedSampler(
+        train_ds, num_replicas=world, rank=rank, shuffle=True, seed=args.seed
     )
     val_sampler = (
         DistributedSampler(val_ds, num_replicas=world, rank=rank, shuffle=False)
@@ -545,7 +608,7 @@ def main(*, stage: str = "format") -> int:
         train_ds,
         batch_size=args.batch_size,
         sampler=train_sampler,
-        shuffle=train_sampler is None,
+        shuffle=False,
         **loader_kwargs,
     )
     val_loader = DataLoader(
@@ -564,7 +627,7 @@ def main(*, stage: str = "format") -> int:
     load_path = args.model
     resume_lora = False
     if args.resume and resume_ckpt is not None and resume_ckpt.exists():
-        state_peek = torch.load(resume_ckpt, map_location="cpu")
+        state_peek = torch.load(resume_ckpt, map_location="cpu", weights_only=False)
         validate_resume_stage(state_peek, resume_dir, stage)
         saved_mode = state_peek.get("latent_query_mode")
         if saved_mode is None and "mask_latent_query_labels" in state_peek:
@@ -662,6 +725,9 @@ def main(*, stage: str = "format") -> int:
     scheduler = get_cosine_schedule_with_warmup(
         optimizer, int(total_steps * args.warmup_ratio), total_steps
     )
+    resume_identity = _resume_identity(
+        args, stage=stage, world=world, train_size=len(train_ds)
+    )
 
     log_path = args.output_dir / "train_step_log.csv"
     if is_main() and not log_path.exists():
@@ -700,11 +766,39 @@ def main(*, stage: str = "format") -> int:
     global_step = 0
     best_val = float("inf")
     start_epoch = 1
+    resume_next_micro_batch = 0
+    resume_rank_rng: dict[str, Any] | None = None
     if args.resume and resume_ckpt is not None and resume_ckpt.exists():
-        state = torch.load(resume_ckpt, map_location="cpu")
+        state = torch.load(resume_ckpt, map_location="cpu", weights_only=False)
         global_step = int(state.get("step", 0))
         best_val = float(state.get("best_val", float("inf")))
-        if "epoch" in state:
+        if state.get("resume_schema") == RESUME_SCHEMA:
+            validate_resume_state(
+                state, expected_identity=resume_identity, rank=rank, world=world
+            )
+            start_epoch = int(state["epoch"])
+            resume_next_micro_batch = int(state["next_micro_batch"])
+            if resume_next_micro_batch > len(train_loader):
+                raise ValueError(
+                    "resume checkpoint data cursor exceeds current epoch length"
+                )
+            resume_rank_rng = state["rank_rng_states"][rank]
+        elif "epoch" in state:
+            if (
+                state.get("identity") is not None
+                and state.get("identity") != resume_identity
+            ):
+                raise ValueError(
+                    "epoch checkpoint stage/dataset/objective identity mismatch"
+                )
+            if (
+                state.get("world_size") is not None
+                and int(state["world_size"]) != world
+            ):
+                raise ValueError(
+                    f"epoch checkpoint world size mismatch: "
+                    f"{state.get('world_size')} != {world}"
+                )
             start_epoch = int(state["epoch"]) + 1
         else:
             epoch_dirs = sorted(args.output_dir.glob("epoch_*"))
@@ -733,20 +827,42 @@ def main(*, stage: str = "format") -> int:
                         "resume_ckpt": str(resume_ckpt),
                         "start_epoch": start_epoch,
                         "global_step": global_step,
+                        "next_micro_batch": resume_next_micro_batch,
                         "best_val": best_val,
                     }
                 )
             )
 
+    stop_after_boundary = False
+
+    def request_boundary_stop(signum, _frame) -> None:
+        nonlocal stop_after_boundary
+        stop_after_boundary = True
+        if is_main():
+            print(
+                json.dumps(
+                    {"signal": signum, "action": "stop_after_optimizer_boundary"}
+                )
+            )
+
+    if hasattr(signal, "SIGUSR1"):
+        signal.signal(signal.SIGUSR1, request_boundary_stop)
+
     model.train()
     for epoch in range(start_epoch, args.epochs + 1):
-        if train_sampler is not None:
-            train_sampler.set_epoch(epoch)
+        train_sampler.set_epoch(epoch)
         optimizer.zero_grad(set_to_none=True)
         accum_loss = 0.0
         micro_accum = 0
+        next_micro_batch = resume_next_micro_batch if epoch == start_epoch else 0
 
-        def optimizer_step(*, micro_count: int, epoch_number: int = epoch) -> None:
+        def optimizer_step(
+            *,
+            micro_count: int,
+            next_batch: int,
+            epoch_number: int = epoch,
+            best_at_epoch_start: float = best_val,
+        ) -> None:
             nonlocal global_step, accum_loss
             for p in model.parameters():
                 if p.grad is not None:
@@ -786,17 +902,80 @@ def main(*, stage: str = "format") -> int:
                     )
             accum_loss = 0.0
 
-        for batch in train_loader:
+            if global_step % args.resume_save_steps == 0 or stop_after_boundary:
+                save_resume_checkpoint(
+                    model,
+                    processor,
+                    args.output_dir,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    global_step=global_step,
+                    epoch=epoch_number,
+                    next_micro_batch=next_batch,
+                    best_val=best_at_epoch_start,
+                    identity=resume_identity,
+                    rank=rank,
+                    world=world,
+                    lora=args.lora,
+                    base_model_path=base_model_path,
+                    latent_token_count=args.latent_token_count,
+                    mask_latent_query_labels=args.mask_latent_query_labels,
+                    latent_query_mode=args.latent_query_mode,
+                )
+
+        train_iterator = iter(train_loader)
+        for _ in range(next_micro_batch):
+            try:
+                next(train_iterator)
+            except StopIteration as error:
+                raise ValueError(
+                    "resume checkpoint data cursor is not reproducible"
+                ) from error
+        if epoch == start_epoch and resume_rank_rng is not None:
+            restore_rng_state(resume_rank_rng)
+            resume_rank_rng = None
+        for batch_index, batch in enumerate(train_iterator, start=next_micro_batch):
             batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
             loss = model(**batch).loss
             loss.backward()
             accum_loss += loss.detach().float().item()
             micro_accum += 1
             if micro_accum % args.grad_accum == 0:
-                optimizer_step(micro_count=micro_accum)
+                optimizer_step(micro_count=micro_accum, next_batch=batch_index + 1)
                 micro_accum = 0
+                if stop_after_boundary:
+                    cleanup_dist()
+                    return 75
         if micro_accum > 0:
-            optimizer_step(micro_count=micro_accum)
+            optimizer_step(micro_count=micro_accum, next_batch=len(train_loader))
+            if stop_after_boundary:
+                cleanup_dist()
+                return 75
+
+        if stop_after_boundary:
+            save_resume_checkpoint(
+                model,
+                processor,
+                args.output_dir,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                global_step=global_step,
+                epoch=epoch,
+                next_micro_batch=len(train_loader),
+                best_val=best_val,
+                identity=resume_identity,
+                rank=rank,
+                world=world,
+                lora=args.lora,
+                base_model_path=base_model_path,
+                latent_token_count=args.latent_token_count,
+                mask_latent_query_labels=args.mask_latent_query_labels,
+                latent_query_mode=args.latent_query_mode,
+            )
+            cleanup_dist()
+            return 75
+
+        resume_next_micro_batch = 0
 
         distributed_barrier()
         if torch.cuda.is_available():
@@ -812,6 +991,8 @@ def main(*, stage: str = "format") -> int:
             latent_query_mode=args.latent_query_mode,
         )
         if is_main():
+            previous_best_val = best_val
+            best_val = min(best_val, val_loss)
             with log_path.open("a", newline="") as f:
                 csv.writer(f).writerow(
                     [
@@ -840,9 +1021,10 @@ def main(*, stage: str = "format") -> int:
                 latent_token_count=args.latent_token_count,
                 mask_latent_query_labels=args.mask_latent_query_labels,
                 latent_query_mode=args.latent_query_mode,
+                world_size=world,
+                identity=resume_identity,
             )
-            if val_loss < best_val:
-                best_val = val_loss
+            if val_loss < previous_best_val:
                 save_checkpoint(
                     model,
                     processor,
@@ -859,6 +1041,8 @@ def main(*, stage: str = "format") -> int:
                     latent_token_count=args.latent_token_count,
                     mask_latent_query_labels=args.mask_latent_query_labels,
                     latent_query_mode=args.latent_query_mode,
+                    world_size=world,
+                    identity=resume_identity,
                 )
             print(
                 json.dumps(
@@ -905,6 +1089,8 @@ def main(*, stage: str = "format") -> int:
             latent_token_count=args.latent_token_count,
             mask_latent_query_labels=args.mask_latent_query_labels,
             latent_query_mode=args.latent_query_mode,
+            world_size=world,
+            identity=resume_identity,
         )
         if wandb_run is not None:
             import wandb

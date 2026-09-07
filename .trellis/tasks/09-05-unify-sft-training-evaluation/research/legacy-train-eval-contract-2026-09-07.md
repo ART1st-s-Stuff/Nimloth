@@ -96,3 +96,15 @@ sbatch --parsable \
 本次仅修改实验资源与配套检查，复用已完成的真实输入/DINO/shard/PEFT/CLI预检，不重写算法。新运行固定commit及提交结果在本节后补充；当前仍未提交6GPU作业。
 
 六卡版本已完成：GPU可见数、三个torchrun入口和rank映射均要求6，SBATCH为6GPU/72CPU/450G/6h并显式--no-requeue。评估仍用索引0–3，合法。6项CPU合同测试、真实CLI参数解析、Shell语法、Ruff和diff检查通过，独立审核通过；无算法、输入或checkpoint内容改动。
+
+### 原八卡作业终态
+
+2026-09-07T17:03:50Z重新核验556418仍PENDING且归属本任务后，只取消该作业。sacct与scontrol确认 `CANCELLED by 3738`、Elapsed=00:00:00、NodeList=None assigned、AllocTRES为空。取消原因是人类要求改为6GPU，不是训练失败；未运行训练或评估，无产物/可恢复checkpoint，也没有GPU消费。旧源码为c502e629。新的6GPU版本固定提交为 `9acf44157cf5428744053e0ae3e6a7869c24d1b4`，独立新输出身份，不复用旧输出。
+
+### 六卡作业557382已提交
+
+2026-09-07T17:04:47Z成功提交 **557382**，job name保持sft12-step79-eval。提交前远程worktree通过Git bundle正常快进至9acf4415、完整pins一致且干净；六rank CPU合同检查通过，训练/验证JSONL SHA256与已核验preflight完全一致、磁盘余量通过。其余输入及PEFT/CLI证据沿用前述未改变内容。
+
+RUN_ROOT=`/project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluation/20260907T170447Z_legacy_step79_6gpu_9acf4415`，Slurm日志为此路径追加 `.slurm-557382.log`。提交命令与八卡记录的结构相同：同一REPO与脚本，EXPECTED_COMMIT改9acf44157cf5428744053e0ae3e6a7869c24d1b4、RUN_ROOT改上述唯一新目录；子模块三个EXPECTED值不变；资源来自已提交六卡脚本指令。
+
+最新核验2026-09-07T17:05:25Z：`PENDING(Priority)`，无分配节点、无训练日志，ReqTRES=6GPU/72CPU/450G、TimeLimit=06:00:00、Requeue=0、Restarts=0。调度器预计当地2026-09-09 00:53:53（UTC2026-09-08 16:53:53）开始，可变，不是保证。监控精确job由556418切换为557382；后续查询squeue/sacct及新输出目录，其他phase、失败处理与结果边界同前。未完成训练/评估验收。

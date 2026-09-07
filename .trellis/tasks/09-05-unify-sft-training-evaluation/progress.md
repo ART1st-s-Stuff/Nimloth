@@ -88,3 +88,23 @@ canary、动作头修复、packed/KV研究原型和依赖它们的特征审计�
 ### 2026-09-07T16:30:55Z进度查询
 
 只读squeue/sacct/scontrol确认556418仍为PENDING(Priority)，无分配节点，Elapsed=0；排队约2小时30分钟，训练与评估均未启动，Slurm日志尚不存在。资源仍为单节点8GPU/96CPU/600G、TimeLimit=6h、Requeue=0。调度器预计启动变为当地2026-09-10 20:36:29（UTC12:36:29），此为动态估计而非保证。本次未调整资源、取消或重提。
+
+### 2026-09-07T17:05:25Z：按人类要求替换为6GPU
+
+六卡入口、CUDA/rank检查、三次torchrun及README/测试已同步，固定提交9acf44157cf5428744053e0ae3e6a7869c24d1b4。独立审核通过，6项CPU合同测试、CLI解析、Ruff与Shell语法通过。每卡batch1/GA8不变，有效batch64→48已向人类说明，约13/153个stage1/2更新；各一轮和两臂各120条评估不变。
+
+旧556418于17:03:50Z确认仍pending后取消，终态CANCELLED、零运行时长、无分配节点，无训练结果或可恢复状态。新版 **557382** 于17:04:47Z成功提交；最新PENDING(Priority)，6GPU/72CPU/450G/6h、Requeue=0，尚未开始训练。输出和完整交接见research/legacy-train-eval-contract-2026-09-07.md六卡章节；后续只监控557382，任务仍in_progress。
+
+### 2026-09-07T17:20:24Z：转向可抢占恢复
+
+人类要求实现中断恢复后使用dgx-55。实时核验557382仍PENDING、Elapsed=0、无节点；随后只取消精确557382，sacct确认CANCELLED by 3738、零运行时长、None assigned，无训练产物或GPU消费。取消属于按人类要求替换运行配置，不是训练失败。
+
+dgx-55属于preempt且当前4/8 GPU被其他作业占用，只能使用剩余4卡；现有训练仅epoch边界保存，不能安全进入该环境。已在implement.md记录恢复实现边界：optimizer-step原子checkpoint、epoch内消费位置、各rank RNG、同world确定性恢复、pipeline阶段恢复及中断等价测试。实现与独立审核完成前不提交新GPU作业。最终预期world4，有效batch32；数据/损失/各一轮/两阶段各120评估不变。
+
+### 2026-09-07 抢占恢复实现与独立审核
+
+SFT1/SFT2共享trainer现支持每5个optimizer step发布原子恢复点，保存epoch、下一micro-batch、global step、optimizer、scheduler和每rank Python/NumPy/Torch CPU/CUDA RNG。恢复身份覆盖训练/验证数据SHA、预处理与DINO cache指纹、world size及关键目标和训练参数；同world确定性sampler跳过已消费batch后再恢复RNG。新格式半写step/epoch不会被选中，旧epoch checkpoint兼容保留。
+
+dgx-55入口固定world4/preempt/requeue/48CPU/240G/6h和持久RUN_ROOT。batch shell只在确认四个训练rank完整时转发USR1；训练在下一完整optimizer边界保存并返回75，控制器记录preempted并执行精确job requeue。已完成stage、模型导出和direct eval均按生产校验跳过或续接；模型导出使用临时目录后原子发布。world4有效batch32，SFT1/SFT2约20/229次更新。
+
+独立trellis-check修复信号误匹配、普通SIGTERM误报、恢复身份缺口、半写epoch、merge中断和best_val落后一轮。最终focused恢复/流水线测试15 passed，相邻SFT回归169 passed；Ruff check/format、bash -n、py_compile和git diff --check通过。未配置type checker，不宣称type check。真实四rank NCCL、Slurm自重排和恢复后的模型一致性仍需dgx-55运行验证。

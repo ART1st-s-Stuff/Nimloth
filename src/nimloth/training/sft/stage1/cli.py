@@ -1,4 +1,5 @@
 """SFT1/SFT2 命令行、YAML 默认值与阶段参数验证。"""
+
 from __future__ import annotations
 
 import argparse
@@ -72,6 +73,12 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap.add_argument("--gradient-checkpointing", action="store_true", default=True)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument(
+        "--resume-save-steps",
+        type=int,
+        default=10,
+        help="Publish an atomic resume checkpoint every N completed optimizer steps.",
+    )
     ap.add_argument(
         "--max-pixels",
         type=int,
@@ -192,6 +199,8 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     )
     args.mask_latent_query_labels = query_labels_are_masked(args.latent_query_mode)
     args.latent_token_count = int(args.latent_token_count)
+    if args.resume_save_steps < 1:
+        raise ValueError("--resume-save-steps must be >= 1")
     if args.latent_token_count < 1:
         raise ValueError(
             f"--latent-token-count must be >= 1, got {args.latent_token_count}"

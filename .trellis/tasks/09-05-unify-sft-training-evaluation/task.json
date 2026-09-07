@@ -27,8 +27,9 @@
     "kind": "experiment",
     "gpu_test_authorization": "2026-09-06 human approved normal 3-GPU allocation for testing",
     "legacy_validation_authorization": "Human requested training stage1 then stage2 from the previous checkpoint and old datasets, followed by evaluation of the new outputs. On 2026-09-07 explicitly requested six GPUs instead of eight: one epoch per stage, normal six-GPU job, six-hour cap, batch1 GA8 retained (effective batch48); details in research/legacy-train-eval-contract-2026-09-07.md.",
-    "legacy_validation_job": "556418",
-    "legacy_validation_commit": "c502e629226d4a5ec2d1093fef26f579f0363acf",
-    "legacy_validation_last_verified": "2026-09-07T14:03:33Z PENDING(Priority); TimeLimit=06:00:00; Requeue=0"
+    "legacy_validation_job": "557382",
+    "legacy_validation_commit": "9acf44157cf5428744053e0ae3e6a7869c24d1b4",
+    "legacy_validation_last_verified": "2026-09-07 optimizer-step recovery implemented and independently reviewed: 15 focused and 169 adjacent SFT tests passed; dgx-55 world4 preempt launch pending final commit and live preflight",
+    "legacy_validation_replaced_job": "556418 CANCELLED while pending at 2026-09-07T17:03:50Z; zero runtime"
   }
 }

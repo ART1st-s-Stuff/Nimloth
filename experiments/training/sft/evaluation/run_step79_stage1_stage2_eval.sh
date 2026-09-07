@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 #SBATCH --account=peilab
-#SBATCH --partition=normal
-#SBATCH --qos=normal_qos
+#SBATCH --partition=preempt
+#SBATCH --qos=preempt_qos
+#SBATCH --nodelist=dgx-55
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:6
-#SBATCH --cpus-per-task=72
-#SBATCH --mem=450G
+#SBATCH --gres=gpu:4
+#SBATCH --cpus-per-task=48
+#SBATCH --mem=240G
 #SBATCH --time=06:00:00
 #SBATCH --job-name=sft12-step79-eval
-#SBATCH --no-requeue
+#SBATCH --requeue
+#SBATCH --signal=B:USR1@120
 
 set -euo pipefail
 
@@ -19,6 +21,7 @@ set -euo pipefail
 : "${EXPECTED_VERL_COMMIT:?set EXPECTED_VERL_COMMIT}"
 : "${EXPECTED_LEWM_COMMIT:?set EXPECTED_LEWM_COMMIT}"
 : "${SLURM_JOB_ID:?submit this script through Slurm}"
+: "${RUN_ROOT:?set RUN_ROOT once and reuse it for every preemption/requeue}"
 
 PYTHON=/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3
 ROOT=/project/peilab/atst/nimloth
@@ -28,8 +31,6 @@ TRAIN_JSONL=${DATA_ROOT}/train_success.jsonl
 VAL_JSONL=${DATA_ROOT}/val_all.jsonl
 DINO_CACHE=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-20/sft2/cache/k16_all3217_px100352_bf16_dino4x4_f32_b8659fe
 ASSET_ROOT=${REPO}/external/VAGEN/vagen/envs/navigation/assets
-RUN_STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-RUN_ROOT=${RUN_ROOT:-${ROOT}/outputs/experiments/training/sft/evaluation/${RUN_STAMP}_job${SLURM_JOB_ID}_${EXPECTED_COMMIT:0:8}}
 CONTRACT_MODULE=experiments.training.sft.evaluation.pipeline_contract
 ARM_SCRIPT=${REPO}/experiments/training/sft/evaluation/environment_arm.sh
 
@@ -56,12 +57,10 @@ for input in "${SOURCE_CHECKPOINT}/config.json" "${TRAIN_JSONL}" "${VAL_JSONL}" 
   "${ASSET_ROOT}/base.json" "${ASSET_ROOT}/common_sense.json"; do
   [[ -s "${input}" ]] || { echo "missing required input: ${input}" >&2; exit 2; }
 done
-[[ ! -e "${RUN_ROOT}" ]] || { echo "fresh output already exists: ${RUN_ROOT}" >&2; exit 2; }
-
 ALLOCATED_CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-}
 IFS=',' read -r -a GPU_TOKENS <<<"${ALLOCATED_CUDA_VISIBLE_DEVICES}"
-(( ${#GPU_TOKENS[@]} == 6 )) || {
-  echo "pipeline requires exactly six allocated CUDA tokens; got ${#GPU_TOKENS[@]}" >&2
+(( ${#GPU_TOKENS[@]} == 4 )) || {
+  echo "pipeline requires exactly four allocated CUDA tokens; got ${#GPU_TOKENS[@]}" >&2
   exit 2
 }
 PORT_BASE=$((22000 + SLURM_JOB_ID % 8000))
@@ -74,7 +73,6 @@ for port in "${TRAIN_PORT}" "${ENV1_PORT}" "${ENV2_PORT}"; do
   fi
 done
 
-mkdir -p "${RUN_ROOT}"
 export PYTHONPATH=${REPO}/src:${REPO}:${REPO}/external/VAGEN:${REPO}/external/VAGEN/verl:${REPO}/external/le-wm
 export PATH=/project/peilab/atst/nimloth/.venv-vagen-main/bin:${PATH}
 export HF_HOME=/project/peilab/atst/.cache/huggingface
@@ -88,6 +86,16 @@ export PYTHONDONTWRITEBYTECODE=1
 export WANDB_MODE=disabled
 export WANDB_DISABLED=true
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+if [[ -e "${RUN_ROOT}/run_identity.json" ]]; then
+  "${PYTHON}" -m "${CONTRACT_MODULE}" validate-run-identity \
+    --run-root "${RUN_ROOT}" --commit "${EXPECTED_COMMIT}" --world-size 4
+elif [[ -e "${RUN_ROOT}" ]]; then
+  echo "existing run root has no durable identity: ${RUN_ROOT}" >&2; exit 2
+else
+  mkdir -p "${RUN_ROOT}"
+  "${PYTHON}" -m "${CONTRACT_MODULE}" init-run-identity \
+    --run-root "${RUN_ROOT}" --commit "${EXPECTED_COMMIT}" --world-size 4
+fi
 export NIMLOTH_PIPELINE_RUNTIME_ROOT=/tmp/nimloth-sft12-${SLURM_JOB_ID}-${EXPECTED_COMMIT:0:8}
 mkdir -p "${NIMLOTH_PIPELINE_RUNTIME_ROOT}"
 
@@ -162,10 +170,60 @@ cleanup() {
 }
 handle_termination() {
   trap - TERM INT
+  if [[ -f "${NIMLOTH_PIPELINE_RUNTIME_ROOT}/preemption_notice" ]]; then
+    "${PYTHON}" -m "${CONTRACT_MODULE}" record-exit \
+      --exit-code 75 --output "${RUN_ROOT}/final_status.json"
+    scontrol requeue "${SLURM_JOB_ID}"
+    exit 0
+  fi
   exit 143
+}
+signal_training_workers() {
+  local pid
+  local -a training_pids=()
+  : >"${NIMLOTH_PIPELINE_RUNTIME_ROOT}/preemption_notice"
+  mapfile -t training_pids < <("${PYTHON}" - "${NIMLOTH_PIPELINE_RUNTIME_ROOT}" <<'PY'
+import sys
+from pathlib import Path
+
+marker = sys.argv[1].encode()
+for entry in Path("/proc").iterdir():
+    if not entry.name.isdigit():
+        continue
+    try:
+        environment = (entry / "environ").read_bytes()
+        command = (entry / "cmdline").read_bytes()
+    except (FileNotFoundError, PermissionError, ProcessLookupError):
+        continue
+    variables = environment.split(b"\0")
+    is_rank = any(item.startswith(b"LOCAL_RANK=") for item in variables) and any(
+        item.startswith(b"RANK=") for item in variables
+    )
+    if marker in environment and is_rank and b"nimloth.training.sft.stage" in command:
+        print(entry.name)
+PY
+  )
+  if (( ${#training_pids[@]} == 4 )); then
+    for pid in "${training_pids[@]}"; do
+      kill -USR1 "${pid}" >/dev/null 2>&1 || true
+    done
+    echo "preemption notice forwarded to four training ranks"
+  else
+    echo "preemption notice found ${#training_pids[@]} training ranks; using latest periodic checkpoint" >&2
+  fi
+}
+handle_training_failure() {
+  if [[ -f "${NIMLOTH_PIPELINE_RUNTIME_ROOT}/preemption_notice" ]]; then
+    "${PYTHON}" -m "${CONTRACT_MODULE}" record-exit \
+      --exit-code 75 --output "${RUN_ROOT}/final_status.json"
+    scontrol requeue "${SLURM_JOB_ID}"
+    exit 0
+  fi
+  exit 1
 }
 trap cleanup EXIT
 trap handle_termination TERM INT
+trap signal_training_workers USR1
 
 # Keep logging alive until the controller exits, after runtime cleanup.
 exec > >(env -u NIMLOTH_PIPELINE_RUNTIME_ROOT tee -a "${RUN_ROOT}/controller.log") 2>&1
@@ -177,13 +235,14 @@ cat >"${RUN_ROOT}/README.md" <<EOF
 - 初始化：历史 VAGEN step79 HF checkpoint：${SOURCE_CHECKPOINT}。
 - 数据：train_success.jsonl（613 条轨迹、7309 个回答前缀）与 val_all.jsonl（355 条轨迹、6054 个回答前缀）。
 - 离线验证边界：val_all 与 train_success 有1个任务重叠，因此只用于训练过程诊断，不称为独立 held-out；正式 Base/Common Sense 120 与训练任务及场景均无重叠。
-- SFT1：format，K1 generate，LoRA r64/alpha128，world6，batch1，GA8，一轮。
+- SFT1：format，K1 generate，LoRA r64/alpha128，world4，batch1，GA8，一轮。
 - SFT2：从 SFT1 epoch_001/hf_merged 初始化；query，K16 inject，CE+DINO，其他训练规模相同，一轮。
-- 计算单元：SFT1遍历613条完整轨迹（约13个optimizer step）；SFT2按回答前缀建立索引，完整遍历7309个回答（约153个optimizer step），每个样本保留该回答之前的全部真实历史，不截断或抽样回答。
-- 批量：每卡batch1、GA8保持不变；world6下有效batch为48，低于此前配置的64。
+- 计算单元：SFT1遍历613条完整轨迹（约20个optimizer step）；SFT2按回答前缀建立索引，完整遍历7309个回答（约229个optimizer step），每个样本保留该回答之前的全部真实历史，不截断或抽样回答。
+- 批量：每卡batch1、GA8保持不变；world4下有效batch为32，低于此前配置的64。
 - 可训练参数：基础权重冻结；LoRA后缀同时命中语言层与视觉块MLP，历史模型探针为698个可训练tensor、770,940,928个参数；embedding和lm_head完整训练，SFT2另训练共享slot projector，因此不将视觉分支描述为完全冻结。
 - 评估：两阶段合并模型并发 direct rollout；Base/Common Sense 各 seeds 1..60，greedy，最多20步，512 tokens，TP1。
-- 资源：normal 单节点六卡，训练顺序执行；评估各占一张环境卡和一张策略卡。
+- 恢复：每5个optimizer step原子保存；收到USR1后在下一个完整step边界保存并以75退出，由controller重排同一RUN_ROOT。
+- 资源：preempt 的 dgx-55 单节点四卡，训练顺序执行；评估各占一张环境卡和一张策略卡。
 - W&B：禁用。
 EOF
 
@@ -198,7 +257,7 @@ export PS4='+ ${BASH_SOURCE}:${LINENO}: '
 set -x
 
 CUDA_VISIBLE_DEVICES="${ALLOCATED_CUDA_VISIBLE_DEVICES}" \
-  "${PYTHON}" -m torch.distributed.run --nproc_per_node=6 \
+  "${PYTHON}" -m torch.distributed.run --nproc_per_node=4 \
   --master_port="${TRAIN_PORT}" -m "${CONTRACT_MODULE}" rank-map \
   --output "${RUN_ROOT}/rank_map.json"
 
@@ -209,34 +268,54 @@ STAGE2_OUT=${RUN_ROOT}/stage2
 STAGE2_EPOCH=${STAGE2_OUT}/epoch_001
 STAGE2_MERGED=${STAGE2_EPOCH}/hf_merged
 
-CUDA_VISIBLE_DEVICES="${ALLOCATED_CUDA_VISIBLE_DEVICES}" \
-  "${PYTHON}" -m torch.distributed.run --nproc_per_node=6 --master_port="${TRAIN_PORT}" \
-  -m nimloth.training.sft.stage1 \
-  --model "${SOURCE_CHECKPOINT}" --train-jsonl "${TRAIN_JSONL}" --val-jsonl "${VAL_JSONL}" \
-  --output-dir "${STAGE1_OUT}" --epochs 1 --batch-size 1 --grad-accum 8 \
-  --lr 1e-6 --embedding-lr 5e-6 --max-length 12000 --max-pixels 100352 \
-  --latent-token-count 1 --latent-query-mode generate \
-  --lora --lora-r 64 --lora-alpha 128 --no-cache --no-wandb \
-  2>&1 | tee "${RUN_ROOT}/stage1_train.log"
-"${PYTHON}" -m nimloth.training.sft.stage1.checkpoint_export \
-  --base-model "${SOURCE_CHECKPOINT}" --adapter-dir "${STAGE1_EPOCH}" \
-  --out-dir "${STAGE1_MERGED}" 2>&1 | tee "${RUN_ROOT}/stage1_merge.log"
+if ! "${PYTHON}" -m "${CONTRACT_MODULE}" validate-stage-checkpoint \
+  --stage format --checkpoint "${STAGE1_EPOCH}"; then
+  if ! CUDA_VISIBLE_DEVICES="${ALLOCATED_CUDA_VISIBLE_DEVICES}" \
+    "${PYTHON}" -m torch.distributed.run --nproc_per_node=4 --master_port="${TRAIN_PORT}" \
+    -m nimloth.training.sft.stage1 \
+    --model "${SOURCE_CHECKPOINT}" --train-jsonl "${TRAIN_JSONL}" --val-jsonl "${VAL_JSONL}" \
+    --output-dir "${STAGE1_OUT}" --epochs 1 --batch-size 1 --grad-accum 8 \
+    --lr 1e-6 --embedding-lr 5e-6 --max-length 12000 --max-pixels 100352 \
+    --latent-token-count 1 --latent-query-mode generate \
+    --lora --lora-r 64 --lora-alpha 128 --no-cache --no-wandb --resume --resume-save-steps 5 \
+    2>&1 | tee -a "${RUN_ROOT}/stage1_train.log"; then
+    handle_training_failure
+  fi
+fi
+if [[ ! -e "${STAGE1_MERGED}" ]]; then
+  STAGE1_MERGE_TMP=${STAGE1_EPOCH}/.hf_merged.${SLURM_RESTART_COUNT:-0}
+  [[ ! -e "${STAGE1_MERGE_TMP}" ]] || { echo "stale stage1 merge temp: ${STAGE1_MERGE_TMP}" >&2; exit 2; }
+  "${PYTHON}" -m nimloth.training.sft.stage1.checkpoint_export \
+    --base-model "${SOURCE_CHECKPOINT}" --adapter-dir "${STAGE1_EPOCH}" \
+    --out-dir "${STAGE1_MERGE_TMP}" 2>&1 | tee -a "${RUN_ROOT}/stage1_merge.log"
+  mv "${STAGE1_MERGE_TMP}" "${STAGE1_MERGED}"
+fi
 "${PYTHON}" -m "${CONTRACT_MODULE}" validate-merged --stage format \
   --adapter-dir "${STAGE1_EPOCH}" --merged-dir "${STAGE1_MERGED}" \
   --output "${RUN_ROOT}/stage1_merge.json"
 
-CUDA_VISIBLE_DEVICES="${ALLOCATED_CUDA_VISIBLE_DEVICES}" \
-  "${PYTHON}" -m torch.distributed.run --nproc_per_node=6 --master_port="${TRAIN_PORT}" \
-  -m nimloth.training.sft.stage2 \
-  --model "${STAGE1_MERGED}" --train-jsonl "${TRAIN_JSONL}" --val-jsonl "${VAL_JSONL}" \
-  --output-dir "${STAGE2_OUT}" --dino-cache-root "${DINO_CACHE}" \
-  --epochs 1 --batch-size 1 --grad-accum 8 --max-length 12000 --max-pixels 100352 \
-  --lr 1e-6 --embedding-lr 5e-6 --latent-token-count 16 --latent-query-mode inject \
-  --grid-size 4 --lora --lora-r 64 --lora-alpha 128 --no-wandb \
-  2>&1 | tee "${RUN_ROOT}/stage2_train.log"
-"${PYTHON}" -m nimloth.training.sft.stage1.checkpoint_export \
-  --base-model "${STAGE1_MERGED}" --adapter-dir "${STAGE2_EPOCH}" \
-  --out-dir "${STAGE2_MERGED}" 2>&1 | tee "${RUN_ROOT}/stage2_merge.log"
+if ! "${PYTHON}" -m "${CONTRACT_MODULE}" validate-stage-checkpoint \
+  --stage query --checkpoint "${STAGE2_EPOCH}"; then
+  if ! CUDA_VISIBLE_DEVICES="${ALLOCATED_CUDA_VISIBLE_DEVICES}" \
+    "${PYTHON}" -m torch.distributed.run --nproc_per_node=4 --master_port="${TRAIN_PORT}" \
+    -m nimloth.training.sft.stage2 \
+    --model "${STAGE1_MERGED}" --train-jsonl "${TRAIN_JSONL}" --val-jsonl "${VAL_JSONL}" \
+    --output-dir "${STAGE2_OUT}" --dino-cache-root "${DINO_CACHE}" \
+    --epochs 1 --batch-size 1 --grad-accum 8 --max-length 12000 --max-pixels 100352 \
+    --lr 1e-6 --embedding-lr 5e-6 --latent-token-count 16 --latent-query-mode inject \
+    --grid-size 4 --lora --lora-r 64 --lora-alpha 128 --no-wandb --resume --resume-save-steps 5 \
+    2>&1 | tee -a "${RUN_ROOT}/stage2_train.log"; then
+    handle_training_failure
+  fi
+fi
+if [[ ! -e "${STAGE2_MERGED}" ]]; then
+  STAGE2_MERGE_TMP=${STAGE2_EPOCH}/.hf_merged.${SLURM_RESTART_COUNT:-0}
+  [[ ! -e "${STAGE2_MERGE_TMP}" ]] || { echo "stale stage2 merge temp: ${STAGE2_MERGE_TMP}" >&2; exit 2; }
+  "${PYTHON}" -m nimloth.training.sft.stage1.checkpoint_export \
+    --base-model "${STAGE1_MERGED}" --adapter-dir "${STAGE2_EPOCH}" \
+    --out-dir "${STAGE2_MERGE_TMP}" 2>&1 | tee -a "${RUN_ROOT}/stage2_merge.log"
+  mv "${STAGE2_MERGE_TMP}" "${STAGE2_MERGED}"
+fi
 "${PYTHON}" -m "${CONTRACT_MODULE}" validate-merged --stage query \
   --adapter-dir "${STAGE2_EPOCH}" --merged-dir "${STAGE2_MERGED}" \
   --output "${RUN_ROOT}/stage2_merge.json"
@@ -287,7 +366,7 @@ run_eval() {
     --output-dir "${out}" --eval-sets base common_sense --split test \
     --episodes-per-eval-set 60 --seed-offset 1 --max-steps 20 \
     --temperature 0 --top-p 1 --max-response-tokens 512 --tensor-parallel-size 1 \
-    --max-pixels 100352 >"${RUN_ROOT}/${arm}_eval.log" 2>&1 &
+    --max-pixels 100352 --resume >>"${RUN_ROOT}/${arm}_eval.log" 2>&1 &
   LAST_CHILD_PID=$!
 }
 run_eval stage1 "${GPU_TOKENS[1]}" "${ENV1_PORT}" "${STAGE1_MERGED}"

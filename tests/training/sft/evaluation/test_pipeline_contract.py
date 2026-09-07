@@ -54,14 +54,16 @@ def test_launcher_owns_resources_and_fails_closed():
     text = PIPELINE.read_text(encoding="utf-8")
     for directive in (
         "#SBATCH --account=peilab",
-        "#SBATCH --partition=normal",
-        "#SBATCH --qos=normal_qos",
+        "#SBATCH --partition=preempt",
+        "#SBATCH --qos=preempt_qos",
+        "#SBATCH --nodelist=dgx-55",
         "#SBATCH --nodes=1",
-        "#SBATCH --gres=gpu:6",
-        "#SBATCH --cpus-per-task=72",
-        "#SBATCH --mem=450G",
+        "#SBATCH --gres=gpu:4",
+        "#SBATCH --cpus-per-task=48",
+        "#SBATCH --mem=240G",
         "#SBATCH --time=06:00:00",
-        "#SBATCH --no-requeue",
+        "#SBATCH --requeue",
+        "#SBATCH --signal=B:USR1@120",
     ):
         assert directive in text
     for required in (
@@ -72,7 +74,9 @@ def test_launcher_owns_resources_and_fails_closed():
     ):
         assert f"${{{required}:?" in text
     assert "status --porcelain --untracked-files=all" in text
-    assert '[[ ! -e "${RUN_ROOT}" ]]' in text
+    assert ': "${RUN_ROOT:?set RUN_ROOT once' in text
+    assert "validate-run-identity" in text
+    assert "init-run-identity" in text
     assert "rank-map" in text
     assert "direct_render_probe" in (
         ROOT / "experiments/training/sft/evaluation/environment_arm.sh"
@@ -93,22 +97,103 @@ def test_launcher_owns_resources_and_fails_closed():
     assert "export HOME=" not in arm_text
     assert arm_text.count('env HOME="${OWNED_HOME}"') == 2
     assert "set -x" in text
-    assert text.count("--nproc_per_node=6") == 3
-    assert "有效batch为48" in text
+    assert text.count("--nproc_per_node=4") == 3
+    assert "有效batch为32" in text
+    assert text.count("--resume --resume-save-steps 5") == 2
+    assert "validate-stage-checkpoint" in text
+    assert "--resume >>" in text
+    assert 'item.startswith(b"LOCAL_RANK=")' in text
+    assert 'item.startswith(b"RANK=")' in text
+    assert "(( ${#training_pids[@]} == 4 ))" in text
+    assert text.count(".hf_merged.${SLURM_RESTART_COUNT:-0}") == 2
 
 
-def test_six_rank_mapping_requires_unique_complete_single_node_rows():
+def test_four_rank_mapping_requires_unique_complete_single_node_rows():
     module = load_contract_module()
     rows = [
         {"rank": rank, "local_rank": rank, "host": "dgx", "device": rank}
-        for rank in range(6)
+        for rank in range(4)
     ]
-    module.validate_rank_rows(rows, 6)
+    module.validate_rank_rows(rows, 4)
     rows[-1]["local_rank"] = 0
     with pytest.raises(RuntimeError, match="one-to-one"):
-        module.validate_rank_rows(rows, 6)
-    with pytest.raises(RuntimeError, match="world6"):
-        module.validate_rank_rows(rows[:-1], 6)
+        module.validate_rank_rows(rows, 4)
+    with pytest.raises(RuntimeError, match="world4"):
+        module.validate_rank_rows(rows[:-1], 4)
+
+
+def test_run_identity_allows_only_same_commit_and_world(tmp_path):
+    module = load_contract_module()
+    root = tmp_path / "run"
+    root.mkdir()
+    init = module.build_parser().parse_args(
+        [
+            "init-run-identity",
+            "--run-root",
+            str(root),
+            "--commit",
+            "abc",
+            "--world-size",
+            "4",
+        ]
+    )
+    assert init.func(init) == 0
+    validate = module.build_parser().parse_args(
+        [
+            "validate-run-identity",
+            "--run-root",
+            str(root),
+            "--commit",
+            "abc",
+            "--world-size",
+            "4",
+        ]
+    )
+    assert validate.func(validate) == 0
+    wrong = module.build_parser().parse_args(
+        [
+            "validate-run-identity",
+            "--run-root",
+            str(root),
+            "--commit",
+            "def",
+            "--world-size",
+            "4",
+        ]
+    )
+    with pytest.raises(ValueError, match="identity"):
+        wrong.func(wrong)
+
+
+def test_completed_stage_marker_is_required_and_world_is_fixed(tmp_path):
+    torch = pytest.importorskip("torch")
+    module = load_contract_module()
+    checkpoint = tmp_path / "epoch_001"
+    checkpoint.mkdir()
+    state = {
+        "training_stage": "format",
+        "epoch": 1,
+        "world_size": 4,
+        "identity": {"world_size": 4},
+    }
+    torch.save(state, checkpoint / "training_state.pt")
+    args = module.build_parser().parse_args(
+        [
+            "validate-stage-checkpoint",
+            "--stage",
+            "format",
+            "--checkpoint",
+            str(checkpoint),
+        ]
+    )
+    with pytest.raises(FileNotFoundError, match="completion marker"):
+        args.func(args)
+    (checkpoint / "COMMITTED").write_text("{}\n", encoding="utf-8")
+    assert args.func(args) == 0
+    state["world_size"] = 6
+    torch.save(state, checkpoint / "training_state.pt")
+    with pytest.raises(ValueError, match="world mismatch"):
+        args.func(args)
 
 
 def test_jsonl_preflight_counts_answers_images_and_rejects_missing(
@@ -260,3 +345,26 @@ def test_cleanup_failure_overrides_previously_passed_status(tmp_path):
     assert payload["status"] == "cleanup_failed"
     assert payload["pipeline_status_before_cleanup"] == "passed"
     assert payload["exit_code"] == 92
+
+
+def test_unannounced_sigterm_is_failure_not_preemption(tmp_path):
+    module = load_contract_module()
+    output = tmp_path / "final_status.json"
+    args = module.build_parser().parse_args(
+        ["record-exit", "--exit-code", "143", "--output", str(output)]
+    )
+    assert args.func(args) == 0
+    assert json.loads(output.read_text(encoding="utf-8"))["status"] == "failed"
+
+
+def test_failure_after_prior_preemption_is_not_mislabeled_cleanup(tmp_path):
+    module = load_contract_module()
+    output = tmp_path / "final_status.json"
+    output.write_text('{"schema":"test","status":"preempted"}\n', encoding="utf-8")
+    args = module.build_parser().parse_args(
+        ["record-exit", "--exit-code", "1", "--output", str(output)]
+    )
+    assert args.func(args) == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert payload["pipeline_status_before_cleanup"] == "preempted"

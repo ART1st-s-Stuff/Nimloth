@@ -29,3 +29,15 @@
 - [x] 将canary及实验原型移出核心，明确模块职责，改善局部可读性。
 - [x] 中文化SFT所有README，更新入口与模块索引。
 - [x] 实施后独立审核并运行受影响回归，记录未验证项。
+
+## 2026-09-07 抢占恢复实施边界
+
+人类要求实现可从抢占中恢复，以便把验证实验放到dgx-55。当前缺口是stage1/stage2只在完整epoch后保存，无法恢复epoch内的数据消费、各rank RNG和梯度累积边界。
+
+- 修改 `stage1/cli.py`、`trainer.py`、`checkpoint.py`：按明确optimizer-step间隔原子发布resume checkpoint；保存阶段、epoch、下一micro-batch位置、global step、optimizer/scheduler和每rank Python/NumPy/Torch CPU/CUDA RNG；恢复时重建相同sampler epoch并跳过已提交batch。只在optimizer step后保存，不恢复半个gradient accumulation。
+- 修改stage2回答索引/采样合同所需的最小代码与测试，确保恢复位置仍以该epoch确定性索引计数，不丢失或重复已提交optimizer step。
+- 修改本次pipeline：自动发现同一run的完整阶段/step checkpoint并传入resume；stage1完成后不重跑，stage2同理；merge与评估保持幂等且按完成标记验证。抢占退出不能写永久失败或覆盖完整产物。
+- 不修改CE、DINO、LoRA、学习率或数据内容，不实现跨world-size的逐位恢复，不把日志当checkpoint，不复用半写checkpoint。
+- 验收证据：CPU中断/恢复与无中断最终参数、optimizer/scheduler、消费顺序和global step一致；多rank状态结构/缺rank拒绝；原子目录发布/损坏拒绝；stage1与stage2路径及pipeline shell/合同测试；随后独立trellis-check。真实GPU抢占恢复须用远程运行证据单独确认。
+
+dgx-55实时只有4张空闲卡且属于preempt，因此最终运行预计为固定world4；若world size改变，必须从新的阶段起点或同world4 checkpoint恢复，不能加载world6的epoch内游标。当前尚无已运行world6 checkpoint。

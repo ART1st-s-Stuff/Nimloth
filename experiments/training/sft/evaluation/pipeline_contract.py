@@ -22,7 +22,35 @@ EXPECTED_HELD_OUT = {
     "common_sense": "3e7d2cb4246b6e2edaeaabd318dba93e4dbbff114c8368ed0c862e64f417afcf",
 }
 EXPECTED_DINO_FINGERPRINT = "b50d261e2b533f3e"
-TRAIN_WORLD_SIZE = 6
+TRAIN_WORLD_SIZE = 4
+
+
+def _run_identity(commit: str, world_size: int) -> dict[str, Any]:
+    return {
+        "schema": "sft_stage1_stage2_preemptible_run_v1",
+        "commit": commit,
+        "world_size": world_size,
+        "stages": ["format", "query", "direct_eval"],
+    }
+
+
+def init_run_identity(args: argparse.Namespace) -> int:
+    root = Path(args.run_root)
+    identity = root / "run_identity.json"
+    if identity.exists():
+        raise FileExistsError(f"run identity already exists: {identity}")
+    _atomic_json(identity, _run_identity(args.commit, args.world_size))
+    return 0
+
+
+def validate_run_identity(args: argparse.Namespace) -> int:
+    actual = json.loads(
+        (Path(args.run_root) / "run_identity.json").read_text(encoding="utf-8")
+    )
+    expected = _run_identity(args.commit, args.world_size)
+    if actual != expected:
+        raise ValueError("existing run identity does not match commit/world/stages")
+    return 0
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -268,6 +296,25 @@ def validate_merged(args: argparse.Namespace) -> int:
     return 0
 
 
+def validate_stage_checkpoint(args: argparse.Namespace) -> int:
+    import torch
+
+    checkpoint = Path(args.checkpoint)
+    if not (checkpoint / "COMMITTED").is_file():
+        raise FileNotFoundError("stage checkpoint has no durable completion marker")
+    state = torch.load(
+        checkpoint / "training_state.pt", map_location="cpu", weights_only=False
+    )
+    if (
+        state.get("training_stage") != args.stage
+        or int(state.get("epoch", -1)) != 1
+        or int(state.get("world_size", -1)) != TRAIN_WORLD_SIZE
+        or state.get("identity", {}).get("world_size") != TRAIN_WORLD_SIZE
+    ):
+        raise ValueError("stage checkpoint identity/epoch/world mismatch")
+    return 0
+
+
 def _argv_value(argv: list[str], flag: str) -> str:
     try:
         return argv[argv.index(flag) + 1]
@@ -357,10 +404,21 @@ def record_exit(args: argparse.Namespace) -> int:
         if args.exit_code == 0:
             return 0
         payload = json.loads(output.read_text(encoding="utf-8"))
+        if args.exit_code == 75:
+            payload.update(
+                {
+                    "status": "preempted",
+                    "exit_code": args.exit_code,
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            _atomic_json(output, payload)
+            return 0
         previous_status = payload.get("status")
+        cleanup_failed = args.exit_code in {91, 92} or previous_status == "passed"
         payload.update(
             {
-                "status": "cleanup_failed",
+                "status": "cleanup_failed" if cleanup_failed else "failed",
                 "pipeline_status_before_cleanup": previous_status,
                 "exit_code": args.exit_code,
                 "finished_at": datetime.now(timezone.utc).isoformat(),
@@ -368,11 +426,12 @@ def record_exit(args: argparse.Namespace) -> int:
         )
         _atomic_json(output, payload)
         return 0
+    status = "preempted" if args.exit_code == 75 else "failed"
     _atomic_json(
         output,
         {
             "schema": "sft_stage1_stage2_direct_eval_v1",
-            "status": "failed",
+            "status": status,
             "exit_code": args.exit_code,
             "finished_at": datetime.now(timezone.utc).isoformat(),
         },
@@ -408,7 +467,7 @@ def rank_map(args: argparse.Namespace) -> int:
     world = dist.get_world_size()
     local_rank = int(os.environ["LOCAL_RANK"])
     if world != TRAIN_WORLD_SIZE or torch.cuda.device_count() != TRAIN_WORLD_SIZE:
-        raise RuntimeError(f"expected world{TRAIN_WORLD_SIZE}/six visible GPUs")
+        raise RuntimeError(f"expected world{TRAIN_WORLD_SIZE}/four visible GPUs")
     torch.cuda.set_device(local_rank)
     row = {
         "rank": rank,
@@ -430,6 +489,15 @@ def rank_map(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
+    for name, function in (
+        ("init-run-identity", init_run_identity),
+        ("validate-run-identity", validate_run_identity),
+    ):
+        identity = subparsers.add_parser(name)
+        identity.add_argument("--run-root", required=True)
+        identity.add_argument("--commit", required=True)
+        identity.add_argument("--world-size", type=int, required=True)
+        identity.set_defaults(func=function)
     preflight = subparsers.add_parser("preflight-inputs")
     preflight.add_argument("--source-checkpoint", required=True)
     preflight.add_argument("--train-jsonl", required=True)
@@ -445,6 +513,10 @@ def build_parser() -> argparse.ArgumentParser:
     merged.add_argument("--merged-dir", required=True)
     merged.add_argument("--output", required=True)
     merged.set_defaults(func=validate_merged)
+    stage_checkpoint = subparsers.add_parser("validate-stage-checkpoint")
+    stage_checkpoint.add_argument("--stage", choices=("format", "query"), required=True)
+    stage_checkpoint.add_argument("--checkpoint", required=True)
+    stage_checkpoint.set_defaults(func=validate_stage_checkpoint)
     final = subparsers.add_parser("finalize")
     final.add_argument("--stage1-eval", required=True)
     final.add_argument("--stage2-eval", required=True)
