@@ -166,7 +166,8 @@ handle_termination() {
 trap cleanup EXIT
 trap handle_termination TERM INT
 
-exec > >(tee -a "${RUN_ROOT}/controller.log") 2>&1
+# Keep logging alive until the controller exits, after runtime cleanup.
+exec > >(env -u NIMLOTH_PIPELINE_RUNTIME_ROOT tee -a "${RUN_ROOT}/controller.log") 2>&1
 cat >"${RUN_ROOT}/README.md" <<EOF
 # 统一 SFT1/SFT2 一轮训练与 direct 评估
 
