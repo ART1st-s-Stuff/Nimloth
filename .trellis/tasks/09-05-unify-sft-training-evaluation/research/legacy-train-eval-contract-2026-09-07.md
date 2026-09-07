@@ -108,3 +108,10 @@ sbatch --parsable \
 RUN_ROOT=`/project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluation/20260907T170447Z_legacy_step79_6gpu_9acf4415`，Slurm日志为此路径追加 `.slurm-557382.log`。提交命令与八卡记录的结构相同：同一REPO与脚本，EXPECTED_COMMIT改9acf44157cf5428744053e0ae3e6a7869c24d1b4、RUN_ROOT改上述唯一新目录；子模块三个EXPECTED值不变；资源来自已提交六卡脚本指令。
 
 最新核验2026-09-07T17:05:25Z：`PENDING(Priority)`，无分配节点、无训练日志，ReqTRES=6GPU/72CPU/450G、TimeLimit=06:00:00、Requeue=0、Restarts=0。调度器预计当地2026-09-09 00:53:53（UTC2026-09-08 16:53:53）开始，可变，不是保证。监控精确job由556418切换为557382；后续查询squeue/sacct及新输出目录，其他phase、失败处理与结果边界同前。未完成训练/评估验收。
+## dgx-55可抢占恢复运行（2026-09-07T18:19:44Z）
+
+- 固定提交：Nimloth `9c9d6a9b0c0ba25cce60422ebf0b8740ba80db6f`；VAGEN `b4066c56c727c19a88b593e7207ca5f6c0744a9b`；VERL `494f264494b2525f2c13595f63ac4912963e6d2f`；LeWM `8edfeb336732b5f3ce7b8b210d0ba370a09e2cac`。
+- 输入preflight：step79四shard/825 keys完整；train 613/7309、val 355/6054；14331个DINO特征无缺失且finite；Base/Common Sense各60；输出盘约294GB可用。
+- Slurm job `557736`：preempt、dgx-55、4GPU、48CPU、240G、6h、Requeue=1；提交后状态 `PENDING(Priority)`，Elapsed=0。
+- 持久输出：`/project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluation/20260907T181900Z_dgx55_world4_9c9d6a9b`。
+- 预检期间dgx-55空闲GPU由4降为2；保持world4合同并排队，未缩减world size。尚无GPU训练或评估结果。
