@@ -15,7 +15,20 @@ from experiments.training.sft1.vagen_step60_data import (
 PILOT_SELECTION = 'batch1 train first 100 source rows per category'
 BATCH1_REMAINDER_SELECTION = 'batch1 excluding the 200-row balanced training pilot'
 SELECTION = PILOT_SELECTION
-OVERRIDES = {'prompt_format': 'source_wm_mode', 'step_length': 0.3, 'success_threshold': 1.0}
+PROMPT_FORMATS = ('source_wm_mode', 'source_eval_mode')
+
+
+def runtime_overrides(prompt_format: str) -> dict[str, object]:
+    if prompt_format not in PROMPT_FORMATS:
+        raise ValueError(f'unsupported prompt format: {prompt_format!r}')
+    return {
+        'prompt_format': prompt_format,
+        'step_length': 0.3,
+        'success_threshold': 1.0,
+    }
+
+
+OVERRIDES = runtime_overrides('source_wm_mode')
 
 
 def sha256(path: Path) -> str:
@@ -60,6 +73,7 @@ def select_rows(
     manifest: dict,
     batch_rows: list[dict],
     selection: str = PILOT_SELECTION,
+    prompt_format: str = 'source_wm_mode',
 ) -> tuple[list[dict], list[dict]]:
     batch = next(b for b in manifest['batches'] if b['batch'] == 1)
     if len(batch_rows) != len(batch['source_indices']):
@@ -74,7 +88,7 @@ def select_rows(
                 or info['env_config']['eval_set'] != identity['eval_set']):
             raise ValueError('source row identity mismatch')
         info.update({key: identity[key] for key in ('source_index', 'source_key', 'dataset_split')})
-        info['env_config'].update(OVERRIDES)
+        info['env_config'].update(runtime_overrides(prompt_format))
         prepared.append(row)
     return prepared, identities
 
@@ -83,6 +97,7 @@ def prepare(
     partition_path: Path,
     output: Path,
     selection: str = PILOT_SELECTION,
+    prompt_format: str = 'source_wm_mode',
 ) -> dict:
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -93,6 +108,7 @@ def prepare(
         manifest,
         pq.read_table(partition_path.parent / batch['parquet']).to_pylist(),
         selection,
+        prompt_format=prompt_format,
     )
     output.mkdir(parents=True, exist_ok=False)
     shards = []
@@ -107,7 +123,7 @@ def prepare(
               'partition_sha256': sha256(partition_path), 'source': manifest['source'],
               'batch1_parquet_sha256': batch['parquet_sha256'], 'count': len(rows),
               'selection': selection,
-              'runtime_overrides': OVERRIDES, 'shards': shards}
+              'runtime_overrides': runtime_overrides(prompt_format), 'shards': shards}
     # Marker last: a partial directory is never accepted for rollout.
     (output / 'prepared_manifest.json').write_text(json.dumps(result, indent=2) + '\n')
     return result
@@ -133,7 +149,12 @@ def verify(prepared_path: Path, shard_indices: str | None = None) -> list[Path]:
         'source200_prepared_v1': PILOT_SELECTION,
         'source_batch1_remainder_prepared_v1': BATCH1_REMAINDER_SELECTION,
     }
-    if manifest['format'] not in formats or manifest['runtime_overrides'] != OVERRIDES:
+    overrides = manifest.get('runtime_overrides')
+    if (
+        manifest['format'] not in formats
+        or not isinstance(overrides, dict)
+        or overrides != runtime_overrides(overrides.get('prompt_format'))
+    ):
         raise ValueError('prepared contract mismatch')
     selection = formats[manifest['format']]
     partition = Path(manifest['partition_path'])
@@ -149,6 +170,7 @@ def verify(prepared_path: Path, shard_indices: str | None = None) -> list[Path]:
         parent,
         pq.read_table(partition.parent / batch['parquet']).to_pylist(),
         selection,
+        prompt_format=overrides['prompt_format'],
     )
     if manifest['count'] != len(identities) or len(manifest['shards']) != len(identities) // 20:
         raise ValueError('prepared shard count mismatch')
@@ -194,6 +216,7 @@ if __name__ == '__main__':
     parser.add_argument('--partition', type=Path)
     parser.add_argument('--output', type=Path)
     parser.add_argument('--selection', choices=('pilot', 'batch1_remainder'), default='pilot')
+    parser.add_argument('--prompt-format', choices=PROMPT_FORMATS, default='source_wm_mode')
     parser.add_argument('--verify', type=Path)
     parser.add_argument('--shard-indices')
     parser.add_argument('--validate-output', type=Path)
@@ -206,6 +229,6 @@ if __name__ == '__main__':
     elif args.partition and args.output:
         selection = (PILOT_SELECTION if args.selection == 'pilot'
                      else BATCH1_REMAINDER_SELECTION)
-        prepare(args.partition, args.output, selection)
+        prepare(args.partition, args.output, selection, prompt_format=args.prompt_format)
     else:
         parser.error('provide --partition and --output, or --verify')

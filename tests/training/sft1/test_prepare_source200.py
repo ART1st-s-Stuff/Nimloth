@@ -45,6 +45,25 @@ def test_published_roundtrip_and_tamper(tmp_path, monkeypatch):
         pilot.verify(output / 'prepared_manifest.json')
 
 
+def test_source_eval_mode_roundtrip(tmp_path, monkeypatch):
+    source = tmp_path / 'source.parquet'
+    rows = _source_rows()
+    pq.write_table(pa.Table.from_pylist(rows), source)
+    digest = pilot.sha256(source)
+    monkeypatch.setattr(data, 'SOURCE_TRAIN_SHA256', digest)
+    partition = tmp_path / 'partition'
+    data.partition_source_parquet(source, partition, expected_sha256=digest)
+    output = tmp_path / 'prepared_eval'
+
+    manifest = pilot.prepare(
+        partition / 'partition_manifest.json', output, prompt_format='source_eval_mode'
+    )
+
+    assert manifest['runtime_overrides']['prompt_format'] == 'source_eval_mode'
+    first = pq.read_table(pilot.verify(output / 'prepared_manifest.json')[0]).to_pylist()[0]
+    assert first['extra_info']['env_config']['prompt_format'] == 'source_eval_mode'
+
+
 def test_source_identity_mismatch_rejected():
     rows = _source_rows()
     manifest = data.build_partition_manifest(rows, source_path='source',
