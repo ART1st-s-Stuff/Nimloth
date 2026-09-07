@@ -74,3 +74,7 @@ SFT1 stores cached `pixel_values` as BF16 by default (`CACHE_PIXEL_DTYPE=bfloat1
 ## Legacy
 
 SFT1 scripts in `experiments/navigation_baseline/` are frozen. Do not add new files there.
+
+## Original step60 validation rerun
+
+`original_validation200.py` verifies and prepares the existing balanced 200-row pilot and strictly summarizes original validation dumps. `run_original_validation200.slurm` runs the frozen step60 actor with original sampling, batch size, context, and 8-rank/TP4 topology. See the task research launch contract for provenance and limits.
