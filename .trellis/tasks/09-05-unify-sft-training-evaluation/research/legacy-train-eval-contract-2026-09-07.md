@@ -53,3 +53,46 @@ canonical stage2 现在先建立回答索引再采样，batch1 为一个完整�
 远程 torch2.8.0/transformers4.55.4/peft0.19.1 的真实 tiny Qwen 检查已通过：默认 auto adapter 保存、扩词表32→36、merge、HF重载，输入与输出权重逐元素一致且独立存储、generate协议回退正确。仅processor序列化使用隔离替身，不能替代本次真实tokenizer/大checkpoint运行证据。显式 `save_embedding_layers=True` 的外部adapter重复别名仍是已知限制，本次默认auto路径未触发，不扩大修复。
 
 最终启动器5项CPU合同测试、完整Ruff、shell语法和diff检查通过；独立源码复审通过。远程Vulkan/cache/tool路径可用，/project剩余约510GiB；本次输出预计低于100GiB，启动器在剩余空间低于100GiB时拒绝启动。
+
+## 已提交与交接（2026-09-07T14:01:15Z）
+
+最终源码 `c502e629226d4a5ec2d1093fef26f579f0363acf`，包含上一实现提交 `cd3e360533a5d19e4211fc14706688a197742206`。最后一项独立审核修复让日志 tee 不继承 runtime cleanup marker，避免退出时先杀掉自身日志通道。远程专用 worktree 已通过 Git bundle 正常快进，固定提交及所有子模块 pins 一致、干净；未推 GitHub、未合并开发分支。
+
+最终远程 CPU preflight 通过并保存在 `/tmp/sft12-cd3e3605-input-preflight.json`：所有图像实际存在、DINO全部相关特征有限、源模型4个shard完整且计算SHA256、磁盘约546487402496字节可用。stage1、stage2、checkpoint_export、evaluation、prewarm、navigation.serve六个真实CLI导入通过。最后日志修复不改变上述输入或Python代码。
+
+成功提交一次：job **556418**，job name `sft12-step79-eval`，UTC `2026-09-07T14:01:15Z`（Slurm当地时间22:01:15）。初始 PENDING，尚无 GPU 执行或训练/评估结果。提交前当前账号只有其他任务556034、556035，未干扰。
+
+输出根：`/project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluation/20260907T140115Z_legacy_step79_c502e629`。
+Slurm日志位于输出根旁边：同一完整路径追加 `.slurm-556418.log`，不提前污染空输出目录。
+
+实际提交使用最终入口及其SBATCH资源指令：
+
+```bash
+sbatch --parsable \
+  --chdir=/project/peilab/atst/nimloth/.worktree/unify-sft-training-evaluation \
+  --output=<RUN_ROOT>.slurm-%j.log --error=<RUN_ROOT>.slurm-%j.log \
+  --export=ALL,REPO=/project/peilab/atst/nimloth/.worktree/unify-sft-training-evaluation,RUN_ROOT=<上述输出根>,EXPECTED_COMMIT=c502e629226d4a5ec2d1093fef26f579f0363acf,EXPECTED_VAGEN_COMMIT=b4066c56c727c19a88b593e7207ca5f6c0744a9b,EXPECTED_VERL_COMMIT=494f264494b2525f2c13595f63ac4912963e6d2f,EXPECTED_LEWM_COMMIT=8edfeb336732b5f3ce7b8b210d0ba370a09e2cac \
+  experiments/training/sft/evaluation/run_step79_stage1_stage2_eval.sh
+```
+
+上面RUN_ROOT占位仅为避免重复长路径，实际命令使用已列明完整路径。完整训练、merge、评估命令在固定提交的启动器内，并由controller的set-x记录展开值。提交默认Slurm Requeue=1，控制器随后请求对精确556418设置Requeue=0，需以下次实测记录为准。
+
+监控入口（先通过 `.local/SERVER.md` 已确认SSH入口连接，初始化profile后加载Slurm）：`squeue -j 556418`、`sacct -j 556418 --format=JobID,State,ExitCode,Elapsed,NodeList`。拿到GPU后核验 `rank_map.json` 八rank与实际node/CUDA映射，随后看 `stage1_train.log`、`stage2_train.log` 和各自 `train_step_log.csv`；merge日志和metadata完成后才看双臂env/render/prewarm/eval日志及最终 `final_status.json`。CPU preflight重读大模型哈希可能需要几分钟，不能把该阶段误报成训练停滞。
+
+失败、NaN/OOM、导出或渲染失败时保存全部phase日志，不自动重提；time limit是6小时运行上限。没有完整epoch产物时不宣称可恢复。本作业主体和cleanup状态分别记录，`passed`只有两阶段训练导出及240条实际rollout完整才成立。其他任务不在取消/修改范围内。
+
+### 最新核验：2026-09-07T14:03:33Z
+
+556418仍 `PENDING(Priority)`，未获得节点；实测 `TimeLimit=06:00:00`、`Requeue=0`、`Restarts=0`、`8 GPU/96 CPU/600G`。集群的update钩子即使返回Access/permission denied也部分应用属性：第一次显式Account更新曾把TimeLimit重置8小时，已立即显式恢复6小时并读回确认；期间始终pending，未产生额外GPU用量。不得只凭命令返回码推断这些属性未生效。
+
+调度器当时预计当地2026-09-08 20:14（UTC12:14）开始，此估计可变、不是已分配节点或启动保证。后续以live squeue/scontrol为准；无训练loss、checkpoint或rollout结果可报告。长job的准确身份、源码、输入、输出和监控入口均已记录供继续接手。
+
+## 人类授权改为6GPU（2026-09-07）
+
+人类要求将作业调整为6GPU。当前556418于16:59:44Z实测仍PENDING(Priority)、无节点/运行产物；dgx-06当时有7张空闲GPU。准备修改实验入口及rank检查为单节点6GPU/72CPU/450G、6小时时限，关闭自动重排，独立审核后替换未启动的8GPU作业。取消前再次刷新精确作业，确认终态后才同步新版远程代码和提交新的唯一输出身份；不让旧job运行在改变后的源码上。
+
+每卡batch1、GA8保持，完整有效batch从64变48；stage1每rank103个trajectory batches、约13个optimizer steps，stage2每rank1219个回答batches、约153个optimizer steps。每阶段仍完整一轮，DDP按既有规则补齐少量样本。已向人类说明此变化，不声称与8卡训练完全等价。CE/query-DINO目标、数据、初始化checkpoint、学习率及两阶段各120条direct评估均不变，评估两臂仍分别占用一张policy卡和一张环境卡。
+
+本次仅修改实验资源与配套检查，复用已完成的真实输入/DINO/shard/PEFT/CLI预检，不重写算法。新运行固定commit及提交结果在本节后补充；当前仍未提交6GPU作业。
+
+六卡版本已完成：GPU可见数、三个torchrun入口和rank映射均要求6，SBATCH为6GPU/72CPU/450G/6h并显式--no-requeue。评估仍用索引0–3，合法。6项CPU合同测试、真实CLI参数解析、Shell语法、Ruff和diff检查通过，独立审核通过；无算法、输入或checkpoint内容改动。

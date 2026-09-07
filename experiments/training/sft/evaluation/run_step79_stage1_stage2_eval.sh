@@ -4,11 +4,12 @@
 #SBATCH --qos=normal_qos
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:8
-#SBATCH --cpus-per-task=96
-#SBATCH --mem=600G
+#SBATCH --gres=gpu:6
+#SBATCH --cpus-per-task=72
+#SBATCH --mem=450G
 #SBATCH --time=06:00:00
 #SBATCH --job-name=sft12-step79-eval
+#SBATCH --no-requeue
 
 set -euo pipefail
 
@@ -59,8 +60,8 @@ done
 
 ALLOCATED_CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-}
 IFS=',' read -r -a GPU_TOKENS <<<"${ALLOCATED_CUDA_VISIBLE_DEVICES}"
-(( ${#GPU_TOKENS[@]} == 8 )) || {
-  echo "pipeline requires exactly eight allocated CUDA tokens; got ${#GPU_TOKENS[@]}" >&2
+(( ${#GPU_TOKENS[@]} == 6 )) || {
+  echo "pipeline requires exactly six allocated CUDA tokens; got ${#GPU_TOKENS[@]}" >&2
   exit 2
 }
 PORT_BASE=$((22000 + SLURM_JOB_ID % 8000))
@@ -176,12 +177,13 @@ cat >"${RUN_ROOT}/README.md" <<EOF
 - 初始化：历史 VAGEN step79 HF checkpoint：${SOURCE_CHECKPOINT}。
 - 数据：train_success.jsonl（613 条轨迹、7309 个回答前缀）与 val_all.jsonl（355 条轨迹、6054 个回答前缀）。
 - 离线验证边界：val_all 与 train_success 有1个任务重叠，因此只用于训练过程诊断，不称为独立 held-out；正式 Base/Common Sense 120 与训练任务及场景均无重叠。
-- SFT1：format，K1 generate，LoRA r64/alpha128，world8，batch1，GA8，一轮。
+- SFT1：format，K1 generate，LoRA r64/alpha128，world6，batch1，GA8，一轮。
 - SFT2：从 SFT1 epoch_001/hf_merged 初始化；query，K16 inject，CE+DINO，其他训练规模相同，一轮。
-- 计算单元：SFT1遍历613条完整轨迹（约10个optimizer step）；SFT2按回答前缀建立索引，完整遍历7309个回答（约115个optimizer step），每个样本保留该回答之前的全部真实历史，不截断或抽样回答。
+- 计算单元：SFT1遍历613条完整轨迹（约13个optimizer step）；SFT2按回答前缀建立索引，完整遍历7309个回答（约153个optimizer step），每个样本保留该回答之前的全部真实历史，不截断或抽样回答。
+- 批量：每卡batch1、GA8保持不变；world6下有效batch为48，低于此前配置的64。
 - 可训练参数：基础权重冻结；LoRA后缀同时命中语言层与视觉块MLP，历史模型探针为698个可训练tensor、770,940,928个参数；embedding和lm_head完整训练，SFT2另训练共享slot projector，因此不将视觉分支描述为完全冻结。
 - 评估：两阶段合并模型并发 direct rollout；Base/Common Sense 各 seeds 1..60，greedy，最多20步，512 tokens，TP1。
-- 资源：normal 单节点八卡，训练顺序执行；评估各占一张环境卡和一张策略卡。
+- 资源：normal 单节点六卡，训练顺序执行；评估各占一张环境卡和一张策略卡。
 - W&B：禁用。
 EOF
 
@@ -196,7 +198,7 @@ export PS4='+ ${BASH_SOURCE}:${LINENO}: '
 set -x
 
 CUDA_VISIBLE_DEVICES="${ALLOCATED_CUDA_VISIBLE_DEVICES}" \
-  "${PYTHON}" -m torch.distributed.run --nproc_per_node=8 \
+  "${PYTHON}" -m torch.distributed.run --nproc_per_node=6 \
   --master_port="${TRAIN_PORT}" -m "${CONTRACT_MODULE}" rank-map \
   --output "${RUN_ROOT}/rank_map.json"
 
@@ -208,7 +210,7 @@ STAGE2_EPOCH=${STAGE2_OUT}/epoch_001
 STAGE2_MERGED=${STAGE2_EPOCH}/hf_merged
 
 CUDA_VISIBLE_DEVICES="${ALLOCATED_CUDA_VISIBLE_DEVICES}" \
-  "${PYTHON}" -m torch.distributed.run --nproc_per_node=8 --master_port="${TRAIN_PORT}" \
+  "${PYTHON}" -m torch.distributed.run --nproc_per_node=6 --master_port="${TRAIN_PORT}" \
   -m nimloth.training.sft.stage1 \
   --model "${SOURCE_CHECKPOINT}" --train-jsonl "${TRAIN_JSONL}" --val-jsonl "${VAL_JSONL}" \
   --output-dir "${STAGE1_OUT}" --epochs 1 --batch-size 1 --grad-accum 8 \
@@ -224,7 +226,7 @@ CUDA_VISIBLE_DEVICES="${ALLOCATED_CUDA_VISIBLE_DEVICES}" \
   --output "${RUN_ROOT}/stage1_merge.json"
 
 CUDA_VISIBLE_DEVICES="${ALLOCATED_CUDA_VISIBLE_DEVICES}" \
-  "${PYTHON}" -m torch.distributed.run --nproc_per_node=8 --master_port="${TRAIN_PORT}" \
+  "${PYTHON}" -m torch.distributed.run --nproc_per_node=6 --master_port="${TRAIN_PORT}" \
   -m nimloth.training.sft.stage2 \
   --model "${STAGE1_MERGED}" --train-jsonl "${TRAIN_JSONL}" --val-jsonl "${VAL_JSONL}" \
   --output-dir "${STAGE2_OUT}" --dino-cache-root "${DINO_CACHE}" \

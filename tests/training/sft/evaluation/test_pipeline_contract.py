@@ -57,8 +57,11 @@ def test_launcher_owns_resources_and_fails_closed():
         "#SBATCH --partition=normal",
         "#SBATCH --qos=normal_qos",
         "#SBATCH --nodes=1",
-        "#SBATCH --gres=gpu:8",
+        "#SBATCH --gres=gpu:6",
+        "#SBATCH --cpus-per-task=72",
+        "#SBATCH --mem=450G",
         "#SBATCH --time=06:00:00",
+        "#SBATCH --no-requeue",
     ):
         assert directive in text
     for required in (
@@ -90,6 +93,22 @@ def test_launcher_owns_resources_and_fails_closed():
     assert "export HOME=" not in arm_text
     assert arm_text.count('env HOME="${OWNED_HOME}"') == 2
     assert "set -x" in text
+    assert text.count("--nproc_per_node=6") == 3
+    assert "有效batch为48" in text
+
+
+def test_six_rank_mapping_requires_unique_complete_single_node_rows():
+    module = load_contract_module()
+    rows = [
+        {"rank": rank, "local_rank": rank, "host": "dgx", "device": rank}
+        for rank in range(6)
+    ]
+    module.validate_rank_rows(rows, 6)
+    rows[-1]["local_rank"] = 0
+    with pytest.raises(RuntimeError, match="one-to-one"):
+        module.validate_rank_rows(rows, 6)
+    with pytest.raises(RuntimeError, match="world6"):
+        module.validate_rank_rows(rows[:-1], 6)
 
 
 def test_jsonl_preflight_counts_answers_images_and_rejects_missing(

@@ -78,3 +78,13 @@ canary、动作头修复、packed/KV研究原型和依赖它们的特征审计�
 已修复stage2按trajectory批次导致全部回答前缀同时入显存的问题，采样前建立回答索引；全部7309回答与历史保留。补上query完整但动作尾部截断的拒绝检查，格式诊断仍用原trajectory dataset。159项SFT/SFT1 CPU回归通过；启动器5项CPU合同测试通过。独立审核复查上述修复及阶段导出接线，无当前默认路径阻断。远程DINO实际cache加载/finite检查通过（14331图像）；初始化checkpoint的4shards825keys完整。
 
 新启动器位于 `experiments/training/sft/evaluation/`，明确stage1→merge→stage2→merge→双臂独立direct环境，清理失败撤销最终passed。远程PEFT 0.19.1微型实际保存/导出检查待收取结果；固定最终commit、远程同步和提交仍未执行。此处不能把准备完成当作训练或质量验证完成。
+
+### 556418已提交，2026-09-07T14:03:33Z最新状态
+
+远程PEFT0.19.1默认auto保存/merge/重载实际tiny模型检查通过，最终CPU输入预检与六个真实CLI检查通过。源码最终固定为 `c502e629226d4a5ec2d1093fef26f579f0363acf` 并同步远程干净专用worktree。
+
+14:01:15Z成功提交normal作业 **556418**。最新 `PENDING(Priority)`，6小时上限、Requeue=0、8GPU/96CPU/600G；尚无GPU训练或评估结果。调度估计UTC次日12:14开始，可变。完整输出身份、提交参数、前置验证、集群属性更新注意事项和监控/交接均见 `research/legacy-train-eval-contract-2026-09-07.md`。任务保持in_progress，不因提交成功标记完成。
+
+### 2026-09-07T16:30:55Z进度查询
+
+只读squeue/sacct/scontrol确认556418仍为PENDING(Priority)，无分配节点，Elapsed=0；排队约2小时30分钟，训练与评估均未启动，Slurm日志尚不存在。资源仍为单节点8GPU/96CPU/600G、TimeLimit=6h、Requeue=0。调度器预计启动变为当地2026-09-10 20:36:29（UTC12:36:29），此为动态估计而非保证。本次未调整资源、取消或重提。

@@ -26,6 +26,9 @@
     "worktree_path": "/workspace/remote2/nimloth/.worktree/codex-unify-sft",
     "kind": "experiment",
     "gpu_test_authorization": "2026-09-06 human approved normal 3-GPU allocation for testing",
-    "legacy_validation_authorization": "Human requested training stage1 then stage2 from the previous checkpoint and old datasets, followed by evaluation of the new outputs; continued 2026-09-07. One epoch per stage, one normal eight-GPU job, six-hour cap; details in research/legacy-train-eval-contract-2026-09-07.md."
+    "legacy_validation_authorization": "Human requested training stage1 then stage2 from the previous checkpoint and old datasets, followed by evaluation of the new outputs. On 2026-09-07 explicitly requested six GPUs instead of eight: one epoch per stage, normal six-GPU job, six-hour cap, batch1 GA8 retained (effective batch48); details in research/legacy-train-eval-contract-2026-09-07.md.",
+    "legacy_validation_job": "556418",
+    "legacy_validation_commit": "c502e629226d4a5ec2d1093fef26f579f0363acf",
+    "legacy_validation_last_verified": "2026-09-07T14:03:33Z PENDING(Priority); TimeLimit=06:00:00; Requeue=0"
   }
 }

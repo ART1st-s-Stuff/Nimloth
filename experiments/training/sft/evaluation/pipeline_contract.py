@@ -22,6 +22,7 @@ EXPECTED_HELD_OUT = {
     "common_sense": "3e7d2cb4246b6e2edaeaabd318dba93e4dbbff114c8368ed0c862e64f417afcf",
 }
 EXPECTED_DINO_FINGERPRINT = "b50d261e2b533f3e"
+TRAIN_WORLD_SIZE = 6
 
 
 def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -379,6 +380,23 @@ def record_exit(args: argparse.Namespace) -> int:
     return 0
 
 
+def validate_rank_rows(rows: list[dict[str, Any]], visible_count: int) -> None:
+    if len(rows) != TRAIN_WORLD_SIZE or visible_count != TRAIN_WORLD_SIZE:
+        raise RuntimeError(
+            f"expected world{TRAIN_WORLD_SIZE}/{TRAIN_WORLD_SIZE} visible GPUs, "
+            f"got {len(rows)}/{visible_count}"
+        )
+    expected = list(range(TRAIN_WORLD_SIZE))
+    if sorted(item["rank"] for item in rows) != expected:
+        raise RuntimeError("global ranks are incomplete or duplicated")
+    if sorted(item["local_rank"] for item in rows) != expected:
+        raise RuntimeError(
+            f"local ranks do not map one-to-one onto {TRAIN_WORLD_SIZE} GPUs"
+        )
+    if len({item["host"] for item in rows}) != 1:
+        raise RuntimeError("rank preflight escaped the one-node allocation")
+
+
 def rank_map(args: argparse.Namespace) -> int:
     import socket
 
@@ -389,10 +407,8 @@ def rank_map(args: argparse.Namespace) -> int:
     rank = dist.get_rank()
     world = dist.get_world_size()
     local_rank = int(os.environ["LOCAL_RANK"])
-    if world != 8 or torch.cuda.device_count() != 8:
-        raise RuntimeError(
-            f"expected world8/eight visible GPUs, got {world}/{torch.cuda.device_count()}"
-        )
+    if world != TRAIN_WORLD_SIZE or torch.cuda.device_count() != TRAIN_WORLD_SIZE:
+        raise RuntimeError(f"expected world{TRAIN_WORLD_SIZE}/six visible GPUs")
     torch.cuda.set_device(local_rank)
     row = {
         "rank": rank,
@@ -404,10 +420,7 @@ def rank_map(args: argparse.Namespace) -> int:
     rows: list[Any] = [None] * world
     dist.all_gather_object(rows, row)
     if rank == 0:
-        if sorted(item["local_rank"] for item in rows) != list(range(8)):
-            raise RuntimeError("local ranks do not map one-to-one onto eight GPUs")
-        if len({item["host"] for item in rows}) != 1:
-            raise RuntimeError("rank preflight escaped the one-node allocation")
+        validate_rank_rows(rows, torch.cuda.device_count())
         _atomic_json(Path(args.output), {"world_size": world, "ranks": rows})
     dist.barrier()
     dist.destroy_process_group()
