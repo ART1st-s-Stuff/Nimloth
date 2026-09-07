@@ -522,3 +522,23 @@ Oneautomaticreview rejectedVAGENbundletransfer;read-onlyproofshowedmatchingexist
 ### 2026-09-07T16:48Z — 监控与预算校正
 
 Job557214仍PENDING(Priority)，未分配节点、运行目录未创建。监控发现TimeLimit变为8h（前次scontrol策略处理后的实际状态），已显式带Account=peilab、TimeLimit=06:00:00、Requeue=0更新。命令仍返回集群Access/permission denied文字，但紧接scontrol读取确认TimeLimit=06:00:00、Requeue=0、8GPU112CPU256G，预算恢复为原约定。没有新job、重启或rollout产物；监控继续。
+
+## 2026-09-07T17:16Z 独立两卡方案替换
+
+人类纠正为每节点独立管理模型和环境；跨节点共享Ray方案未提交、未运行。现采用array0-2%3，每成员1节点2GPU/28CPU/128GiB/6h、TP2、valbatch1，67/67/66原始身份分片，其他采样合同不变。53项CPU测试通过、1项原重建fixture测试跳过；包括分片完整性和确定性的并发半写入JSON回归。VAGEN仅改变审计JSON原子发布，未改变模型/环境生成代码。
+
+旧job557214在2026-09-07T17:15Z刷新为PENDING后取消；sacct确认CANCELLED、Elapsed00:00:00，无GPU运行。未修改其他job。已push并快进自己的remote worktree：Nimloth aee586b2533bbd110139eeed7465b771ad2ee712，VAGEN844378ce8a5727d8274b0c7024573031f9b1296d，verl仍14b2453e2cdb859067fec4258b5657a89d7a3a9c。新环境记录远程.local/step60-original-validation/launch-independent.env；旧monitor已暂停，待新arrayID确定后恢复。
+
+新输出预定outputs/experiments/training/sft1-vagen-step60/20260907T171300Z_original_validation200_independent_2gpu；分片同父目录20260907T171300Z_original_validation200_partitions。正在执行远程CPU preflight和原始loader逐片保留核验，尚未提交新array。
+
+### 2026-09-07T17:18:32Z 已提交独立两卡array557451
+
+远程三组Hydra/checkpoint/版本preflight均通过；原始RLHFDataset真实加载保留67/67/66条，NavigationEnvConfig逐行接受，verify_partitions确认200身份与内容完全保留。随后仅提交一次array557451，成员0/1/2，确认每成员1节点2GPU28CPU128GiB、6h、Requeue0。提交时三个成员PENDING(None)，尚无GPU执行证据。完整提交：source .local/step60-original-validation/launch-independent.env；sbatch --parsable --export=ALL --chdir=$REPO --output=$RUN_OUT/slurm-%A_%a.out --error=$RUN_OUT/slurm-%A_%a.err experiments/training/sft1/run_original_validation200.slurm。控制目录independent_job_id.txt和independent_submission_time.txt已保存。
+
+原heartbeat monitor-original-validation-200已更新至557451并恢复5分钟监控。全部三个成员成功后由监控执行原summarize exact200验证，再创建success_summary.json和collection_done.flag；各成员不单独写全局完成标记。运行源码固定aee586b2/844378c/14b2453e，后续本地进度改动不要同步影响运行时Git清洁门禁。
+
+### 2026-09-07T17:22Z array557451启动失败
+
+三个成员已全部FAILED1:0：0在dgx-38运行24秒，1在dgx-51运行54秒，2在dgx-18运行54秒。全部在render_probe构造AI2-THOR Controller的unity_command阶段抛出“vulkaninfo failed to run”。没有进入环境服务/Ray/模型加载/rollout阶段，无success rate。Slurm stderr无额外异常，具体traceback均在各node_<id>/render_probe.log；原始输出目录保留，不用于新运行。监控已暂停。
+
+根因核验：launcher PATH仅含独立venv，没有已有Vulkan工具目录；远程command-v vulkaninfo未找到。实际可用二进制为/project/peilab/atst/flower/.local-vulkan/tools/extracted/usr/bin/vulkaninfo，使用原有Vulkan LD_LIBRARY_PATH后CPU --help成功，ldd所有库均解析。修复需把工具PATH/库设置提前至CPU preflight，并加command-v及--help门禁。该CPU检查仅证明可执行性，不证明真实GPU渲染；下一次仍保留150秒render_probe。尚未重提。

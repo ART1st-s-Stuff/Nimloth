@@ -21,7 +21,13 @@ unset RAY_INIT_ADDRESS RAY_ADDRESS
 NODE_OUT=${RUN_OUT}/node_${SLURM_ARRAY_TASK_ID}
 SHARD_FILE=${SHARDED_DIR}/shard_${SLURM_ARRAY_TASK_ID}.parquet
 PY=${PYTHON_ENV}/bin/python3
-export PATH="${PYTHON_ENV}/bin:${PATH}"
+VULKAN_ROOT=/project/peilab/atst/flower/.local-vulkan
+export LD_LIBRARY_PATH="${VULKAN_ROOT}/extracted/usr/lib/x86_64-linux-gnu:${VULKAN_ROOT}/runtime/extracted/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
+export VK_ICD_FILENAMES="${VULKAN_ROOT}/icd.d/nvidia_icd.json" VK_DRIVER_FILES="${VULKAN_ROOT}/icd.d/nvidia_icd.json"
+export PATH="${VULKAN_ROOT}/tools/extracted/usr/bin:${PYTHON_ENV}/bin:${PATH}"
+# CPU-only executable/loader check, including the --preflight login path.
+command -v vulkaninfo
+timeout --kill-after=5s 15s vulkaninfo --help >/dev/null
 export PYTHONPATH="${VAGEN_DIR}:${VERL_DIR}:${REPO}"
 export PYTHONDONTWRITEBYTECODE=1 TOKENIZERS_PARALLELISM=true
 export HF_HOME=/project/peilab/atst/.cache/huggingface
@@ -114,9 +120,6 @@ ln -s /project/peilab/atst/flower/.ai2thor-home/.ai2thor/releases "${NODE_OUT}/e
 export ORIGINAL_VALIDATION_RUNTIME_DIR="${NODE_OUT}/runtime"
 export TRITON_CACHE_DIR="${NODE_OUT}/runtime/triton" FLASHINFER_WORKSPACE_DIR="${NODE_OUT}/runtime/flashinfer"
 export XDG_CACHE_HOME="${NODE_OUT}/runtime/cache" TORCH_EXTENSIONS_DIR="${NODE_OUT}/runtime/extensions"
-VULKAN_ROOT=/project/peilab/atst/flower/.local-vulkan
-export LD_LIBRARY_PATH="${VULKAN_ROOT}/extracted/usr/lib/x86_64-linux-gnu:${VULKAN_ROOT}/runtime/extracted/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
-export VK_ICD_FILENAMES="${VULKAN_ROOT}/icd.d/nvidia_icd.json" VK_DRIVER_FILES="${VULKAN_ROOT}/icd.d/nvidia_icd.json"
 IP=$(hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print;exit}')
 [[ -n "$IP" ]]
 export VLLM_HOST_IP=$IP
