@@ -243,54 +243,14 @@ def summarize(manifest_path: Path, output_dir: Path) -> dict:
     successes = Counter()
     expected_by_index = {row['source_index']: row for row in expected}
     for path in paths:
-        row = json.loads(path.read_text())
-        identity = {key: row[key] for key in IDENTITY_KEYS}
+        row, identity, success, row_hashes = validate_record(
+            path, expected_by_index.get(json.loads(path.read_text()).get('source_index')),
+            artifact_root=output_dir,
+        )
         index = row['source_index']
-        if (row.get('format') != 'original_validation_row_v1'
-                or index in records or expected_by_index.get(index) != identity
-                or path.parent.name != f'row_{index:06d}'):
+        if index in records:
             raise ValueError('unexpected/duplicate rollout identity')
-        info = row['env_config']
-        if ({**{key: info[key] for key in IDENTITY_KEYS if key != 'eval_set'},
-             'eval_set': info['env_config']['eval_set']} != identity):
-            raise ValueError('record environment identity mismatch')
-        config = info['env_config']
-        if (config.get('prompt_format') != 'grounding_worldmodeling'
-                or 'success_reward' in config
-                or any(config.get(key) != value for key, value in ENV_CONTRACT.items())):
-            raise ValueError('record environment contract mismatch')
-        recording = row['recording']
-        success = recording['metrics'].get('success')
-        if type(success) is not bool:
-            raise ValueError('metrics.success must be an exact boolean')
-        if (not isinstance(recording.get('output_str'), str)
-                or not recording.get('history') or not recording.get('image_data')):
-            raise ValueError('missing trajectory or images')
-        image_files = set()
-
-        def check_images(value, row_dir=path.parent, referenced=image_files):
-            if isinstance(value, dict):
-                if 'image_file' in value:
-                    ref = value['image_file']
-                    name = ref['path']
-                    if Path(name).name != name or not name.endswith('.png'):
-                        raise ValueError('unsafe image path')
-                    image_path = row_dir / name
-                    if image_path.is_symlink() or sha256(image_path) != ref['sha256']:
-                        raise ValueError('image hash mismatch')
-                    hashes[str(image_path.relative_to(output_dir))] = ref['sha256']
-                    referenced.add(name)
-                else:
-                    for item in value.values():
-                        check_images(item)
-            elif isinstance(value, list):
-                for item in value:
-                    check_images(item)
-
-        check_images(recording)
-        if not image_files or {p.name for p in path.parent.iterdir()} != image_files | {'record.json'}:
-            raise ValueError('missing or unreferenced row artifacts')
-        hashes[str(path.relative_to(output_dir))] = sha256(path)
+        hashes.update(row_hashes)
         records[index] = identity
         counts[row['eval_set']] += 1
         successes[row['eval_set']] += success
@@ -306,6 +266,65 @@ def summarize(manifest_path: Path, output_dir: Path) -> dict:
         'manifest_sha256': sha256(manifest_path), 'parquet_sha256': sha256(parquet),
         'artifact_sha256': hashes,
     }
+
+
+def validate_record(
+    path: Path,
+    expected_identity: dict | None,
+    *,
+    artifact_root: Path,
+) -> tuple[dict, dict, bool, dict[str, str]]:
+    """Validate one complete original-validation record and all referenced images."""
+    row = json.loads(path.read_text())
+    identity = {key: row[key] for key in IDENTITY_KEYS}
+    index = row['source_index']
+    if (row.get('format') != 'original_validation_row_v1'
+            or expected_identity != identity
+            or path.parent.name != f'row_{index:06d}'):
+        raise ValueError('unexpected/duplicate rollout identity')
+    info = row['env_config']
+    if ({**{key: info[key] for key in IDENTITY_KEYS if key != 'eval_set'},
+         'eval_set': info['env_config']['eval_set']} != identity):
+        raise ValueError('record environment identity mismatch')
+    config = info['env_config']
+    if (config.get('prompt_format') != 'grounding_worldmodeling'
+            or 'success_reward' in config
+            or any(config.get(key) != value for key, value in ENV_CONTRACT.items())):
+        raise ValueError('record environment contract mismatch')
+    recording = row['recording']
+    success = recording['metrics'].get('success')
+    if type(success) is not bool:
+        raise ValueError('metrics.success must be an exact boolean')
+    if (not isinstance(recording.get('output_str'), str)
+            or not recording.get('history') or not recording.get('image_data')):
+        raise ValueError('missing trajectory or images')
+    image_files: set[str] = set()
+    hashes: dict[str, str] = {}
+
+    def check_images(value: object) -> None:
+        if isinstance(value, dict):
+            if 'image_file' in value:
+                ref = value['image_file']
+                name = ref['path']
+                if Path(name).name != name or not name.endswith('.png'):
+                    raise ValueError('unsafe image path')
+                image_path = path.parent / name
+                if image_path.is_symlink() or sha256(image_path) != ref['sha256']:
+                    raise ValueError('image hash mismatch')
+                hashes[str(image_path.relative_to(artifact_root))] = ref['sha256']
+                image_files.add(name)
+            else:
+                for item in value.values():
+                    check_images(item)
+        elif isinstance(value, list):
+            for item in value:
+                check_images(item)
+
+    check_images(recording)
+    if not image_files or {p.name for p in path.parent.iterdir()} != image_files | {'record.json'}:
+        raise ValueError('missing or unreferenced row artifacts')
+    hashes[str(path.relative_to(artifact_root))] = sha256(path)
+    return row, identity, success, hashes
 
 
 def main() -> None:

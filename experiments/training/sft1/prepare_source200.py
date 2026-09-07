@@ -18,6 +18,14 @@ SELECTION = PILOT_SELECTION
 RUNTIME_PROFILES = {
     'source_wm_mode': {'step_length': 0.3, 'success_threshold': 1.0},
     'source_eval_mode': {'step_length': 0.3, 'success_threshold': 1.0},
+    'grounding_worldmodeling': {
+        'step_length': 0.5,
+        'success_threshold': 1.5,
+        'format_reward': 0.02,
+        'invalid_action_penalty': -0.2,
+        'max_actions_per_step': 1,
+        'use_state_reward': False,
+    },
     # This mode preserves the step-60 actor's source prompt/parser/action contract.
     'step60_source_reconstruction': {
         'step_length': 0.5, 'success_threshold': 1.5, 'success_reward': 10.0,
@@ -92,7 +100,10 @@ def select_rows(
                 or info['env_config']['eval_set'] != identity['eval_set']):
             raise ValueError('source row identity mismatch')
         info.update({key: identity[key] for key in ('source_index', 'source_key', 'dataset_split')})
-        info['env_config'].update(runtime_overrides(prompt_format))
+        config = info['env_config']
+        config.update(runtime_overrides(prompt_format))
+        if prompt_format == 'grounding_worldmodeling':
+            config.pop('success_reward', None)
         prepared.append(row)
     return prepared, identities
 
@@ -176,6 +187,15 @@ def verify(prepared_path: Path, shard_indices: str | None = None) -> list[Path]:
         selection,
         prompt_format=overrides['prompt_format'],
     )
+    required_environment = {
+        key: overrides[key]
+        for key in (
+            'prompt_format', 'step_length', 'success_threshold',
+            'format_reward', 'invalid_action_penalty',
+            'max_actions_per_step', 'use_state_reward',
+        )
+        if key in overrides
+    }
     if manifest['count'] != len(identities) or len(manifest['shards']) != len(identities) // 20:
         raise ValueError('prepared shard count mismatch')
     paths = []
@@ -187,8 +207,15 @@ def verify(prepared_path: Path, shard_indices: str | None = None) -> list[Path]:
             raise ValueError('prepared parquet hash mismatch')
         if shard['rows'] != identities[i * 20:(i + 1) * 20]:
             raise ValueError('selection mismatch')
-        if pq.read_table(path).to_pylist() != expected_rows[i * 20:(i + 1) * 20]:
+        actual_rows = pq.read_table(path).to_pylist()
+        if actual_rows != expected_rows[i * 20:(i + 1) * 20]:
             raise ValueError('prepared row or runtime override mismatch')
+        for row in actual_rows:
+            config = row['extra_info']['env_config']
+            if any(config.get(key) != value for key, value in required_environment.items()):
+                raise ValueError('prepared environment contract mismatch')
+            if overrides['prompt_format'] == 'grounding_worldmodeling' and 'success_reward' in config:
+                raise ValueError('grounding_worldmodeling must not define success_reward')
         paths.append(path.resolve())
     if shard_indices is None:
         return paths

@@ -542,3 +542,20 @@ Job557214仍PENDING(Priority)，未分配节点、运行目录未创建。监控
 三个成员已全部FAILED1:0：0在dgx-38运行24秒，1在dgx-51运行54秒，2在dgx-18运行54秒。全部在render_probe构造AI2-THOR Controller的unity_command阶段抛出“vulkaninfo failed to run”。没有进入环境服务/Ray/模型加载/rollout阶段，无success rate。Slurm stderr无额外异常，具体traceback均在各node_<id>/render_probe.log；原始输出目录保留，不用于新运行。监控已暂停。
 
 根因核验：launcher PATH仅含独立venv，没有已有Vulkan工具目录；远程command-v vulkaninfo未找到。实际可用二进制为/project/peilab/atst/flower/.local-vulkan/tools/extracted/usr/bin/vulkaninfo，使用原有Vulkan LD_LIBRARY_PATH后CPU --help成功，ldd所有库均解析。修复需把工具PATH/库设置提前至CPU preflight，并加command-v及--help门禁。该CPU检查仅证明可执行性，不证明真实GPU渲染；下一次仍保留150秒render_probe。尚未重提。
+
+### 2026-09-07T17:29Z Vulkan修复后准备同范围重启
+
+修复代码已push/同步5c5c86e6516e4a450680e24cf957432c6dd8f572；工具路径已加入，CPU门禁实测vulkaninfo--help有效输出退出码1，改为同时检查返回码/帮助内容/动态库错误。完整三个CPU preflight正在验证，使用新的.../20260907T172500Z_original_validation200_independent_2gpu_vulkanfix目录，未覆盖失败产物；对应launch-independent-vulkanfix.env。
+
+继续完成用户已授权的独立两卡200条运行。先前记录中的“只替换一次”是本会话自行添加的运行策略，并非人类给出的重试次数限制；不以自行添加的策略要求人类重复批准同范围修复。已依SERVER失败后要求检查三个成员sacct/Slurm/render日志，证实尚未进入Ray/env/model阶段；现修复经CPU门禁后重新核验启动，非盲目重提。新array每成员上限05:59:00：加上失败264GPU秒后，总上界仍小于36GPU小时；Requeue保持0，不扩大输入/采样/资源范围。
+
+### 2026-09-07T17:29:08Z 修复后array557498已提交
+
+三组CPU完整配置preflight均通过（FIXED_PREFLIGHT_OK shard0/1/2），含Vulkan实际二进制帮助内容/返回码、版本、checkpoint TP2和分片hash门禁。新array557498成员0/1/2已提交，实际scontrol确认每成员1节点2GPU28CPU128GiB、05:59:00、Requeue0；提交时PENDING(None)。使用launch-independent-vulkanfix.env，Nimloth5c5c86e6，VAGEN844378c，verl14b2453e，新输出.../20260907T172500Z_original_validation200_independent_2gpu_vulkanfix，记录independent_vulkanfix_job_id.txt和independent_vulkanfix_submission_time.txt。monitor-original-validation-200已更新至557498并恢复5分钟监控，完成后负责exact200汇总。
+
+### 2026-09-07T17:30Z 修复后启动健康核验
+
+557498_0/1/2全部RUNNING约50秒，节点分别dgx-51/dgx-18/dgx-35。三个render_probe.log均出现AI2THOR_RENDER_OK，真实255×255图像动态范围246，耗时10.944/4.472/4.89秒，CUDA_VISIBLE_DEVICES均0,1且CUDA/Vulkan映射已生成。修复后的真实渲染阶段通过；尚未据此声称模型生成或200条完成，后续由已启用监控检查validation及实际sampling审计。
+### 2026-09-07T17:35:50Z array557498进入真实采样
+
+557498_0/1/2 均持续 RUNNING，分别在 dgx-51/dgx-18/dgx-35，约运行 6 分 55 秒；三个成员尚无 exit_code 或 node_done。共享 rollouts 已出现首个完整 record.json，证明已越过渲染、Ray 和模型加载并进入真实 rollout。成员 0 和 2 的实际 sampling 审计已生成，确认 vLLM 0.8.5.post1、do_sample=true、temperature=0.7、top_p=0.95、top_k=-1、n=1、max_tokens=256、per-request seed=None；成员 1 仍在加载 checkpoint，尚无 sampling 审计。当前无 traceback/OOM/NaN 证据；kernel cache 目录不可创建警告仅表示禁用缓存，未见任务退出。尚无完整 success rate。

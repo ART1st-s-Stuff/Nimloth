@@ -113,6 +113,38 @@ def test_batch1_remainder_excludes_pilot_and_preserves_split_counts():
     assert sum(row['eval_set'] == 'common_sense' for row in remainder) == 900
 
 
+def test_grounding_remainder_profile_is_exact_and_has_no_success_reward(tmp_path, monkeypatch):
+    source = tmp_path / 'source.parquet'
+    pq.write_table(pa.Table.from_pylist(_source_rows()), source)
+    digest = pilot.sha256(source)
+    monkeypatch.setattr(data, 'SOURCE_TRAIN_SHA256', digest)
+    partition = tmp_path / 'partition'
+    data.partition_source_parquet(source, partition, expected_sha256=digest)
+    output = tmp_path / 'remainder'
+    manifest = pilot.prepare(
+        partition / 'partition_manifest.json', output,
+        selection=pilot.BATCH1_REMAINDER_SELECTION,
+        prompt_format='grounding_worldmodeling',
+    )
+
+    paths = pilot.verify(output / 'prepared_manifest.json')
+    assert manifest['format'] == 'source_batch1_remainder_prepared_v1'
+    assert manifest['count'] == 1800
+    assert len(paths) == 90
+    assert all(shard['count'] == 20 for shard in manifest['shards'])
+    assert manifest['runtime_overrides'] == {
+        'prompt_format': 'grounding_worldmodeling', 'step_length': 0.5,
+        'success_threshold': 1.5, 'format_reward': 0.02,
+        'invalid_action_penalty': -0.2, 'max_actions_per_step': 1,
+        'use_state_reward': False,
+    }
+    rows = [row for path in paths for row in pq.read_table(path).to_pylist()]
+    assert len(rows) == 1800
+    assert all('success_reward' not in row['extra_info']['env_config'] for row in rows)
+    assert sum(row['extra_info']['dataset_split'] == 'train' for row in rows) == 1600
+    assert sum(row['extra_info']['dataset_split'] == 'heldout' for row in rows) == 200
+
+
 def test_verify_selects_exact_prepared_shards(tmp_path, monkeypatch):
     source = tmp_path / 'source.parquet'
     rows = _source_rows()
