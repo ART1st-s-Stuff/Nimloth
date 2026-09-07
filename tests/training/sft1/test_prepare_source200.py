@@ -1,4 +1,8 @@
 import copy
+import json
+import os
+from pathlib import Path
+import runpy
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -69,6 +73,7 @@ def test_source_reconstruction_profile_uses_training_navigation_settings():
         'prompt_format': 'step60_source_reconstruction',
         'step_length': 0.5,
         'success_threshold': 1.5,
+        'success_reward': 10.0,
     }
 
 
@@ -153,3 +158,56 @@ def test_output_identity_coverage(tmp_path, error):
     else:
         assert pilot.validate_output(output, parquet)['count'] == 20
         assert output.with_suffix('.validation.json').is_file()
+
+
+def test_reconstruction_configs_pass_actual_vagen_validator():
+    vagen = Path(os.environ.get('VAGEN_DIR', Path(__file__).resolve().parents[3] / 'external/VAGEN'))
+    validator_path = vagen / 'vagen/env/navigation/step60_reconstruction.py'
+    if not validator_path.is_file():
+        pytest.skip('set VAGEN_DIR to the reconstruction checkout for the actual validator')
+    validate = runpy.run_path(str(validator_path))['validate_environment_config']
+    rows = _source_rows()
+    manifest = data.build_partition_manifest(
+        rows, source_path='source', source_sha256=data.SOURCE_TRAIN_SHA256
+    )
+    batch_rows = [rows[index] for index in manifest['batches'][0]['source_indices']]
+    prepared, _ = pilot.select_rows(
+        manifest, batch_rows, prompt_format='step60_source_reconstruction'
+    )
+    assert len(prepared) == 200
+    for row in prepared:
+        config = {**row['extra_info']['env_config'], 'gpu_device': 0}
+        validate(config)
+        del config['success_reward']
+        with pytest.raises(ValueError, match='fields drift'):
+            validate(config)
+
+
+@pytest.mark.parametrize('missing_from', ['profile', 'parquet'])
+def test_reconstruction_verifier_rejects_missing_success_reward(tmp_path, monkeypatch, missing_from):
+    source = tmp_path / 'source.parquet'
+    pq.write_table(pa.Table.from_pylist(_source_rows()), source)
+    digest = pilot.sha256(source)
+    monkeypatch.setattr(data, 'SOURCE_TRAIN_SHA256', digest)
+    partition = tmp_path / 'partition'
+    data.partition_source_parquet(source, partition, expected_sha256=digest)
+    output = tmp_path / 'prepared'
+    manifest = pilot.prepare(
+        partition / 'partition_manifest.json', output,
+        prompt_format='step60_source_reconstruction',
+    )
+    marker = output / 'prepared_manifest.json'
+    assert len(pilot.verify(marker)) == 10
+    if missing_from == 'profile':
+        del manifest['runtime_overrides']['success_reward']
+    else:
+        shard = manifest['shards'][0]
+        path = output / shard['parquet']
+        rows = pq.read_table(path).to_pylist()
+        for row in rows:
+            del row['extra_info']['env_config']['success_reward']
+        pq.write_table(pa.Table.from_pylist(rows), path)
+        shard['sha256'] = pilot.sha256(path)
+    marker.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError, match='prepared contract mismatch|runtime override mismatch'):
+        pilot.verify(marker)

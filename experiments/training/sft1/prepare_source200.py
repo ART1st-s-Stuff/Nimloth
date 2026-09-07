@@ -19,7 +19,9 @@ RUNTIME_PROFILES = {
     'source_wm_mode': {'step_length': 0.3, 'success_threshold': 1.0},
     'source_eval_mode': {'step_length': 0.3, 'success_threshold': 1.0},
     # This mode preserves the step-60 actor's source prompt/parser/action contract.
-    'step60_source_reconstruction': {'step_length': 0.5, 'success_threshold': 1.5},
+    'step60_source_reconstruction': {
+        'step_length': 0.5, 'success_threshold': 1.5, 'success_reward': 10.0,
+    },
 }
 PROMPT_FORMATS = tuple(RUNTIME_PROFILES)
 
