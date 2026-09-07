@@ -129,8 +129,11 @@ import socket,sys
 for port in sys.argv[2:]:
     with socket.socket() as s:s.bind(('0.0.0.0',int(port)))
 PY
+# Fail before model loading if the first validation environment cannot render.
+timeout --kill-after=15s 150s env HOME="${RUN_OUT}/env_home" AI2THOR_HOME_ROOT="${RUN_OUT}/env_home" \
+  "$PY" -m vagen.utils.navigation_direct_render_probe --gpu-device 0 > "${RUN_OUT}/render_probe.log" 2>&1
 # Original topology: environment service and 8 policy ranks share the allocation.
-setsid env HOME="${RUN_OUT}/env_home" "$PY" -m vagen.server.server \
+setsid env HOME="${RUN_OUT}/env_home" AI2THOR_HOME_ROOT="${RUN_OUT}/env_home" "$PY" -m vagen.server.server \
   "server.port=${ENV_PORT}" use_state_reward=False navigation.max_workers=2 \
   'navigation.devices=[0,1,2,3,4,5,6,7]' > "${RUN_OUT}/environment.log" 2>&1 &
 ENV_PID=$!
