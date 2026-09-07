@@ -116,6 +116,7 @@ def test_remainder_launcher_static_contract():
                      'actor_rollout_ref.rollout.n=1', 'max_response_length=256',
                      'PREPARED_REMAINDER_DIR', 'shard_done.flag',
                      'ACTUAL_SAMPLING_AUDIT_OK', 'worker_pids',
+                     'RAY_TMPDIR="/tmp/nv-${SLURM_JOB_ID}"',
                      "identity_keys = ('source_index', 'source_key', 'dataset_split', 'eval_set')",
                      "type(saved['recording']['metrics']['success']) is bool"):
         assert required in text

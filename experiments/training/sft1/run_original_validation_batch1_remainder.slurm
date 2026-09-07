@@ -147,7 +147,7 @@ export VLLM_HOST_IP=$IP
 IFACE=$(ip -o -4 addr show | awk -v ip="$IP" '$4 ~ ("^" ip "/") {print $2;exit}')
 [[ -n "$IFACE" ]]
 export NCCL_SOCKET_IFNAME=$IFACE GLOO_SOCKET_IFNAME=$IFACE
-export RAY_TMPDIR="/tmp/step60-original-val-rem-${SLURM_JOB_ID}-${SLURM_ARRAY_JOB_ID}-${SLURM_ARRAY_TASK_ID}"
+export RAY_TMPDIR="/tmp/nv-${SLURM_JOB_ID}"
 ENV_PID= RAY_PID= POLICY_PID= PROBE_PID=
 cleanup() {
   rc=$?
