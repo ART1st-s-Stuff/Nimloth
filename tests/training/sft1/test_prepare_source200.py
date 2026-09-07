@@ -64,6 +64,14 @@ def test_source_eval_mode_roundtrip(tmp_path, monkeypatch):
     assert first['extra_info']['env_config']['prompt_format'] == 'source_eval_mode'
 
 
+def test_source_reconstruction_profile_uses_training_navigation_settings():
+    assert pilot.runtime_overrides('step60_source_reconstruction') == {
+        'prompt_format': 'step60_source_reconstruction',
+        'step_length': 0.5,
+        'success_threshold': 1.5,
+    }
+
+
 def test_source_identity_mismatch_rejected():
     rows = _source_rows()
     manifest = data.build_partition_manifest(rows, source_path='source',

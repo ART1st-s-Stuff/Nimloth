@@ -15,17 +15,19 @@ from experiments.training.sft1.vagen_step60_data import (
 PILOT_SELECTION = 'batch1 train first 100 source rows per category'
 BATCH1_REMAINDER_SELECTION = 'batch1 excluding the 200-row balanced training pilot'
 SELECTION = PILOT_SELECTION
-PROMPT_FORMATS = ('source_wm_mode', 'source_eval_mode')
+RUNTIME_PROFILES = {
+    'source_wm_mode': {'step_length': 0.3, 'success_threshold': 1.0},
+    'source_eval_mode': {'step_length': 0.3, 'success_threshold': 1.0},
+    # This mode preserves the step-60 actor's source prompt/parser/action contract.
+    'step60_source_reconstruction': {'step_length': 0.5, 'success_threshold': 1.5},
+}
+PROMPT_FORMATS = tuple(RUNTIME_PROFILES)
 
 
 def runtime_overrides(prompt_format: str) -> dict[str, object]:
     if prompt_format not in PROMPT_FORMATS:
         raise ValueError(f'unsupported prompt format: {prompt_format!r}')
-    return {
-        'prompt_format': prompt_format,
-        'step_length': 0.3,
-        'success_threshold': 1.0,
-    }
+    return {'prompt_format': prompt_format, **RUNTIME_PROFILES[prompt_format]}
 
 
 OVERRIDES = runtime_overrides('source_wm_mode')
