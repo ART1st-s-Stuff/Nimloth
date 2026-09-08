@@ -137,11 +137,24 @@ if [[ ${1:-} == --preflight ]]; then
 fi
 [[ ${SLURM_JOB_NUM_NODES:?} == 1 ]]
 IFS=',' read -r -a GPUS <<< "${CUDA_VISIBLE_DEVICES:?}"
-[[ ${#GPUS[@]} == 4 && ${SLURM_CPUS_PER_TASK:?} == 112 ]] || { echo 'Four visible GPUs and 112 CPUs required' >&2; exit 2; }
-printf -v MODEL_VISIBLE '%s,' "${GPUS[@]:0:2}"
-MODEL_VISIBLE=${MODEL_VISIBLE%,}
-printf -v ENV_VISIBLE '%s,' "${GPUS[@]:2:2}"
-ENV_VISIBLE=${ENV_VISIBLE%,}
+SHARED_TWO_GPU=${SHARED_TWO_GPU:-0}
+if [[ $SHARED_TWO_GPU == 1 ]]; then
+  [[ ${#GPUS[@]} == 2 && ${SLURM_CPUS_PER_TASK:?} == 28 ]] || {
+    echo 'Shared mode requires two visible GPUs and 28 CPUs' >&2
+    exit 2
+  }
+  MODEL_VISIBLE=${CUDA_VISIBLE_DEVICES}
+  ENV_VISIBLE=${CUDA_VISIBLE_DEVICES}
+else
+  [[ ${#GPUS[@]} == 4 && ${SLURM_CPUS_PER_TASK:?} == 112 ]] || {
+    echo 'Split mode requires four visible GPUs and 112 CPUs' >&2
+    exit 2
+  }
+  printf -v MODEL_VISIBLE '%s,' "${GPUS[@]:0:2}"
+  MODEL_VISIBLE=${MODEL_VISIBLE%,}
+  printf -v ENV_VISIBLE '%s,' "${GPUS[@]:2:2}"
+  ENV_VISIBLE=${ENV_VISIBLE%,}
+fi
 mkdir "$NODE_OUT"
 mkdir "${NODE_OUT}/runtime" "${NODE_OUT}/env_home" "${NODE_OUT}/env_home/.ai2thor"
 ln -s /project/peilab/atst/flower/.ai2thor-home/.ai2thor/releases "${NODE_OUT}/env_home/.ai2thor/releases"
@@ -183,8 +196,9 @@ trap cleanup EXIT
 trap 'exit 143' TERM INT
 {
   date -u --iso-8601=seconds
-  printf 'job=%s node=%s allocated_gpus=%s model_gpus=%s env_gpus=%s model_ranks=2 tp=2 cpus=%s\n' \
-    "$SLURM_JOB_ID" "$SLURM_JOB_NODELIST" "$CUDA_VISIBLE_DEVICES" "$MODEL_VISIBLE" "$ENV_VISIBLE" "$SLURM_CPUS_PER_TASK"
+  printf 'job=%s node=%s allocated_gpus=%s model_gpus=%s env_gpus=%s shared_two_gpu=%s model_ranks=2 tp=2 cpus=%s\n' \
+    "$SLURM_JOB_ID" "$SLURM_JOB_NODELIST" "$CUDA_VISIBLE_DEVICES" "$MODEL_VISIBLE" "$ENV_VISIBLE" \
+    "$SHARED_TWO_GPU" "$SLURM_CPUS_PER_TASK"
   printf 'nimloth=%s vagen=%s verl=%s\n' "$NIMLOTH_COMMIT" "$VAGEN_COMMIT" "$VERL_COMMIT"
   printf '%q ' "${CMD[@]}"; printf '\n'
 } > "${NODE_OUT}/launch_contract.txt"
