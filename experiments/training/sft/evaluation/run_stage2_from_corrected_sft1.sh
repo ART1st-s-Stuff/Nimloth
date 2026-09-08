@@ -9,14 +9,30 @@ EXPECTED_NODE=${EXPECTED_NODE:-dgx-22}
 }
 GRAD_ACCUM=$((32 / WORLD_SIZE))
 
+: "${REPO:?set REPO to the clean committed unified-SFT worktree}"
+PYTHON=/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3
+ROOT=/project/peilab/atst/nimloth
+SOURCE_DATA_ROOT=${ROOT}/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/converted_strict_k8_b6c811c
+STAGE2_DATA_ROOT=${STAGE2_DATA_ROOT:-${SOURCE_DATA_ROOT}/stage2_nonempty_cot_v1}
+DINO_CACHE=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-20/sft2/cache/k16_all3217_px100352_bf16_dino4x4_f32_b8659fe
+STAGE2_VALIDATE=(
+  "${PYTHON}" -m experiments.training.sft.evaluation.stage2_inputs validate
+  --input-root "${STAGE2_DATA_ROOT}" --dino-cache-root "${DINO_CACHE}"
+  --expected-train-source "${SOURCE_DATA_ROOT}/train_success.jsonl"
+  --expected-val-source "${SOURCE_DATA_ROOT}/val_all.jsonl"
+)
+
 if [[ "${NIMLOTH_ALLOCATION_STEP:-0}" != 1 ]]; then
   : "${ALLOCATION_JOB_ID:?set ALLOCATION_JOB_ID to the existing allocation}"
+  # Fail on data lineage, exclusions, empty splits, or DINO coverage before the
+  # allocation step can acquire GPUs. The same audit is repeated inside it.
+  PYTHONPATH=${REPO}/src:${REPO}:${REPO}/external/VAGEN:${REPO}/external/VAGEN/verl:${REPO}/external/le-wm \
+    "${STAGE2_VALIDATE[@]}"
   exec srun --jobid="${ALLOCATION_JOB_ID}" --nodes=1 --ntasks=1 \
     --gres="gpu:${WORLD_SIZE}" --cpus-per-task="$((WORLD_SIZE * 12))" --mem="$((WORLD_SIZE * 60))G" \
     --export=ALL,NIMLOTH_ALLOCATION_STEP=1 bash "$0"
 fi
 
-: "${REPO:?set REPO to the clean committed unified-SFT worktree}"
 : "${EXPECTED_COMMIT:?set EXPECTED_COMMIT to the exact Nimloth commit}"
 : "${SFT1_RUN_ROOT:?set SFT1_RUN_ROOT to the corrected SFT1 continuation output}"
 : "${RUN_ROOT:?set RUN_ROOT to a new persistent Stage2 output directory}"
@@ -24,12 +40,8 @@ fi
 : "${ALLOCATION_JOB_ID:?set ALLOCATION_JOB_ID to the existing allocation}"
 [[ "${SLURM_JOB_ID}" == "${ALLOCATION_JOB_ID}" ]] || { echo "allocation mismatch" >&2; exit 2; }
 
-PYTHON=/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3
-ROOT=/project/peilab/atst/nimloth
-DATA_ROOT=${ROOT}/outputs/experiments/vagen_legacy_wm_k8_full/2026-07-10/full_2e66e97/converted_strict_k8_b6c811c
-TRAIN_JSONL=${DATA_ROOT}/train_success.jsonl
-VAL_JSONL=${DATA_ROOT}/val_all.jsonl
-DINO_CACHE=${ROOT}/outputs/experiments/vagen_legacy_wm_k16_grid/2026-07-20/sft2/cache/k16_all3217_px100352_bf16_dino4x4_f32_b8659fe
+TRAIN_JSONL=${STAGE2_DATA_ROOT}/train.jsonl
+VAL_JSONL=${STAGE2_DATA_ROOT}/val.jsonl
 SELECTED=${SFT1_RUN_ROOT}/selected_for_sft2.json
 STAGE1_MERGED=${SFT1_RUN_ROOT}/stage1_for_sft2
 OUT=${RUN_ROOT}/stage2
@@ -49,6 +61,9 @@ for manifest in \
   "${DINO_CACHE}/val/dino_grid4/manifest.json"; do
   [[ -f "${manifest}" ]] || { echo "DINO cache manifest is missing: ${manifest}" >&2; exit 2; }
 done
+[[ -f "${STAGE2_DATA_ROOT}/manifest.json" && -f "${STAGE2_DATA_ROOT}/exclusions.jsonl" ]] || {
+  echo "audited Stage2 input manifest/sidecar is missing: ${STAGE2_DATA_ROOT}" >&2; exit 2;
+}
 
 export PYTHONPATH=${REPO}/src:${REPO}:${REPO}/external/VAGEN:${REPO}/external/VAGEN/verl:${REPO}/external/le-wm
 export PATH=/project/peilab/atst/nimloth/.venv-vagen-main/bin:${PATH}
@@ -62,12 +77,26 @@ fi
 mkdir -p "${RUN_ROOT}"
 exec > >(tee -a "${RUN_ROOT}/controller.log") 2>&1
 
-"${PYTHON}" - "${SELECTED}" "${STAGE1_MERGED}" "${RUN_ROOT}/stage2_input.json" "${WORLD_SIZE}" "${EXPECTED_NODE}" <<'PY'
+# This is CPU-only and runs before model loading. The same command should be run
+# before requesting an allocation when materializing a new Stage2 input version.
+"${STAGE2_VALIDATE[@]}"
+
+"${PYTHON}" - "${SELECTED}" "${STAGE1_MERGED}" "${RUN_ROOT}/stage2_input.json" "${WORLD_SIZE}" "${EXPECTED_NODE}" "${STAGE2_DATA_ROOT}" <<'PY'
 import json, sys
+import hashlib
 from pathlib import Path
 
 selected, merged, output = map(Path, sys.argv[1:4])
 world_size, node = int(sys.argv[4]), sys.argv[5]
+stage2_data = Path(sys.argv[6])
+manifest = json.loads((stage2_data / "manifest.json").read_text())
+data_identity = {
+    split: {
+        key: manifest["splits"][split][key]
+        for key in ("source", "source_sha256", "output", "output_sha256")
+    }
+    for split in ("train", "val")
+}
 payload = json.loads(selected.read_text())
 if Path(payload.get("merged", "")).resolve() != merged.resolve():
     raise ValueError("selected_for_sft2 does not name the supplied merged model")
@@ -82,20 +111,35 @@ output.write_text(json.dumps({
     "stage1_epoch": 3, "stage1_val_loss": payload.get("val_loss"),
     "world_size": world_size, "grad_accum": 32 // world_size, "node": node,
     "lr": 1e-6, "embedding_lr": 5e-6,
+    "stage2_data_root": str(stage2_data.resolve()),
+    "stage2_data_manifest_sha256": hashlib.sha256((stage2_data / "manifest.json").read_bytes()).hexdigest(),
+    "stage2_data_files": data_identity,
 }, indent=2, sort_keys=True) + "\n")
 PY
 
-"${PYTHON}" - "${RUN_ROOT}/run_identity.json" "${EXPECTED_COMMIT}" "${STAGE1_MERGED}" "${WORLD_SIZE}" "${EXPECTED_NODE}" <<'PY'
-import json, os, sys, tempfile
+"${PYTHON}" - "${RUN_ROOT}/run_identity.json" "${EXPECTED_COMMIT}" "${STAGE1_MERGED}" "${WORLD_SIZE}" "${EXPECTED_NODE}" "${STAGE2_DATA_ROOT}" <<'PY'
+import hashlib, json, os, sys, tempfile
 from pathlib import Path
 
 path = Path(sys.argv[1])
+stage2_data = Path(sys.argv[6])
+manifest = json.loads((stage2_data / "manifest.json").read_text())
+data_identity = {
+    split: {
+        key: manifest["splits"][split][key]
+        for key in ("source", "source_sha256", "output", "output_sha256")
+    }
+    for split in ("train", "val")
+}
 expected = {
     "schema": "sft2_from_corrected_sft1_v1", "commit": sys.argv[2],
     "stage1_merged": str(Path(sys.argv[3]).resolve()), "world_size": int(sys.argv[4]),
     "node": sys.argv[5], "grad_accum": 32 // int(sys.argv[4]),
     "epochs": 1, "lr": 1e-6, "embedding_lr": 5e-6,
     "latent_token_count": 16, "latent_query_mode": "inject", "grid_size": 4,
+    "stage2_data_root": str(stage2_data.resolve()),
+    "stage2_data_manifest_sha256": hashlib.sha256((stage2_data / "manifest.json").read_bytes()).hexdigest(),
+    "stage2_data_files": data_identity,
 }
 if path.exists():
     if json.loads(path.read_text()) != expected:

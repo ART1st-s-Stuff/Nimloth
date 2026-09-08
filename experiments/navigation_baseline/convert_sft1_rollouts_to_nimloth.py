@@ -35,16 +35,26 @@ if _VAGEN_ROOT.is_dir() and str(_VAGEN_ROOT) not in sys.path:
 
 from vagen.envs.navigation.utils.nimloth_format import (
     ACTION_NAMES,
-    ACTION_TO_IDX,
-    ACTION_TOKEN,
-    NIMLOTH_FORMAT_INSTRUCTION,
-    SPECIAL_TOKENS,
+    action_block,
+    latent_state_tokens,
 )
 
 ACTION_NAMES = list(ACTION_NAMES)
-ACTION_TO_IDX = dict(ACTION_TO_IDX)
-ACTION_TOKEN = dict(ACTION_TOKEN)
-SPECIAL_TOKENS = list(SPECIAL_TOKENS)
+ACTION_TO_IDX = {name: index for index, name in enumerate(ACTION_NAMES)}
+ACTION_TOKEN = {name: f"<|action_({index})|>" for name, index in ACTION_TO_IDX.items()}
+SPECIAL_TOKENS = [
+    *latent_state_tokens(16),
+    "<|action_start|>",
+    "<|action_end|>",
+    *(ACTION_TOKEN[name] for name in ACTION_NAMES),
+]
+NIMLOTH_FORMAT_INSTRUCTION = (
+    "Respond in this format:\n"
+    f"<think>...</think>{action_block(latent_token_count=16)}\n"
+    "where idx is one of: "
+    + ", ".join(f"{index}={name}" for name, index in ACTION_TO_IDX.items())
+    + "."
+)
 
 IM_START = "<|im_start|>"
 IM_END = "<|im_end|>"
@@ -177,6 +187,16 @@ def convert_assistant(content: str) -> tuple[str, str | None, str | None]:
     return converted, action, think
 
 
+def cot_validation_issue(content: str) -> str | None:
+    """Keep absent and blank source CoT distinct for strict future artifacts."""
+    match = THINK_RE.search(content)
+    if match is None:
+        return "missing_think_tag"
+    if not match.group(1).strip():
+        return "empty_think_body"
+    return None
+
+
 def split_messages(src: SourceRecord) -> tuple[list[dict[str, str]], list[str], list[str], list[str]]:
     obj = src.payload
     messages: list[dict[str, str]] = []
@@ -196,6 +216,8 @@ def split_messages(src: SourceRecord) -> tuple[list[dict[str, str]], list[str], 
         warnings.append("missing_input_messages")
     for msg in input_messages:
         if msg["role"] == "assistant":
+            if issue := cot_validation_issue(msg["content"]):
+                warnings.append(issue)
             converted, action, think = convert_assistant(msg["content"])
             msg = {"role": "assistant", "content": converted}
             if action:
@@ -214,6 +236,8 @@ def split_messages(src: SourceRecord) -> tuple[list[dict[str, str]], list[str], 
     # input = system+initial user only.
     for msg in output_messages:
         if msg["role"] == "assistant":
+            if issue := cot_validation_issue(msg["content"]):
+                warnings.append(issue)
             converted, action, think = convert_assistant(msg["content"])
             msg = {"role": "assistant", "content": converted}
             if action:
@@ -288,6 +312,12 @@ def convert_one(src: SourceRecord) -> dict[str, Any]:
     messages, actions, thinks, warnings = split_messages(src)
     image_paths = image_paths_for(src.jsonl_path, step, src.line_index)
     issues = validate_record(messages, image_paths, actions)
+    issues.extend(
+        warning
+        for warning in warnings
+        if warning in {"missing_think_tag", "empty_think_body"}
+        and warning not in issues
+    )
     success = float(obj.get("traj_success", 0.0) or 0.0) >= 1.0
     return {
         "id": f"{src.split}/{src.shard}/{src.line_index:06d}",

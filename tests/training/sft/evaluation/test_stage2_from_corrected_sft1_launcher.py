@@ -22,6 +22,13 @@ def test_stage2_only_launcher_keeps_query_training_contract():
     assert '"${DINO_CACHE}/train/dino_grid4/manifest.json"' in text
     assert '"${DINO_CACHE}/val/dino_grid4/manifest.json"' in text
     assert '"${DINO_CACHE}/manifest.json"' not in text
+    assert "stage2_nonempty_cot_v1" in text
+    assert "stage2_inputs validate" in text
+    assert '--expected-train-source "${SOURCE_DATA_ROOT}/train_success.jsonl"' in text
+    assert '--expected-val-source "${SOURCE_DATA_ROOT}/val_all.jsonl"' in text
+    assert text.index('"${STAGE2_VALIDATE[@]}"') < text.index("exec srun")
+    assert '"stage2_data_files": data_identity' in text
+    assert '--train-jsonl "${TRAIN_JSONL}" --val-jsonl "${VAL_JSONL}"' in text
     assert "validate-stage-checkpoint" in text
     assert "validate-merged" in text
 

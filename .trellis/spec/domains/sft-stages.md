@@ -66,3 +66,40 @@ SFT1旧LoRA对照配置为`--lora --lr 2e-4 --embedding-lr 5e-4`；`1e-6/5e-6`�
 `run_stage1_fresh_retry.sh`通过ALLOCATION_JOB_ID/WORLD_SIZE/EXPECTED_NODE/REPO/EXPECTED_COMMIT/RUN_ROOT绑定已分配资源。WORLD_SIZE必须整除32，batch1/GA32÷world，完整一轮训练后单卡32样本格式诊断。RUN_ROOT必须新建，不能读取错误低LR旧optimizer状态。节点/GPU数/源码不符、端口占用和已存在输出均拒绝；中断清理本进程组，不自动重提。回归检查覆盖LoRA学习率配对、Stage2不被修改、无旧checkpoint恢复、shell语法及内嵌Python编译。诊断结果而非训练loss单独决定是否修复了格式问题。
 
 续训launcher的`WORLD_SIZE`默认8、`EXPECTED_NODE`默认dgx-56；world必须整除32，GA=32/world，CPU=12×world、内存=60G×world。source仍限定已审查world4/batch1/GA8完整epoch；新run identity固定node/world/GA/LR，不静默接纳缺字段的旧identity。CPU门禁分别执行world4/8真实checkpoint preflight和内嵌Python编译；trainer严格恢复合同保持不变。
+
+## SFT2旧数据CoT审计合同
+
+### 1. 范围 / 触发
+
+旧SFT1转换数据用于query/DINO Stage2前，必须先审计每个回答是否保留同观测的真实、非空CoT。旧转换器会把缺少`<think>`和空`<think></think>`都归一化为空CoT；不能等到GPU collator才发现，也不能补写CoT。
+
+### 2. 命令
+
+- 生成：`python -m experiments.training.sft.evaluation.stage2_inputs materialize --train-source TRAIN --val-source VAL --output-root NEW`
+- 核验：`python -m experiments.training.sft.evaluation.stage2_inputs validate --input-root NEW --dino-cache-root CACHE --expected-train-source TRAIN --expected-val-source VAL`
+
+### 3. 合同
+
+派生目录使用`nimloth_stage2_nonempty_cot_inputs_v1`，包含`train.jsonl`、`val.jsonl`、`exclusions.jsonl`和`manifest.json`。任一回答无真实非空CoT时排除整条轨迹；sidecar记录split、record ID、输入行、assistant ordinal/message index、原始source行和`missing_think_tag`或`empty_think_body`。manifest记录原始/输出绝对路径及SHA256、前后轨迹/回答/图片计数、整轨迹排除数和sidecar hash。Stage2 run identity同时绑定manifest、源和输出hash。
+
+### 4. 校验与错误矩阵
+
+- train或val保留集为空 -> 拒绝生成/启动。
+- 源路径/hash、输出路径/hash、计数、排除sidecar或重算结果不同 -> 拒绝。
+- 转换后CoT与可读原始响应不同，或原始响应无法证明同一非空CoT -> 排除整条轨迹并记录原因。
+- 保留图片缺少DINO grid4缓存 -> 拒绝。
+- 派生目录已存在 -> 不覆盖；使用新的版本目录。
+
+### 5. Good / Base / Bad
+
+- Good：全部回答的转换CoT与原始响应一致；轨迹保留，DINO路径完整。
+- Base：部分轨迹有空CoT；完整记录排除后，其余轨迹顺序和正文逐字保留。
+- Bad：逐回答跳过、借用相邻CoT、填固定文本、只改manifest hash或让collator运行时随机发现。
+
+### 6. 必须测试
+
+测试需断言缺tag与空body分类、整轨迹排除、非空split、重复/缺失ID、原始与转换CoT不一致、源/输出/sidecar篡改、预期源路径绑定、DINO缺图，以及启动器在`srun`和模型加载前调用核验并把数据身份写入run identity。
+
+### 7. 错误与正确
+
+错误：把SFT1动作格式有效等同于SFT2 query输入有效，或放宽`answer_examples`的非空CoT门禁。正确：保留运行时fail-closed门禁，在GPU申请/使用前生成并核验可追溯的Stage2专用派生数据。

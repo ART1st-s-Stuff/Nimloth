@@ -13,6 +13,14 @@
 
 SFT1仅监督目标回答token。SFT2同样保留CE，并比较projector输出和同观测的DINO grid。SFT3从真实起点状态沿记录动作递推：下一状态用于WM监督，动作前状态用于Q(s,a)监督，MC return在完整episode上计算后切窗。
 
+SFT2输入必须在申请GPU前用
+`python -m experiments.training.sft.evaluation.stage2_inputs materialize`
+完成CPU审计。该命令不补写CoT；只要轨迹中任一回答缺少真实、非空的
+`<think>`，就排除整条轨迹，并在版本化manifest和exclusions sidecar中记录
+源文件hash、前后轨迹/回答数、record/turn标识及缺失或空白原因。启动脚本再次以
+`stage2_inputs validate`核验源文件与派生文件hash、计数和所有保留图片的DINO
+cache覆盖，然后才加载模型。原始JSONL保持不变。
+
 ## 阶段兼容
 
 旧`sft2`名称始终代表WM/value阶段，即新`stage3`。旧配置、checkpoint字段和公共类型名继续保留原意义；不能用旧SFT2 checkpoint表示新query对齐阶段。旧 `training.sft1` / `training.sft2` Python 包已移除，活动调用统一使用本目录的阶段入口。

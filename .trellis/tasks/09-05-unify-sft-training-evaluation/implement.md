@@ -21,6 +21,13 @@
 ## 审查/回退点
 目录迁移、算法改动、评估接线分别审查；以专用分支的普通diff/提交分组回退，不修改权重和实验输出，不force操作。实现/check使用Trellis子agent时按模块分配所有权并传入本任务上下文。
 
+## Stage2 空 CoT 修复（2026-09-08）
+
+- 保留collator运行时的非空CoT门禁；不补写、借用或逐回答跳过CoT。
+- GPU申请前用CPU命令生成版本化Stage2输入。任一监督回答缺失/空白CoT时排除整条轨迹；manifest及sidecar记录源/输出hash、前后轨迹与回答计数、record/turn标识和原因。
+- 独立Stage2启动器只接受通过manifest、源hash、输出hash、计数及DINO保留路径覆盖核验的派生输入。
+- 历史converter未来生成严格数据时，将原始响应的`missing_think_tag`与`empty_think_body`加入validation issues。
+
 ## 2026-09-05 实施授权与范围澄清
 人类已批准实施并要求新branch。SFT3（旧SFT2）仅迁移及可读性优化，保留现有算法和生命周期，不完全重写。SFT1/2按新设计可做更多必要改写。主要工作目录为当前任务隔离worktree，控制目录原计划保留供定位，后续计划/验收状态以此工作目录为准。
 

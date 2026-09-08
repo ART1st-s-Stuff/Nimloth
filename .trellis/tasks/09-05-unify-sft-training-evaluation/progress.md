@@ -259,3 +259,44 @@ world4/batch1/GA8、K16 inject、4x4 grid、lr1e-6/embedding lr5e-6；只训练�
 已改为检查两个实际 split manifest，并加入静态合同；17项相关测试、Ruff、shell
 语法与 diff check 通过。修复提交同步后，待 561674 实际 RUNNING 才在该 allocation
 内启动训练，不另提重复 hold。
+
+### 2026-09-08 14:15 UTC Stage2 输入对齐失败
+
+allocation 561674 在 dgx-22 获得4张GPU后，使用远程干净提交
+`bc8990e1fcfb237d79922452443eaf0605d52b73` 启动训练 step 561674.0。启动前重新核验
+了SFT1 epoch3选择文件、`stage1_for_sft2/config.json`、train/val两个DINO grid4
+manifest、Python环境和空的新RUN_ROOT。四rank初始化及rank mapping完成，但训练在首批
+数据读取阶段失败，尚未形成optimizer update或checkpoint。
+
+已证实的根因是stage2 query数据对齐门禁拒绝旧训练数据中的至少一个样本：rank3在
+`stage2/data.py::answer_examples` 抛出
+`ValueError: query alignment requires the recorded nonempty CoT for this observation`。
+训练step终态为FAILED/ExitCode 1:0，运行6分14秒；`controller_exit.json`记录
+exit_code 1。RUN_ROOT为
+`/project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluation/20260908T133000Z_stage2_from_sft1e3_561674`，
+仅有运行身份、输入身份、rank map和日志，没有COMMITTED、training_state、
+`stage2_for_evaluation`或merge产物，因此没有可恢复的Stage2 checkpoint。
+
+按no-requeue合同未自动修改数据、放宽门禁或重提训练。确认launcher已退出、step失败且
+job归属csejzhang后，只释放精确allocation 561674；最终allocation/batch因主动释放显示
+CANCELLED，失败step仍保留FAILED/1:0。SFT1最佳epoch3及其合并模型未修改。下一步需先
+核验旧数据中空CoT记录的范围，以及SFT2伪代码所要求的对齐语义，再由人类决定修复数据、
+调整数据合同或修改实现后重新启动。
+
+### 2026-09-08 Stage2空CoT修复
+
+已确认失败来自旧转换合同：历史converter把缺少`<think>`和空白think body都写成
+`<think></think>`，且没有把它列为validation issue；Stage2的回答索引、同观测图片配对和
+运行时非空CoT门禁保持正确。新增CPU工具`stage2_inputs.py`，在不修改原JSONL、不生成或
+借用CoT的前提下，按整条轨迹显式排除任一回答CoT无效的记录，原子生成train/val派生
+JSONL、manifest和exclusions sidecar。验证会从固定源文件重新计算排除及输出，核验绝对
+路径、SHA256、前后计数、sidecar、非空split、转换/原始CoT一致性及所有保留图片的DINO
+cache覆盖。Stage2 launcher在`srun`前和allocation内部各核验一次，并把manifest、源和
+输出hash写入输入及运行身份；collator门禁未放宽。未来历史转换也会把missing/empty CoT
+列入validation issues。
+
+独立Trellis审核补齐了源路径固定、派生输出逐条重算、sidecar防篡改、空split拒绝及DINO
+覆盖门禁。最终本地聚焦与相邻回归32项通过；新代码及测试Ruff check/format、Python编译、
+launcher shell语法和git diff检查通过。尚未在远端旧数据上生成派生输入或重启GPU；需在
+远端连接恢复后执行全量CPU materialize/validate，记录实际排除计数，再按实验启动合同
+提交新的Stage2运行。
