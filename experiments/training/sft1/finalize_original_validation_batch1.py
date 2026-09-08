@@ -30,7 +30,7 @@ def _identity(row: dict) -> dict:
 
 def _sampling_audits(
     root: Path, pattern: str, expected: set[str], *, done_marker: str,
-    expected_world_size: int,
+    expected_world_size: int, expected_tensor_parallel_size: int,
 ) -> dict[str, str]:
     actual: dict[str, str] = {}
     for unit in root.glob(pattern):
@@ -43,7 +43,7 @@ def _sampling_audits(
         audit_path = unit / 'sampling_audit.json'
         audit = _read(audit_path)
         if (audit.get('format') != 'original_validation_sampling_audit_v1'
-                or audit.get('tensor_parallel_size') != 2
+                or audit.get('tensor_parallel_size') != expected_tensor_parallel_size
                 or audit.get('model_world_size', 2) != expected_world_size
                 or audit.get('ranks') != list(range(expected_world_size))
                 or audit.get('sampling') != SAMPLING
@@ -97,6 +97,7 @@ def finalize(
     audit_hashes = _sampling_audits(
         pilot_run_out, 'node_*', {f'node_{index}' for index in range(3)},
         done_marker='node_done.flag', expected_world_size=2,
+        expected_tensor_parallel_size=2,
     )
     if set(audit_hashes) != {f'node_{index}' for index in range(3)}:
         raise ValueError('pilot run lacks three completed sampling audits')
@@ -105,7 +106,7 @@ def finalize(
     for root in run_outs:
         found = _sampling_audits(
             root, 'shard_*', expected_shards, done_marker='shard_done.flag',
-            expected_world_size=6,
+            expected_world_size=5, expected_tensor_parallel_size=1,
         )
         overlap = set(remainder_audits) & set(found)
         if overlap:
