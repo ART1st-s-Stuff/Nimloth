@@ -130,7 +130,7 @@ def finalize(
                 path, _identity(expected_row) if expected_row else None,
                 artifact_root=root,
             )
-            if record.get('dataset_split') != expected_row['dataset_split']:
+            if record['env_config'].get('dataset_split') != expected_row['dataset_split']:
                 raise ValueError('record dataset_split identity mismatch')
             records[index] = (identity, success)
             artifact_hashes.update({f'{root.resolve()}::{key}': value for key, value in hashes.items()})

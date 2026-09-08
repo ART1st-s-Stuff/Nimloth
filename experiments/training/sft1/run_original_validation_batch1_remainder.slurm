@@ -292,7 +292,12 @@ records = []
 for identity in expected.values():
     path = Path(sys.argv[2]) / f"row_{identity['source_index']:06d}" / 'record.json'
     saved = json.loads(path.read_text())
-    actual = {name: saved[name] for name in identity_keys}
+    actual = {
+        'source_index': saved['source_index'],
+        'source_key': saved['source_key'],
+        'dataset_split': saved['env_config']['dataset_split'],
+        'eval_set': saved['eval_set'],
+    }
     assert actual == identity
     assert type(saved['recording']['metrics']['success']) is bool
     outer = saved['env_config']

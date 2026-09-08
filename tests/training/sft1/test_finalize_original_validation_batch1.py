@@ -58,6 +58,7 @@ def _fixture(tmp_path, monkeypatch):
         identity = finalizer._identity(record)
         if identity != expected:
             raise ValueError('unexpected/duplicate rollout identity')
+        record['env_config'] = {'dataset_split': record['dataset_split']}
         return record, identity, record['success'], {str(path.relative_to(artifact_root)): 'b' * 64}
     monkeypatch.setattr(finalizer, 'validate_record', validate)
     pilot_root, remainder_root = tmp_path / 'pilot_run', tmp_path / 'remainder_run'
@@ -118,6 +119,7 @@ def test_remainder_launcher_static_contract():
                      'PREPARED_REMAINDER_DIR', 'shard_done.flag',
                      'ACTUAL_SAMPLING_AUDIT_OK', 'worker_pids',
                      'RAY_TMPDIR="/tmp/nv-${SLURM_JOB_ID}"',
+                     "'dataset_split': saved['env_config']['dataset_split']",
                      "identity_keys = ('source_index', 'source_key', 'dataset_split', 'eval_set')",
                      "type(saved['recording']['metrics']['success']) is bool"):
         assert required in text
