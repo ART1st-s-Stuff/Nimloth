@@ -40,7 +40,8 @@ def test_launcher_encodes_sequential_training_merge_and_eval_contract():
     assert '--base-model "${STAGE1_MERGED}"' in text
     assert text.count("--lora-r 64 --lora-alpha 128") == 2
     assert text.count("--no-wandb") == 2
-    assert text.count("--lr 1e-6 --embedding-lr 5e-6") == 2
+    assert text.count("--lr 2e-4 --embedding-lr 5e-4") == 1
+    assert text.count("--lr 1e-6 --embedding-lr 5e-6") == 1
     assert "--max-val-batches" not in text
     assert "--no-cache --no-wandb" in text
     assert "--episodes-per-eval-set 60 --seed-offset 1 --max-steps 20" in text

@@ -240,3 +240,14 @@ Python 编译、diff check 和对应静态合同均通过；当前本机没有�
 确认 dgx-22 资源、同步新commit或提交 Stage2；这只是当前连接认证失败，不推断
 人类撤销认证，也没有申请或修改任何 Slurm job。连接恢复后应先刷新资源与远端
 worktree，再同步并执行真实输入加载预检，最后才提交allocation。
+
+### 2026-09-08 Stage2 启动授权与资源
+
+人类明确要求启动 Stage2。SSH 已恢复，实时确认 SFT1 任务 561111.0 为
+COMPLETED/0:0，最佳 epoch3、`selected_for_sft2.json` 和 8.7G
+`stage1_for_sft2` 均存在。已提交并获得 hold 561674：dgx-22、4GPU、48CPU、
+240G、preempt_qos、6h、no-requeue。启动范围保持一轮 query/DINO SFT2，
+world4/batch1/GA8、K16 inject、4x4 grid、lr1e-6/embedding lr5e-6；只训练和
+导出 `stage2_for_evaluation`，不启动 rollout。启动前检查发现旧 pipeline 测试仍
+错误要求 SFT1 使用低学习率，已改为分别断言 SFT1 2e-4/5e-4 与 SFT2
+1e-6/5e-6；相关17项测试通过，Ruff、shell语法和 diff check 通过。

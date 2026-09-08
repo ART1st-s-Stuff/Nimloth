@@ -4,7 +4,6 @@ import os
 import subprocess
 from pathlib import Path
 
-
 SCRIPT = (
     Path(__file__).resolve().parents[4]
     / "experiments/training/sft/evaluation/run_stage2_from_corrected_sft1.sh"
