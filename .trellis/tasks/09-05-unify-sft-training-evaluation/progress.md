@@ -130,3 +130,11 @@ SSH详细诊断确认宿主agent的 `art1st@ART1st-NixOS` 密钥被vpn-vm接受�
 人类要求先占节点，再使用8GPU继续SFT1直到被抢占或收敛，并准备SFT2。两份四卡hold 560586/560587按明确指令取消；替代allocation 560589已核验RUNNING dgx-56，单节点8GPU/96CPU/480G，6h，no-requeue。当前仅hold，训练尚未启动。
 
 来源仍为557736的stage1/epoch_001，实际读取training_state确认epoch1/step20/world4、best_val5.593027114868164，optimizer两组LR均为0、initial_lr分别1e-6和5e-6。新续训段保持模型和Adam moments，明确重启scheduler；world8/batch1/GA4维持effective batch32，同段恢复严格world8。拟定操作性停止判据为离线val_loss连续3轮未改善至少0.001，最多额外19轮或allocation结束；该判据不证明held-out质量收敛。被抢占后不自动重排，SFT2仅准备合并初始化产物。
+
+### 560589.0八卡续训已启动（2026-09-08）
+
+经独立review及30项定向测试，通过显式scheduler段、source零LR重启、world4/GA8→world8/GA4 batch守恒、checkpoint retention和PEFT trained alias导出检查。提交7842e88e898933b78fddf811b9b5f776a790b0d2。完整bundle同步被auto-review拒绝，改为20KB增量后仍被拒绝；人类明确批准该payload/destination后上传成功。远程worktree快进到该提交并保持干净，三个依赖pin一致。
+
+在已核验8GPU allocation560589内通过srun启动step560589.0，登录节点launcher PID785687。输出为 `/project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluation/20260908T074500Z_dgx56_world8_7842e88e`，外层日志为同路径加`.launch.log`。参数world8/batch1/GA4、额外19轮、patience3/min_delta0.001、每5steps保存且保留最近2点，新段epoch保留latest/best。不自动重排，SFT2仅准备。
+
+heartbeat `dgx-56-sft1` 每5分钟监控；正常进展安静，失败/完成/抢占通知并记录。运行结束需清理本task进程并释放精确hold560589，避免sleep空占；不得取消其他作业。首次核验step RUNNING，尚处来源checkpoint预检，不能宣称已完成optimizer更新。

@@ -27,9 +27,9 @@
     "kind": "experiment",
     "gpu_test_authorization": "2026-09-06 human approved normal 3-GPU allocation for testing",
     "legacy_validation_authorization": "Human requested training stage1 then stage2 from the previous checkpoint and old datasets, followed by evaluation of the new outputs. On 2026-09-07 explicitly requested six GPUs instead of eight: one epoch per stage, normal six-GPU job, six-hour cap, batch1 GA8 retained (effective batch48); details in research/legacy-train-eval-contract-2026-09-07.md.",
-    "legacy_validation_job": "557736",
-    "legacy_validation_commit": "9c9d6a9b0c0ba25cce60422ebf0b8740ba80db6f",
-    "legacy_validation_last_verified": "2026-09-07T19:07:51Z job 557736 FAILED after complete SFT1 epoch; stage1 export rejected two PEFT embedding aliases as ambiguous; SFT2/eval not started; local fix in progress",
+    "legacy_validation_job": "560589",
+    "legacy_validation_commit": "7842e88e898933b78fddf811b9b5f776a790b0d2",
+    "legacy_validation_last_verified": "2026-09-08 step560589.0 RUNNING dgx-56 world8; source epoch1 step20 preflight passed; rank initialization in progress; heartbeat dgx-56-sft1",
     "legacy_validation_replaced_job": "556418 CANCELLED while pending at 2026-09-07T17:03:50Z; zero runtime"
   }
 }
