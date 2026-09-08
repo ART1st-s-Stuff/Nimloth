@@ -124,3 +124,9 @@ SSH详细诊断确认宿主agent的 `art1st@ART1st-NixOS` 密钥被vpn-vm接受�
 作业在dgx-55实际运行28分14秒，四rank映射通过。SFT1完整执行20个optimizer step，step 5/10/15/20原子恢复点均提交；epoch_001持久checkpoint完成。离线验证为val_loss 5.593027114868164、format_correct_rate 0.0；后者是当前格式诊断结果，不代表held-out rollout质量。
 
 随后stage1模型导出失败，未进入SFT2或direct eval。PEFT 0.19 adapter同时包含 `base_model.model.model.language_model.embed_tokens.modules_to_save.weight` 与 `base_model.model.model.language_model.embed_tokens.weight`，`restore_saved_untied_embeddings` 将其判为歧义并抛出RuntimeError。Slurm终态FAILED/ExitCode 1:0，final_status为failed；不是抢占、OOM或训练失败。SFT1 epoch checkpoint可保留复用。已启动本地根因修复与回归测试，未自动重提。
+
+### 2026-09-08 dgx-56八卡续训准备
+
+人类要求先占节点，再使用8GPU继续SFT1直到被抢占或收敛，并准备SFT2。两份四卡hold 560586/560587按明确指令取消；替代allocation 560589已核验RUNNING dgx-56，单节点8GPU/96CPU/480G，6h，no-requeue。当前仅hold，训练尚未启动。
+
+来源仍为557736的stage1/epoch_001，实际读取training_state确认epoch1/step20/world4、best_val5.593027114868164，optimizer两组LR均为0、initial_lr分别1e-6和5e-6。新续训段保持模型和Adam moments，明确重启scheduler；world8/batch1/GA4维持effective batch32，同段恢复严格world8。拟定操作性停止判据为离线val_loss连续3轮未改善至少0.001，最多额外19轮或allocation结束；该判据不证明held-out质量收敛。被抢占后不自动重排，SFT2仅准备合并初始化产物。

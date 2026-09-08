@@ -21,7 +21,45 @@ if TYPE_CHECKING:
 
 
 RESUME_SCHEMA = "nimloth_early_stage_resume_v1"
+SCHEDULER_SEGMENT_SCHEMA = "nimloth_scheduler_segment_v1"
 COMMITTED_MARKER = "COMMITTED"
+
+
+def prune_numbered_checkpoints(out_dir: Path, prefix: str, keep: int) -> None:
+    """Keep only the newest committed numbered checkpoints in this run directory."""
+
+    if keep < 1:
+        raise ValueError("checkpoint retention must be >= 1")
+    import re
+
+    name_pattern = re.compile(rf"{re.escape(prefix)}[0-9]+")
+    checkpoints = sorted(
+        path
+        for path in out_dir.iterdir()
+        if name_pattern.fullmatch(path.name)
+        and not path.is_symlink()
+        and path.is_dir()
+        and (path / COMMITTED_MARKER).is_file()
+    )
+    for checkpoint in checkpoints[:-keep]:
+        shutil.rmtree(checkpoint)
+
+
+def publish_checkpoint_alias(out_dir: Path, alias: str, target: Path) -> None:
+    """Atomically point an in-run alias at an already committed checkpoint."""
+
+    if target.parent != out_dir or not (target / COMMITTED_MARKER).is_file():
+        raise ValueError("checkpoint alias target must be committed inside output_dir")
+    destination = out_dir / alias
+    if destination.exists() and not destination.is_symlink():
+        raise FileExistsError(
+            f"refusing to replace non-symlink checkpoint alias: {destination}"
+        )
+    temporary = out_dir / f".{alias}.tmp-{os.getpid()}"
+    temporary.unlink(missing_ok=True)
+    temporary.symlink_to(target.name, target_is_directory=True)
+    os.replace(temporary, destination)
+    _fsync_directory(out_dir)
 
 
 def _fsync_file(path: Path) -> None:
@@ -97,6 +135,116 @@ def validate_resume_state(
         raise ValueError("resume checkpoint has an invalid data cursor")
 
 
+def validate_new_scheduler_segment_source(
+    state: dict[str, Any],
+    checkpoint: Path,
+    *,
+    expected_stage: str,
+    current_identity: dict[str, Any],
+) -> None:
+    """Require a complete compatible epoch before resetting its scheduler."""
+
+    if (
+        not checkpoint.name.startswith("epoch_")
+        or not (checkpoint / COMMITTED_MARKER).is_file()
+    ):
+        raise ValueError(
+            "new scheduler segment source must be a committed epoch checkpoint"
+        )
+    validate_resume_stage(state, checkpoint, expected_stage)
+    if state.get("resume_schema") is not None:
+        raise ValueError(
+            "new scheduler segment cannot start from a mid-epoch resume checkpoint"
+        )
+    if not isinstance(state.get("optimizer"), dict):
+        raise TypeError("new scheduler segment source has no optimizer moments")
+    source_identity = state.get("identity")
+    if not isinstance(source_identity, dict):
+        raise TypeError("new scheduler segment source has no training identity")
+    source_world = int(state.get("world_size", -1))
+    if source_world < 1 or int(source_identity.get("world_size", -1)) != source_world:
+        raise ValueError("new scheduler segment source world-size identity mismatch")
+    current_world = int(current_identity.get("world_size", -1))
+    if current_world < 1:
+        raise ValueError("new scheduler segment current world size is invalid")
+    ignored = {"epochs", "world_size", "grad_accum"}
+    source_base_identity = {
+        k: v for k, v in source_identity.items() if k not in ignored
+    }
+    current_base_identity = {
+        k: v for k, v in current_identity.items() if k not in ignored
+    }
+    if source_base_identity != current_base_identity:
+        raise ValueError(
+            "new scheduler segment source dataset/objective identity mismatch"
+        )
+    source_effective_batch = (
+        source_world
+        * int(source_identity.get("batch_size", -1))
+        * int(source_identity.get("grad_accum", -1))
+    )
+    current_effective_batch = (
+        current_world
+        * int(current_identity.get("batch_size", -1))
+        * int(current_identity.get("grad_accum", -1))
+    )
+    if source_effective_batch < 1 or source_effective_batch != current_effective_batch:
+        raise ValueError(
+            "new scheduler segment must preserve effective batch size: "
+            f"source={source_effective_batch}, current={current_effective_batch}"
+        )
+    if int(state.get("epoch", 0)) < 1 or int(state.get("step", -1)) < 0:
+        raise ValueError("new scheduler segment source has an invalid completed cursor")
+
+
+def update_early_stopping(
+    *,
+    val_loss: float,
+    best_val: float,
+    bad_epochs: int,
+    patience: int,
+    min_delta: float,
+) -> tuple[float, int, bool, bool]:
+    """Update absolute-delta patience state after one completed validation."""
+
+    improved = val_loss < best_val - min_delta
+    if improved:
+        best_val = val_loss
+        bad_epochs = 0
+    else:
+        bad_epochs += 1
+    should_stop = patience > 0 and bad_epochs >= patience
+    return best_val, bad_epochs, improved, should_stop
+
+
+def initialize_new_scheduler_segment(
+    state: dict[str, Any],
+    optimizer: torch.optim.Optimizer,
+    *,
+    fresh_lrs: list[float],
+) -> tuple[int, int, float]:
+    """Restore optimizer moments while deliberately leaving a new scheduler untouched."""
+
+    optimizer_state = state.get("optimizer")
+    if not isinstance(optimizer_state, dict):
+        raise TypeError("new scheduler segment source has no optimizer moments")
+    optimizer.load_state_dict(optimizer_state)
+    if len(fresh_lrs) != len(optimizer.param_groups):
+        raise ValueError("fresh scheduler LR count does not match optimizer groups")
+    for group, learning_rate in zip(optimizer.param_groups, fresh_lrs, strict=True):
+        if learning_rate <= 0:
+            raise ValueError(
+                "new scheduler segment initial learning rates must be positive"
+            )
+        group["lr"] = float(learning_rate)
+        group["initial_lr"] = float(learning_rate)
+    return (
+        int(state["epoch"]) + 1,
+        int(state["step"]),
+        float(state.get("best_val", float("inf"))),
+    )
+
+
 def save_resume_checkpoint(
     model,
     processor,
@@ -116,6 +264,9 @@ def save_resume_checkpoint(
     latent_token_count: int,
     mask_latent_query_labels: bool,
     latent_query_mode: str,
+    scheduler_segment: dict[str, Any] | None = None,
+    segment_bad_epochs: int = 0,
+    keep_last: int | None = None,
 ) -> Path:
     """Atomically publish a same-world checkpoint at an optimizer boundary."""
     local_rng = capture_rng_state()
@@ -171,6 +322,9 @@ def save_resume_checkpoint(
                     "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict(),
                 }
+                if scheduler_segment is not None:
+                    state["scheduler_segment"] = scheduler_segment
+                    state["segment_bad_epochs"] = int(segment_bad_epochs)
                 state_path = temporary / "training_state.pt"
                 torch.save(state, state_path)
                 marker = temporary / COMMITTED_MARKER
@@ -184,6 +338,10 @@ def save_resume_checkpoint(
             except BaseException:
                 shutil.rmtree(temporary, ignore_errors=True)
                 raise
+    if world > 1:
+        dist.barrier()
+    if is_main() and keep_last is not None:
+        prune_numbered_checkpoints(out_dir, "resume_step_", keep_last)
     if world > 1:
         dist.barrier()
     return final
@@ -208,6 +366,8 @@ def save_checkpoint(
     latent_query_mode: str = "inject",
     world_size: int | None = None,
     identity: dict[str, Any] | None = None,
+    scheduler_segment: dict[str, Any] | None = None,
+    segment_bad_epochs: int = 0,
 ) -> None:
     ckpt = out_dir / name
     ckpt.mkdir(parents=True, exist_ok=True)
@@ -230,6 +390,9 @@ def save_checkpoint(
         state["world_size"] = int(world_size)
     if identity is not None:
         state["identity"] = identity
+    if scheduler_segment is not None:
+        state["scheduler_segment"] = scheduler_segment
+        state["segment_bad_epochs"] = int(segment_bad_epochs)
     if base_model_path is not None:
         state["base_model_path"] = str(base_model_path)
     if optimizer is not None:

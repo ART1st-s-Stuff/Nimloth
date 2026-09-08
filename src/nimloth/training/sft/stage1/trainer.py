@@ -40,11 +40,16 @@ from nimloth.latent import (
 
 from .checkpoint import (
     RESUME_SCHEMA,
+    SCHEDULER_SEGMENT_SCHEMA,
     find_latest_resume_dir,
+    initialize_new_scheduler_segment,
     load_lora_adapter_state,
+    publish_checkpoint_alias,
     restore_rng_state,
     save_checkpoint,
     save_resume_checkpoint,
+    update_early_stopping,
+    validate_new_scheduler_segment_source,
     validate_resume_stage,
     validate_resume_state,
 )
@@ -396,6 +401,29 @@ def _resume_identity(
     return identity
 
 
+def _scheduler_segment_identity(
+    args: argparse.Namespace,
+    source: Path,
+    source_state: dict[str, Any],
+    *,
+    current_world: int,
+) -> dict[str, Any]:
+    return {
+        "schema": SCHEDULER_SEGMENT_SCHEMA,
+        "source_checkpoint": str(source.resolve()),
+        "source_epoch": int(source_state["epoch"]),
+        "source_step": int(source_state["step"]),
+        "source_world_size": int(source_state["world_size"]),
+        "source_grad_accum": int(source_state["identity"]["grad_accum"]),
+        "target_world_size": int(current_world),
+        "target_grad_accum": int(args.grad_accum),
+        "additional_epochs": int(args.epochs),
+        "warmup_ratio": float(args.warmup_ratio),
+        "early_stopping_patience": int(args.early_stopping_patience),
+        "early_stopping_min_delta": float(args.early_stopping_min_delta),
+    }
+
+
 def main(*, stage: str = "format") -> int:
     args, query_config = parse_args(stage=stage)
     random.seed(args.seed)
@@ -620,13 +648,17 @@ def main(*, stage: str = "format") -> int:
     )
 
     base_model_path = args.model
-    resume_dir: Path | None = (
+    same_segment_resume_dir: Path | None = (
         find_latest_resume_dir(args.output_dir) if args.resume else None
     )
+    segment_source = args.new_scheduler_segment_from
+    if segment_source is not None:
+        segment_source = segment_source.resolve()
+    resume_dir = same_segment_resume_dir or segment_source
     resume_ckpt = resume_dir / "training_state.pt" if resume_dir is not None else None
     load_path = args.model
     resume_lora = False
-    if args.resume and resume_ckpt is not None and resume_ckpt.exists():
+    if resume_ckpt is not None and resume_ckpt.exists():
         state_peek = torch.load(resume_ckpt, map_location="cpu", weights_only=False)
         validate_resume_stage(state_peek, resume_dir, stage)
         saved_mode = state_peek.get("latent_query_mode")
@@ -645,6 +677,7 @@ def main(*, stage: str = "format") -> int:
         )
         if resume_lora:
             load_path = state_peek.get("base_model_path", args.model)
+            base_model_path = Path(load_path)
         elif (resume_dir / "config.json").exists():
             load_path = str(resume_dir)
         if is_main():
@@ -657,7 +690,7 @@ def main(*, stage: str = "format") -> int:
                     }
                 )
             )
-    elif args.resume and is_main():
+    elif args.resume and segment_source is None and is_main():
         print(
             json.dumps(
                 {"warning": "--resume set but no checkpoint found under output_dir"}
@@ -680,9 +713,9 @@ def main(*, stage: str = "format") -> int:
         latent_token_count=args.latent_token_count,
     )
 
-    if args.resume and resume_ckpt is not None and resume_ckpt.exists() and resume_lora:
+    if resume_ckpt is not None and resume_ckpt.exists() and resume_lora:
         if not args.lora:
-            raise ValueError("--resume with LoRA adapter requires --lora")
+            raise ValueError("restoring a LoRA checkpoint requires --lora")
         model = apply_lora(model, args)
         load_lora_adapter_state(model, resume_dir)
         if args.gradient_checkpointing:
@@ -728,6 +761,27 @@ def main(*, stage: str = "format") -> int:
     resume_identity = _resume_identity(
         args, stage=stage, world=world, train_size=len(train_ds)
     )
+    scheduler_segment: dict[str, Any] | None = None
+    segment_source_state: dict[str, Any] | None = None
+    if segment_source is not None:
+        source_state_path = segment_source / "training_state.pt"
+        if not source_state_path.is_file():
+            raise FileNotFoundError(
+                f"new scheduler segment source has no training state: {segment_source}"
+            )
+        segment_source_state = torch.load(
+            source_state_path, map_location="cpu", weights_only=False
+        )
+        validate_new_scheduler_segment_source(
+            segment_source_state,
+            segment_source,
+            expected_stage=stage,
+            current_identity=resume_identity,
+        )
+        scheduler_segment = _scheduler_segment_identity(
+            args, segment_source, segment_source_state, current_world=world
+        )
+        resume_identity["scheduler_segment"] = scheduler_segment
 
     log_path = args.output_dir / "train_step_log.csv"
     if is_main() and not log_path.exists():
@@ -765,10 +819,12 @@ def main(*, stage: str = "format") -> int:
 
     global_step = 0
     best_val = float("inf")
+    segment_bad_epochs = 0
     start_epoch = 1
+    end_epoch = args.epochs
     resume_next_micro_batch = 0
     resume_rank_rng: dict[str, Any] | None = None
-    if args.resume and resume_ckpt is not None and resume_ckpt.exists():
+    if same_segment_resume_dir is not None and resume_ckpt is not None:
         state = torch.load(resume_ckpt, map_location="cpu", weights_only=False)
         global_step = int(state.get("step", 0))
         best_val = float(state.get("best_val", float("inf")))
@@ -818,6 +874,17 @@ def main(*, stage: str = "format") -> int:
             optimizer.load_state_dict(state["optimizer"])
         if state.get("scheduler") is not None:
             scheduler.load_state_dict(state["scheduler"])
+        if scheduler_segment is not None:
+            if state.get("scheduler_segment") != scheduler_segment:
+                raise ValueError(
+                    "resume checkpoint scheduler segment identity mismatch"
+                )
+            segment_bad_epochs = int(state.get("segment_bad_epochs", -1))
+            if segment_bad_epochs < 0:
+                raise ValueError(
+                    "resume checkpoint is missing segment early-stopping state"
+                )
+            end_epoch = int(scheduler_segment["source_epoch"]) + args.epochs
         if is_main():
             print(
                 json.dumps(
@@ -828,6 +895,26 @@ def main(*, stage: str = "format") -> int:
                         "start_epoch": start_epoch,
                         "global_step": global_step,
                         "next_micro_batch": resume_next_micro_batch,
+                        "best_val": best_val,
+                        "scheduler_segment": scheduler_segment,
+                        "segment_bad_epochs": segment_bad_epochs,
+                    }
+                )
+            )
+    elif scheduler_segment is not None and segment_source_state is not None:
+        state = segment_source_state
+        start_epoch, global_step, best_val = initialize_new_scheduler_segment(
+            state, optimizer, fresh_lrs=list(scheduler.base_lrs)
+        )
+        end_epoch = int(state["epoch"]) + args.epochs
+        if is_main():
+            print(
+                json.dumps(
+                    {
+                        "new_scheduler_segment": scheduler_segment,
+                        "start_epoch": start_epoch,
+                        "end_epoch": end_epoch,
+                        "global_step": global_step,
                         "best_val": best_val,
                     }
                 )
@@ -849,7 +936,17 @@ def main(*, stage: str = "format") -> int:
         signal.signal(signal.SIGUSR1, request_boundary_stop)
 
     model.train()
-    for epoch in range(start_epoch, args.epochs + 1):
+    stopped_early = (
+        args.early_stopping_patience > 0
+        and segment_bad_epochs >= args.early_stopping_patience
+    )
+    last_completed_epoch = (
+        int(state["epoch"])
+        if stopped_early and same_segment_resume_dir is not None
+        else start_epoch - 1
+    )
+    epoch_numbers = () if stopped_early else range(start_epoch, end_epoch + 1)
+    for epoch in epoch_numbers:
         train_sampler.set_epoch(epoch)
         optimizer.zero_grad(set_to_none=True)
         accum_loss = 0.0
@@ -862,6 +959,7 @@ def main(*, stage: str = "format") -> int:
             next_batch: int,
             epoch_number: int = epoch,
             best_at_epoch_start: float = best_val,
+            bad_epochs_at_epoch_start: int = segment_bad_epochs,
         ) -> None:
             nonlocal global_step, accum_loss
             for p in model.parameters():
@@ -921,6 +1019,9 @@ def main(*, stage: str = "format") -> int:
                     latent_token_count=args.latent_token_count,
                     mask_latent_query_labels=args.mask_latent_query_labels,
                     latent_query_mode=args.latent_query_mode,
+                    scheduler_segment=scheduler_segment,
+                    segment_bad_epochs=bad_epochs_at_epoch_start,
+                    keep_last=args.keep_resume_checkpoints or None,
                 )
 
         train_iterator = iter(train_loader)
@@ -971,6 +1072,9 @@ def main(*, stage: str = "format") -> int:
                 latent_token_count=args.latent_token_count,
                 mask_latent_query_labels=args.mask_latent_query_labels,
                 latent_query_mode=args.latent_query_mode,
+                scheduler_segment=scheduler_segment,
+                segment_bad_epochs=segment_bad_epochs,
+                keep_last=args.keep_resume_checkpoints or None,
             )
             cleanup_dist()
             return 75
@@ -990,9 +1094,15 @@ def main(*, stage: str = "format") -> int:
             latent_token_count=args.latent_token_count,
             latent_query_mode=args.latent_query_mode,
         )
+        best_val, segment_bad_epochs, improved, stopped_early = update_early_stopping(
+            val_loss=val_loss,
+            best_val=best_val,
+            bad_epochs=segment_bad_epochs,
+            patience=args.early_stopping_patience,
+            min_delta=args.early_stopping_min_delta,
+        )
+        last_completed_epoch = epoch
         if is_main():
-            previous_best_val = best_val
-            best_val = min(best_val, val_loss)
             with log_path.open("a", newline="") as f:
                 csv.writer(f).writerow(
                     [
@@ -1023,8 +1133,25 @@ def main(*, stage: str = "format") -> int:
                 latent_query_mode=args.latent_query_mode,
                 world_size=world,
                 identity=resume_identity,
+                scheduler_segment=scheduler_segment,
+                segment_bad_epochs=segment_bad_epochs,
             )
-            if val_loss < previous_best_val:
+            if scheduler_segment is not None:
+                epoch_checkpoint = args.output_dir / f"epoch_{epoch:03d}"
+                if improved:
+                    publish_checkpoint_alias(args.output_dir, "best", epoch_checkpoint)
+                best_target = (args.output_dir / "best").resolve()
+                for old_epoch in sorted(args.output_dir.glob("epoch_*")):
+                    if (
+                        not old_epoch.is_symlink()
+                        and old_epoch != epoch_checkpoint
+                        and old_epoch.resolve() != best_target
+                        and (old_epoch / "COMMITTED").is_file()
+                    ):
+                        import shutil
+
+                        shutil.rmtree(old_epoch)
+            elif improved:
                 save_checkpoint(
                     model,
                     processor,
@@ -1053,6 +1180,8 @@ def main(*, stage: str = "format") -> int:
                         "format_correct_rate": format_rate,
                         "format_eval_protocol": args.latent_query_mode,
                         "best_val": best_val,
+                        "segment_bad_epochs": segment_bad_epochs,
+                        "early_stopping": stopped_early,
                     }
                 )
             )
@@ -1071,27 +1200,33 @@ def main(*, stage: str = "format") -> int:
                     step=global_step,
                 )
         distributed_barrier()
+        if stopped_early:
+            break
 
     if is_main():
-        save_checkpoint(
-            model,
-            processor,
-            args.output_dir,
-            "final",
-            optimizer,
-            scheduler,
-            global_step,
-            args.epochs,
-            best_val,
-            lora=args.lora,
-            base_model_path=base_model_path,
-            merge_for_eval=False,
-            latent_token_count=args.latent_token_count,
-            mask_latent_query_labels=args.mask_latent_query_labels,
-            latent_query_mode=args.latent_query_mode,
-            world_size=world,
-            identity=resume_identity,
-        )
+        if scheduler_segment is not None:
+            final_epoch = args.output_dir / f"epoch_{last_completed_epoch:03d}"
+            publish_checkpoint_alias(args.output_dir, "final", final_epoch)
+        else:
+            save_checkpoint(
+                model,
+                processor,
+                args.output_dir,
+                "final",
+                optimizer,
+                scheduler,
+                global_step,
+                last_completed_epoch,
+                best_val,
+                lora=args.lora,
+                base_model_path=base_model_path,
+                merge_for_eval=False,
+                latent_token_count=args.latent_token_count,
+                mask_latent_query_labels=args.mask_latent_query_labels,
+                latent_query_mode=args.latent_query_mode,
+                world_size=world,
+                identity=resume_identity,
+            )
         if wandb_run is not None:
             import wandb
 

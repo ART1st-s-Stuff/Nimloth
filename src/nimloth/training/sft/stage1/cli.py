@@ -74,10 +74,39 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--resume", action="store_true")
     ap.add_argument(
+        "--new-scheduler-segment-from",
+        type=Path,
+        default=None,
+        help=(
+            "Start a new scheduler segment from a committed epoch checkpoint. "
+            "Model and optimizer moments are restored; --epochs is the maximum "
+            "number of additional epochs. May be combined with --resume only "
+            "to resume this same segment from --output-dir."
+        ),
+    )
+    ap.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=0,
+        help="Stop after this many consecutive non-improving epochs; 0 disables.",
+    )
+    ap.add_argument(
+        "--early-stopping-min-delta",
+        type=float,
+        default=0.0,
+        help="Absolute val_loss decrease required to reset early-stopping patience.",
+    )
+    ap.add_argument(
         "--resume-save-steps",
         type=int,
         default=10,
         help="Publish an atomic resume checkpoint every N completed optimizer steps.",
+    )
+    ap.add_argument(
+        "--keep-resume-checkpoints",
+        type=int,
+        default=0,
+        help="Keep this many committed step checkpoints; 0 preserves all.",
     )
     ap.add_argument(
         "--max-pixels",
@@ -201,6 +230,16 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     args.latent_token_count = int(args.latent_token_count)
     if args.resume_save_steps < 1:
         raise ValueError("--resume-save-steps must be >= 1")
+    if args.keep_resume_checkpoints < 0:
+        raise ValueError("--keep-resume-checkpoints must be >= 0")
+    if args.early_stopping_patience < 0:
+        raise ValueError("--early-stopping-patience must be >= 0")
+    if args.early_stopping_min_delta < 0:
+        raise ValueError("--early-stopping-min-delta must be >= 0")
+    if args.new_scheduler_segment_from is not None and stage != "format":
+        raise ValueError(
+            "new scheduler segments are currently supported only for SFT1 format training"
+        )
     if args.latent_token_count < 1:
         raise ValueError(
             f"--latent-token-count must be >= 1, got {args.latent_token_count}"

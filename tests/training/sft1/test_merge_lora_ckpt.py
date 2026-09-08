@@ -49,7 +49,10 @@ def test_finalize_merged_vocab_preserves_independent_lm_head() -> None:
 
     assert torch.equal(model.input_embeddings.weight, input_before)
     assert torch.equal(model.output_embeddings.weight, output_before)
-    assert model.input_embeddings.weight.data_ptr() != model.output_embeddings.weight.data_ptr()
+    assert (
+        model.input_embeddings.weight.data_ptr()
+        != model.output_embeddings.weight.data_ptr()
+    )
     assert model.config.vocab_size == 7
     assert model.config.text_config.vocab_size == 7
     assert model.generation_config.vocab_size == 7
@@ -85,4 +88,68 @@ def test_restore_saved_embedding_layers_reconstructs_untied_head(tmp_path) -> No
     )
     assert torch.equal(model.input_embeddings.weight, saved_input)
     assert torch.equal(model.output_embeddings.weight, saved_output)
-    assert model.input_embeddings.weight.data_ptr() != model.output_embeddings.weight.data_ptr()
+    assert (
+        model.input_embeddings.weight.data_ptr()
+        != model.output_embeddings.weight.data_ptr()
+    )
+
+
+def test_restore_prefers_trained_peft019_modules_to_save_aliases(tmp_path) -> None:
+    model = FakeMergedModel(vocab_size=7, tied=True)
+    frozen_input = torch.full((7, 4), -1.0)
+    trained_input = torch.arange(28, dtype=torch.float32).reshape(7, 4)
+    frozen_output = torch.full((7, 4), -2.0)
+    trained_output = trained_input.flip(0).clone()
+    save_file(
+        {
+            "base_model.model.model.language_model.embed_tokens.weight": frozen_input,
+            "base_model.model.model.language_model.embed_tokens.modules_to_save.weight": trained_input,
+            "base_model.model.lm_head.weight": frozen_output,
+            "base_model.model.lm_head.modules_to_save.weight": trained_output,
+        },
+        tmp_path / "adapter_model.safetensors",
+    )
+
+    keys = restore_saved_untied_embeddings(model, tmp_path)
+
+    assert keys == (
+        "base_model.model.model.language_model.embed_tokens.modules_to_save.weight",
+        "base_model.model.lm_head.modules_to_save.weight",
+    )
+    assert torch.equal(model.input_embeddings.weight, trained_input)
+    assert torch.equal(model.output_embeddings.weight, trained_output)
+    assert not torch.equal(model.input_embeddings.weight, frozen_input)
+    assert not torch.equal(model.output_embeddings.weight, frozen_output)
+
+
+def test_restore_rejects_multiple_trained_aliases_even_when_equal(tmp_path) -> None:
+    model = FakeMergedModel(vocab_size=7, tied=True)
+    saved_input = torch.arange(28, dtype=torch.float32).reshape(7, 4)
+    saved_output = saved_input.flip(0).clone()
+    save_file(
+        {
+            "first.embed_tokens.modules_to_save.weight": saved_input,
+            "second.embed_tokens.modules_to_save.weight": saved_input.clone(),
+            "base_model.model.lm_head.modules_to_save.weight": saved_output,
+        },
+        tmp_path / "adapter_model.safetensors",
+    )
+
+    with pytest.raises(RuntimeError, match="ambiguous saved input weights"):
+        restore_saved_untied_embeddings(model, tmp_path)
+
+
+def test_restore_rejects_mixed_trained_and_plain_aliases(tmp_path) -> None:
+    model = FakeMergedModel(vocab_size=7, tied=True)
+    saved_input = torch.arange(28, dtype=torch.float32).reshape(7, 4)
+    saved_output = saved_input.flip(0).clone()
+    save_file(
+        {
+            "base_model.model.model.language_model.embed_tokens.modules_to_save.weight": saved_input,
+            "base_model.model.lm_head.weight": saved_output,
+        },
+        tmp_path / "adapter_model.safetensors",
+    )
+
+    with pytest.raises(RuntimeError, match="same PEFT alias kind"):
+        restore_saved_untied_embeddings(model, tmp_path)

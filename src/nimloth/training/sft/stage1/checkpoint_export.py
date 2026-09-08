@@ -57,33 +57,49 @@ def restore_saved_untied_embeddings(model, adapter_dir: Path) -> tuple[str, str]
     from safetensors import safe_open
 
     state_path = adapter_dir / "adapter_model.safetensors"
-    suffixes = {
-        "input": (
-            "embed_tokens.weight",
-            "embed_tokens.modules_to_save.weight",
-        ),
-        "output": (
-            "lm_head.weight",
-            "lm_head.modules_to_save.weight",
-        ),
-    }
+    module_names = {"input": "embed_tokens", "output": "lm_head"}
     with safe_open(state_path, framework="pt", device="cpu") as handle:
         keys = list(handle.keys())
         selected: dict[str, str] = {}
-        for name, endings in suffixes.items():
-            matches = [key for key in keys if key.endswith(endings)]
-            if len(matches) > 1:
+        selected_kinds: dict[str, str] = {}
+        for name, module_name in module_names.items():
+            # PEFT 0.19 can emit two keys for a module listed in
+            # ``modules_to_save`` when embedding layers are also saved:
+            #
+            #   <module>.modules_to_save.weight  (the trained adapter copy)
+            #   <module>.weight                  (the frozen original module)
+            #
+            # They are different semantic tensors and normally diverge during
+            # training.  The modules_to_save copy is therefore authoritative;
+            # the plain embedding-layer snapshot is only a fallback for
+            # checkpoints that do not contain a modules_to_save copy.
+            trained_suffix = f"{module_name}.modules_to_save.weight"
+            plain_suffix = f"{module_name}.weight"
+            trained_matches = [key for key in keys if key.endswith(trained_suffix)]
+            plain_matches = [
+                key
+                for key in keys
+                if key.endswith(plain_suffix) and not key.endswith(trained_suffix)
+            ]
+            candidates = trained_matches or plain_matches
+            if len(candidates) > 1:
                 raise RuntimeError(
-                    f"adapter contains ambiguous saved {name} weights: {matches}"
+                    f"adapter contains ambiguous saved {name} weights: {candidates}"
                 )
-            if matches:
-                selected[name] = matches[0]
+            if candidates:
+                selected[name] = candidates[0]
+                selected_kinds[name] = "trained" if trained_matches else "plain"
         if not selected:
             return None
         if set(selected) != {"input", "output"}:
             raise RuntimeError(
                 "adapter must save both input embedding and lm_head when either "
                 f"is present, got {selected}"
+            )
+        if len(set(selected_kinds.values())) != 1:
+            raise RuntimeError(
+                "adapter must save input embedding and lm_head with the same "
+                f"PEFT alias kind, got {selected_kinds}"
             )
         saved_input = handle.get_tensor(selected["input"])
         saved_output = handle.get_tensor(selected["output"])

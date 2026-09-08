@@ -38,3 +38,13 @@ stage2需要同观测的真实回答/CoT、完整有序的query slots和冻结DI
 `stage3.algorithm`拥有损失和反传顺序，`stage3.sigreg`拥有跨rank有效状态汇聚及同步随机投影，提取时不改变collective顺序或梯度。canary、动作头专项修复、packed/KV原型及依赖它们的特征审计归`experiments/training/sft/diagnosis`，不得由生产训练导入。Python旧路径不再兼容；保存的tensor/state_dict、目标标识及恢复语义保持不变。
 
 `stage1.cli.parse_args(argv=None, *, stage="format")`负责入口参数校验；`stage1.checkpoint`负责保存及恢复阶段校验；`stage1.trainer`负责模型构建与训练生命周期，不再动态转发数据模块中的任意属性。数据调用者直接依赖`stage1.data`。
+
+## SFT1显式续训段与PEFT导出
+
+1. 范围：已完成epoch的scheduler已走完时，以新输出目录开始额外训练；普通`--resume`不接受改变world、数据或目标。
+2. 入口：`--new-scheduler-segment-from PATH --epochs N --early-stopping-patience P --early-stopping-min-delta D`；`--keep-resume-checkpoints 2`限制本次恢复点数量。
+3. 合同：新段保留模型和optimizer moments，明确重建scheduler并恢复正的初始LR。仅允许在完整epoch边界调整world与grad_accum且保持effective batch；段内resume校验完全相同的identity。保存scheduler_segment和segment_bad_epochs。新段保留最新/最佳epoch及原子best指针，不修改来源实验。
+4. 错误：来源无COMMITTED、optimizer缺失、数据/目标不符、effective batch改变、同段身份变化均拒绝。PEFT导出input/output同时出现plain与modules_to_save别名时，选择后者训练副本；同优先级多候选或input/output混用别名类型仍拒绝。
+5. 情形：world4/batch1/GA8完整epoch可开启world8/batch1/GA4新段；mid-epoch不能借新段跳过同world恢复限制。patience衡量离线val_loss停滞，不证明held-out质量收敛。
+6. 验证：源LR为0而新段发生有效更新；moments保留；patience保存/恢复；拓扑变化保持batch；旧默认保存行为保留；retention不得越过新输出目录；PEFT两个别名数值不同时必须导出训练副本。
+7. 错误与正确：错误是放宽普通resume identity或以零LR继续；正确是显式新段记录来源，并对同段恢复继续严格校验。

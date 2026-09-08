@@ -439,18 +439,22 @@ def record_exit(args: argparse.Namespace) -> int:
     return 0
 
 
-def validate_rank_rows(rows: list[dict[str, Any]], visible_count: int) -> None:
-    if len(rows) != TRAIN_WORLD_SIZE or visible_count != TRAIN_WORLD_SIZE:
+def validate_rank_rows(
+    rows: list[dict[str, Any]],
+    visible_count: int,
+    expected_world: int = TRAIN_WORLD_SIZE,
+) -> None:
+    if len(rows) != expected_world or visible_count != expected_world:
         raise RuntimeError(
-            f"expected world{TRAIN_WORLD_SIZE}/{TRAIN_WORLD_SIZE} visible GPUs, "
+            f"expected world{expected_world}/{expected_world} visible GPUs, "
             f"got {len(rows)}/{visible_count}"
         )
-    expected = list(range(TRAIN_WORLD_SIZE))
+    expected = list(range(expected_world))
     if sorted(item["rank"] for item in rows) != expected:
         raise RuntimeError("global ranks are incomplete or duplicated")
     if sorted(item["local_rank"] for item in rows) != expected:
         raise RuntimeError(
-            f"local ranks do not map one-to-one onto {TRAIN_WORLD_SIZE} GPUs"
+            f"local ranks do not map one-to-one onto {expected_world} GPUs"
         )
     if len({item["host"] for item in rows}) != 1:
         raise RuntimeError("rank preflight escaped the one-node allocation")
@@ -466,8 +470,10 @@ def rank_map(args: argparse.Namespace) -> int:
     rank = dist.get_rank()
     world = dist.get_world_size()
     local_rank = int(os.environ["LOCAL_RANK"])
-    if world != TRAIN_WORLD_SIZE or torch.cuda.device_count() != TRAIN_WORLD_SIZE:
-        raise RuntimeError(f"expected world{TRAIN_WORLD_SIZE}/four visible GPUs")
+    if world != args.world_size or torch.cuda.device_count() != args.world_size:
+        raise RuntimeError(
+            f"expected world{args.world_size}/{args.world_size} visible GPUs"
+        )
     torch.cuda.set_device(local_rank)
     row = {
         "rank": rank,
@@ -479,7 +485,7 @@ def rank_map(args: argparse.Namespace) -> int:
     rows: list[Any] = [None] * world
     dist.all_gather_object(rows, row)
     if rank == 0:
-        validate_rank_rows(rows, torch.cuda.device_count())
+        validate_rank_rows(rows, torch.cuda.device_count(), args.world_size)
         _atomic_json(Path(args.output), {"world_size": world, "ranks": rows})
     dist.barrier()
     dist.destroy_process_group()
@@ -530,6 +536,7 @@ def build_parser() -> argparse.ArgumentParser:
     exit_parser.set_defaults(func=record_exit)
     ranks = subparsers.add_parser("rank-map")
     ranks.add_argument("--output", required=True)
+    ranks.add_argument("--world-size", type=int, default=TRAIN_WORLD_SIZE)
     ranks.set_defaults(func=rank_map)
     return parser
 
