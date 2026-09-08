@@ -23,11 +23,12 @@ def _write_json(path: Path, value):
     path.write_text(json.dumps(value))
 
 
-def _audit(root: Path, name: str, marker: str):
+def _audit(root: Path, name: str, marker: str, *, world_size: int):
     unit = root / name
     _write_json(unit / 'sampling_audit.json', {
         'format': 'original_validation_sampling_audit_v1',
-        'tensor_parallel_size': 2, 'ranks': [0, 1],
+        'tensor_parallel_size': 2, 'model_world_size': world_size,
+        'ranks': list(range(world_size)),
         'sampling': finalizer.SAMPLING, 'vllm_version': '0.8.5.post1',
     })
     (unit / marker).write_text('done\n')
@@ -63,9 +64,9 @@ def _fixture(tmp_path, monkeypatch):
     monkeypatch.setattr(finalizer, 'validate_record', validate)
     pilot_root, remainder_root = tmp_path / 'pilot_run', tmp_path / 'remainder_run'
     for i in range(3):
-        _audit(pilot_root, f'node_{i}', 'node_done.flag')
+        _audit(pilot_root, f'node_{i}', 'node_done.flag', world_size=2)
     for i in range(90):
-        _audit(remainder_root, f'shard_{i:02d}', 'shard_done.flag')
+        _audit(remainder_root, f'shard_{i:02d}', 'shard_done.flag', world_size=6)
     for position, row in enumerate(rows):
         root = pilot_root if position < 100 or 1000 <= position < 1100 else remainder_root
         payload = {**row, 'success': position % 2 == 0}
@@ -109,8 +110,9 @@ def test_finalizer_rejects_sampling_drift(tmp_path, monkeypatch):
 def test_remainder_launcher_static_contract():
     path = Path('experiments/training/sft1/run_original_validation_batch1_remainder.slurm')
     text = path.read_text()
-    for required in ('#SBATCH --nodes=1', '#SBATCH --gres=gpu:2', '#SBATCH --cpus-per-task=28',
-                     '#SBATCH --mem=128G', '#SBATCH --time=01:30:00', '#SBATCH --array=0-89%8',
+    for required in ('#SBATCH --nodes=1', '#SBATCH --partition=preempt', '#SBATCH --nodelist=dgx-20',
+                     '#SBATCH --gres=gpu:8', '#SBATCH --cpus-per-task=112',
+                     '#SBATCH --mem=360G', '#SBATCH --time=01:30:00', '#SBATCH --array=0-89%1',
                      '#SBATCH --no-requeue', 'tensor_model_parallel_size=2',
                      'data.train_batch_size=20',
                      'data.val_batch_size=1', 'actor_rollout_ref.rollout.temperature=0.7',
@@ -118,6 +120,8 @@ def test_remainder_launcher_static_contract():
                      'actor_rollout_ref.rollout.n=1', 'max_response_length=256',
                      'PREPARED_REMAINDER_DIR', 'shard_done.flag',
                      'ACTUAL_SAMPLING_AUDIT_OK', 'worker_pids',
+                     'trainer.n_gpus_per_node=6', 'rollout_manager.n_gpus_per_node=6',
+                     'CUDA_VISIBLE_DEVICES="$ENV_VISIBLE"', 'CUDA_VISIBLE_DEVICES="$MODEL_VISIBLE"',
                      'RAY_TMPDIR="/tmp/nv-${SLURM_JOB_ID}"',
                      "'dataset_split': saved['env_config']['dataset_split']",
                      "identity_keys = ('source_index', 'source_key', 'dataset_split', 'eval_set')",
