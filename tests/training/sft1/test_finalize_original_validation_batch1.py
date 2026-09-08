@@ -111,6 +111,7 @@ def test_remainder_launcher_static_contract():
     for required in ('#SBATCH --nodes=1', '#SBATCH --gres=gpu:2', '#SBATCH --cpus-per-task=28',
                      '#SBATCH --mem=128G', '#SBATCH --time=01:30:00', '#SBATCH --array=0-89%8',
                      '#SBATCH --no-requeue', 'tensor_model_parallel_size=2',
+                     'data.train_batch_size=20',
                      'data.val_batch_size=1', 'actor_rollout_ref.rollout.temperature=0.7',
                      'actor_rollout_ref.rollout.top_p=0.95', 'actor_rollout_ref.rollout.top_k=-1',
                      'actor_rollout_ref.rollout.n=1', 'max_response_length=256',

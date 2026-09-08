@@ -97,7 +97,7 @@ RAY_PORT=$((ENV_PORT+1))
 DASHBOARD_PORT=$((ENV_PORT+2))
 CMD=("$PY" -m vagen.trainer.main_ppo
   "data.train_files=${SHARD_FILE}" "data.val_files=${SHARD_FILE}"
-  data.train_batch_size=32 data.val_batch_size=1 data.max_prompt_length=1024
+  data.train_batch_size=20 data.val_batch_size=1 data.max_prompt_length=1024
   data.max_response_length=256 data.max_trajectory_length=16000 data.truncation=left
   algorithm.adv_estimator=reinforce_plus_plus algorithm.kl_ctrl.kl_coef=0
   "actor_rollout_ref.model.path=${INIT_HF}"
