@@ -106,7 +106,7 @@ def finalize(
     for root in run_outs:
         found = _sampling_audits(
             root, 'shard_*', expected_shards, done_marker='shard_done.flag',
-            expected_world_size=5, expected_tensor_parallel_size=1,
+            expected_world_size=4, expected_tensor_parallel_size=2,
         )
         overlap = set(remainder_audits) & set(found)
         if overlap:
