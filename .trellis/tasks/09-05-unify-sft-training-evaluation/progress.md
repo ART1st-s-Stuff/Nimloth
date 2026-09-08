@@ -194,3 +194,21 @@ Teacher forcing同首轮目标共448tokens，top1正确227（50.67%）；32/32�
 已申请重试hold560944（dgx22），监控sft1-560944已创建。训练仍未启动，等待修复独立审核和远程同步。其他用户任务560920_4/560921_5不属于本次重试，禁止取消或干扰。
 
 重试完整启动合同：ALLOCATION_JOB_ID=560944 WORLD_SIZE=4 EXPECTED_NODE=dgx-22 REPO=/project/peilab/atst/nimloth/.worktree/unify-sft-training-evaluation EXPECTED_COMMIT=本次审核提交 RUN_ROOT=/project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluation/20260908T095000Z_lora_lr_retry560944 bash $REPO/experiments/training/sft/evaluation/run_stage1_fresh_retry.sh。源码入口绑定上文旧base/data，单轮4GPU48CPU240G，K1 generate、LoRA r64 alpha128、lr2e-4/embed5e-4，batch1/GA8、maxlen12000/maxpixels100352、每5步checkpoint保留2，无cache/W&B/Stage2。成功后epoch001单卡32/128诊断；不导出模型、不改旧产物。hold提交09:44:49 UTC，排队+运行截止11:44:49 UTC；监控sft1-560944。
+
+修复commit75d26e5d235b66b5a98a2a004b0fa4aaa0e80db3已通过独立7项测试、Ruff/shell语法/内嵌Python编译检查，增量同步远程干净worktree。实际重试于09:48 UTC启动560944，launcher1122244，输出20260908T095000Z_lora_lr_retry560944，外层日志同路径加.launch.log。启动前训练/验证SHA256与原记录完全一致、base4分片存在、依赖pins一致；预算截止11:44:49 UTC。当前需核验rank-map和首次优化器更新，未声称训练或格式修复已成功。
+
+### 2026-09-08 人类授权删除错误训练产物
+
+人类明确要求删除错误训练artifacts。执行前实时确认557736 FAILED、560589 PREEMPTED、560944 RUNNING。已删除20260907T181900Z_dgx55_world4_9c9d6a9b/stage1下epoch_001、best、final及step5/10/15/20目录；删除20260908T074500Z_dgx56_world8_7842e88e/stage1_continuation下epoch_004、step85/90及best链接。所有精确目标删除后确认不存在。删除前两运行占用分别59G/25G，保留轻量日志/身份与诊断结构产物。此前记录的低LR恢复点已失效，不得再尝试恢复或从其初始化。原step79基础模型、旧数据集、正在运行的560944新重试均未修改。
+
+### 2026-09-08 10:17 UTC修复重试完成
+
+560944.0 COMPLETED/0:0，运行24分12秒；controller_exit=0。单轮20updates后val_loss0.08103560656309128，训练内格式率1.0。独立重载epoch_001完成32样本：free_full_pass32/32、conditional_action_pass32/32、teacher_correct448/448。相同旧数据、原base、world4/GA8单轮对照，修复LoRA学习率后，格式失败已在本次32条诊断上消失；这支持启动学习率错配是此前0%的原因，不把32条格式成功等同于held-out导航质量或多轮收敛。
+
+成功模型：/project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluation/20260908T095000Z_lora_lr_retry560944/stage1/epoch_001，COMMITTED确认epoch1/step20。诊断summary.json和samples.jsonl在同run的format_diagnostic下。未执行Stage2或模型合并导出。launcher1122244已退出，无GPU step，只有batch hold；核验job归属后scancel560944，allocation CANCELLED by3738、batch CANCELLED、实验step仍COMPLETED。该取消仅释放空闲资源，不是实验失败。删除监控sft1-560944。训练后续与Stage2等待人类决定。
+
+### 2026-09-08 正确SFT1继续训练授权
+
+人类要求继续训练。从修复成功run20260908T095000Z_lora_lr_retry560944/stage1/epoch_001（epoch1/step20、val0.0810356、format32/32）保留模型和optimizer moments开启显式新scheduler段，恢复正LR2e-4/embed5e-4。旧一轮cosine已到0，不直接沿用零LR。沿用旧数据/目标、world4/batch1/GA8保持effective32；dgx22目前空4卡，申请4GPU48CPU240G、6h no-requeue；最多额外19轮、val_loss patience3/min_delta0.001或抢占停止，预算上限不等于收敛。不启动Stage2。需先占hold，再审核可配置节点/world的现有continuation脚本并提交同步。其他用户数组job不属于本task。
+
+已申请hold561111（dgx22，4GPU48CPU240G），监控sft1-561111已建立。成功来源checkpoint实际读取确认epoch1/step20/world4/GA8、lr身份2e-4/5e-4、optimizer当前LR0、initial_lr2e-4/5e-4，旧dataset SHA身份匹配。新输出 /project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluation/20260908T102500Z_corrected_cont561111。完整启动：ALLOCATION_JOB_ID=561111 WORLD_SIZE=4 EXPECTED_NODE=dgx-22 REPO=/project/peilab/atst/nimloth/.worktree/unify-sft-training-evaluation EXPECTED_COMMIT=最终审核提交 SOURCE_EPOCH=/project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluation/20260908T095000Z_lora_lr_retry560944/stage1/epoch_001 RUN_ROOT=上述新输出 bash $REPO/experiments/training/sft/evaluation/run_stage1_continuation_dgx56.sh。参数沿用已审查脚本：19额外epoch、patience3/min_delta0.001、periodic5 retain2、best/final和最佳模型导出；只准备SFT2初始化，不启动SFT2。

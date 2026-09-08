@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
+WORLD_SIZE=${WORLD_SIZE:-8}
+EXPECTED_NODE=${EXPECTED_NODE:-dgx-56}
+[[ "${WORLD_SIZE}" =~ ^[1-9][0-9]*$ ]] && (( WORLD_SIZE <= 32 && 32 % WORLD_SIZE == 0 )) || {
+  echo "WORLD_SIZE must divide effective batch 32" >&2; exit 2;
+}
+GRAD_ACCUM=$((32 / WORLD_SIZE))
 
 if [[ "${NIMLOTH_ALLOCATION_STEP:-0}" != 1 ]]; then
-  : "${ALLOCATION_JOB_ID:?set ALLOCATION_JOB_ID to the existing dgx-56 allocation}"
+  : "${ALLOCATION_JOB_ID:?set ALLOCATION_JOB_ID to the existing allocation}"
   exec srun --jobid="${ALLOCATION_JOB_ID}" --nodes=1 --ntasks=1 \
-    --gres=gpu:8 --cpus-per-task=96 --mem=480G \
+    --gres="gpu:${WORLD_SIZE}" --cpus-per-task="$((WORLD_SIZE * 12))" --mem="$((WORLD_SIZE * 60))G" \
     --export=ALL,NIMLOTH_ALLOCATION_STEP=1 bash "$0"
 fi
 
@@ -13,6 +19,8 @@ fi
 : "${SOURCE_EPOCH:?set SOURCE_EPOCH to the completed SFT1 epoch checkpoint}"
 : "${RUN_ROOT:?set a new persistent RUN_ROOT for this continuation segment}"
 : "${SLURM_JOB_ID:?the controller must run inside the allocation step}"
+: "${ALLOCATION_JOB_ID:?set ALLOCATION_JOB_ID to the existing allocation}"
+[[ "${SLURM_JOB_ID}" == "${ALLOCATION_JOB_ID}" ]] || { echo "allocation mismatch" >&2; exit 2; }
 
 PYTHON=/project/peilab/atst/nimloth/.venv-vagen-main/bin/python3
 ROOT=/project/peilab/atst/nimloth
@@ -30,9 +38,9 @@ RUNTIME_ROOT=/tmp/nimloth-sft1-cont-${SLURM_JOB_ID}
 [[ -f "${SOURCE_EPOCH}/COMMITTED" && -f "${SOURCE_EPOCH}/training_state.pt" ]] || {
   echo "SOURCE_EPOCH is not a committed epoch checkpoint" >&2; exit 2;
 }
-[[ "${SLURM_JOB_NODELIST:-}" == "dgx-56" ]] || { echo "allocation is not fixed to dgx-56" >&2; exit 2; }
+[[ "${SLURM_JOB_NODELIST:-}" == "${EXPECTED_NODE}" ]] || { echo "allocation node mismatch" >&2; exit 2; }
 IFS=',' read -r -a GPU_TOKENS <<<"${CUDA_VISIBLE_DEVICES:-}"
-(( ${#GPU_TOKENS[@]} == 8 )) || { echo "launcher requires exactly eight GPUs" >&2; exit 2; }
+(( ${#GPU_TOKENS[@]} == WORLD_SIZE )) || { echo "allocated GPU count differs from WORLD_SIZE" >&2; exit 2; }
 
 export PYTHONPATH=${REPO}/src:${REPO}:${REPO}/external/VAGEN:${REPO}/external/VAGEN/verl:${REPO}/external/le-wm
 export PATH=/project/peilab/atst/nimloth/.venv-vagen-main/bin:${PATH}
@@ -58,14 +66,16 @@ PY
 }
 trap record_early_exit EXIT
 
-"${PYTHON}" - "${SOURCE_EPOCH}" "${RUN_ROOT}/source_preflight.json" <<'PY'
+"${PYTHON}" - "${SOURCE_EPOCH}" "${RUN_ROOT}/source_preflight.json" "${WORLD_SIZE}" <<'PY'
 import json, sys
 from pathlib import Path
 import torch
 from safetensors import safe_open
 
-source, output = map(Path, sys.argv[1:])
-state = torch.load(source / "training_state.pt", map_location="cpu", weights_only=False)
+source, output = map(Path, sys.argv[1:3])
+target_world = int(sys.argv[3])
+target_accum = 32 // target_world
+state = torch.load(source / "training_state.pt", map_location="cpu", weights_only=False, mmap=True)
 identity = state.get("identity")
 if not isinstance(identity, dict):
     raise TypeError("source epoch has no strict training identity")
@@ -77,7 +87,7 @@ source_batch = int(identity.get("batch_size", -1))
 source_accum = int(identity.get("grad_accum", -1))
 if (source_world, source_batch, source_accum) != (4, 1, 8):
     raise ValueError("source epoch is not the reviewed world4/batch1/GA8 segment")
-if source_world * source_batch * source_accum != 8 * 1 * 4:
+if source_world * source_batch * source_accum != target_world * target_accum:
     raise ValueError("source and target effective batch sizes differ")
 adapter = source / "adapter_model.safetensors"
 if not adapter.is_file() or not (source / "adapter_config.json").is_file():
@@ -91,15 +101,15 @@ for module in ("embed_tokens", "lm_head"):
 payload = {
     "source": str(source.resolve()), "epoch": int(state["epoch"]),
     "step": int(state["step"]), "source_world_size": source_world,
-    "source_grad_accum": source_accum, "target_world_size": 8,
-    "target_grad_accum": 4, "effective_batch_size": 32,
+    "source_grad_accum": source_accum, "target_world_size": target_world,
+    "target_grad_accum": target_accum, "effective_batch_size": 32,
     "adapter_tensor_count": len(keys),
 }
 output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 print(json.dumps(payload, sort_keys=True))
 PY
 
-"${PYTHON}" - "${RUN_ROOT}/run_identity.json" "${EXPECTED_COMMIT}" "${SOURCE_EPOCH}" <<'PY'
+"${PYTHON}" - "${RUN_ROOT}/run_identity.json" "${EXPECTED_COMMIT}" "${SOURCE_EPOCH}" "${WORLD_SIZE}" "${EXPECTED_NODE}" <<'PY'
 import json, os, sys, tempfile
 from pathlib import Path
 
@@ -108,7 +118,10 @@ expected = {
     "schema": "sft1_scheduler_continuation_v1",
     "commit": sys.argv[2],
     "source_epoch": str(Path(sys.argv[3]).resolve()),
-    "world_size": 8,
+    "world_size": int(sys.argv[4]),
+    "node": sys.argv[5],
+    "grad_accum": 32 // int(sys.argv[4]),
+    "lr": 2e-4, "embedding_lr": 5e-4,
     "additional_epochs": 19,
     "early_stopping_patience": 3,
     "early_stopping_min_delta": 0.001,
@@ -161,15 +174,15 @@ if ss -ltnH "sport = :${PORT}" | grep -q .; then
   exit 2
 fi
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" \
-  "${PYTHON}" -m torch.distributed.run --nproc_per_node=8 --master_port="${PORT}" \
+  "${PYTHON}" -m torch.distributed.run --nproc_per_node="${WORLD_SIZE}" --master_port="${PORT}" \
   -m experiments.training.sft.evaluation.pipeline_contract rank-map \
-  --world-size 8 --output "${RUN_ROOT}/rank_map.json"
+  --world-size "${WORLD_SIZE}" --output "${RUN_ROOT}/rank_map.json"
 set +e
 setsid env CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" \
-  "${PYTHON}" -m torch.distributed.run --nproc_per_node=8 --master_port="${PORT}" \
+  "${PYTHON}" -m torch.distributed.run --nproc_per_node="${WORLD_SIZE}" --master_port="${PORT}" \
   -m nimloth.training.sft.stage1 \
   --model "${SOURCE_CHECKPOINT}" --train-jsonl "${TRAIN_JSONL}" --val-jsonl "${VAL_JSONL}" \
-  --output-dir "${OUT}" --epochs 19 --batch-size 1 --grad-accum 4 \
+  --output-dir "${OUT}" --epochs 19 --batch-size 1 --grad-accum "${GRAD_ACCUM}" \
   --lr 2e-4 --embedding-lr 5e-4 --max-length 12000 --max-pixels 100352 \
   --latent-token-count 1 --latent-query-mode generate --lora --lora-r 64 --lora-alpha 128 \
   --no-cache --no-wandb --resume --resume-save-steps 5 --keep-resume-checkpoints 2 \
@@ -213,7 +226,7 @@ from pathlib import Path
 import torch
 
 source, merged, output = map(Path, sys.argv[1:])
-state = torch.load(source / "training_state.pt", map_location="cpu", weights_only=False)
+state = torch.load(source / "training_state.pt", map_location="cpu", weights_only=False, mmap=True)
 if state.get("training_stage") != "format" or not state.get("lora"):
     raise ValueError("selected SFT2 initializer is not an SFT1 LoRA checkpoint")
 if not (merged / "config.json").is_file():

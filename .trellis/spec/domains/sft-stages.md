@@ -64,3 +64,5 @@ stage2需要同观测的真实回答/CoT、完整有序的query slots和冻结DI
 SFT1旧LoRA对照配置为`--lora --lr 2e-4 --embedding-lr 5e-4`；`1e-6/5e-6`来自旧非LoRA全参分支，不得因迁移入口而混用。Stage2配置独立审查。
 
 `run_stage1_fresh_retry.sh`通过ALLOCATION_JOB_ID/WORLD_SIZE/EXPECTED_NODE/REPO/EXPECTED_COMMIT/RUN_ROOT绑定已分配资源。WORLD_SIZE必须整除32，batch1/GA32÷world，完整一轮训练后单卡32样本格式诊断。RUN_ROOT必须新建，不能读取错误低LR旧optimizer状态。节点/GPU数/源码不符、端口占用和已存在输出均拒绝；中断清理本进程组，不自动重提。回归检查覆盖LoRA学习率配对、Stage2不被修改、无旧checkpoint恢复、shell语法及内嵌Python编译。诊断结果而非训练loss单独决定是否修复了格式问题。
+
+续训launcher的`WORLD_SIZE`默认8、`EXPECTED_NODE`默认dgx-56；world必须整除32，GA=32/world，CPU=12×world、内存=60G×world。source仍限定已审查world4/batch1/GA8完整epoch；新run identity固定node/world/GA/LR，不静默接纳缺字段的旧identity。CPU门禁分别执行world4/8真实checkpoint preflight和内嵌Python编译；trainer严格恢复合同保持不变。
