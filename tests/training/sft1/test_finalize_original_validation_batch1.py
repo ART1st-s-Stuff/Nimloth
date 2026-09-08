@@ -66,7 +66,7 @@ def _fixture(tmp_path, monkeypatch):
     for i in range(3):
         _audit(pilot_root, f'node_{i}', 'node_done.flag', world_size=2, tp_size=2)
     for i in range(90):
-        _audit(remainder_root, f'shard_{i:02d}', 'shard_done.flag', world_size=4, tp_size=2)
+        _audit(remainder_root, f'shard_{i:02d}', 'shard_done.flag', world_size=2, tp_size=2)
     for position, row in enumerate(rows):
         root = pilot_root if position < 100 or 1000 <= position < 1100 else remainder_root
         payload = {**row, 'success': position % 2 == 0}
@@ -111,7 +111,7 @@ def test_remainder_launcher_static_contract():
     path = Path('experiments/training/sft1/run_original_validation_batch1_remainder.slurm')
     text = path.read_text()
     for required in ('#SBATCH --nodes=1', '#SBATCH --partition=preempt', '#SBATCH --nodelist=dgx-20',
-                     '#SBATCH --gres=gpu:6', '#SBATCH --cpus-per-task=112',
+                     '#SBATCH --gres=gpu:4', '#SBATCH --cpus-per-task=112',
                      '#SBATCH --mem=360G', '#SBATCH --time=01:30:00', '#SBATCH --array=0-89%1',
                      '#SBATCH --no-requeue', 'tensor_model_parallel_size=2',
                      'data.train_batch_size=20',
@@ -120,7 +120,7 @@ def test_remainder_launcher_static_contract():
                      'actor_rollout_ref.rollout.n=1', 'max_response_length=256',
                      'PREPARED_REMAINDER_DIR', 'shard_done.flag',
                      'ACTUAL_SAMPLING_AUDIT_OK', 'worker_pids',
-                     'trainer.n_gpus_per_node=4', 'rollout_manager.n_gpus_per_node=4',
+                     'trainer.n_gpus_per_node=2', 'rollout_manager.n_gpus_per_node=2',
                      'CUDA_VISIBLE_DEVICES="$ENV_VISIBLE"', 'CUDA_VISIBLE_DEVICES="$MODEL_VISIBLE"',
                      'RAY_TMPDIR="/tmp/nv-${SLURM_JOB_ID}"',
                      "'dataset_split': saved['env_config']['dataset_split']",

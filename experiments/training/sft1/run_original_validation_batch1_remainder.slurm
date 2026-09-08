@@ -6,7 +6,7 @@
 #SBATCH --nodelist=dgx-20
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --gres=gpu:6
+#SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=112
 #SBATCH --mem=360G
 #SBATCH --time=01:30:00
@@ -117,14 +117,14 @@ CMD=("$PY" -m vagen.trainer.main_ppo
   actor_rollout_ref.rollout.enable_chunked_prefill=False actor_rollout_ref.rollout.enforce_eager=True
   actor_rollout_ref.rollout.free_cache_engine=False actor_rollout_ref.rollout.disable_log_stats=False
   +actor_rollout_ref.ref.use_ref=False actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
-  trainer.logger='[console]' trainer.n_gpus_per_node=4 trainer.nnodes=1
+  trainer.logger='[console]' trainer.n_gpus_per_node=2 trainer.nnodes=1
   trainer.val_before_train=True trainer.val_only=True trainer.save_freq=-1 trainer.test_freq=-1
   trainer.total_epochs=1 trainer.total_training_steps=1 trainer.resume_mode=disable
   trainer.val_generations_to_log_to_wandb=0
   "trainer.default_local_dir=${NODE_OUT}/unused_checkpoints"
   "+trainer.original_validation_output_dir=${RUN_OUT}/rollouts"
   rollout_manager.max_turns=20 rollout_manager.window_size=5 rollout_manager.max_trajectory_length=16000
-  rollout_manager.n_gpus_per_node=4
+  rollout_manager.n_gpus_per_node=2
   rollout_manager.n_trajectory=1 rollout_manager.use_service=True
   "rollout_manager.base_url=http://127.0.0.1:${ENV_PORT}"
   rollout_manager.timeout=1200 rollout_manager.max_workers=2 rollout_manager.use_multi_turn_reward=False
@@ -136,10 +136,10 @@ if [[ ${1:-} == --preflight ]]; then
 fi
 [[ ${SLURM_JOB_NUM_NODES:?} == 1 ]]
 IFS=',' read -r -a GPUS <<< "${CUDA_VISIBLE_DEVICES:?}"
-[[ ${#GPUS[@]} == 6 && ${SLURM_CPUS_PER_TASK:?} == 112 ]] || { echo 'Six visible GPUs and 112 CPUs required' >&2; exit 2; }
-printf -v MODEL_VISIBLE '%s,' "${GPUS[@]:0:4}"
+[[ ${#GPUS[@]} == 4 && ${SLURM_CPUS_PER_TASK:?} == 112 ]] || { echo 'Four visible GPUs and 112 CPUs required' >&2; exit 2; }
+printf -v MODEL_VISIBLE '%s,' "${GPUS[@]:0:2}"
 MODEL_VISIBLE=${MODEL_VISIBLE%,}
-printf -v ENV_VISIBLE '%s,' "${GPUS[@]:4:2}"
+printf -v ENV_VISIBLE '%s,' "${GPUS[@]:2:2}"
 ENV_VISIBLE=${ENV_VISIBLE%,}
 mkdir "$NODE_OUT"
 mkdir "${NODE_OUT}/runtime" "${NODE_OUT}/env_home" "${NODE_OUT}/env_home/.ai2thor"
@@ -182,7 +182,7 @@ trap cleanup EXIT
 trap 'exit 143' TERM INT
 {
   date -u --iso-8601=seconds
-  printf 'job=%s node=%s allocated_gpus=%s model_gpus=%s env_gpus=%s model_ranks=4 tp=2 cpus=%s\n' \
+  printf 'job=%s node=%s allocated_gpus=%s model_gpus=%s env_gpus=%s model_ranks=2 tp=2 cpus=%s\n' \
     "$SLURM_JOB_ID" "$SLURM_JOB_NODELIST" "$CUDA_VISIBLE_DEVICES" "$MODEL_VISIBLE" "$ENV_VISIBLE" "$SLURM_CPUS_PER_TASK"
   printf 'nimloth=%s vagen=%s verl=%s\n' "$NIMLOTH_COMMIT" "$VAGEN_COMMIT" "$VERL_COMMIT"
   printf '%q ' "${CMD[@]}"; printf '\n'
@@ -199,15 +199,14 @@ setsid timeout --kill-after=15s 150s env CUDA_VISIBLE_DEVICES="$ENV_VISIBLE" \
 PROBE_PID=$!
 wait "$PROBE_PID"
 PROBE_PID=
-# The environment owns the final two GPUs.  Ray exposes only the first four to
-# the policy, which forms two independent TP2 rollout replicas.
+# The environment owns the final two GPUs. Ray exposes the first two to one TP2 replica.
 setsid env CUDA_VISIBLE_DEVICES="$ENV_VISIBLE" HOME="${NODE_OUT}/env_home" AI2THOR_HOME_ROOT="${NODE_OUT}/env_home" "$PY" -m vagen.server.server \
   "server.port=${ENV_PORT}" use_state_reward=False navigation.max_workers=2 \
   'navigation.devices=[0,1]' > "${NODE_OUT}/environment.log" 2>&1 &
 ENV_PID=$!
 setsid env CUDA_VISIBLE_DEVICES="$MODEL_VISIBLE" "$PY" -m ray.scripts.scripts start --head --block --include-dashboard=false \
   "--node-ip-address=${IP}" "--port=${RAY_PORT}" "--dashboard-port=${DASHBOARD_PORT}" \
-  "--temp-dir=${RAY_TMPDIR}" --num-gpus=4 "--num-cpus=${SLURM_CPUS_PER_TASK}" > "${NODE_OUT}/ray.log" 2>&1 &
+  "--temp-dir=${RAY_TMPDIR}" --num-gpus=2 "--num-cpus=${SLURM_CPUS_PER_TASK}" > "${NODE_OUT}/ray.log" 2>&1 &
 RAY_PID=$!
 printf 'env=%s ray=%s\n' "$ENV_PID" "$RAY_PID" > "${NODE_OUT}/pids.txt"
 "$PY" - "$ENV_PORT" "$IP" "$RAY_PORT" "$ENV_PID" "$RAY_PID" <<'PY'
@@ -228,8 +227,7 @@ POLICY_PID=$!
 printf 'policy=%s\n' "$POLICY_PID" >> "${NODE_OUT}/pids.txt"
 wait "$POLICY_PID"
 POLICY_PID=
-# Derive the sampling audit from the four actual vLLM worker traces.  The
-# resolved driver config alone is insufficient evidence that both TP2 replicas ran.
+# Derive the sampling audit from both actual vLLM worker traces.
 "$PY" - "${NODE_OUT}/validation.log" "${NODE_OUT}/sampling_audit.json" <<'PY'
 import ast
 import json
@@ -254,15 +252,15 @@ for pid, value in kwargs:
     if sample == {'temperature': 0.7, 'top_p': 0.95, 'top_k': -1,
                   'n': 1, 'max_tokens': 256}:
         actual[pid] = sample
-if len(engine_pids) != 4 or set(actual) != engine_pids:
-    raise ValueError(f'expected four matching TP worker traces: engine={engine_pids}, kwargs={set(actual)}')
+if len(engine_pids) != 2 or set(actual) != engine_pids:
+    raise ValueError(f'expected two matching TP worker traces: engine={engine_pids}, kwargs={set(actual)}')
 if "'do_sample': True" not in text:
     raise ValueError('resolved runtime config does not enable sampling')
 audit = {
     'format': 'original_validation_sampling_audit_v1',
     'tensor_parallel_size': 2,
-    'model_world_size': 4,
-    'ranks': [0, 1, 2, 3],
+    'model_world_size': 2,
+    'ranks': [0, 1],
     'worker_pids': sorted(map(int, engine_pids)),
     'sampling': {'do_sample': True, 'temperature': 0.7, 'top_p': 0.95,
                  'top_k': -1, 'n': 1, 'max_tokens': 256, 'seed': None},
