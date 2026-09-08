@@ -19,6 +19,9 @@ def test_stage2_only_launcher_keeps_query_training_contract():
     assert "--latent-token-count 16 --latent-query-mode inject" in text
     assert "--grid-size 4" in text
     assert "--epochs 1" in text
+    assert '"${DINO_CACHE}/train/dino_grid4/manifest.json"' in text
+    assert '"${DINO_CACHE}/val/dino_grid4/manifest.json"' in text
+    assert '"${DINO_CACHE}/manifest.json"' not in text
     assert "validate-stage-checkpoint" in text
     assert "validate-merged" in text
 

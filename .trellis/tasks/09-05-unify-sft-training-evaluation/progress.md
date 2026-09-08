@@ -251,3 +251,11 @@ world4/batch1/GA8、K16 inject、4x4 grid、lr1e-6/embedding lr5e-6；只训练�
 导出 `stage2_for_evaluation`，不启动 rollout。启动前检查发现旧 pipeline 测试仍
 错误要求 SFT1 使用低学习率，已改为分别断言 SFT1 2e-4/5e-4 与 SFT2
 1e-6/5e-6；相关17项测试通过，Ruff、shell语法和 diff check 通过。
+
+已提交 Stage2 hold 561674，目标 dgx-22、4GPU/48CPU/240G、6h、no-requeue；
+当前因 Priority 排队，尚未启动训练。远程源码已同步到 0bf9a4e6。登录节点预检
+发现真实 DINO 缓存没有根目录 `manifest.json`，而 train/val 各自的
+`dino_grid4/manifest.json` 均存在；Stage2 入口原门禁会在拿到 GPU 后误报失败。
+已改为检查两个实际 split manifest，并加入静态合同；17项相关测试、Ruff、shell
+语法与 diff check 通过。修复提交同步后，待 561674 实际 RUNNING 才在该 allocation
+内启动训练，不另提重复 hold。

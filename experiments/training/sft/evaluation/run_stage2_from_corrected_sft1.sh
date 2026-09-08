@@ -44,7 +44,11 @@ IFS=',' read -r -a GPU_TOKENS <<<"${CUDA_VISIBLE_DEVICES:-}"
 [[ -f "${SELECTED}" && -f "${STAGE1_MERGED}/config.json" ]] || {
   echo "selected corrected SFT1 initializer is incomplete" >&2; exit 2;
 }
-[[ -f "${DINO_CACHE}/manifest.json" ]] || { echo "DINO cache manifest is missing" >&2; exit 2; }
+for manifest in \
+  "${DINO_CACHE}/train/dino_grid4/manifest.json" \
+  "${DINO_CACHE}/val/dino_grid4/manifest.json"; do
+  [[ -f "${manifest}" ]] || { echo "DINO cache manifest is missing: ${manifest}" >&2; exit 2; }
+done
 
 export PYTHONPATH=${REPO}/src:${REPO}:${REPO}/external/VAGEN:${REPO}/external/VAGEN/verl:${REPO}/external/le-wm
 export PATH=/project/peilab/atst/nimloth/.venv-vagen-main/bin:${PATH}
