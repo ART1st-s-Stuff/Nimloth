@@ -122,6 +122,7 @@ def test_remainder_launcher_static_contract():
                      'ACTUAL_SAMPLING_AUDIT_OK', 'worker_pids',
                      'trainer.n_gpus_per_node=2', 'rollout_manager.n_gpus_per_node=2',
                      'CUDA_VISIBLE_DEVICES="$ENV_VISIBLE"', 'CUDA_VISIBLE_DEVICES="$MODEL_VISIBLE"',
+                     'TORCHINDUCTOR_DISABLE=1 TORCH_COMPILE_DISABLE=1 TORCHDYNAMO_DISABLE=1',
                      'RAY_TMPDIR="/tmp/nv-${SLURM_JOB_ID}"',
                      "'dataset_split': saved['env_config']['dataset_split']",
                      "identity_keys = ('source_index', 'source_key', 'dataset_split', 'eval_set')",
