@@ -138,3 +138,35 @@ SSH详细诊断确认宿主agent的 `art1st@ART1st-NixOS` 密钥被vpn-vm接受�
 在已核验8GPU allocation560589内通过srun启动step560589.0，登录节点launcher PID785687。输出为 `/project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluation/20260908T074500Z_dgx56_world8_7842e88e`，外层日志为同路径加`.launch.log`。参数world8/batch1/GA4、额外19轮、patience3/min_delta0.001、每5steps保存且保留最近2点，新段epoch保留latest/best。不自动重排，SFT2仅准备。
 
 heartbeat `dgx-56-sft1` 每5分钟监控；正常进展安静，失败/完成/抢占通知并记录。运行结束需清理本task进程并释放精确hold560589，避免sleep空占；不得取消其他作业。首次核验step RUNNING，尚处来源checkpoint预检，不能宣称已完成optimizer更新。
+
+### 2026-09-08 08:14 UTC监控连接未返回
+
+08:09 UTC最近一次成功查询：allocation560589和step560589.0均RUNNING于dgx-56，已完成epoch2/global_step33，train_loss5.461809873580933。08:14 UTC heartbeat的SSH查询超过约90秒仍未返回调度或训练数据，仅出现代理主机known-host提示；已终止本次本地查询PID1936182及其代理1936183，未操作远程训练。当前状态未知，不能据此判定训练停止。请人类核查VPN/连接；恢复连接后先刷新精确job状态，不自动重提。监控理由仍有效，保留automation。
+
+### 2026-09-08 08:18 UTC连接恢复
+
+人类重连VPN后，SSH成功返回。allocation560589和step560589.0均RUNNING于dgx-56，训练未因本地连接中断而停止。已到epoch3/global_step44；epoch2/step40验证val_loss5.277740478515625（来源epoch1为5.593027114868164），format_correct_rate0.0，segment_bad_epochs0，early_stopping=false，best指向epoch_002。无controller_exit或SFT2选择产物，继续既定监控；该离线loss改善不等同于held-out rollout质量提升。
+
+### 2026-09-08 08:43 UTC验证趋势与Stage2条件授权
+
+人类明确批准：检查val_loss，若已收敛可开始Stage2。当前epoch2/3/4的val_loss分别为5.277740478515625、4.343783378601074、3.5164287090301514，最近一轮下降约19.0%，segment_bad_epochs=0，early_stopping=false；已进入epoch5/step81，尚未收敛，继续SFT1。格式正确率仍为0，未完成held-out rollout评估。沿用连续3轮改善不足0.001的操作性早停判据。heartbeat已更新条件授权：只有达到判据且训练、最佳checkpoint导出成功，才核验既有Stage2完整启动合同与资源后启动；不能将预算上限/抢占当收敛，不自动重提或扩大预算。
+
+### 2026-09-08 08:54 UTC抢占终态
+
+实时sacct确认560589归属csejzhang、dgx-56，终态PREEMPTED（集群时间16:53:41）；step560589.0于16:48:24收到Slurm CANCELLED/SIGTERM，16:48:27结束FAILED/15:0。controller_exit为exit_code143、interrupted=false、automatic_requeue=false；interrupted标记不覆盖调度器抢占证据。日志最后更新epoch5/step94，未收敛；最近完整验证epoch4/step80 val_loss3.5164287090301514、format_correct_rate0。best -> epoch_004，COMMITTED确认epoch4/step80。最新周期恢复点resume_step_00000090/COMMITTED确认step90，另保留step85；step91–94未形成可恢复提交。精确路径为当前20260908T074500Z_dgx56_world8_7842e88e/stage1_continuation/resume_step_00000090。将来恢复应使用同源码与原参数/身份、world8/batch1/GA4，原output-dir和--resume，从已有周期点恢复，而不是另建scheduler segment。
+
+squeue无allocation或step，登录launcher PID785687已退出，资源已由Slurm释放，无需再scancel；未触碰其他job。未生成final或selected_for_sft2.json，未完成合并导出、未启动Stage2。按既定边界不自动重提；等待人类决定恢复。监控理由已结束，删除heartbeat dgx-56-sft1。
+
+### 2026-09-08 格式0%只读诊断
+
+远程仅输出聚合统计（没有传出私有样本正文）。first32 val首个assistant：原始K8文本62 tokens、原始K1 regex 0/32；按运行实际normalize_latent_state_blocks归一化到K1后全部12 tokens、regex 32/32。因此原始K8 regex失败不是运行时错误；参考长度不支持将128-token上限作为0%的主要解释，但实际自由生成是否截断仍未知。32条首轮thought均为同一13字符内容，非空且非省略号；并非保留各样本不同的完整observation/reasoning/prediction思考。前32轨迹的val497/train393个assistant均有think、latent及action标记，首轮prompt包含新格式说明，无旧answer/action标记。该抽样证据不外推全数据。
+
+基础生成配置eos=[151645,151643]、repetition_penalty1.05，evaluate_format明确do_sample=False，128token；无强制提前结束的额外配置证据。独立只读审查确认生成调用保留PEFT，skip_special_tokens=False，train/eval共用processor和K1归一化，未发现明确格式判定/adapter绕过缺陷。现有日志只有标量，没有实际生成ids/text、结束原因和失败分类，故根因尚不能确定。要区分提前EOS、延续旧格式、特殊token遗漏、长生成截断，应对保留的epoch_004在真实GPU上做小样本生成诊断，仅输出失败分类、token长度和标记计数；不能把该未来诊断或loss下降冒充已得到生成证据。本轮未修改代码或启动GPU任务。
+
+### 2026-09-08 人类暂停训练并批准生成诊断
+
+当前无用户运行中Slurm job，560589维持PREEMPTED；暂停训练及Stage2推进。诊断只读epoch_004 adapter和原global_step79 base、旧val_all前32条，单卡/12CPU/64G，预算最多1小时（含模型读取与原128-token greedy、参考思考条件动作生成、teacher-forced目标概率）。只执行一次诊断，不训练，不修改checkpoint。候选dgx-55 preempt可用1卡；先申请受限hold，实际诊断代码完成审查并提交同步后才启动srun。所有结构指标保存在新的专属输出目录，不打印私有数据正文。完成或失败后核验并释放精确hold；不自动重提。当前代码基准7842e88e，诊断提交及完整命令启动前补录。
+
+已提交诊断hold560830，dgx-55，1GPU/12CPU/64G，preempt_qos，no-requeue，运行上限1h。代码准备阶段，尚未启动GPU诊断。Slurm输出 /project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluation/format-diagnose-hold-560830.log。
+
+诊断脚本及独立审核完成：新增diagnose_stage1_format.py和2项分类/终止测试；复用严格adapter恢复、原128token greedy，teacher单位仅首个assistant。Ruff/help/diff及2测试通过。诊断输出固定为 /project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluation/20260908T093000Z_format560830；base/val/epoch004沿用上文来源，参数max-samples32 max-new-tokens128 max-length12000 max-pixels100352 min-pixels3136 latent-token-count1 attn-implementation sdpa。解释器.venv-vagen-main/bin/python3，PYTHONPATH含taskWT/src、taskWT、VAGEN、verl，offline模式，无训练。通过srun --jobid560830 --nodes1 --ntasks1 --gres=gpu:1 --cpus-per-task12 --mem64G运行；实际提交hash同步后补录。

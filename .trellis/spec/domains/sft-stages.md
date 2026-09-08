@@ -48,3 +48,13 @@ stage2需要同观测的真实回答/CoT、完整有序的query slots和冻结DI
 5. 情形：world4/batch1/GA8完整epoch可开启world8/batch1/GA4新段；mid-epoch不能借新段跳过同world恢复限制。patience衡量离线val_loss停滞，不证明held-out质量收敛。
 6. 验证：源LR为0而新段发生有效更新；moments保留；patience保存/恢复；拓扑变化保持batch；旧默认保存行为保留；retention不得越过新输出目录；PEFT两个别名数值不同时必须导出训练副本。
 7. 错误与正确：错误是放宽普通resume identity或以零LR继续；正确是显式新段记录来源，并对同段恢复继续严格校验。
+
+## SFT1只读格式诊断
+
+1. 范围：标量格式正确率异常时，检查相同首轮生成单位，不修改训练和checkpoint。
+2. 入口：`experiments/training/sft/evaluation/diagnose_stage1_format.py --model BASE --adapter CKPT --val-jsonl VAL --output-dir NEW`，默认32样本、128生成token、K1。
+3. 合同：复用训练词表与严格adapter恢复；分别报告自由生成、参考thought条件动作生成、首个assistant的teacher-forcing。仅输出结构、类别、概率和运行身份，增量写samples.jsonl。
+4. 错误：无GPU、非正预算、输出目录已存在、词表不同、adapter roundtrip不符、teacher目标截断均失败。
+5. 情形：目标参考通过而自由生成不通过时，查看EOS/长度/marker分类；条件动作通过不能替代自由生成通过。
+6. 验证：有效格式、仅动作、缺失闭合marker分类；EOS与长度上限独立计数；诊断结果不包含私有文本。
+7. 错误与正确：参考文本短不能证明实际生成未截断；必须读取本次生成结构证据。离线loss不代替自由生成格式证据。
