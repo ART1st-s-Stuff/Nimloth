@@ -170,3 +170,27 @@ squeue无allocation或step，登录launcher PID785687已退出，资源已由Slu
 已提交诊断hold560830，dgx-55，1GPU/12CPU/64G，preempt_qos，no-requeue，运行上限1h。代码准备阶段，尚未启动GPU诊断。Slurm输出 /project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluation/format-diagnose-hold-560830.log。
 
 诊断脚本及独立审核完成：新增diagnose_stage1_format.py和2项分类/终止测试；复用严格adapter恢复、原128token greedy，teacher单位仅首个assistant。Ruff/help/diff及2测试通过。诊断输出固定为 /project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluation/20260908T093000Z_format560830；base/val/epoch004沿用上文来源，参数max-samples32 max-new-tokens128 max-length12000 max-pixels100352 min-pixels3136 latent-token-count1 attn-implementation sdpa。解释器.venv-vagen-main/bin/python3，PYTHONPATH含taskWT/src、taskWT、VAGEN、verl，offline模式，无训练。通过srun --jobid560830 --nodes1 --ntasks1 --gres=gpu:1 --cpus-per-task12 --mem64G运行；实际提交hash同步后补录。
+
+诊断已启动：2026-09-08 09:30 UTC，allocation560830内单卡srun，launcher PID1069599。远程clean commit cf9da5622447a2e0c5b10943790592c26742b6c1，脚本SHA256 ce4585c9494fabedcd7dfa47e4b63423cbc8bc8e6a15c922ec480c236ab46847。输出20260908T093000Z_format560830，日志同路径加.launch.log；命令参数与上文完整合同一致。hold提交09:24:32 UTC、运行09:24:43，包含排队的截止10:24:32 UTC。heartbeat sft-560830已建立；诊断完成后分析samples.jsonl/summary.json，核验step/launcher退出，释放精确560830。训练与Stage2仍暂停。
+
+### 2026-09-08 09:37 UTC格式诊断完成
+
+560830.0 COMPLETED/0:0，运行1分6秒，32样本全部完成（samples.jsonl 96条阶段记录）。自由生成0/32通过；全部10–15token内EOS结束，0条触及128token上限；32条都有think开闭标记，但latent/action_start/action_end/数字动作token均未生成。给定reference thought+latent条件后仍0/32动作格式通过，全部3token内EOS，未生成任何动作标记。该证据确认本次0%源于缺失latent/action格式，而非长度截断。
+
+Teacher forcing同首轮目标共448tokens，top1正确227（50.67%）；32/32的latent、action_start、action token、action_end目标均非top1，平均目标概率分别4.6116e-6、1.0448e-6、1.1536e-11、8.1918e-8。多数普通文本位置可预测。因条件动作也失败，问题不只是自由思考内容偏离；当前checkpoint未可靠预测新增latent/action符号。此处仍未确定为何这些符号未学会（训练权重/梯度/损失/恢复路径需进一步定位），不能宣称已证明具体训练bug。
+
+登录launcher1069599已退出，无GPU step运行，仅batch sleep残留。身份复核后scancel精确hold560830，sacct确认allocation CANCELLED by3738、batch CANCELLED、诊断step仍COMPLETED/0:0。资源释放不覆盖诊断成功结论。训练和Stage2保持暂停。删除监控sft-560830。
+
+### 2026-09-08 训练配置回归审查
+
+人类指出旧SFT1使用同批数据，要求优先检查本次训练流程。独立比对迁移前ed7a1f16^和当前旧train_8gpu.slurm：LoRA分支原本lr2e-4/embedding_lr5e-4，非LoRA embedlr分支才是1e-6/5e-6。新run_step79_stage1_stage2_eval.sh:278与run_stage1_continuation_dgx56.sh:173错误组合LoRA和全参分支低LR，低200倍/100倍。该配置回归由本次实验启动方案引入，已确认；旧成功run实际参数及唯一因果未完全核验。主体modules_to_save、optimizer requires_grad筛选、DDP/梯度累积、验证后model.train与旧源码一致，未发现冻结/评估模式遗留的迁移错误。
+
+远程只读比较epoch1与epoch4的最后11个新增token行：lm_head BF16共22528元素，3375变化（约15%），max_abs5.8746e-4、mean_abs2.8206e-5；embed_tokens BF16同22528元素，2928变化（约13%），max_abs5.1117e-4、mean_abs2.5250e-5。因此不能说这些参数完全冻结/完全没更新，但BF16低LR存在舍入风险；尚未通过对照实验证明该风险的因果份额。本轮未修参数或启动训练，保持暂停；后续应修正LoRA实验配置并验证新增token的实际梯度/更新及自由生成，而不是继续以总val_loss下降作为放行证据。
+
+### 2026-09-08 修正LoRA配置后重试授权
+
+人类批准修复并重试。Stage1统一使用原LoRA配置lr2e-4/embedding_lr5e-4，独立新输出从原global_step79基础checkpoint重新训练一轮，沿用旧train_success/val_all、K1 generate、LoRAr64/alpha128、maxlen12000/maxpixels100352。随后对epoch001做相同32样本结构诊断，不启动Stage2。当前无可用整8卡节点（dgx04 down），dgx22空6卡；申请4卡/48CPU/240G，world4/batch1/GA8保持effective batch32，2小时总预算含准备/排队，单次重试、no-requeue。失败/抢占不自动重提，结束后释放精确hold。新训练起点不使用错误低LR模型或optimizer状态，避免混淆对照；保留旧产物只读。启动前记录最终代码和完整命令并完成独立检查。
+
+已申请重试hold560944（dgx22），监控sft1-560944已创建。训练仍未启动，等待修复独立审核和远程同步。其他用户任务560920_4/560921_5不属于本次重试，禁止取消或干扰。
+
+重试完整启动合同：ALLOCATION_JOB_ID=560944 WORLD_SIZE=4 EXPECTED_NODE=dgx-22 REPO=/project/peilab/atst/nimloth/.worktree/unify-sft-training-evaluation EXPECTED_COMMIT=本次审核提交 RUN_ROOT=/project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluation/20260908T095000Z_lora_lr_retry560944 bash $REPO/experiments/training/sft/evaluation/run_stage1_fresh_retry.sh。源码入口绑定上文旧base/data，单轮4GPU48CPU240G，K1 generate、LoRA r64 alpha128、lr2e-4/embed5e-4，batch1/GA8、maxlen12000/maxpixels100352、每5步checkpoint保留2，无cache/W&B/Stage2。成功后epoch001单卡32/128诊断；不导出模型、不改旧产物。hold提交09:44:49 UTC，排队+运行截止11:44:49 UTC；监控sft1-560944。

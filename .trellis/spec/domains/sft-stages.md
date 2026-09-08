@@ -58,3 +58,9 @@ stage2需要同观测的真实回答/CoT、完整有序的query slots和冻结DI
 5. 情形：目标参考通过而自由生成不通过时，查看EOS/长度/marker分类；条件动作通过不能替代自由生成通过。
 6. 验证：有效格式、仅动作、缺失闭合marker分类；EOS与长度上限独立计数；诊断结果不包含私有文本。
 7. 错误与正确：参考文本短不能证明实际生成未截断；必须读取本次生成结构证据。离线loss不代替自由生成格式证据。
+
+## SFT1 LoRA重试启动合同
+
+SFT1旧LoRA对照配置为`--lora --lr 2e-4 --embedding-lr 5e-4`；`1e-6/5e-6`来自旧非LoRA全参分支，不得因迁移入口而混用。Stage2配置独立审查。
+
+`run_stage1_fresh_retry.sh`通过ALLOCATION_JOB_ID/WORLD_SIZE/EXPECTED_NODE/REPO/EXPECTED_COMMIT/RUN_ROOT绑定已分配资源。WORLD_SIZE必须整除32，batch1/GA32÷world，完整一轮训练后单卡32样本格式诊断。RUN_ROOT必须新建，不能读取错误低LR旧optimizer状态。节点/GPU数/源码不符、端口占用和已存在输出均拒绝；中断清理本进程组，不自动重提。回归检查覆盖LoRA学习率配对、Stage2不被修改、无旧checkpoint恢复、shell语法及内嵌Python编译。诊断结果而非训练loss单独决定是否修复了格式问题。

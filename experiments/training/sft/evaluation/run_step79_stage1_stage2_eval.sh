@@ -275,7 +275,7 @@ if ! "${PYTHON}" -m "${CONTRACT_MODULE}" validate-stage-checkpoint \
     -m nimloth.training.sft.stage1 \
     --model "${SOURCE_CHECKPOINT}" --train-jsonl "${TRAIN_JSONL}" --val-jsonl "${VAL_JSONL}" \
     --output-dir "${STAGE1_OUT}" --epochs 1 --batch-size 1 --grad-accum 8 \
-    --lr 1e-6 --embedding-lr 5e-6 --max-length 12000 --max-pixels 100352 \
+    --lr 2e-4 --embedding-lr 5e-4 --max-length 12000 --max-pixels 100352 \
     --latent-token-count 1 --latent-query-mode generate \
     --lora --lora-r 64 --lora-alpha 128 --no-cache --no-wandb --resume --resume-save-steps 5 \
     2>&1 | tee -a "${RUN_ROOT}/stage1_train.log"; then
