@@ -31,3 +31,8 @@ sbatch --export=ALL,REPO=/path/to/clean/worktree,EXPECTED_COMMIT=<nimloth>,EXPEC
 ```
 
 W&B 被禁用。输出用于检查近期代码变化，不自动作为后续训练的初始化依据。
+
+已完成并选定 SFT1 初始化后，使用 `run_stage2_from_corrected_sft1.sh`。该入口只
+执行一轮 query/DINO SFT2、校验 epoch checkpoint 并导出完整 HF 模型；它要求显式的
+Slurm allocation、SFT1 输出根和新的 Stage2 输出目录，因此不会重跑 SFT1 或启动
+rollout 评估。

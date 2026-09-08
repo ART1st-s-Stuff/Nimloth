@@ -212,3 +212,31 @@ Teacher forcing同首轮目标共448tokens，top1正确227（50.67%）；32/32�
 人类要求继续训练。从修复成功run20260908T095000Z_lora_lr_retry560944/stage1/epoch_001（epoch1/step20、val0.0810356、format32/32）保留模型和optimizer moments开启显式新scheduler段，恢复正LR2e-4/embed5e-4。旧一轮cosine已到0，不直接沿用零LR。沿用旧数据/目标、world4/batch1/GA8保持effective32；dgx22目前空4卡，申请4GPU48CPU240G、6h no-requeue；最多额外19轮、val_loss patience3/min_delta0.001或抢占停止，预算上限不等于收敛。不启动Stage2。需先占hold，再审核可配置节点/world的现有continuation脚本并提交同步。其他用户数组job不属于本task。
 
 已申请hold561111（dgx22，4GPU48CPU240G），监控sft1-561111已建立。成功来源checkpoint实际读取确认epoch1/step20/world4/GA8、lr身份2e-4/5e-4、optimizer当前LR0、initial_lr2e-4/5e-4，旧dataset SHA身份匹配。新输出 /project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluation/20260908T102500Z_corrected_cont561111。完整启动：ALLOCATION_JOB_ID=561111 WORLD_SIZE=4 EXPECTED_NODE=dgx-22 REPO=/project/peilab/atst/nimloth/.worktree/unify-sft-training-evaluation EXPECTED_COMMIT=最终审核提交 SOURCE_EPOCH=/project/peilab/atst/nimloth/outputs/experiments/training/sft/evaluation/20260908T095000Z_lora_lr_retry560944/stage1/epoch_001 RUN_ROOT=上述新输出 bash $REPO/experiments/training/sft/evaluation/run_stage1_continuation_dgx56.sh。参数沿用已审查脚本：19额外epoch、patience3/min_delta0.001、periodic5 retain2、best/final和最佳模型导出；只准备SFT2初始化，不启动SFT2。
+
+续训已于10:24 UTC启动561111，launcher1282079，远程clean commit eab8845a820b13aed4f7616f94052c2d9982cbf0。独立审核13项定向检查及新增allocation guard后5项launcher检查通过，shell/inline编译与Ruff通过。输出20260908T102500Z_corrected_cont561111，日志同路径.launch.log，参数与上文合同一致。hold提交10:20:11 UTC，运行10:20:14，截止16:20:14 UTC（6h）；监控sft1-561111。结束需核验清理后释放精确hold，不触碰其他数组job；Stage2不启动。
+
+### 2026-09-08 11:00 UTC 正确学习率续训完成
+
+561111.0 COMPLETED/0:0，运行1小时38分35秒；controller_exit=0、未被中断或自动重排。显式续训段在epoch2–6、step40–120完成5个完整验证点：val_loss依次为0.0683322、0.0562107、0.0788642、0.1038371、0.0626575；格式率均为1.0。相对epoch3最佳值0.0562107，后续epoch4–6连续三轮未改善至少0.001，segment_bad_epochs=3、early_stopping=true，满足事先约定的操作性早停判据；不是held-out导航质量结论。best稳定指向epoch_003/step60，final指向epoch_006/step120；最佳adapter已合并为stage1_for_sft2并写入selected_for_sft2.json，但Stage2未启动。
+
+只剩batch sleep hold、无GPU step或launcher进程；核验job归属后scancel精确561111，sacct确认allocation/batch因释放而CANCELLED，训练step保持COMPLETED。保留epoch_003最佳checkpoint、epoch_006最终checkpoint及step120/115恢复点；删除监控sft1-561111。后续是否启动Stage2或评估，需要人类明确决定。
+
+### 2026-09-08 Stage2 启动准备
+
+人类要求准备启动 Stage2。已固定输入为上述 SFT1 epoch_003 的
+`selected_for_sft2.json` 与 `stage1_for_sft2` 完整导出，目标为一轮 query/DINO
+SFT2：world4、batch1、GA8（有效 batch32）、K16 inject、4x4 DINO grid、LoRA
+r64/alpha128、lr1e-6/embedding lr5e-6。后两项学习率是原两阶段验证合同中特意为
+query stage 指定的参数，不是先前 SFT1 的低学习率回归。
+
+新增仅执行 Stage2 的 Slurm-allocation 入口
+`run_stage2_from_corrected_sft1.sh`：绑定所选 epoch3、干净固定commit、dgx-22、
+DINO manifest、rank mapping 与新的 run identity；训练完成后校验 query checkpoint
+并导出 `stage2_for_evaluation`，不重跑 SFT1、不启动 rollout。shell 语法、内嵌
+Python 编译、diff check 和对应静态合同均通过；当前本机没有可用 pytest 安装，故
+没有将该环境缺失误报为测试通过。
+
+本次远端刷新通过项目 SSH 入口被 `Permission denied (publickey)` 拒绝，尚无法
+确认 dgx-22 资源、同步新commit或提交 Stage2；这只是当前连接认证失败，不推断
+人类撤销认证，也没有申请或修改任何 Slurm job。连接恢复后应先刷新资源与远端
+worktree，再同步并执行真实输入加载预检，最后才提交allocation。
