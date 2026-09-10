@@ -1,5 +1,6 @@
 """Real-model longest-sample capacity check, not a model-quality experiment."""
 import argparse
+import faulthandler
 import json
 from pathlib import Path
 
@@ -30,6 +31,7 @@ def main():
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--cache-root', type=Path, required=True)
     args = parser.parse_args()
+    faulthandler.dump_traceback_later(180, repeat=True)
     rank, world, _, device = setup_dist()
     assert world == 8
     if rank == 0:
@@ -43,6 +45,7 @@ def main():
         selected[0] = str(max(paths, key=lambda p: torch.load(
             p, map_location='cpu', weights_only=True, mmap=True)['input_ids'].numel()))
     dist.broadcast_object_list(selected, src=0)
+    print(json.dumps({'rank': rank, 'phase': 'load_longest', 'sample': selected[0]}), flush=True)
     sample = torch.load(selected[0], map_location='cpu', weights_only=True)
     model_path = '/mnt/nimloth/checkpoint/hf_actor'
     processor = AutoProcessor.from_pretrained(model_path)
@@ -88,12 +91,15 @@ def main():
         print(json.dumps({'rank': rank, 'step': step+1, 'loss': total}), flush=True)
     validation_path = Path('/mnt/nimloth/outputs/datasets/sft1-vagen-step60/'
         '20260910T093222Z_batch1_original_validation_k16/sft1_heldout_all.jsonl')
+    print(json.dumps({'rank': rank, 'phase': 'format_generation'}), flush=True)
     evaluate_format(model, processor, NimlothVLSFTDataset(validation_path, processor,
                     max_records=1), device, max_samples=1)
+    print(json.dumps({'rank': rank, 'phase': 'checkpoint_export'}), flush=True)
     save_checkpoint(model, processor, args.output_dir, 'epoch_001', optimizer,
                     step=2, epoch=1, lora=True, base_model_path=Path(model_path))
     dist.barrier()
     if rank == 0:
+        print(json.dumps({'rank': rank, 'phase': 'verify_adapter_reload'}), flush=True)
         restored = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             model_path, torch_dtype=torch.bfloat16, attn_implementation='eager')
         prepare_query_vocabulary(restored, len(processor.tokenizer),
@@ -119,6 +125,7 @@ def main():
             'scope': 'capacity only; repeated longest sample, not validation quality',
         }, indent=2)+'\n')
     cleanup_dist()
+    faulthandler.cancel_dump_traceback_later()
 
 
 if __name__ == '__main__':

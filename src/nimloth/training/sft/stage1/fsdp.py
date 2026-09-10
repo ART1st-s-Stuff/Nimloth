@@ -1,7 +1,10 @@
 """Optional format-stage full sharding and portable full checkpoint state."""
+import copy
+import random
 from contextlib import contextmanager
 from functools import partial
 
+import numpy as np
 import torch
 from torch.distributed.fsdp import (
     FullOptimStateDictConfig,
@@ -106,3 +109,53 @@ def clip_grad_norm(model, max_norm):
     for gradient in gradients:
         gradient.mul_(scale.to(gradient.dtype))
     return norm
+
+
+@contextmanager
+def _preserve_serialization_rng():
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    devices = [torch.cuda.current_device()] if torch.cuda.is_available() else []
+    try:
+        with torch.random.fork_rng(devices=devices):
+            yield
+    finally:
+        random.setstate(python_state)
+        np.random.set_state(numpy_state)
+
+
+def save_full_pretrained(module, path, full_weights):
+    """Serialize full tensors through real unsharded HF/PEFT meta topology.
+
+    PEFT calls modules_to_save.state_dict() even when given a full state dict.
+    Calling it on live nested FSDP modules from rank zero would deadlock. The
+    meta model supplies only architecture/key metadata; every saved value must
+    come from the already collectively gathered full CPU state.
+    """
+    with _preserve_serialization_rng():
+        _save_full_pretrained(module, path, full_weights)
+
+
+def _save_full_pretrained(module, path, full_weights):
+    from peft import get_peft_model
+
+    config = copy.deepcopy(module.config)
+    is_peft = hasattr(module, "peft_config")
+    if is_peft and set(module.peft_config) != {"default"}:
+        raise ValueError("FSDP export supports the stage1 default adapter only")
+    model_type = type(module.get_base_model()) if is_peft else type(module)
+    with torch.device("meta"):
+        export = model_type(config)
+        if is_peft:
+            export = get_peft_model(export, copy.deepcopy(module.peft_config["default"]))
+    expected = export.state_dict()
+    if set(expected) != set(full_weights):
+        raise ValueError(
+            "FSDP full export topology mismatch: "
+            f"missing={sorted(set(expected) - set(full_weights))[:5]} "
+            f"unexpected={sorted(set(full_weights) - set(expected))[:5]}"
+        )
+    for key, tensor in full_weights.items():
+        if tensor.is_meta or tensor.shape != expected[key].shape:
+            raise ValueError(f"FSDP full export tensor is incomplete: {key}")
+    export.save_pretrained(path, safe_serialization=True, state_dict=full_weights)

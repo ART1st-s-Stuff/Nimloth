@@ -3,6 +3,7 @@
 Real NCCL/FSDP/PEFT GPU test; never collected as a CPU proxy for GPU correctness.
 """
 import argparse
+import faulthandler
 import json
 import os
 from pathlib import Path
@@ -34,6 +35,8 @@ class TestProcessor:
 
 
 def main():
+    faulthandler.enable()
+    faulthandler.dump_traceback_later(120, repeat=True)
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", type=Path, required=True)
     args = parser.parse_args()
@@ -62,6 +65,7 @@ def main():
         scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
         return model, optimizer, scheduler
 
+    print(f"rank={rank} phase=construct", flush=True)
     model, optimizer, scheduler = construct()
     inputs = torch.arange(16, device=device).unsqueeze(0)
 
@@ -81,6 +85,7 @@ def main():
         return float(loss.detach())
 
     step(model, optimizer, scheduler)
+    print(f"rank={rank} phase=save_resume", flush=True)
     checkpoint = save_resume_checkpoint(model, TestProcessor(), args.output_dir,
         optimizer=optimizer, scheduler=scheduler, global_step=1, epoch=1,
         next_micro_batch=2, best_val=1.0, identity={"test": "fsdp"},
@@ -88,10 +93,12 @@ def main():
         latent_token_count=None, mask_latent_query_labels=None, latent_query_mode=None,
         convergence_state={"test": "preserved"})
     state = torch.load(checkpoint / "training_state.pt", weights_only=False, map_location="cpu")
+    print(f"rank={rank} phase=reference_update", flush=True)
     expected_loss = step(model, optimizer, scheduler)
     expected, expected_optim = checkpoint_state(model, optimizer)
     del model, optimizer, scheduler
     torch.cuda.empty_cache()
+    print(f"rank={rank} phase=restore", flush=True)
     model, optimizer, scheduler = construct(checkpoint)
     load_optimizer_state(model, optimizer, state["optimizer"])
     scheduler.load_state_dict(state["scheduler"])
@@ -105,11 +112,13 @@ def main():
         for key, values in expected_optim["state"].items():
             for field, value in values.items():
                 torch.testing.assert_close(actual_optim["state"][key][field], value, rtol=0, atol=0)
+    print(f"rank={rank} phase=generation", flush=True)
     model.eval()
     with torch.no_grad(), generation_model(model) as generation:
         generated = generation.generate(input_ids=inputs, max_new_tokens=3,
                                         do_sample=False, synced_gpus=True)
     assert generated.shape[1] > inputs.shape[1]
+    print(f"rank={rank} phase=epoch_save", flush=True)
     save_checkpoint(model, TestProcessor(), args.output_dir, "epoch_001", optimizer,
                     scheduler, step=2, epoch=1, lora=True)
     dist.barrier()
@@ -117,6 +126,7 @@ def main():
         (args.output_dir / "PASSED.json").write_text(json.dumps({
             "world_size": dist.get_world_size(), "loss": actual_loss,
             "exact_resume": True, "generation": True, "epoch_export": True}) + "\n")
+    faulthandler.cancel_dump_traceback_later()
     dist.destroy_process_group()
 
 

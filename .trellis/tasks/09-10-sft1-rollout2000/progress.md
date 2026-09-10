@@ -59,3 +59,6 @@ run=20260910T115929Z_format_only_converge，controller PID529832，preprocess PI
 ## FSDP实施与远程验收准备
 用户已明确批准FSDP方案，现stage1显式--distributed-strategy fsdp；FULL_SHARD/use_orig_params，混合精度参数分开leaf包装，冻结共享embedding/head保留共同root所有权，可训练副本各自分片。全rank状态聚合/格式生成，优化器分片恢复及全局梯度裁剪。默认DDP和stage2保留。
 当前58 CPUtests+10subtests通过，Ruff/compile/shell/diff通过。真实检查入口research/run_fsdp_gate.py COMMIT UNIQUE_OUTPUT：单机8rank/NCCL，总900秒deadline并终止准确ownedgroup；先tests/integration/sft1_fsdp_roundtrip.py测试真实PEFT下一步exact resume/生成/epoch导出，再research/fsdp_capacity_probe.py实际初始化原Qwen模型，对最长1709traincache样本作2optimizersteps、每步8累积，视觉LoRA梯度非零，真实format生成1样本、实际checkpoint导出并CPU重新加载验证。两项预计<10min，属于已批准FSDP修复的有限验收，不算模型质量。source/data/model/参数保持之前核验身份，输出新建fsdp_gate目录。完成后才能重新正式训练。
+
+## FSDP gate 123938保存同步阻塞
+远程commitb96293a0，gate /mnt/nimloth/outputs/experiments/sft1-rollout2000/20260910T123938Z_fsdp_gate，controller534483，8rank group534491。tiny真实PEFT已到resume_step临时目录README创建，保存阶段collective阻塞，无成功marker。读取实际peft0.20 ModulesToSaveWrapper.adapter_state_dict发现即使提供fullstate仍调用子模块.state_dict()，rank0触发嵌套FSDP集合同步，其他rank在barrier。已核验命令与PGID并SIGTERM准确group534491，未进入capacity/正式训练。修复所有PEFT导出路径后再跑有限门禁；不将本次当保存成功。

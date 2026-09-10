@@ -15,7 +15,7 @@ import torch
 import torch.distributed as dist
 
 from .distributed import is_main
-from .fsdp import checkpoint_state
+from .fsdp import checkpoint_state, save_full_pretrained
 
 if TYPE_CHECKING:
     from transformers import AutoProcessor
@@ -154,7 +154,10 @@ def save_resume_checkpoint(
                 )
                 module.config.nimloth_latent_token_count = latent_token_count
                 module.config.nimloth_latent_query_mode = latent_query_mode
-                module.save_pretrained(temporary, safe_serialization=True, **({"state_dict": full_weights} if full_weights is not None else {}))
+                if full_weights is not None:
+                    save_full_pretrained(module, temporary, full_weights)
+                else:
+                    module.save_pretrained(temporary, safe_serialization=True)
                 processor.save_pretrained(temporary)
                 state = {
                     "convergence_state": convergence_state,
@@ -230,7 +233,10 @@ def save_checkpoint(
     )
     module.config.nimloth_latent_token_count = latent_token_count
     module.config.nimloth_latent_query_mode = latent_query_mode
-    module.save_pretrained(ckpt, safe_serialization=True, **({"state_dict": full_weights} if full_weights is not None else {}))
+    if full_weights is not None:
+        save_full_pretrained(module, ckpt, full_weights)
+    else:
+        module.save_pretrained(ckpt, safe_serialization=True)
     processor.save_pretrained(ckpt)
     state = {
         "convergence_state": convergence_state,
