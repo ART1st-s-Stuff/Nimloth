@@ -25,11 +25,11 @@
   "meta": {
     "kind": "experiment",
     "source_commit": "5425780e78cb11ec0008d36b836a8286f1e1b94d",
-    "training_source_commit": "6ff11bc2191e093814b7aa935e16cce72eb06cfa",
-    "launch_status": "failed_first_forward_python_headers",
+    "training_source_commit": "53ae70007bf85f68c72972e33d7d6dfd597f3154",
+    "launch_status": "validating_reused_cache",
     "remote_worktree": "/mnt/nimloth/.worktree/sft1-rollout2000",
-    "run_id": "20260910T112834Z_format_only_converge",
-    "controller_pid": 525324,
-    "remote_run": "/mnt/nimloth/outputs/experiments/sft1-rollout2000/20260910T112834Z_format_only_converge"
+    "run_id": "20260910T115929Z_format_only_converge",
+    "controller_pid": 529832,
+    "remote_run": "/mnt/nimloth/outputs/experiments/sft1-rollout2000/20260910T115929Z_format_only_converge"
   }
 }

@@ -274,6 +274,7 @@ def build_optimizer(
             {"params": embed_params, "lr": embed_lr},
         ],
         weight_decay=weight_decay,
+        foreach=False,
     )
 
 
@@ -745,6 +746,7 @@ def main(*, stage: str = "format") -> int:
             device_ids=[local_rank],
             output_device=local_rank,
             find_unused_parameters=False,
+            gradient_as_bucket_view=True,
         )
         if args.lora:
             # PEFT + gradient checkpointing requires static graph under DDP.

@@ -44,3 +44,10 @@ RUN=/mnt/nimloth/outputs/experiments/sft1-rollout2000/20260910T112834Z_format_on
 
 ## 2026-09-10T11:56Z 缓存搬迁被门禁拦截
 retry run=20260910T115604Z_format_only_converge_retry，controller529399，commitb700abab；复制后manifest.dir仍旧路径，CPU validator拒绝，11:56:27退出1，未启动GPU。修复复制缓存后仅更新新副本manifest.dir，原manifest及tensor保持不变；加入实际文件复制回归测试。再次使用新run，保留失败目录。
+
+## 2026-09-10T11:59:29Z 当前运行
+run=20260910T115929Z_format_only_converge，controller PID529832，preprocess PID529833，commit53ae70007bf85f68c72972e33d7d6dfd597f3154。运行根/mnt/nimloth/outputs/experiments/sft1-rollout2000/20260910T115929Z_format_only_converge；同名_controller/events.jsonl及0000_preprocess.log、0001_train.log监控。policy/stdout/pid.json在/mnt/nimloth/logs同run前缀。
+已实际命中复制的1709+193新format缓存，正在全量验证。源缓存为112834运行，原文件保留，复制清单仅dir修正且有单元测试；远程搬迁测试、真实Qwen视觉反向和controller6测试通过，数据全量VALID、模型两个hash匹配原记录、真实CLI/compile/shell通过、8GPU空闲。尚无优化步，不宣称训练健康。
+
+## 2026-09-10T12:05:36Z 反向OOM
+115929运行缓存复用/全量验证通过，12:02:11进入train，首次backward rank4/6 OOM（申请4.71/6.96GiB，allocated23.49/28.86，reserved-unallocated11.51/4.35GiB）。Triton已通过，未产生optimizer步/ckpt。controller正常fail-closed，GPU归零。修复显存管理：expandable_segments、DDP gradient_as_bucket_view、AdamW foreach=False，保留模型/数据/目标/batch/LR。新run重做全量缓存验证与启动检查，不从失败run恢复。

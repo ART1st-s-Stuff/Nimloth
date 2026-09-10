@@ -46,6 +46,7 @@ on_exit() {
 trap on_exit EXIT
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" PYTHONUNBUFFERED=1 OMP_NUM_THREADS=4 TOKENIZERS_PARALLELISM=false
 export CPATH=/mnt/nimloth/dependencies/python310-dev/root/usr/include/python3.10:/mnt/nimloth/dependencies/python310-dev/root/usr/include${CPATH:+:$CPATH}
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 CUDA_VISIBLE_DEVICES='' "$PY" - <<'PY_TRITON'
 from pathlib import Path
 from triton.backends.nvidia import driver
