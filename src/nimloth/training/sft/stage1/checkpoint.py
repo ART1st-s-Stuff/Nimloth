@@ -15,6 +15,7 @@ import torch
 import torch.distributed as dist
 
 from .distributed import is_main
+from .fsdp import checkpoint_state
 
 if TYPE_CHECKING:
     from transformers import AutoProcessor
@@ -125,6 +126,7 @@ def save_resume_checkpoint(
         dist.all_gather_object(rank_rng_states, local_rng)
     else:
         rank_rng_states = [local_rng]
+    full_weights, full_optimizer = checkpoint_state(model, optimizer)
     name = f"resume_step_{global_step:08d}"
     final = out_dir / name
     if is_main():
@@ -152,7 +154,7 @@ def save_resume_checkpoint(
                 )
                 module.config.nimloth_latent_token_count = latent_token_count
                 module.config.nimloth_latent_query_mode = latent_query_mode
-                module.save_pretrained(temporary, safe_serialization=True)
+                module.save_pretrained(temporary, safe_serialization=True, **({"state_dict": full_weights} if full_weights is not None else {}))
                 processor.save_pretrained(temporary)
                 state = {
                     "convergence_state": convergence_state,
@@ -174,7 +176,7 @@ def save_resume_checkpoint(
                     "training_stage": getattr(
                         module.config, "nimloth_training_stage", "format"
                     ),
-                    "optimizer": optimizer.state_dict(),
+                    "optimizer": full_optimizer,
                     "scheduler": scheduler.state_dict(),
                 }
                 state_path = temporary / "training_state.pt"
@@ -217,6 +219,9 @@ def save_checkpoint(
     convergence_state: dict[str, Any] | None = None,
     rank_rng_states: list[Any] | None = None,
 ) -> None:
+    full_weights, full_optimizer = checkpoint_state(model, optimizer)
+    if not is_main():
+        return
     ckpt = out_dir / name
     ckpt.mkdir(parents=True, exist_ok=True)
     module = model.module if hasattr(model, "module") else model
@@ -225,7 +230,7 @@ def save_checkpoint(
     )
     module.config.nimloth_latent_token_count = latent_token_count
     module.config.nimloth_latent_query_mode = latent_query_mode
-    module.save_pretrained(ckpt, safe_serialization=True)
+    module.save_pretrained(ckpt, safe_serialization=True, **({"state_dict": full_weights} if full_weights is not None else {}))
     processor.save_pretrained(ckpt)
     state = {
         "convergence_state": convergence_state,
@@ -247,7 +252,7 @@ def save_checkpoint(
     if base_model_path is not None:
         state["base_model_path"] = str(base_model_path)
     if optimizer is not None:
-        state["optimizer"] = optimizer.state_dict()
+        state["optimizer"] = full_optimizer
     if scheduler is not None:
         state["scheduler"] = scheduler.state_dict()
     torch.save(state, ckpt / "training_state.pt")

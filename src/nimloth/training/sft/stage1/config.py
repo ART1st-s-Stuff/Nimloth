@@ -21,6 +21,7 @@ _SFT1_YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("tuning", "lora"): "lora",
     ("tuning", "lora_r"): "lora_r",
     ("tuning", "lora_alpha"): "lora_alpha",
+    ("train", "distributed_strategy"): "distributed_strategy",
     ("train", "epochs"): "epochs",
     ("train", "batch_size"): "batch_size",
     ("train", "grad_accum"): "grad_accum",

@@ -51,3 +51,11 @@ run=20260910T115929Z_format_only_converge，controller PID529832，preprocess PI
 
 ## 2026-09-10T12:05:36Z 反向OOM
 115929运行缓存复用/全量验证通过，12:02:11进入train，首次backward rank4/6 OOM（申请4.71/6.96GiB，allocated23.49/28.86，reserved-unallocated11.51/4.35GiB）。Triton已通过，未产生optimizer步/ckpt。controller正常fail-closed，GPU归零。修复显存管理：expandable_segments、DDP gradient_as_bucket_view、AdamW foreach=False，保留模型/数据/目标/batch/LR。新run重做全量缓存验证与启动检查，不从失败run恢复。
+
+## 2026-09-10T12:15:50Z 最新终态：完成step1后OOM，等待显存方案决定
+当前run20260910T120905Z_format_only_converge，controller531438/train launcher531667均已退出，exit1；8GPU归零。commit4643dc0baf32ec092b354922b8c2a6216c727237。1709+193复制缓存全量验证通过，12:11:45开始train，CSV epoch1 global_step1 train_loss1.1537441462278366 lr5e-7；随后rank5 backward申请7.08GiB仅7.02GiBfree，allocated30.72GiB、reserved-unallocated131.20MiB。显存管理降低碎片但仍单卡容量不足。无第10步checkpoint，无epoch/验证loss/收敛证据，不可exact resume。
+完整日志：/mnt/nimloth/outputs/experiments/sft1-rollout2000/20260910T120905Z_format_only_converge_controller/0001_train.log 与 events.jsonl；训练CSV在不带_controller的RUN下。控制器没有自动重试，原数据和所有run保留。下一步需要选择保留完整序列的进一步显存方案（如FSDP分片），不擅自截断/改batch/迁移服务器。最新聚焦46passed+10subtests、lint/shell/diff通过，真实长期训练仍未成立。
+
+## FSDP实施与远程验收准备
+用户已明确批准FSDP方案，现stage1显式--distributed-strategy fsdp；FULL_SHARD/use_orig_params，混合精度参数分开leaf包装，冻结共享embedding/head保留共同root所有权，可训练副本各自分片。全rank状态聚合/格式生成，优化器分片恢复及全局梯度裁剪。默认DDP和stage2保留。
+当前58 CPUtests+10subtests通过，Ruff/compile/shell/diff通过。真实检查入口research/run_fsdp_gate.py COMMIT UNIQUE_OUTPUT：单机8rank/NCCL，总900秒deadline并终止准确ownedgroup；先tests/integration/sft1_fsdp_roundtrip.py测试真实PEFT下一步exact resume/生成/epoch导出，再research/fsdp_capacity_probe.py实际初始化原Qwen模型，对最长1709traincache样本作2optimizersteps、每步8累积，视觉LoRA梯度非零，真实format生成1样本、实际checkpoint导出并CPU重新加载验证。两项预计<10min，属于已批准FSDP修复的有限验收，不算模型质量。source/data/model/参数保持之前核验身份，输出新建fsdp_gate目录。完成后才能重新正式训练。

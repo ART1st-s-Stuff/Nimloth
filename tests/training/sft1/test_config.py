@@ -19,3 +19,20 @@ def test_default_sft1_config_has_only_format_parameters():
     defaults = sft1_yaml_defaults(ROOT / "configs/training/sft1/qwen25vl_lora.yaml")
     assert not any("latent" in key for key in defaults)
     assert defaults["epochs"] == 20
+
+
+def test_fsdp_yaml_is_explicit(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("train:\n  distributed_strategy: fsdp\n")
+    assert sft1_yaml_defaults(path)["distributed_strategy"] == "fsdp"
+
+
+def test_fsdp_cli_is_format_only():
+    from nimloth.training.sft.stage1.cli import parse_args
+
+    common = ["--model", "/tmp/model", "--train-jsonl", "/tmp/train.jsonl",
+              "--val-jsonl", "/tmp/val.jsonl", "--output-dir", "/tmp/output"]
+    assert parse_args(common)[0].distributed_strategy == "ddp"
+    assert parse_args(common + ["--distributed-strategy", "fsdp"])[0].distributed_strategy == "fsdp"
+    with pytest.raises(ValueError, match="only for format"):
+        parse_args(common + ["--distributed-strategy", "fsdp", "--dino-cache-root", "/tmp/dino"], stage="query")

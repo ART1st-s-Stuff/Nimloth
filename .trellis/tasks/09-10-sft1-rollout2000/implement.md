@@ -8,3 +8,10 @@
 - [ ] 构建并全量核验新format-only缓存，刷新资源后启动一次8GPU训练。
 - [ ] 核验optimizer step/loss，记录进程、commit、run/监控与交接。
 - [ ] epoch成功及final核验后清理当前run step checkpoints；记录最终结果。
+
+## FSDP追加执行
+- [x] 用户批准FSDP替代DDP。
+- [ ] 实现阶段配置、FSDP训练和完整保存恢复，保留非FSDP路径。
+- [ ] 独立审查及CPU回归。
+- [ ] 远程8卡有限保存/恢复验证，15分钟总截止。
+- [ ] 新run复用cache全量验证并启动真实收敛训练，确认有限optimizer步及运行状态。

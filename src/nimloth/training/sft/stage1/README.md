@@ -25,3 +25,24 @@ Checkpoint 保存 `training_stage=format`、`format_objective=format_answer_ce_v
 格式阶段可显式使用 `--until-converged --convergence-min-epochs N --convergence-patience-epochs P --convergence-min-relative-improvement R`，不能同时指定固定 `--epochs`。每轮完整验证后判断回答LM loss是否相对上一轮改善达到阈值；连续P轮未达到阈值且达到最少轮数后停止。绝对最低验证loss另外记录用于best checkpoint。
 
 此模式按首轮预计优化步数和warmup_ratio确定预热步数，之后保持设定学习率，不设置虚构的总epoch数供cosine调度。Checkpoint保存收敛计数和每rank随机状态，续训恢复原有判断历史。运行时限或外部暂停不代表收敛；只有实际满足条件且final保存后才产生CONVERGED.json。
+
+Stage1 optionally accepts `--distributed-strategy fsdp` for multi-rank CUDA
+FULL_SHARD training; the default remains DDP. Query stage2 rejects this option.
+FSDP preserves original parameters and separates linear/embedding leaves to keep
+PEFT FP32 trainable tensors distinct from BF16 frozen weights. Each microbatch
+reduces sharded gradients; accumulation does not retain full replicated gradients.
+Global gradient clipping includes every rank and supports mixed gradient dtypes.
+
+Every rank participates in full CPU model/optimizer checkpoint collection, while
+rank zero publishes ordinary PEFT artifacts plus complete training state. Resume
+loads adapters before wrapping and converts the full named optimizer state into
+local shards after wrapping. FSDP is part of the resume identity. Epoch, best,
+final and optimizer-boundary saves use the same collective path. Format generation
+runs the same prompts on all ranks with synchronized stopping; validation LM loss
+and the convergence rule are unchanged.
+
+The explicit GPU integration probe is
+`torchrun --nproc_per_node=8 tests/integration/sft1_fsdp_roundtrip.py --output-dir UNIQUE_PATH`.
+It compares uninterrupted and restored next updates exactly, including optimizer
+state, and checks collective generation and epoch export. CPU tests alone do not
+establish FSDP runtime, memory capacity, or model quality.

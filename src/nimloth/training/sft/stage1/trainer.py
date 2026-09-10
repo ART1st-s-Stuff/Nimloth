@@ -64,6 +64,13 @@ from .data import (
     render_stage_text,
 )
 from .distributed import cleanup_dist, distributed_barrier, is_main, setup_dist
+from .fsdp import (
+    clip_grad_norm,
+    generation_model,
+    is_fsdp,
+    load_optimizer_state,
+    wrap_fsdp,
+)
 
 
 def _nimloth_format_re(latent_token_count: int | None = None) -> re.Pattern[str]:
@@ -114,7 +121,7 @@ def evaluate_format(
     latent_token_count: int | None = None,
     latent_query_mode: str | None = None,
 ) -> float:
-    if dist.is_available() and dist.is_initialized() and not is_main():
+    if dist.is_available() and dist.is_initialized() and not is_main() and not is_fsdp(model):
         return 0.0
     module = model.module if hasattr(model, "module") else model
     was_training = module.training
@@ -148,7 +155,11 @@ def evaluate_format(
         text = render_stage_text(text, latent_token_count)
         inputs = processor(text=[text], images=images or None, return_tensors="pt")
         inputs = {k: v.to(device) for k, v in inputs.items()}
-        output_ids = module.generate(**inputs, max_new_tokens=128, do_sample=False)
+        with generation_model(model) as generation_module:
+            output_ids = generation_module.generate(
+                **inputs, max_new_tokens=128, do_sample=False,
+                **({"synced_gpus": True} if is_fsdp(model) else {}),
+            )
         new_ids = output_ids[0, inputs["input_ids"].shape[1] :]
         decoded = processor.decode(new_ids, skip_special_tokens=False)
         total += 1
@@ -399,6 +410,8 @@ def _resume_identity(
         "lora_dropout": args.lora_dropout,
         "lora_target_modules": args.lora_target_modules,
     }
+    if getattr(args, "distributed_strategy", "ddp") == "fsdp":
+        identity["distributed_strategy"] = "fsdp_full_shard_orig_params_v1"
     if getattr(args, "until_converged", False):
         identity["convergence"] = {
             "monitor": "validation_lm_loss",
@@ -740,7 +753,12 @@ def main(*, stage: str = "format") -> int:
     model.config.nimloth_training_stage = stage
     model.to(device)
     optimizer = build_optimizer(model, args.lr, args.embedding_lr, args.weight_decay)
-    if world > 1:
+    if getattr(args, "distributed_strategy", "ddp") == "fsdp":
+        if world < 2 or device.type != "cuda":
+            raise ValueError("FSDP requires multi-rank CUDA training")
+        model = wrap_fsdp(model, device)
+        optimizer = build_optimizer(model, args.lr, args.embedding_lr, args.weight_decay)
+    elif world > 1:
         model = DDP(
             model,
             device_ids=[local_rank],
@@ -871,7 +889,7 @@ def main(*, stage: str = "format") -> int:
                         pass
                     break
         if state.get("optimizer") is not None:
-            optimizer.load_state_dict(state["optimizer"])
+            load_optimizer_state(model, optimizer, state["optimizer"])
         if state.get("scheduler") is not None:
             scheduler.load_state_dict(state["scheduler"])
         if is_main():
@@ -936,7 +954,7 @@ def main(*, stage: str = "format") -> int:
             for p in model.parameters():
                 if p.grad is not None:
                     p.grad.div_(micro_count)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            clip_grad_norm(model, 1.0)
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
@@ -1086,11 +1104,33 @@ def main(*, stage: str = "format") -> int:
                         scheduler.get_last_lr()[0],
                     ]
                 )
+        save_checkpoint(
+            model,
+            processor,
+            args.output_dir,
+            f"epoch_{epoch:03d}",
+            optimizer,
+            scheduler,
+            global_step,
+            epoch,
+            best_val,
+            lora=args.lora,
+            base_model_path=base_model_path,
+            merge_for_eval=False,
+            latent_token_count=args.latent_token_count,
+            mask_latent_query_labels=args.mask_latent_query_labels,
+            latent_query_mode=args.latent_query_mode,
+            world_size=world,
+            identity=resume_identity,
+            convergence_state=convergence.state_dict() if convergence_policy else None,
+            rank_rng_states=epoch_rng_states,
+        )
+        if val_loss < previous_best_val:
             save_checkpoint(
                 model,
                 processor,
                 args.output_dir,
-                f"epoch_{epoch:03d}",
+                "best",
                 optimizer,
                 scheduler,
                 global_step,
@@ -1107,28 +1147,7 @@ def main(*, stage: str = "format") -> int:
                 convergence_state=convergence.state_dict() if convergence_policy else None,
                 rank_rng_states=epoch_rng_states,
             )
-            if val_loss < previous_best_val:
-                save_checkpoint(
-                    model,
-                    processor,
-                    args.output_dir,
-                    "best",
-                    optimizer,
-                    scheduler,
-                    global_step,
-                    epoch,
-                    best_val,
-                    lora=args.lora,
-                    base_model_path=base_model_path,
-                    merge_for_eval=False,
-                    latent_token_count=args.latent_token_count,
-                    mask_latent_query_labels=args.mask_latent_query_labels,
-                    latent_query_mode=args.latent_query_mode,
-                    world_size=world,
-                    identity=resume_identity,
-                    convergence_state=convergence.state_dict() if convergence_policy else None,
-                    rank_rng_states=epoch_rng_states,
-                )
+        if is_main():
             print(
                 json.dumps(
                     {
@@ -1160,28 +1179,28 @@ def main(*, stage: str = "format") -> int:
         if convergence.converged:
             break
 
+    save_checkpoint(
+        model,
+        processor,
+        args.output_dir,
+        "final",
+        optimizer,
+        scheduler,
+        global_step,
+        epoch,
+        best_val,
+        lora=args.lora,
+        base_model_path=base_model_path,
+        merge_for_eval=False,
+        latent_token_count=args.latent_token_count,
+        mask_latent_query_labels=args.mask_latent_query_labels,
+        latent_query_mode=args.latent_query_mode,
+        world_size=world,
+        identity=resume_identity,
+        convergence_state=convergence.state_dict() if convergence_policy else None,
+        rank_rng_states=epoch_rng_states,
+    )
     if is_main():
-        save_checkpoint(
-            model,
-            processor,
-            args.output_dir,
-            "final",
-            optimizer,
-            scheduler,
-            global_step,
-            epoch,
-            best_val,
-            lora=args.lora,
-            base_model_path=base_model_path,
-            merge_for_eval=False,
-            latent_token_count=args.latent_token_count,
-            mask_latent_query_labels=args.mask_latent_query_labels,
-            latent_query_mode=args.latent_query_mode,
-            world_size=world,
-            identity=resume_identity,
-            convergence_state=convergence.state_dict() if convergence_policy else None,
-            rank_rng_states=epoch_rng_states,
-        )
         if convergence_policy is not None:
             (args.output_dir / "CONVERGED.json").write_text(
                 json.dumps({"monitor": "validation_lm_loss", "policy": convergence_policy.state_dict(),

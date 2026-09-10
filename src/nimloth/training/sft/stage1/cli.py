@@ -41,6 +41,7 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap.add_argument("--convergence-patience-epochs", type=int)
     ap.add_argument("--convergence-min-relative-improvement", type=float)
     ap.add_argument("--batch-size", type=int, default=1)
+    ap.add_argument("--distributed-strategy", choices=("ddp", "fsdp"), default="ddp")
     ap.add_argument("--grad-accum", type=int, default=8)
     ap.add_argument("--lr", type=float, default=1e-6)
     ap.add_argument(
@@ -184,6 +185,8 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         if action.required and action.default is not None:
             action.required = False
     args = ap.parse_args(argv)
+    if stage != "format" and args.distributed_strategy != "ddp":
+        raise ValueError("FSDP is supported only for format stage1")
     policy_values = (
         args.convergence_min_epochs, args.convergence_patience_epochs,
         args.convergence_min_relative_improvement,

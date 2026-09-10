@@ -18,3 +18,6 @@
 监控内部验证回答LM loss，min_epochs=2、patience_epochs=2、min_relative_improvement=0.01（用户已明确选择）。记录previous validation loss、absolute best、bad epochs、last completed epoch和stop reason；中间/epoch checkpoint均保留控制状态，resume不能重置patience。无限期训练不能沿用以1epoch为终点的cosine衰减；使用明确记录的constant-with-warmup，warmup按首epoch预计optimizer steps的5%计算，之后保持所选LR直到收敛。最终epoch以实际结束值保存。
 
 收敛相对改善明确按相邻两轮的验证LM loss比较；不把多轮小幅改善累积为一次显著改善。
+
+## FSDP修复边界
+为降低每卡参数/梯度/优化器占用，stage1新增显式FSDP FULL_SHARD策略，保留默认DDP及stage2行为。PEFT混合冻结/训练参数需use_orig_params；按真实Qwen块封装并确认embedding/head分片。所有rank参与状态聚合，rank0写可导出完整模型/优化器状态，恢复转换回本rank优化器分片；保存RNG/数据游标/收敛状态不能丢。先在远程同8卡拓扑用微型真实模型做有限训练与保存恢复检查（预计<10分钟，15分钟硬截止），再启动正式长job。FSDP不自动消除完整logits激活峰值，必须实测长样本。
