@@ -200,6 +200,13 @@ def prepare_query_vocabulary(
         )
 
 
+def enable_gradient_checkpointing(model) -> None:
+    # 视觉输入无需梯度，但视觉 LoRA 参数仍必须参与反向传播。
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs={"use_reentrant": False}
+    )
+
+
 def apply_lora(model: Qwen2_5_VLForConditionalGeneration, args: argparse.Namespace):
     from peft import LoraConfig, get_peft_model
 
@@ -694,7 +701,7 @@ def main(*, stage: str = "format") -> int:
         trust_remote_code=True,
     )
     if args.gradient_checkpointing:
-        model.gradient_checkpointing_enable()
+        enable_gradient_checkpointing(model)
     prepare_query_vocabulary(
         model,
         len(processor.tokenizer),

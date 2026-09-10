@@ -45,6 +45,14 @@ on_exit() {
 }
 trap on_exit EXIT
 export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}" PYTHONUNBUFFERED=1 OMP_NUM_THREADS=4 TOKENIZERS_PARALLELISM=false
+export CPATH=/mnt/nimloth/dependencies/python310-dev/root/usr/include/python3.10:/mnt/nimloth/dependencies/python310-dev/root/usr/include${CPATH:+:$CPATH}
+CUDA_VISIBLE_DEVICES='' "$PY" - <<'PY_TRITON'
+from pathlib import Path
+from triton.backends.nvidia import driver
+# Compile without initializing CUDA, so missing development headers fail before DDP.
+driver.compile_module_from_src(Path(driver.__file__).with_name('driver.c').read_text(), 'cuda_utils')
+print('Triton driver compilation preflight passed')
+PY_TRITON
 unset RANK WORLD_SIZE LOCAL_RANK MASTER_ADDR MASTER_PORT
 printf '%s  %s\n' af1f8d11a52279051d0deea96db81f3522de7bf556b089f921943d832e1224e6 "$DATA/sft1_train_all.jsonl" 1632d9aebbe499076fe1d9477fa83c2dbfbadea593189ece640603bdad0115dd "$DATA/sft1_heldout_all.jsonl" | sha256sum --check
 ARGS=(--model /mnt/nimloth/checkpoint/hf_actor --train-jsonl "$DATA/sft1_train_all.jsonl" --val-jsonl "$DATA/sft1_heldout_all.jsonl" --output-dir "$RUN" --batch-size 1 --grad-accum 8 --lr 1e-6 --embedding-lr 5e-6 --lora --lora-r 64 --lora-alpha 128 --lora-dropout 0.05 --weight-decay 0.01 --warmup-ratio 0.05 --max-length 20000 --max-pixels 100352 --min-pixels 3136 --attn-implementation flash_attention_2 --gradient-checkpointing --seed 42 --resume-save-steps 10 --no-wandb --cache-dir "$RUN/preprocess_cache" --cache-pixel-dtype bfloat16 --preprocess-workers 8 --num-workers 4 --format-eval-samples 32 --max-val-records -1 --max-val-batches -1)
@@ -55,7 +63,15 @@ from pathlib import Path
 run = Path(sys.argv[1])
 (run/'launch.json').write_text(json.dumps(dict(run_output=str(run), commit=sys.argv[2], args=sys.argv[3:], controller_pid=os.getppid(), controller_pgid=os.getpgid(os.getppid()), phase='preprocess', wandb=False), indent=2)+'\n')
 PY
-CUDA_VISIBLE_DEVICES='' "$PY" -m nimloth.training.sft.stage1.trainer "${ARGS[@]}" --cache-only --rebuild-cache
+if [[ -n ${SFT1_CACHE_SOURCE:-} ]]; then
+    [[ $SFT1_CACHE_SOURCE == /mnt/nimloth/outputs/experiments/sft1-rollout2000/* && -f $SFT1_CACHE_SOURCE/PREPROCESS_SUCCEEDED && -f $SFT1_CACHE_SOURCE/cache_validation.json ]]
+    [[ $(cat "$SFT1_CACHE_SOURCE/PREPROCESS_SUCCEEDED") == 0 ]]
+    cp -a --reflink=auto "$SFT1_CACHE_SOURCE/preprocess_cache" "$RUN/preprocess_cache"
+    printf '%s\n' "$SFT1_CACHE_SOURCE" > "$RUN/cache_source.txt"
+    CUDA_VISIBLE_DEVICES='' "$PY" -m nimloth.training.sft.stage1.trainer "${ARGS[@]}" --cache-only
+else
+    CUDA_VISIBLE_DEVICES='' "$PY" -m nimloth.training.sft.stage1.trainer "${ARGS[@]}" --cache-only --rebuild-cache
+fi
 fi
 "$PY" - "$RUN" <<'PY_CACHE'
 import hashlib, json, re, sys

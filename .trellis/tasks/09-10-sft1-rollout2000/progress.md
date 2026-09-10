@@ -23,3 +23,21 @@ train SHA256 af1f8d11a52279051d0deea96db81f3522de7bf556b089f921943d832e1224e6；
 检查：combined233passed+8subtests；1个旧rollout-resolution parquet测试缺pyarrow/fastparquet无法执行（不涉及本次stage1）。源代码/新测试Ruff、compileall、diffcheck通过；共享latent helper既有B008告警不作无关修改。尚未启动新预处理或GPU训练。
 
 最终独立审查通过：最新控制器/启动/清理/监控24passed、10subtests；计划pause必须全部报告exit75且无OOM，有新的完整恢复点才自动续训；清理检查epoch收敛游标与8rank RNG。真实8GPU及暂停恢复仍待运行。
+
+## 2026-09-10T11:23Z 同步受网络阻塞
+代码修正commit 6ff11bc2191e093814b7aa935e16cce72eb06cfa，分支codex/sft1-rollout2000。本地Git包/tmp/sft1-format-converged.bundle约46KiB（包含相对5425780e增量）。scp到a100-1退出255，错误：nc: connection failed, SOCKSv5 error: TTL expired / Connection closed by UNKNOWN port65535。遵守当前.local/SERVER.md，停止远程操作并请人类检查重连VPN；未反复重试。此错误仅证明本次代理连接失败，不推断认证授权撤回。
+新format-only缓存和GPU训练均未启动。远程worktree最后确认commit为5425780e（本轮11:03Z查询），当前状态未刷新；恢复网络后必须重新核验，不根据旧资源快照启动。
+下一步：重新scp本地bundle→在a100-1专用worktree核验clean/branch后gitfetch+ff→核验真实CLI与脚本、freshdata/model/GPU/空run→写入policy{until_converged:true,min_epochs:2,patience_epochs:2,min_relative_improvement:0.01,budget:"6h per segment; pause and resume until convergence"}→用/mnt/nimloth/venv/bin/python3运行research/run_segments.py COMMIT UNIQUE_RUN_ID POLICY。该controller先预处理再验证1902cache，然后8GPU训练，5h50计划暂停、6h上限；仅完整计划暂停状态可自动续训，意外失败不重试。每epoch验证后清理被其覆盖中间ckpt，收敛后验证final并清理剩余。
+
+## 2026-09-10T11:28:34Z 已启动预处理→收敛训练控制器
+VPN恢复后重新确认n30191/8GPU空闲，远程专用worktree干净并快进至6ff11bc2191e093814b7aa935e16cce72eb06cfa。真实CLI/shell/compile通过，全部数据图像验证再次VALID，远程controller6测试通过。
+run_id=20260910T112834Z_format_only_converge；controller PID525324，预处理launcher PID525325，预处理Python PID525342。
+RUN=/mnt/nimloth/outputs/experiments/sft1-rollout2000/20260910T112834Z_format_only_converge；controller目录为RUN加_controller；stdout=/mnt/nimloth/logs/20260910T112834Z_format_only_converge.controller.log；policy及pid.json同前缀。
+最近确认11:29Z：正在CPU构建1709训练cache，之后193验证；日志latent_token_count/mode/mask均null，special_tokens_requested10（仅动作标记），没有GPU训练证据。控制器在cache全量检查后自动8GPU训练直至相邻epoch验证LM loss连续两轮改善<1%（min2）。
+启动命令：/mnt/nimloth/venv/bin/python3 /mnt/nimloth/.worktree/sft1-rollout2000/.trellis/tasks/09-10-sft1-rollout2000/research/run_segments.py 6ff11bc2191e093814b7aa935e16cce72eb06cfa 20260910T112834Z_format_only_converge /mnt/nimloth/logs/20260910T112834Z_format_only_converge.policy.json；cwd为远程专用worktree，PYTHONPATH为其src。
+监控：读取RUN_controller/events.jsonl、0000_preprocess.log及后续0001_train.log；训练CSV=RUN/train_step_log.csv；终态需CONVERGED.json、TRAIN_SUCCEEDED与cleanup_complete.json。异常不得自动重提。
+
+## 2026-09-10T11:48Z 首次format运行失败及修复
+1902新缓存全量验证通过（train1709，val193；query_free，未截断），11:44:38进入train；11:47:48首forward在FlashAttention rotary调用Triton编译时报Python.h缺失，11:48:03退出1，controller已退出，8GPU归零，CSV仅表头，无optimizer步或checkpoint。不是OOM，不自动恢复；旧RUN完整保留。
+依赖使用Ubuntu libpython3.10-dev 3.10.12包解压到/mnt/nimloth/dependencies/python310-dev/root，未更改系统Python；CPATH含其usr/include/python3.10与usr/include，实际无GPU Triton驱动编译通过。launch新增此CPU preflight。另修复视觉冻结输入下默认reentrant checkpoint漏参数梯度，改non-reentrant；真实微型Qwen视觉模块反向传播测试通过。42测试+10subtests通过。
+重试边界：新run ID/空输出，复制已完成format缓存并再次全量核验，原数据/cache不改；不从无checkpoint失败run恢复。训练合同/资源/收敛规则不变；同步新commit后重核完整preflight。
