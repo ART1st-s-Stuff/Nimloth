@@ -1,0 +1,29 @@
+{
+  "id": "sft1-rollout2000",
+  "name": "sft1-rollout2000",
+  "title": "从2000条rollout启动SFT stage 1",
+  "description": "核验现有2000条rollout，参考Superpod近期旧数据stage1参数准备并启动一次SFT1训练",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-09-10",
+  "completedAt": null,
+  "branch": "codex/sft1-rollout2000",
+  "base_branch": "dev",
+  "worktree_path": "/workspace/remote2/nimloth/.worktree/sft1-rollout2000",
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "kind": "experiment",
+    "source_commit": "5425780e78cb11ec0008d36b836a8286f1e1b94d"
+  }
+}
