@@ -76,12 +76,22 @@ def restore_rng_state(state: dict[str, Any]) -> None:
         torch.cuda.set_rng_state(state["torch_cuda"])
 
 
+def objective_identities_match(saved, expected) -> bool:
+    if not isinstance(saved, dict) or not isinstance(expected, dict):
+        return False
+    def normalized(identity):
+        result = dict(identity)
+        result.setdefault("action_token_loss_weight", 1.0)
+        return result
+    return normalized(saved) == normalized(expected)
+
+
 def validate_resume_state(
     state: dict[str, Any], *, expected_identity: dict[str, Any], rank: int, world: int
 ) -> None:
     if state.get("resume_schema") != RESUME_SCHEMA:
         raise ValueError("checkpoint is not an optimizer-step resume checkpoint")
-    if state.get("identity") != expected_identity:
+    if not objective_identities_match(state.get("identity"), expected_identity):
         raise ValueError("resume checkpoint stage/dataset/objective identity mismatch")
     if int(state.get("world_size", -1)) != world:
         raise ValueError(
@@ -137,7 +147,7 @@ def save_resume_checkpoint(
                 final / "training_state.pt", map_location="cpu", weights_only=False
             )
             if (
-                existing.get("identity") != identity
+                not objective_identities_match(existing.get("identity"), identity)
                 or int(existing.get("step", -1)) != global_step
                 or int(existing.get("epoch", -1)) != epoch
                 or int(existing.get("next_micro_batch", -1)) != next_micro_batch
@@ -152,6 +162,7 @@ def save_resume_checkpoint(
                 module.config.nimloth_format_objective = (
                     "format_answer_ce_v2" if latent_token_count is None else None
                 )
+                module.config.nimloth_action_token_loss_weight = identity.get("action_token_loss_weight", 1.0)
                 module.config.nimloth_latent_token_count = latent_token_count
                 module.config.nimloth_latent_query_mode = latent_query_mode
                 if full_weights is not None:
@@ -231,6 +242,7 @@ def save_checkpoint(
     module.config.nimloth_format_objective = (
         "format_answer_ce_v2" if latent_token_count is None else None
     )
+    module.config.nimloth_action_token_loss_weight = (identity or {}).get("action_token_loss_weight", 1.0)
     module.config.nimloth_latent_token_count = latent_token_count
     module.config.nimloth_latent_query_mode = latent_query_mode
     if full_weights is not None:

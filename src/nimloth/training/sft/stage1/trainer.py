@@ -44,6 +44,7 @@ from .checkpoint import (
     capture_rng_state,
     find_latest_resume_dir,
     load_lora_adapter_state,
+    objective_identities_match,
     restore_rng_state,
     save_checkpoint,
     save_resume_checkpoint,
@@ -71,6 +72,7 @@ from .fsdp import (
     load_optimizer_state,
     wrap_fsdp,
 )
+from .loss import resolve_action_token_ids, training_loss
 
 
 def _nimloth_format_re(latent_token_count: int | None = None) -> re.Pattern[str]:
@@ -319,6 +321,7 @@ def maybe_init_wandb(args: argparse.Namespace) -> Any | None:
             "grad_accum": args.grad_accum,
             "lr": args.lr,
             "embedding_lr": args.embedding_lr,
+            "action_token_loss_weight": args.action_token_loss_weight,
             "max_length": args.max_length,
             "seed": args.seed,
             "lora": args.lora,
@@ -378,6 +381,7 @@ def _resume_identity(
     identity: dict[str, Any] = {
         "stage": stage,
         "format_objective": FORMAT_OBJECTIVE if stage == "format" else None,
+        "action_token_loss_weight": getattr(args, "action_token_loss_weight", 1.0),
         "world_size": world,
         "model": str(Path(args.model).resolve()),
         "train_jsonl": str(args.train_jsonl.resolve()),
@@ -451,7 +455,9 @@ def main(*, stage: str = "format") -> int:
     token_id_map = special_token_ids(
         processor.tokenizer, latent_token_count=args.latent_token_count
     )
+    action_ids = resolve_action_token_ids(processor.tokenizer) if stage == "format" else ()
     if is_main():
+        print(json.dumps({"action_token_loss_weight": args.action_token_loss_weight, "weighted_action_token_ids": action_ids}))
         print(
             json.dumps(
                 {
@@ -832,6 +838,8 @@ def main(*, stage: str = "format") -> int:
     resume_at_epoch_boundary = False
     if args.resume and resume_ckpt is not None and resume_ckpt.exists():
         state = torch.load(resume_ckpt, map_location="cpu", weights_only=False)
+        if args.action_token_loss_weight != 1 and not objective_identities_match(state.get("identity"), resume_identity):
+            raise ValueError("weighted loss resume checkpoint objective identity mismatch")
         if convergence_policy is not None:
             if state.get("convergence_state") is None:
                 raise ValueError("resume checkpoint lacks convergence state")
@@ -852,7 +860,7 @@ def main(*, stage: str = "format") -> int:
         elif "epoch" in state:
             if (
                 state.get("identity") is not None
-                and state.get("identity") != resume_identity
+                and not objective_identities_match(state.get("identity"), resume_identity)
             ):
                 raise ValueError(
                     "epoch checkpoint stage/dataset/objective identity mismatch"
@@ -1027,7 +1035,8 @@ def main(*, stage: str = "format") -> int:
             resume_rank_rng = None
         for batch_index, batch in enumerate(train_iterator, start=next_micro_batch):
             batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
-            loss = model(**batch).loss
+            loss = training_loss(model, batch, action_token_ids=action_ids,
+                                 action_weight=args.action_token_loss_weight)
             loss.backward()
             accum_loss += loss.detach().float().item()
             micro_accum += 1

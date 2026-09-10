@@ -9,6 +9,7 @@ PHASE=$3
 [[ $PHASE == preprocess || $PHASE == train || $PHASE == resume ]]
 if [[ $PHASE == preprocess ]]; then [[ $# == 3 ]]; else [[ $# == 4 ]]; fi
 POLICY=${4:-}
+: "${SFT1_ACTION_TOKEN_LOSS_WEIGHT:?set the reviewed action token loss weight}"
 ROOT=/mnt/nimloth/.worktree/sft1-rollout2000
 PY=/mnt/nimloth/venv/bin/python3
 DATA=/mnt/nimloth/outputs/datasets/sft1-vagen-step60/20260910T093222Z_batch1_original_validation_k16
@@ -56,7 +57,7 @@ print('Triton driver compilation preflight passed')
 PY_TRITON
 unset RANK WORLD_SIZE LOCAL_RANK MASTER_ADDR MASTER_PORT
 printf '%s  %s\n' af1f8d11a52279051d0deea96db81f3522de7bf556b089f921943d832e1224e6 "$DATA/sft1_train_all.jsonl" 1632d9aebbe499076fe1d9477fa83c2dbfbadea593189ece640603bdad0115dd "$DATA/sft1_heldout_all.jsonl" | sha256sum --check
-ARGS=(--distributed-strategy fsdp --model /mnt/nimloth/checkpoint/hf_actor --train-jsonl "$DATA/sft1_train_all.jsonl" --val-jsonl "$DATA/sft1_heldout_all.jsonl" --output-dir "$RUN" --batch-size 1 --grad-accum 8 --lr 1e-6 --embedding-lr 5e-6 --lora --lora-r 64 --lora-alpha 128 --lora-dropout 0.05 --weight-decay 0.01 --warmup-ratio 0.05 --max-length 20000 --max-pixels 100352 --min-pixels 3136 --attn-implementation flash_attention_2 --gradient-checkpointing --seed 42 --resume-save-steps 10 --no-wandb --cache-dir "$RUN/preprocess_cache" --cache-pixel-dtype bfloat16 --preprocess-workers 8 --num-workers 4 --format-eval-samples 32 --max-val-records -1 --max-val-batches -1)
+ARGS=(--distributed-strategy fsdp --model /mnt/nimloth/checkpoint/hf_actor --train-jsonl "$DATA/sft1_train_all.jsonl" --val-jsonl "$DATA/sft1_heldout_all.jsonl" --output-dir "$RUN" --batch-size 1 --grad-accum 8 --action-token-loss-weight "$SFT1_ACTION_TOKEN_LOSS_WEIGHT" --lr 1e-6 --embedding-lr 5e-6 --lora --lora-r 64 --lora-alpha 128 --lora-dropout 0.05 --weight-decay 0.01 --warmup-ratio 0.05 --max-length 20000 --max-pixels 100352 --min-pixels 3136 --attn-implementation flash_attention_2 --gradient-checkpointing --seed 42 --resume-save-steps 10 --no-wandb --cache-dir "$RUN/preprocess_cache" --cache-pixel-dtype bfloat16 --preprocess-workers 8 --num-workers 4 --format-eval-samples 32 --max-val-records -1 --max-val-batches -1)
 if [[ $PHASE == preprocess ]]; then
 "$PY" - "$RUN" "$EXPECTED_COMMIT" "${ARGS[@]}" <<'PY'
 import json, os, sys

@@ -14,6 +14,7 @@ from nimloth.latent import (
 
 from .config import sft1_yaml_defaults
 from .convergence import ConvergencePolicy
+from .loss import validate_action_weight
 
 
 def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
@@ -43,6 +44,7 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap.add_argument("--batch-size", type=int, default=1)
     ap.add_argument("--distributed-strategy", choices=("ddp", "fsdp"), default="ddp")
     ap.add_argument("--grad-accum", type=int, default=8)
+    ap.add_argument("--action-token-loss-weight", type=float, default=1.0)
     ap.add_argument("--lr", type=float, default=1e-6)
     ap.add_argument(
         "--embedding-lr",
@@ -185,6 +187,9 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         if action.required and action.default is not None:
             action.required = False
     args = ap.parse_args(argv)
+    args.action_token_loss_weight = validate_action_weight(args.action_token_loss_weight)
+    if stage != "format" and args.action_token_loss_weight != 1:
+        raise ValueError("action token loss weighting is supported only for format stage1")
     if stage != "format" and args.distributed_strategy != "ddp":
         raise ValueError("FSDP is supported only for format stage1")
     policy_values = (

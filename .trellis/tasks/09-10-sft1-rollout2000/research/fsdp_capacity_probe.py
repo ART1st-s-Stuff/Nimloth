@@ -17,6 +17,11 @@ from nimloth.training.sft.stage1.checkpoint_export import verify_adapter_loaded
 from nimloth.training.sft.stage1.data import NimlothVLSFTDataset, collate_cached_fn
 from nimloth.training.sft.stage1.distributed import cleanup_dist, setup_dist
 from nimloth.training.sft.stage1.fsdp import clip_grad_norm, wrap_fsdp
+from nimloth.training.sft.stage1.loss import (
+    resolve_action_token_ids,
+    training_loss,
+    validate_action_weight,
+)
 from nimloth.training.sft.stage1.trainer import (
     apply_lora,
     build_optimizer,
@@ -30,7 +35,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--output-dir', type=Path, required=True)
     parser.add_argument('--cache-root', type=Path, required=True)
+    parser.add_argument('--action-token-loss-weight', type=float, required=True)
     args = parser.parse_args()
+    validate_action_weight(args.action_token_loss_weight)
     faulthandler.dump_traceback_later(180, repeat=True)
     rank, world, _, device = setup_dist()
     assert world == 8
@@ -62,6 +69,8 @@ def main():
         lora_r=64, lora_alpha=128, lora_dropout=0.05,
         lora_target_modules='q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj',
         gradient_checkpointing=True))
+    action_ids = resolve_action_token_ids(processor.tokenizer)
+    initial_action_head = model.get_output_embeddings().weight[list(action_ids)].detach().cpu().clone()
     model = wrap_fsdp(model, device)
     optimizer = build_optimizer(model, 1e-6, 5e-6, 0.01)
     model.train()
@@ -72,7 +81,8 @@ def main():
         optimizer.zero_grad(set_to_none=True)
         total = 0.0
         for _ in range(8):
-            loss = model(**batch).loss
+            loss = training_loss(model, batch, action_token_ids=action_ids,
+                                 action_weight=args.action_token_loss_weight)
             assert torch.isfinite(loss).item()
             total += loss.item() / 8
             loss.backward()
@@ -96,10 +106,22 @@ def main():
                     max_records=1), device, max_samples=1)
     print(json.dumps({'rank': rank, 'phase': 'checkpoint_export'}), flush=True)
     save_checkpoint(model, processor, args.output_dir, 'epoch_001', optimizer,
-                    step=2, epoch=1, lora=True, base_model_path=Path(model_path))
+                    step=2, epoch=1, lora=True, base_model_path=Path(model_path),
+                    identity={'action_token_loss_weight': args.action_token_loss_weight})
     dist.barrier()
     if rank == 0:
         print(json.dumps({'rank': rank, 'phase': 'verify_adapter_reload'}), flush=True)
+        saved_training = torch.load(args.output_dir/'epoch_001'/'training_state.pt',
+                                    weights_only=False, map_location='cpu', mmap=True)
+        assert saved_training['identity']['action_token_loss_weight'] == args.action_token_loss_weight
+        del saved_training
+        from safetensors import safe_open
+        with safe_open(str(args.output_dir/'epoch_001'/'adapter_model.safetensors'),
+                       framework='pt', device='cpu') as saved:
+            action_head = saved.get_tensor('base_model.model.lm_head.weight')[list(action_ids)]
+        assert action_head.dtype == initial_action_head.dtype == torch.bfloat16
+        changed_action_head = int((action_head != initial_action_head).sum())
+        assert changed_action_head > 0, 'action output rows did not update'
         restored = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             model_path, torch_dtype=torch.bfloat16, attn_implementation='eager')
         prepare_query_vocabulary(restored, len(processor.tokenizer),
@@ -120,6 +142,9 @@ def main():
         (args.output_dir/'PASSED.json').write_text(json.dumps({
             'sample': selected[0], 'tokens': sample['input_ids'].numel(),
             'world_size': world, 'grad_accum': 8, 'optimizer_steps': 2,
+            'action_token_loss_weight': args.action_token_loss_weight,
+            'changed_action_head_elements': changed_action_head,
+            'action_head_dtype': str(action_head.dtype),
             'losses': losses, 'max_rank_peak_allocated_bytes': peak.item(),
             'qwen_format_generation': True, 'qwen_adapter_reload_verified': True,
             'scope': 'capacity only; repeated longest sample, not validation quality',

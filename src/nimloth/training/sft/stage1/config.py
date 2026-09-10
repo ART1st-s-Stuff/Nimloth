@@ -25,6 +25,7 @@ _SFT1_YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("train", "epochs"): "epochs",
     ("train", "batch_size"): "batch_size",
     ("train", "grad_accum"): "grad_accum",
+    ("train", "action_token_loss_weight"): "action_token_loss_weight",
     ("train", "lr"): "lr",
     ("train", "embedding_lr"): "embedding_lr",
     ("train", "max_length"): "max_length",

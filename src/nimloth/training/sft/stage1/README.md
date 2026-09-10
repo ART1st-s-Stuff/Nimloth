@@ -7,6 +7,7 @@
 - `data.py`：读取记录中的对话和截图，构造仅监督回答的标签，屏蔽提示词和填充，stage1移除所有角色文本中的历史 latent 标记（原始 JSONL/截图不变），保留真实 CoT 和动作；使用右侧填充保留文本区间的位置关系，并负责样本编码缓存。
 - `config.py`：读取 YAML 默认配置。`cli.py`：定义命令行选项，在加载模型前校验训练阶段和参数。
 - `trainer.py`：加载 Qwen、设置可训练参数、构建优化器，驱动梯度累积、离线验证和 epoch checkpoint 保存。SFT1直接使用 teacher forcing 的回答 CE，不计算 DINO 或 WM 损失。SFT2显式选择 query 阶段后复用同一训练生命周期。
+- `loss.py`：`--action-token-loss-weight`（YAML `train.action_token_loss_weight`）为动作起止及八个动作 token 加权，其他有效回答 token（含 EOS）权重 1；按每微批次权重和归一化，保持梯度累积方式。默认 1 保留原 loss 路径；stage2 拒绝大于 1。验证与收敛仍使用未加权 LM loss，缓存不因权重改变而重建；checkpoint 身份包含权重，改变权重不可原样恢复。
 - `convergence.py`：验证 loss 收敛状态和可恢复的停止策略。
 - `distributed.py`：建立和清理分布式进程组，提供主进程判断与同步；checkpoint 模块不依赖训练循环。
 - `checkpoint.py`：保存训练状态、查找恢复位置和校验阶段身份，独立于训练循环。

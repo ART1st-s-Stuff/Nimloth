@@ -26,6 +26,7 @@ from nimloth.training.sft.stage1.fsdp import (
     load_optimizer_state,
     wrap_fsdp,
 )
+from nimloth.training.sft.stage1.loss import training_loss, validate_action_weight
 from nimloth.training.sft.stage1.trainer import build_optimizer
 
 
@@ -39,7 +40,9 @@ def main():
     faulthandler.dump_traceback_later(120, repeat=True)
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--action-token-loss-weight", type=float, default=1.0)
     args = parser.parse_args()
+    validate_action_weight(args.action_token_loss_weight)
     rank = int(os.environ["RANK"])
     device = torch.device("cuda", int(os.environ["LOCAL_RANK"]))
     torch.cuda.set_device(device)
@@ -72,7 +75,11 @@ def main():
     def step(model, optimizer, scheduler):
         model.train()
         for _ in range(2):
-            loss = model(input_ids=inputs, labels=inputs, use_cache=False).loss
+            loss = training_loss(
+                model, {"input_ids": inputs, "labels": inputs, "use_cache": False},
+                action_token_ids=tuple(range(6, 16)),
+                action_weight=args.action_token_loss_weight,
+            )
             assert torch.isfinite(loss)
             loss.backward()
         for parameter in model.parameters():
@@ -88,11 +95,12 @@ def main():
     print(f"rank={rank} phase=save_resume", flush=True)
     checkpoint = save_resume_checkpoint(model, TestProcessor(), args.output_dir,
         optimizer=optimizer, scheduler=scheduler, global_step=1, epoch=1,
-        next_micro_batch=2, best_val=1.0, identity={"test": "fsdp"},
+        next_micro_batch=2, best_val=1.0, identity={"test": "fsdp", "action_token_loss_weight": args.action_token_loss_weight},
         rank=rank, world=dist.get_world_size(), lora=True, base_model_path=Path("test"),
         latent_token_count=None, mask_latent_query_labels=None, latent_query_mode=None,
         convergence_state={"test": "preserved"})
     state = torch.load(checkpoint / "training_state.pt", weights_only=False, map_location="cpu")
+    assert state["identity"]["action_token_loss_weight"] == args.action_token_loss_weight
     print(f"rank={rank} phase=reference_update", flush=True)
     expected_loss = step(model, optimizer, scheduler)
     expected, expected_optim = checkpoint_state(model, optimizer)
@@ -120,11 +128,16 @@ def main():
     assert generated.shape[1] > inputs.shape[1]
     print(f"rank={rank} phase=epoch_save", flush=True)
     save_checkpoint(model, TestProcessor(), args.output_dir, "epoch_001", optimizer,
-                    scheduler, step=2, epoch=1, lora=True)
+                    scheduler, step=2, epoch=1, lora=True,
+                    identity={"test": "fsdp", "action_token_loss_weight": args.action_token_loss_weight})
     dist.barrier()
     if rank == 0:
+        epoch_state = torch.load(args.output_dir / "epoch_001" / "training_state.pt",
+                                 map_location="cpu", weights_only=False)
+        assert epoch_state["identity"]["action_token_loss_weight"] == args.action_token_loss_weight
         (args.output_dir / "PASSED.json").write_text(json.dumps({
             "world_size": dist.get_world_size(), "loss": actual_loss,
+            "action_token_loss_weight": args.action_token_loss_weight,
             "exact_resume": True, "generation": True, "epoch_export": True}) + "\n")
     faulthandler.cancel_dump_traceback_later()
     dist.destroy_process_group()

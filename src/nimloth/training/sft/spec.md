@@ -35,10 +35,15 @@ def wm_predict(wm, value_head, state, actions, num_steps):
         predicted_states.append(state)
     return stack(predicted_states), stack(predicted_values)
 
-def sft1_step(model, input, output):
-    """训练回答格式，通过目标回答的token监督模型。"""
+def sft1_step(model, config, input, output, action_token_ids):
+    """训练回答格式，对目标回答中的动作 token 赋予更高权重。"""
     model_output = model(input)  # teacher forcing，目标为output
-    loss = lm_loss(model_output, output)
+    # 按下一 token 预测对齐，仅保留目标回答的有效监督位置。
+    token_losses, target_tokens = token_lm_losses(model_output, output)
+    # action_token_ids 包含动作起始、动作结束及各动作编号 token。
+    # 动作权重大于1，其余回答 token（包括EOS）的权重为1。
+    weights = where(isin(target_tokens, action_token_ids), config.action_weight, 1)
+    loss = sum(weights * token_losses) / sum(weights)
     loss.backward()
 
 def sft2_step(model, config, input, output, proj, dino_model, queries):

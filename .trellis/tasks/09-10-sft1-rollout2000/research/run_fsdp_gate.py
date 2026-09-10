@@ -13,6 +13,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('commit')
     parser.add_argument('output', type=Path)
+    parser.add_argument('--action-token-loss-weight', type=float, required=True)
     args = parser.parse_args()
     started = time.monotonic()
     root = Path('/mnt/nimloth/.worktree/sft1-rollout2000')
@@ -28,10 +29,12 @@ def main():
                PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True',
                CPATH='/mnt/nimloth/dependencies/python310-dev/root/usr/include/python3.10:'
                      '/mnt/nimloth/dependencies/python310-dev/root/usr/include')
-    tasks = [('roundtrip', root/'tests/integration/sft1_fsdp_roundtrip.py', []),
+    tasks = [('roundtrip', root/'tests/integration/sft1_fsdp_roundtrip.py',
+              ['--action-token-loss-weight', str(args.action_token_loss_weight)]),
              ('capacity', Path(__file__).with_name('fsdp_capacity_probe.py'),
               ['--cache-root', ('/mnt/nimloth/outputs/experiments/sft1-rollout2000/'
-               '20260910T112834Z_format_only_converge/preprocess_cache')])]
+               '20260910T112834Z_format_only_converge/preprocess_cache'),
+               '--action-token-loss-weight', str(args.action_token_loss_weight)])]
     with (args.output/'events.jsonl').open('x') as events:
         for name, script, extra in tasks:
             usage = subprocess.check_output(['nvidia-smi', '--query-gpu=memory.used',
@@ -64,6 +67,7 @@ def main():
             assert json.loads((args.output/name/'PASSED.json').read_text())['world_size'] == 8
     (args.output/'PASSED.json').write_text(json.dumps({
         'commit': args.commit, 'world_size': 8, 'phases': ['roundtrip', 'capacity'],
+        'action_token_loss_weight': args.action_token_loss_weight,
         'elapsed_seconds': time.monotonic()-started})+'\n')
 
 
