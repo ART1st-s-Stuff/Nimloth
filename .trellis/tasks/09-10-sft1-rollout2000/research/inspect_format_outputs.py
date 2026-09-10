@@ -37,6 +37,74 @@ def emit(value):
     print(json.dumps(value, ensure_ascii=False), flush=True)
 
 
+def diagnose_boundaries(model, processor, dataset, action_ids, original, state, output_dir):
+    """Compare exact rows and full-vocabulary next-token scores; never generate."""
+    def save(row):
+        with (output_dir / 'diagnostics.jsonl').open('a') as stream:
+            stream.write(json.dumps(row, ensure_ascii=False) + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        emit(row)
+
+    rows = {}
+    for name, module in [('embedding', model.get_input_embeddings()),
+                         ('lm_head', model.get_output_embeddings())]:
+        rows[name] = {}
+        for token, token_id in action_ids.items():
+            value = module.weight[token_id].detach().float().cpu()
+            before = original[name][token]
+            delta = value - before
+            rows[name][token] = {
+                'dtype': str(module.weight.dtype), 'norm': value.norm().item(),
+                'original_norm': before.norm().item(), 'delta_norm': delta.norm().item(),
+                'max_absolute_delta': delta.abs().max().item(),
+                'changed_elements': int((value != before).sum().item()),
+                'row_elements': value.numel(),
+            }
+    save({'state': state, 'phase': 'row_comparison', 'rows': rows})
+    messages = dataset.get_messages(0)
+    prompt_messages = prompt_messages_before_first_assistant(messages)
+    if not prompt_messages:
+        raise ValueError('First record has no assistant prompt')
+    reference = next(m['content'] for m in messages if m['role'] == 'assistant')
+    if not isinstance(reference, str):
+        raise TypeError('Expected textual assistant reference')
+    reference = render_stage_text(reference, None)
+    prompt = render_stage_text(processor.apply_chat_template(
+        prompt_messages, tokenize=False, add_generation_prompt=True), None)
+    images = collect_images(prompt_messages)
+    eos = model.generation_config.eos_token_id
+    eos_ids = [] if eos is None else [eos] if isinstance(eos, int) else list(eos)
+    model.eval()
+    with torch.inference_mode():
+        for name, marker in [('after_think', '</think>'),
+                             ('after_action_start', '<|action_start|>')]:
+            if marker not in reference:
+                raise ValueError(f'Reference missing {marker}')
+            prefix = reference[:reference.index(marker) + len(marker)]
+            inputs = processor(text=[prompt + prefix], images=images or None,
+                               return_tensors='pt')
+            output = model(**inputs, use_cache=False)
+            logits = output.logits[0, -1].float().cpu()
+            del output
+            probabilities = logits.softmax(-1)
+
+            def stats(token_id, logits=logits, probabilities=probabilities):
+                return {'id': token_id,
+                        'token': processor.decode([token_id], skip_special_tokens=False),
+                        'logit': logits[token_id].item(),
+                        'probability': probabilities[token_id].item(),
+                        'rank': int((logits > logits[token_id]).sum().item()) + 1}
+
+            save({'state': state, 'phase': 'next_token', 'prefix': name,
+                  'id': dataset.records[0]['id'], 'prompt_text': prompt,
+                  'reference_prefix': prefix, 'logit_vocab': len(logits),
+                  'prompt_token_count': inputs['input_ids'].shape[1],
+                  'top10': [stats(i) for i in logits.topk(10).indices.tolist()],
+                  'actions': {token: stats(i) for token, i in action_ids.items()},
+                  'eos': [stats(i) for i in eos_ids]})
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--checkpoint', type=Path, required=True)
@@ -44,6 +112,8 @@ def main():
     parser.add_argument('--samples', type=int, default=4)
     parser.add_argument('--max-new-tokens', type=int, default=512)
     parser.add_argument('--threads', type=int, default=8)
+    parser.add_argument('--diagnostics-only', action='store_true',
+                        help='Compare baseline/checkpoint rows and reference boundaries on CPU; no generation')
     args = parser.parse_args()
     if min(args.samples, args.max_new_tokens, args.threads) < 1:
         parser.error('samples, max-new-tokens and threads must be positive')
@@ -66,6 +136,10 @@ def main():
         'seed': 42, 'started_unix': started,
         'scope': 'actual generated text inspection; not environment success evaluation',
     }
+    if args.diagnostics_only:
+        metadata.update(samples=1, max_new_tokens=None, do_sample=None,
+                        scope='First heldout record reference-boundary logits and action-row deltas; no generation',
+                        numerical_scope='CPU BF16 SDPA logits; not bitwise equivalent to GPU FA2 evaluation')
     (args.output_dir / 'metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
     emit({'phase': 'load_processor', 'checkpoint': str(args.checkpoint)})
     processor = AutoProcessor.from_pretrained(args.checkpoint)
@@ -83,10 +157,34 @@ def main():
         lora_r=64, lora_alpha=128, lora_dropout=0.05,
         lora_target_modules='q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj',
         gradient_checkpointing=False))
+    if args.diagnostics_only:
+        tokens = ['<|action_start|>', '<|action_end|>'] + [f'<|action_({i})|>' for i in range(8)]
+        action_ids = {token: processor.tokenizer.convert_tokens_to_ids(token) for token in tokens}
+        for token, token_id in action_ids.items():
+            if processor.tokenizer.encode(token, add_special_tokens=False) != [token_id]:
+                raise ValueError(f'Not an atomic action token: {token}')
+        original = {
+            name: {token: module.weight[token_id].detach().float().cpu().clone()
+                   for token, token_id in action_ids.items()}
+            for name, module in [('embedding', model.get_input_embeddings()),
+                                 ('lm_head', model.get_output_embeddings())]
+        }
+        dataset = NimlothVLSFTDataset(DATA, processor, max_records=1)
+        if not len(dataset):
+            raise ValueError('No validation records')
+        diagnose_boundaries(model, processor, dataset, action_ids, original, 'baseline', args.output_dir)
     emit({'phase': 'load_adapter_and_verify_saved_tensors'})
     load_lora_adapter_state(model, args.checkpoint)
     model.eval()
     assert all(p.device.type == 'cpu' for p in model.parameters())
+    if args.diagnostics_only:
+        diagnose_boundaries(model, processor, dataset, action_ids, original, 'checkpoint', args.output_dir)
+        summary = {'completed_samples': 1, 'states': ['baseline', 'checkpoint'],
+                   'boundaries_per_state': 2, 'generated_samples': 0,
+                   'elapsed_seconds': time.time() - started}
+        (args.output_dir / 'COMPLETED.json').write_text(json.dumps(summary, indent=2) + '\n')
+        emit(summary)
+        return
     dataset = NimlothVLSFTDataset(DATA, processor, max_records=args.samples)
     eos = model.generation_config.eos_token_id
     eos_ids = [] if eos is None else ([eos] if isinstance(eos, int) else list(eos))
