@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import itertools
 import json
 import math
 import os
@@ -26,6 +27,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from transformers import (
     AutoProcessor,
     Qwen2_5_VLForConditionalGeneration,
+    get_constant_schedule_with_warmup,
     get_cosine_schedule_with_warmup,
 )
 
@@ -34,12 +36,12 @@ from nimloth.latent import (
     initialize_extra_latent_token_embeddings,
     latent_state_block,
     latent_state_tokens,
-    normalize_latent_state_blocks,
     special_token_ids,
 )
 
 from .checkpoint import (
     RESUME_SCHEMA,
+    capture_rng_state,
     find_latest_resume_dir,
     load_lora_adapter_state,
     restore_rng_state,
@@ -49,20 +51,24 @@ from .checkpoint import (
     validate_resume_state,
 )
 from .cli import parse_args
+from .convergence import ConvergencePolicy, ConvergenceState
 from .data import (
+    CACHE_SCHEMA,
+    FORMAT_OBJECTIVE,
     NimlothVLSFTDataset,
     build_preprocess_cache,
     cache_fingerprint,
     collate_cached_fn,
     collate_fn,
     collect_images,
+    render_stage_text,
 )
 from .distributed import cleanup_dist, distributed_barrier, is_main, setup_dist
 
 
-def _nimloth_format_re(latent_token_count: int = 1) -> re.Pattern[str]:
+def _nimloth_format_re(latent_token_count: int | None = None) -> re.Pattern[str]:
     latent_block = r"\s*".join(
-        re.escape(token) for token in latent_state_tokens(latent_token_count)
+        re.escape(token) for token in (latent_state_tokens(latent_token_count) if latent_token_count is not None else ())
     )
     return re.compile(
         r"<think>.*?</think>\s*"
@@ -72,7 +78,7 @@ def _nimloth_format_re(latent_token_count: int = 1) -> re.Pattern[str]:
     )
 
 
-def nimloth_format_correct(text: str, *, latent_token_count: int = 1) -> bool:
+def nimloth_format_correct(text: str, *, latent_token_count: int | None = None) -> bool:
     return bool(_nimloth_format_re(latent_token_count).search(text))
 
 
@@ -105,8 +111,8 @@ def evaluate_format(
     device: torch.device,
     max_samples: int = 32,
     *,
-    latent_token_count: int = 1,
-    latent_query_mode: str = "inject",
+    latent_token_count: int | None = None,
+    latent_query_mode: str | None = None,
 ) -> float:
     if dist.is_available() and dist.is_initialized() and not is_main():
         return 0.0
@@ -139,7 +145,7 @@ def evaluate_format(
             # the reference thought, inject deterministic query slots, then ask
             # the model to generate only the action block.
             text += think_match.group(0) + latent_state_block(latent_token_count)
-        text = normalize_latent_state_blocks(text, latent_token_count)
+        text = render_stage_text(text, latent_token_count)
         inputs = processor(text=[text], images=images or None, return_tensors="pt")
         inputs = {k: v.to(device) for k, v in inputs.items()}
         output_ids = module.generate(**inputs, max_new_tokens=128, do_sample=False)
@@ -181,12 +187,12 @@ def prepare_query_vocabulary(
     token_id_map: dict[str, int],
     *,
     added_tokens: int,
-    latent_token_count: int,
+    latent_token_count: int | None,
 ) -> None:
     """Extend a base model without resetting trained query rows on full resume."""
     vocabulary_grows = model.get_input_embeddings().weight.shape[0] < vocabulary_size
     resize_token_embeddings_and_sync_vocab(model, vocabulary_size)
-    if added_tokens > 0 and vocabulary_grows:
+    if latent_token_count is not None and added_tokens > 0 and vocabulary_grows:
         initialize_extra_latent_token_embeddings(
             model,
             token_id_map,
@@ -233,7 +239,9 @@ def evaluate(model, loader, device: torch.device, max_batches: int = -1) -> floa
         dist.all_reduce(total, op=dist.ReduceOp.SUM)
         dist.all_reduce(count, op=dist.ReduceOp.SUM)
     model.train()
-    return (total / count.clamp_min(1)).item()
+    if count.item() == 0:
+        raise ValueError("validation loader produced no monitored loss")
+    return (total / count).item()
 
 
 def build_optimizer(
@@ -350,6 +358,7 @@ def _resume_identity(
 ) -> dict[str, Any]:
     identity: dict[str, Any] = {
         "stage": stage,
+        "format_objective": FORMAT_OBJECTIVE if stage == "format" else None,
         "world_size": world,
         "model": str(Path(args.model).resolve()),
         "train_jsonl": str(args.train_jsonl.resolve()),
@@ -382,6 +391,14 @@ def _resume_identity(
         "lora_dropout": args.lora_dropout,
         "lora_target_modules": args.lora_target_modules,
     }
+    if getattr(args, "until_converged", False):
+        identity["convergence"] = {
+            "monitor": "validation_lm_loss",
+            "min_epochs": args.convergence_min_epochs,
+            "patience_epochs": args.convergence_patience_epochs,
+            "min_relative_improvement": args.convergence_min_relative_improvement,
+            "scheduler": "constant_with_warmup_first_epoch",
+        }
     if stage == "query":
         identity.update(
             {
@@ -532,6 +549,12 @@ def main(*, stage: str = "format") -> int:
                 raise FileNotFoundError(
                     f"{mode} SFT1 preprocess cache missing manifest: {manifest_path}"
                 )
+            manifest = json.loads(manifest_path.read_text())
+            if (manifest.get("cache_schema") != CACHE_SCHEMA
+                or manifest.get("format_objective") != FORMAT_OBJECTIVE
+                or manifest.get("latent_token_count") is not None
+                or manifest.get("latent_query_mode") is not None):
+                raise ValueError(f"incompatible format-only cache: {manifest_path}")
         if args.cache_only:
             if is_main():
                 print(
@@ -630,7 +653,7 @@ def main(*, stage: str = "format") -> int:
         state_peek = torch.load(resume_ckpt, map_location="cpu", weights_only=False)
         validate_resume_stage(state_peek, resume_dir, stage)
         saved_mode = state_peek.get("latent_query_mode")
-        if saved_mode is None and "mask_latent_query_labels" in state_peek:
+        if stage == "query" and saved_mode is None and "mask_latent_query_labels" in state_peek:
             saved_mode = (
                 "inject" if state_peek["mask_latent_query_labels"] else "generate"
             )
@@ -721,10 +744,21 @@ def main(*, stage: str = "format") -> int:
             model._set_static_graph()
 
     steps_per_epoch = max(1, math.ceil(len(train_loader) / args.grad_accum))
-    total_steps = steps_per_epoch * args.epochs
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer, int(total_steps * args.warmup_ratio), total_steps
+    convergence_policy = (
+        ConvergencePolicy(args.convergence_min_epochs, args.convergence_patience_epochs,
+                          args.convergence_min_relative_improvement)
+        if args.until_converged else None
     )
+    convergence = ConvergenceState()
+    if convergence_policy is not None:
+        scheduler = get_constant_schedule_with_warmup(
+            optimizer, math.ceil(steps_per_epoch * args.warmup_ratio)
+        )
+    else:
+        total_steps = steps_per_epoch * args.epochs
+        scheduler = get_cosine_schedule_with_warmup(
+            optimizer, int(total_steps * args.warmup_ratio), total_steps
+        )
     resume_identity = _resume_identity(
         args, stage=stage, world=world, train_size=len(train_ds)
     )
@@ -768,8 +802,13 @@ def main(*, stage: str = "format") -> int:
     start_epoch = 1
     resume_next_micro_batch = 0
     resume_rank_rng: dict[str, Any] | None = None
+    resume_at_epoch_boundary = False
     if args.resume and resume_ckpt is not None and resume_ckpt.exists():
         state = torch.load(resume_ckpt, map_location="cpu", weights_only=False)
+        if convergence_policy is not None:
+            if state.get("convergence_state") is None:
+                raise ValueError("resume checkpoint lacks convergence state")
+            convergence = ConvergenceState.from_state_dict(state["convergence_state"])
         global_step = int(state.get("step", 0))
         best_val = float(state.get("best_val", float("inf")))
         if state.get("resume_schema") == RESUME_SCHEMA:
@@ -800,11 +839,19 @@ def main(*, stage: str = "format") -> int:
                     f"{state.get('world_size')} != {world}"
                 )
             start_epoch = int(state["epoch"]) + 1
+            if convergence_policy is not None:
+                rng_states = state.get("rank_rng_states")
+                if not isinstance(rng_states, list) or len(rng_states) != world:
+                    raise ValueError("epoch checkpoint lacks per-rank RNG for faithful resume")
+                resume_rank_rng = rng_states[rank]
+                resume_at_epoch_boundary = True
         else:
             epoch_dirs = sorted(args.output_dir.glob("epoch_*"))
             start_epoch = (
                 int(epoch_dirs[-1].name.split("_")[-1]) + 1 if epoch_dirs else 1
             )
+        if convergence_policy is not None and convergence.last_epoch != start_epoch - 1:
+            raise ValueError("convergence history does not match resume data cursor")
         if best_val == float("inf") and log_path.exists():
             rows = list(csv.reader(log_path.open()))
             for row in reversed(rows):
@@ -834,10 +881,11 @@ def main(*, stage: str = "format") -> int:
             )
 
     stop_after_boundary = False
+    stop_requested = False
 
     def request_boundary_stop(signum, _frame) -> None:
-        nonlocal stop_after_boundary
-        stop_after_boundary = True
+        nonlocal stop_requested
+        stop_requested = True
         if is_main():
             print(
                 json.dumps(
@@ -849,7 +897,14 @@ def main(*, stage: str = "format") -> int:
         signal.signal(signal.SIGUSR1, request_boundary_stop)
 
     model.train()
-    for epoch in range(start_epoch, args.epochs + 1):
+    epoch_rng_states = state.get("rank_rng_states") if args.resume and resume_ckpt is not None else None
+    epoch = start_epoch - 1
+    epoch_numbers = (itertools.count(start_epoch) if args.until_converged
+                     else range(start_epoch, args.epochs + 1))
+    for epoch in epoch_numbers:
+        if convergence.converged:
+            epoch = convergence.last_epoch
+            break
         train_sampler.set_epoch(epoch)
         optimizer.zero_grad(set_to_none=True)
         accum_loss = 0.0
@@ -863,7 +918,12 @@ def main(*, stage: str = "format") -> int:
             epoch_number: int = epoch,
             best_at_epoch_start: float = best_val,
         ) -> None:
-            nonlocal global_step, accum_loss
+            nonlocal global_step, accum_loss, stop_after_boundary
+            stop_after_boundary = stop_requested
+            if world > 1:
+                stop_request = torch.tensor(int(stop_after_boundary), device=device)
+                dist.all_reduce(stop_request, op=dist.ReduceOp.MAX)
+                stop_after_boundary = bool(stop_request.item())
             for p in model.parameters():
                 if p.grad is not None:
                     p.grad.div_(micro_count)
@@ -914,6 +974,7 @@ def main(*, stage: str = "format") -> int:
                     next_micro_batch=next_batch,
                     best_val=best_at_epoch_start,
                     identity=resume_identity,
+                    convergence_state=convergence.state_dict() if convergence_policy else None,
                     rank=rank,
                     world=world,
                     lora=args.lora,
@@ -923,6 +984,9 @@ def main(*, stage: str = "format") -> int:
                     latent_query_mode=args.latent_query_mode,
                 )
 
+        if epoch == start_epoch and resume_rank_rng is not None and resume_at_epoch_boundary:
+            restore_rng_state(resume_rank_rng)
+            resume_rank_rng = None
         train_iterator = iter(train_loader)
         for _ in range(next_micro_batch):
             try:
@@ -964,6 +1028,7 @@ def main(*, stage: str = "format") -> int:
                 next_micro_batch=len(train_loader),
                 best_val=best_val,
                 identity=resume_identity,
+                convergence_state=convergence.state_dict() if convergence_policy else None,
                 rank=rank,
                 world=world,
                 lora=args.lora,
@@ -990,9 +1055,16 @@ def main(*, stage: str = "format") -> int:
             latent_token_count=args.latent_token_count,
             latent_query_mode=args.latent_query_mode,
         )
+        if convergence_policy is not None:
+            convergence.observe(epoch=epoch, loss=val_loss, policy=convergence_policy)
+        local_epoch_rng = capture_rng_state()
+        epoch_rng_states = [local_epoch_rng]
+        if world > 1:
+            epoch_rng_states = [None] * world
+            dist.all_gather_object(epoch_rng_states, local_epoch_rng)
+        previous_best_val = best_val
+        best_val = min(best_val, val_loss)
         if is_main():
-            previous_best_val = best_val
-            best_val = min(best_val, val_loss)
             with log_path.open("a", newline="") as f:
                 csv.writer(f).writerow(
                     [
@@ -1023,6 +1095,8 @@ def main(*, stage: str = "format") -> int:
                 latent_query_mode=args.latent_query_mode,
                 world_size=world,
                 identity=resume_identity,
+                convergence_state=convergence.state_dict() if convergence_policy else None,
+                rank_rng_states=epoch_rng_states,
             )
             if val_loss < previous_best_val:
                 save_checkpoint(
@@ -1043,6 +1117,8 @@ def main(*, stage: str = "format") -> int:
                     latent_query_mode=args.latent_query_mode,
                     world_size=world,
                     identity=resume_identity,
+                    convergence_state=convergence.state_dict() if convergence_policy else None,
+                    rank_rng_states=epoch_rng_states,
                 )
             print(
                 json.dumps(
@@ -1050,6 +1126,7 @@ def main(*, stage: str = "format") -> int:
                         "epoch": epoch,
                         "global_step": global_step,
                         "val_loss": val_loss,
+                        "convergence": convergence.state_dict() if convergence_policy else None,
                         "format_correct_rate": format_rate,
                         "format_eval_protocol": args.latent_query_mode,
                         "best_val": best_val,
@@ -1071,6 +1148,8 @@ def main(*, stage: str = "format") -> int:
                     step=global_step,
                 )
         distributed_barrier()
+        if convergence.converged:
+            break
 
     if is_main():
         save_checkpoint(
@@ -1081,7 +1160,7 @@ def main(*, stage: str = "format") -> int:
             optimizer,
             scheduler,
             global_step,
-            args.epochs,
+            epoch,
             best_val,
             lora=args.lora,
             base_model_path=base_model_path,
@@ -1091,7 +1170,15 @@ def main(*, stage: str = "format") -> int:
             latent_query_mode=args.latent_query_mode,
             world_size=world,
             identity=resume_identity,
+            convergence_state=convergence.state_dict() if convergence_policy else None,
+            rank_rng_states=epoch_rng_states,
         )
+        if convergence_policy is not None:
+            (args.output_dir / "CONVERGED.json").write_text(
+                json.dumps({"monitor": "validation_lm_loss", "policy": convergence_policy.state_dict(),
+                            "state": convergence.state_dict(), "global_step": global_step}) + "\n",
+                encoding="utf-8",
+            )
         if wandb_run is not None:
             import wandb
 

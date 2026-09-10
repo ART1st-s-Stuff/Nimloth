@@ -29,19 +29,34 @@ def reject_links(path):
         raise ValueError(f'symlink inside checkpoint: {path}')
 
 
+def validate_completed_state(state, path):
+    for key in ('optimizer', 'scheduler', 'identity'):
+        if not isinstance(state.get(key), dict) or not state[key]:
+            raise ValueError(f'missing {key}: {path}')
+    if (not isinstance(state.get('epoch'), int) or state['epoch'] < 1 or state.get('training_stage') != 'format'
+            or state.get('format_objective') != 'format_answer_ce_v2'
+            or state.get('latent_token_count') is not None or state.get('latent_query_mode') is not None
+            or state.get('mask_latent_query_labels') is not None
+            or state.get('world_size') != 8 or not state.get('lora')
+            or not math.isfinite(state['best_val']) or state['step'] < 1):
+        raise ValueError(f'invalid completed state: {path}')
+    from nimloth.training.sft.stage1.convergence import ConvergenceState
+    convergence = ConvergenceState.from_state_dict(state.get('convergence_state') or {})
+    if convergence.last_epoch != state['epoch']:
+        raise ValueError(f'epoch convergence cursor mismatch: {path}')
+    rng = state.get('rank_rng_states')
+    required = {'python', 'numpy', 'torch_cpu', 'torch_cuda'}
+    if (not isinstance(rng, list) or len(rng) != 8
+            or any(not isinstance(item, dict) or not required.issubset(item) for item in rng)):
+        raise ValueError(f'incomplete epoch RNG state: {path}')
+
+
 def validate_checkpoint(path):
     import torch
     from safetensors import safe_open
     reject_links(path)
     state = torch.load(path / 'training_state.pt', map_location='cpu', weights_only=False)
-    for key in ('optimizer', 'scheduler', 'identity'):
-        if not isinstance(state.get(key), dict) or not state[key]:
-            raise ValueError(f'missing {key}: {path}')
-    if (state.get('epoch') != 1 or state.get('training_stage') != 'format'
-            or state.get('latent_token_count') != 1 or state.get('latent_query_mode') != 'generate'
-            or state.get('world_size') != 8 or not state.get('lora')
-            or not math.isfinite(state['best_val']) or state['step'] < 1):
-        raise ValueError(f'invalid completed state: {path}')
+    validate_completed_state(state, path)
     for name in ('adapter_config.json', 'tokenizer_config.json', 'preprocessor_config.json'):
         json.loads((path / name).read_text())
     weights = list(path.glob('*.safetensors'))
@@ -59,23 +74,49 @@ def validate_checkpoint(path):
     return {k: state[k] for k in ('epoch', 'step', 'identity')}
 
 
-def cleanup(run, validator=validate_checkpoint):
+def validate_step_checkpoint(path, step, identity):
+    import torch
+    state = torch.load(path/'training_state.pt', map_location='cpu', weights_only=False)
+    if (state.get('step') != step or state.get('identity') != identity
+            or state.get('resume_schema') != 'nimloth_early_stage_resume_v1'
+            or state.get('training_stage') != 'format'
+            or state.get('format_objective') != 'format_answer_ce_v2'):
+        raise ValueError(f'step checkpoint identity mismatch: {path}')
+
+
+def cleanup(run, validator=validate_checkpoint, through_epoch=None, step_validator=validate_step_checkpoint):
     run = Path(run).absolute()
     reject_links(run)
-    if (run / 'TRAIN_SUCCEEDED').read_text().strip() != '0':
-        raise ValueError('training did not succeed')
     metadata = json.loads((run / 'launch.json').read_text())
     if metadata['run_output'] != str(run):
         raise ValueError('run ownership mismatch')
-    epoch, final = validator(run / 'epoch_001'), validator(run / 'final')
-    if epoch != final:
+    if through_epoch is None:
+        if (run / 'TRAIN_SUCCEEDED').read_text().strip() != '0':
+            raise ValueError('training did not succeed')
+        final = validator(run / 'final')
+        completed_epoch = final.get('epoch')
+    else:
+        completed_epoch = through_epoch
+    if not isinstance(completed_epoch, int) or completed_epoch < 1:
+        raise ValueError('invalid completed epoch')
+    epoch_name = f'epoch_{completed_epoch:03d}'
+    epoch = validator(run / epoch_name)
+    if through_epoch is None and epoch != final:
         raise ValueError('epoch/final state mismatch')
-    marker = json.loads((run / 'epoch_001' / 'COMMITTED').read_text())
-    if marker != {'epoch': 1, 'step': epoch['step']}:
+    marker = json.loads((run / epoch_name / 'COMMITTED').read_text())
+    if marker != {'epoch': completed_epoch, 'step': epoch['step']}:
         raise ValueError('epoch marker mismatch')
+    suffix = '' if through_epoch is None else f'_epoch_{completed_epoch:03d}'
+    manifest_path = run / f'cleanup{suffix}_manifest.json'
+    complete_path = run / f'cleanup{suffix}_complete.json'
+    if complete_path.exists():
+        return
     candidates = []
     for path in sorted(run.iterdir()):
         if not re.fullmatch(r'resume_step_[0-9]{8}', path.name):
+            continue
+        step = int(path.name.rsplit('_', 1)[1])
+        if through_epoch is not None and step > epoch['step']:
             continue
         if not path.is_dir():
             raise ValueError(f'not a checkpoint directory: {path}')
@@ -83,8 +124,9 @@ def cleanup(run, validator=validate_checkpoint):
         marker = json.loads((path / 'COMMITTED').read_text())
         step = int(path.name.rsplit('_', 1)[1])
         if (marker.get('step') != step or marker.get('schema') != 'nimloth_early_stage_resume_v1'
-                or step <= 0 or step % 10 or step > epoch['step']):
+                or step <= 0 or step > epoch['step']):
             raise ValueError(f'invalid step marker: {path}')
+        step_validator(path, step, epoch['identity'])
         files = []
         for f in sorted(path.rglob('*')):
             if f.is_file():
@@ -94,15 +136,17 @@ def cleanup(run, validator=validate_checkpoint):
                         digest.update(block)
                 files.append({'path': str(f.relative_to(run)), 'size': f.stat().st_size, 'sha256': digest.hexdigest()})
         candidates.append({'path': str(path), 'files': files})
-    durable_json(run / 'cleanup_manifest.json', {'retained': ['epoch_001', 'final', 'best'], 'verified_state': epoch, 'removed_candidates': candidates})
+    durable_json(manifest_path, {'retained': [epoch_name, 'final', 'best'], 'verified_state': epoch, 'removed_candidates': candidates})
     for candidate in candidates:
         path = Path(candidate['path'])
         reject_links(path)
         shutil.rmtree(path)
-    durable_json(run / 'cleanup_complete.json', {'removed': [c['path'] for c in candidates]})
+    durable_json(complete_path, {'removed': [c['path'] for c in candidates]})
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('run', type=Path)
-    cleanup(parser.parse_args().run)
+    parser.add_argument('--through-epoch', type=int)
+    args = parser.parse_args()
+    cleanup(args.run, through_epoch=args.through_epoch)

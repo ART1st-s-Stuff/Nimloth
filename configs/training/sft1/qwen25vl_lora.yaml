@@ -12,10 +12,6 @@ tuning:
   lora_r: 64
   lora_alpha: 128
 
-latent:
-  token_count: 1
-  query_mode: generate  # legacy SFT1 autonomously emits the query token
-
 train:
   epochs: 20
   batch_size: 1

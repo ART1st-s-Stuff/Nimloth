@@ -194,11 +194,15 @@ def merge_checkpoint(
         training_state = torch.load(
             training_state_path, map_location="cpu", weights_only=False
         )
-        merged.config.nimloth_latent_token_count = int(
-            training_state.get("latent_token_count", 1)
+        format_objective = training_state.get("format_objective")
+        merged.config.nimloth_format_objective = format_objective
+        merged.config.nimloth_latent_token_count = (
+            None
+            if format_objective == "format_answer_ce_v2"
+            else int(training_state.get("latent_token_count", 1))
         )
         saved_mode = training_state.get("latent_query_mode")
-        if saved_mode is None:
+        if saved_mode is None and format_objective != "format_answer_ce_v2":
             saved_mode = (
                 "inject"
                 if training_state.get("mask_latent_query_labels", True)

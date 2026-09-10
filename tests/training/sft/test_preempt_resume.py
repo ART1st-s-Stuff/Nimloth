@@ -14,6 +14,7 @@ from nimloth.training.sft.stage1.checkpoint import (
     find_latest_resume_dir,
     restore_rng_state,
     save_resume_checkpoint,
+    validate_resume_stage,
     validate_resume_state,
 )
 
@@ -93,9 +94,9 @@ def _run(tmp_path: Path, *, interrupt: bool):
                         world=1,
                         lora=False,
                         base_model_path=tmp_path / "base",
-                        latent_token_count=1,
-                        mask_latent_query_labels=False,
-                        latent_query_mode="generate",
+                        latent_token_count=None,
+                        mask_latent_query_labels=None,
+                        latent_query_mode=None,
                     )
                     return
 
@@ -106,6 +107,10 @@ def _run(tmp_path: Path, *, interrupt: bool):
         state = torch.load(
             checkpoint / "training_state.pt", map_location="cpu", weights_only=False
         )
+        validate_resume_stage(state, checkpoint, "format")
+        assert state["format_objective"] == "format_answer_ce_v2"
+        assert state["latent_token_count"] is None
+        assert state["latent_query_mode"] is None
         validate_resume_state(state, expected_identity=identity, rank=0, world=1)
         resumed = TinyModel()
         resumed.load_state_dict(torch.load(checkpoint / "model.pt", weights_only=True))

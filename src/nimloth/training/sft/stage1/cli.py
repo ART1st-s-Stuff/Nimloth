@@ -13,6 +13,7 @@ from nimloth.latent import (
 )
 
 from .config import sft1_yaml_defaults
+from .convergence import ConvergencePolicy
 
 
 def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
@@ -34,7 +35,11 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap.add_argument("--train-jsonl", type=Path, required=True)
     ap.add_argument("--val-jsonl", type=Path, required=True)
     ap.add_argument("--output-dir", type=Path, required=True)
-    ap.add_argument("--epochs", type=int, default=20)
+    ap.add_argument("--epochs", type=int, default=None)
+    ap.add_argument("--until-converged", action="store_true")
+    ap.add_argument("--convergence-min-epochs", type=int)
+    ap.add_argument("--convergence-patience-epochs", type=int)
+    ap.add_argument("--convergence-min-relative-improvement", type=float)
     ap.add_argument("--batch-size", type=int, default=1)
     ap.add_argument("--grad-accum", type=int, default=8)
     ap.add_argument("--lr", type=float, default=1e-6)
@@ -47,24 +52,25 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap.add_argument("--weight-decay", type=float, default=0.01)
     ap.add_argument("--warmup-ratio", type=float, default=0.05)
     ap.add_argument("--max-length", type=int, default=20000)
-    ap.add_argument(
-        "--latent-token-count",
-        type=int,
-        default=int(os.environ.get("LATENT_TOKEN_COUNT", "1")),
-        help="Number of latent query tokens per action block; 1 keeps legacy SFT1 behavior.",
-    )
-    ap.add_argument(
-        "--latent-query-mode",
-        choices=LATENT_QUERY_MODES,
-        default=None,
-        help="inject: framework supplies query slots; generate: model emits query token IDs.",
-    )
-    ap.add_argument(
-        "--mask-latent-query-labels",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Deprecated compatibility alias: true=inject, false=generate.",
-    )
+    if stage == "query":
+        ap.add_argument(
+            "--latent-token-count",
+            type=int,
+            default=int(os.environ.get("LATENT_TOKEN_COUNT", "1")),
+            help="Number of latent query tokens per action block; 1 keeps legacy SFT1 behavior.",
+        )
+        ap.add_argument(
+            "--latent-query-mode",
+            choices=LATENT_QUERY_MODES,
+            default=None,
+            help="inject: framework supplies query slots; generate: model emits query token IDs.",
+        )
+        ap.add_argument(
+            "--mask-latent-query-labels",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help="Deprecated compatibility alias: true=inject, false=generate.",
+        )
     ap.add_argument("--max-train-records", type=int, default=-1)
     ap.add_argument("--max-val-records", type=int, default=-1)
     ap.add_argument("--max-val-batches", type=int, default=-1)
@@ -162,8 +168,12 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         help="On-disk cached pixel dtype; bfloat16 matches the GPU visual encoder dtype.",
     )
     if probed.config is not None:
-        ap.set_defaults(**sft1_yaml_defaults(probed.config))
-    if os.environ.get("LATENT_QUERY_MODE"):
+        ap.set_defaults(**sft1_yaml_defaults(probed.config, stage=stage))
+    if stage == "format" and any(
+        name in os.environ for name in ("LATENT_TOKEN_COUNT", "NIMLOTH_LATENT_TOKEN_COUNT", "LATENT_QUERY_MODE", "MASK_LATENT_QUERY_LABELS")
+    ):
+        raise ValueError("stage1 format supervision does not accept latent/query environment overrides")
+    if stage == "query" and os.environ.get("LATENT_QUERY_MODE"):
         ap.set_defaults(latent_query_mode=os.environ["LATENT_QUERY_MODE"])
     if stage == "query":
         ap.set_defaults(no_cache=True)
@@ -174,6 +184,29 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         if action.required and action.default is not None:
             action.required = False
     args = ap.parse_args(argv)
+    policy_values = (
+        args.convergence_min_epochs, args.convergence_patience_epochs,
+        args.convergence_min_relative_improvement,
+    )
+    if args.until_converged:
+        if stage != "format":
+            raise ValueError("--until-converged is supported only for format LM training")
+        if args.epochs is not None:
+            raise ValueError("--until-converged cannot be combined with epochs (CLI or YAML)")
+        if any(value is None for value in policy_values):
+            raise ValueError("--until-converged requires all three convergence policy parameters")
+        ConvergencePolicy(*policy_values)
+        if args.max_val_batches is not None and args.max_val_batches > 0:
+            raise ValueError("convergence requires the full validation loader")
+    else:
+        if any(value is not None for value in policy_values):
+            raise ValueError("convergence policy requires --until-converged")
+        if args.epochs is None:
+            args.epochs = 20
+        if args.epochs < 1:
+            raise ValueError("epochs must be positive")
+    if not 0 <= args.warmup_ratio <= 1:
+        raise ValueError("warmup ratio must be in [0, 1]")
     query_config = None
     if stage == "query":
         from nimloth.training.sft.stage2.config import QueryAlignmentConfig
@@ -192,18 +225,19 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
             raise ValueError(
                 "query token count must equal the DINO spatial grid size squared"
             )
-    args.latent_query_mode = resolve_latent_query_mode(
-        args.latent_query_mode,
-        args.mask_latent_query_labels,
-        default="inject",
-    )
-    args.mask_latent_query_labels = query_labels_are_masked(args.latent_query_mode)
-    args.latent_token_count = int(args.latent_token_count)
+    if stage == "query":
+        args.latent_query_mode = resolve_latent_query_mode(
+            args.latent_query_mode, args.mask_latent_query_labels, default="inject"
+        )
+        args.mask_latent_query_labels = query_labels_are_masked(args.latent_query_mode)
+        if args.latent_token_count < 1:
+            raise ValueError("--latent-token-count must be >= 1")
+    else:
+        # None identifies the format stage; it is not a zero-slot query protocol.
+        args.latent_token_count = None
+        args.latent_query_mode = None
+        args.mask_latent_query_labels = None
     if args.resume_save_steps < 1:
         raise ValueError("--resume-save-steps must be >= 1")
-    if args.latent_token_count < 1:
-        raise ValueError(
-            f"--latent-token-count must be >= 1, got {args.latent_token_count}"
-        )
 
     return args, query_config

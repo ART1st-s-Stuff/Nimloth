@@ -1,12 +1,10 @@
-# 执行检查表
-
-- [x] 用户批准任务创建和a100-1执行位置。
-- [x] 只读核验GPU、旧失败状态、数据hash、验证报告、模型config和FlashAttention导入。
-- [x] 对照当前stage1及近期旧数据实验参数，记录K1/K16差异。
-- [ ] 用户审查本次最终参数方案后task.py start。
-- [ ] 分派实现agent准备运行脚本；核验本地修改、commit并通过Git同步到专用远程worktree。
-- [ ] CPU preflight：干净commit一致、真实CLI、checkpoint shards/keys、全量图像可读、划分无交叠、K1预处理无截断与cache fingerprint。
-- [ ] 检查agent审查脚本/恢复/超时/唯一目录；核验实际可训练模块。
-- [ ] 刷新GPU资源与端口，单次启动8GPU SFT1；记录真实PID与完整contract。
-- [ ] 监控至有限loss与optimizer steps；有异常则留存日志并停止自动重试。
-- [ ] 记录运行位置与交接；完成后记录checkpoint与全量offline val（不误报rollout质量）。
+# 执行计划
+- [x] 用户授权纠正spec漂移后重启，以验证LM loss收敛为目标及每10步保存/成功后清理。
+- [x] 实现stage1无query语义与相关回归测试；明确数据/缓存/checkpoint阶段身份。
+- [x] 更新本次launch/cleanup与必要调用方参数，旧K配置不再进入stage1。
+- [x] 接入已确认的收敛状态、checkpoint恢复与时限暂停；停止条件不是固定epoch。
+- [x] 独立审查实际代码路径与stage2不回归，完成相关测试。
+- [ ] 提交本次专用branch修正，同步远程专用worktree；CPU数据/模型/真实CLI检查。
+- [ ] 构建并全量核验新format-only缓存，刷新资源后启动一次8GPU训练。
+- [ ] 核验optimizer step/loss，记录进程、commit、run/监控与交接。
+- [ ] epoch成功及final核验后清理当前run step checkpoints；记录最终结果。

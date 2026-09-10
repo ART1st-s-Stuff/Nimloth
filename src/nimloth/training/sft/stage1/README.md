@@ -4,15 +4,24 @@
 
 ## 模块职责与数据流
 
-- `data.py`：读取记录中的对话和截图，构造仅监督回答的标签，屏蔽提示词、填充和注入的 query 位置；使用右侧填充保留文本区间的位置关系，并负责样本编码缓存。
+- `data.py`：读取记录中的对话和截图，构造仅监督回答的标签，屏蔽提示词和填充，stage1移除所有角色文本中的历史 latent 标记（原始 JSONL/截图不变），保留真实 CoT 和动作；使用右侧填充保留文本区间的位置关系，并负责样本编码缓存。
 - `config.py`：读取 YAML 默认配置。`cli.py`：定义命令行选项，在加载模型前校验训练阶段和参数。
 - `trainer.py`：加载 Qwen、设置可训练参数、构建优化器，驱动梯度累积、离线验证和 epoch checkpoint 保存。SFT1直接使用 teacher forcing 的回答 CE，不计算 DINO 或 WM 损失。SFT2显式选择 query 阶段后复用同一训练生命周期。
+- `convergence.py`：验证 loss 收敛状态和可恢复的停止策略。
 - `distributed.py`：建立和清理分布式进程组，提供主进程判断与同步；checkpoint 模块不依赖训练循环。
 - `checkpoint.py`：保存训练状态、查找恢复位置和校验阶段身份，独立于训练循环。
 - `checkpoint_export.py`：负责 LoRA 合并与导出校验，包括单独训练的 embedding 和输出 head；历史合并脚本调用此实现。
 
 ## 保存与恢复
 
-Checkpoint 保存优化器、调度器、epoch/step 和 `training_stage=format`。明确识别出的旧格式训练 checkpoint 仍可恢复；Query/WM checkpoint 不能静默按格式阶段恢复。
+Stage1 不接受 K、query mode、query mask 的 CLI、环境变量或 YAML 配置。共享内部接口用 None 标记无 query 的阶段；stage2 仍要求正数 K。
 
-恢复从已保存的 epoch 边界继续，现有训练循环不保存随机数状态，因此不保证逐位重放。离线 loss/格式验证不等于环境 rollout；环境评估见 [`../evaluation/`](../evaluation/README.md)。
+Cache 使用 `nimloth_early_stage_cache_v7`，记录 `format_answer_ce_v2` 与 `remove_latent_markers_all_roles` 投影身份；旧缓存或无身份 tensor 不能静默复用。格式指标检查模型生成的 CoT 与动作块，不要求 latent 块。
+
+Checkpoint 保存 `training_stage=format`、`format_objective=format_answer_ce_v2`，query 参数为空。旧 query 训练 checkpoint 不可恢复为新格式阶段。完整优化步 checkpoint 以 COMMITTED 标记发布，保存优化器、调度器、各 rank RNG 和数据位置；恢复校验完整身份。离线 loss/格式验证不等于环境 rollout；当前共享 direct evaluator 仍要求 query 协议，尚不能用它验收此 format-only 产物。
+
+## 训练至收敛
+
+格式阶段可显式使用 `--until-converged --convergence-min-epochs N --convergence-patience-epochs P --convergence-min-relative-improvement R`，不能同时指定固定 `--epochs`。每轮完整验证后判断回答LM loss是否相对上一轮改善达到阈值；连续P轮未达到阈值且达到最少轮数后停止。绝对最低验证loss另外记录用于best checkpoint。
+
+此模式按首轮预计优化步数和warmup_ratio确定预热步数，之后保持设定学习率，不设置虚构的总epoch数供cosine调度。Checkpoint保存收敛计数和每rank随机状态，续训恢复原有判断历史。运行时限或外部暂停不代表收敛；只有实际满足条件且final保存后才产生CONVERGED.json。

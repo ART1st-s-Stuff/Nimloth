@@ -34,7 +34,8 @@ def test_launcher_encodes_sequential_training_merge_and_eval_contract():
     )
     evaluation = text.index("-m nimloth.training.sft.evaluation", second_merge)
     assert stage1 < first_merge < stage2 < second_merge < evaluation
-    assert "--latent-token-count 1 --latent-query-mode generate" in text
+    assert "--latent-token-count" not in text[stage1:first_merge]
+    assert "--latent-query-mode" not in text[stage1:first_merge]
     assert "--latent-token-count 16 --latent-query-mode inject" in text
     assert '--model "${STAGE1_MERGED}"' in text
     assert '--base-model "${STAGE1_MERGED}"' in text

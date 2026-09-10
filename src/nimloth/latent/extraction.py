@@ -79,12 +79,15 @@ def latent_state_block(
 def all_special_tokens_for_latent_count(
     tokens: LatentActionTokens = LatentActionTokens(),
     *,
-    latent_token_count: int = 1,
+    latent_token_count: int | None = 1,
 ) -> tuple[str, ...]:
-    """Return all Nimloth special tokens for the configured latent slots."""
+    """Return stage tokens; None registers actions for format-only supervision."""
 
     return (
-        *latent_state_tokens(latent_token_count, tokens),
+        *(
+            latent_state_tokens(latent_token_count, tokens)
+            if latent_token_count is not None else ()
+        ),
         tokens.action_start,
         tokens.action_end,
         *tokens.action_tokens,
@@ -142,7 +145,7 @@ def special_token_ids(
     tokenizer,
     tokens: LatentActionTokens = LatentActionTokens(),
     *,
-    latent_token_count: int = 1,
+    latent_token_count: int | None = 1,
 ) -> dict[str, int]:
     """Return ids for every Nimloth special token, failing on missing/split tokens."""
 
@@ -156,7 +159,7 @@ def add_special_tokens(
     tokenizer,
     tokens: LatentActionTokens = LatentActionTokens(),
     *,
-    latent_token_count: int = 1,
+    latent_token_count: int | None = 1,
 ) -> int:
     """Add Nimloth special tokens to a HuggingFace tokenizer.
 

@@ -113,9 +113,10 @@ def save_resume_checkpoint(
     world: int,
     lora: bool,
     base_model_path: Path,
-    latent_token_count: int,
-    mask_latent_query_labels: bool,
-    latent_query_mode: str,
+    latent_token_count: int | None,
+    mask_latent_query_labels: bool | None,
+    latent_query_mode: str | None,
+    convergence_state: dict[str, Any] | None = None,
 ) -> Path:
     """Atomically publish a same-world checkpoint at an optimizer boundary."""
     local_rng = capture_rng_state()
@@ -146,11 +147,15 @@ def save_resume_checkpoint(
             temporary = Path(tempfile.mkdtemp(prefix=f".{name}.tmp-", dir=out_dir))
             try:
                 module = model.module if hasattr(model, "module") else model
-                module.config.nimloth_latent_token_count = int(latent_token_count)
+                module.config.nimloth_format_objective = (
+                    "format_answer_ce_v2" if latent_token_count is None else None
+                )
+                module.config.nimloth_latent_token_count = latent_token_count
                 module.config.nimloth_latent_query_mode = latent_query_mode
                 module.save_pretrained(temporary, safe_serialization=True)
                 processor.save_pretrained(temporary)
                 state = {
+                    "convergence_state": convergence_state,
                     "resume_schema": RESUME_SCHEMA,
                     "identity": identity,
                     "world_size": world,
@@ -162,9 +167,10 @@ def save_resume_checkpoint(
                     "best_val": best_val,
                     "lora": lora,
                     "base_model_path": str(base_model_path),
-                    "latent_token_count": int(latent_token_count),
+                    "format_objective": "format_answer_ce_v2" if latent_token_count is None else None,
+                    "latent_token_count": latent_token_count,
                     "latent_query_mode": latent_query_mode,
-                    "mask_latent_query_labels": bool(mask_latent_query_labels),
+                    "mask_latent_query_labels": mask_latent_query_labels,
                     "training_stage": getattr(
                         module.config, "nimloth_training_stage", "format"
                     ),
@@ -203,27 +209,35 @@ def save_checkpoint(
     lora: bool = False,
     base_model_path: Path | None = None,
     merge_for_eval: bool = False,
-    latent_token_count: int = 1,
-    mask_latent_query_labels: bool = True,
-    latent_query_mode: str = "inject",
+    latent_token_count: int | None = None,
+    mask_latent_query_labels: bool | None = None,
+    latent_query_mode: str | None = None,
     world_size: int | None = None,
     identity: dict[str, Any] | None = None,
+    convergence_state: dict[str, Any] | None = None,
+    rank_rng_states: list[Any] | None = None,
 ) -> None:
     ckpt = out_dir / name
     ckpt.mkdir(parents=True, exist_ok=True)
     module = model.module if hasattr(model, "module") else model
-    module.config.nimloth_latent_token_count = int(latent_token_count)
+    module.config.nimloth_format_objective = (
+        "format_answer_ce_v2" if latent_token_count is None else None
+    )
+    module.config.nimloth_latent_token_count = latent_token_count
     module.config.nimloth_latent_query_mode = latent_query_mode
     module.save_pretrained(ckpt, safe_serialization=True)
     processor.save_pretrained(ckpt)
     state = {
+        "convergence_state": convergence_state,
+        "rank_rng_states": rank_rng_states,
         "step": step,
         "epoch": epoch,
         "best_val": best_val,
         "lora": lora,
-        "latent_token_count": int(latent_token_count),
+        "format_objective": "format_answer_ce_v2" if latent_token_count is None else None,
+                    "latent_token_count": latent_token_count,
         "latent_query_mode": latent_query_mode,
-        "mask_latent_query_labels": bool(mask_latent_query_labels),
+        "mask_latent_query_labels": mask_latent_query_labels,
         "training_stage": getattr(module.config, "nimloth_training_stage", "format"),
     }
     if world_size is not None:
@@ -238,9 +252,12 @@ def save_checkpoint(
         state["scheduler"] = scheduler.state_dict()
     torch.save(state, ckpt / "training_state.pt")
     if name.startswith("epoch_"):
+        _fsync_tree(ckpt)
         (ckpt / COMMITTED_MARKER).write_text(
             json.dumps({"epoch": epoch, "step": step}) + "\n", encoding="utf-8"
         )
+        _fsync_file(ckpt / COMMITTED_MARKER)
+        _fsync_directory(ckpt)
     if lora and merge_for_eval and is_main() and base_model_path is not None:
         merge_peft_checkpoint(base_model_path, ckpt, ckpt / "hf_merged", processor)
 
@@ -257,6 +274,8 @@ def validate_resume_stage(
     }
     if wm_keys.intersection(state) or (checkpoint / "wm_predictor").exists():
         raise ValueError("WM/value checkpoint cannot resume an early training stage")
+    if expected == "format" and state.get("format_objective") != "format_answer_ce_v2":
+        raise ValueError("legacy query-bearing checkpoint cannot resume format-only supervision")
     saved_stage = state.get("training_stage")
     if saved_stage is None:
         legacy_keys = {"step", "epoch", "best_val", "lora"}

@@ -382,12 +382,16 @@ def test_resume_stage_distinguishes_legacy_format_from_wm_and_query(tmp_path):
     from nimloth.training.sft.stage1.checkpoint import validate_resume_stage
 
     legacy = {"step": 3, "epoch": 1, "best_val": 0.5, "lora": True}
-    validate_resume_stage(legacy, tmp_path, "format")
+    with pytest.raises(ValueError, match="legacy query-bearing"):
+        validate_resume_stage(legacy, tmp_path, "format")
+    validate_resume_stage(
+        {**legacy, "format_objective": "format_answer_ce_v2"}, tmp_path, "format"
+    )
     with pytest.raises(ValueError, match="stage mismatch"):
         validate_resume_stage(legacy, tmp_path, "query")
     with pytest.raises(ValueError, match="WM/value"):
         validate_resume_stage({**legacy, "best_val_wm_mse": 0.2}, tmp_path, "format")
-    with pytest.raises(ValueError, match="identity"):
+    with pytest.raises(ValueError, match="legacy query-bearing"):
         validate_resume_stage({}, tmp_path, "format")
 
 

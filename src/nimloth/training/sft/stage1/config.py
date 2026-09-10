@@ -31,8 +31,12 @@ _SFT1_YAML_TO_ARG: dict[tuple[str, str], str] = {
 }
 
 
-def sft1_yaml_defaults(path: Path) -> dict[str, Any]:
+def sft1_yaml_defaults(path: Path, *, stage: str = "format") -> dict[str, Any]:
     cfg = load_yaml_config(path)
+    if stage == "format" and any(key in cfg for key in ("latent", "query_alignment")):
+        raise ValueError(
+            "stage1 format supervision does not accept latent/query configuration"
+        )
     defaults: dict[str, Any] = {}
     for section, values in cfg.items():
         if not isinstance(values, dict):

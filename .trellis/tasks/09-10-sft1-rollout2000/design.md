@@ -1,21 +1,20 @@
-# 运行方案
+# 修正边界与运行方案
 
-本地隔离worktree：/workspace/remote2/nimloth/.worktree/sft1-rollout2000；分支codex/sft1-rollout2000；训练源码基点5425780e78cb11ec0008d36b836a8286f1e1b94d。
-远程目标worktree：/mnt/nimloth/.worktree/sft1-rollout2000；通过Git同步本地已提交源码，不能沿用远程旧源码1e3b81a。解释器/mnt/nimloth/venv/bin/python3。
+## 行为差距和实现位置
+现stage1共享stage2的K/query配置，并在data.py中normalize latent块、以generate方式监督。按人类spec修正为format-only目标。源位置：stage1 cli/config/data/trainer/checkpoint及相关模板/调用配置；保留stage2的显式query分支。
+最小范围：阶段感知的回答文本处理与cache/checkpoint身份；stage1显式拒绝query配置；format指标只检查回答本身。不删除原数据、不改人类spec，不为逃避问题改变loss。
 
-## 参数建议
-1 node、8GPU、DDP world8、rank0..7；batch1、GA8、effective batch64；1epoch（预计27 optimizer steps，以实际trainer记录为准）。LoRA r64/alpha128，LR1e-6、embedding/head LR5e-6；K1 generate、回答CE；max_pixels100352，max_length20000（比参考12000保守保留完整轨迹），BF16、flash_attention_2、gradient checkpointing、seed42。每10步保存恢复点，epoch末完整离线验证与checkpoint；格式诊断32条不替代193条val。
+## 数据
+/mnt/nimloth/outputs/datasets/sft1-vagen-step60/20260910T093222Z_batch1_original_validation_k16下sft1_train_all.jsonl和sft1_heldout_all.jsonl；只读输入。清理已有latent标记必须同步处理system提示和assistant目标，保留真实CoT/action/image，并在新缓存记录format-only身份；不得复用K16/K1缓存。
 
-远程FlashAttention2版本2.7.4.post1已能导入。当前源码模块支持K1与FA2；实际训练模块列表须在模型加载后记录，不凭LoRA名称声称视觉模块冻结。新的K1缓存使用新目录；fingerprint含路径/mtime/processor/K等，旧K16缓存不兼容。
+## 运行
+本地/workspace/remote2/nimloth/.worktree/sft1-rollout2000；分支codex/sft1-rollout2000。远程/mnt/nimloth/.worktree/sft1-rollout2000，Git同步修正commit；Python/mnt/nimloth/venv/bin/python3。单机8GPU world8；直到验证LM loss收敛；batch1 GA8；LoRA64/128；LR1e-6 embedding/head5e-6；max_length20000 max_pixels100352；BF16 FA2 gradient checkpointing seed42；no-wandb。
+每次运行段6h/48GPUh，不作为总训练或收敛上限；先CPU preflight/cache再刷新GPU并启动DDP；每10步保存，每个epoch提交且核验后只清理已由该epoch覆盖的本次中间ckpt。controller超时与日志、训练完成和清理完成分开记录。
 
-## 预算及生命周期
-单次运行，上限6小时/48GPU小时，实际时长待首次训练速度确认。以独立controller日志和唯一UTC运行目录输出；不得复用失败RUN_OUT。前置CPU数据/模型/入口检查完成后再激活GPU，启动前重新核验空闲资源。失败或超时停止并保留产物，不自动重提。无需Slurm/hold/Ray/vLLM。记录PID与进程组，超时仅作用于本次进程组。不自动执行HF导出（近期导出器存在歧义失败记录），训练checkpoint为本次产物。
+## 可训练范围
+沿用现有LoRA suffix：语言252及视觉MLP96模块adapter、完整embedding/head；其他base参数冻结。不是视觉全部冻结。恢复身份须匹配新的format-only合同。没有旧run checkpoint可恢复。
 
-## 风险
-首次FA2/DDP训练尚未验证；旧验证报告需要当前输入/图像复核；模型shard key需要preflight复核。checkpoint恢复能力以当前实现为准，不能从无checkpoint的失败运行恢复，也不承诺逐位复现。
+## 收敛控制
+监控内部验证回答LM loss，min_epochs=2、patience_epochs=2、min_relative_improvement=0.01（用户已明确选择）。记录previous validation loss、absolute best、bad epochs、last completed epoch和stop reason；中间/epoch checkpoint均保留控制状态，resume不能重置patience。无限期训练不能沿用以1epoch为终点的cosine衰减；使用明确记录的constant-with-warmup，warmup按首epoch预计optimizer steps的5%计算，之后保持所选LR直到收敛。最终epoch以实际结束值保存。
 
-## 中间checkpoint清理
-用户已明确批准：每10步保存，在本次1epoch成功结束且epoch/final完整可读后，仅删除本次run内由此训练创建的中间step checkpoint；先记录精确目录和清单，拒绝符号链接或越界路径。失败时保留全部checkpoint。
-
-## 已核验模块范围
-CPU meta模型匹配当前默认LoRA suffix共348个模块：252个语言模块和96个视觉MLP模块。adapter及完整embedding/head可训练，其他base参数由PEFT冻结；不声称视觉模块全部冻结。实际训练参数计数仍记录到训练日志。W&B关闭，与最近旧数据复现实验一致，逐步CSV与本地controller日志保留。
+收敛相对改善明确按相邻两轮的验证LM loss比较；不把多轮小幅改善累积为一次显著改善。
