@@ -41,3 +41,6 @@ RUN=/mnt/nimloth/outputs/experiments/sft1-rollout2000/20260910T112834Z_format_on
 1902新缓存全量验证通过（train1709，val193；query_free，未截断），11:44:38进入train；11:47:48首forward在FlashAttention rotary调用Triton编译时报Python.h缺失，11:48:03退出1，controller已退出，8GPU归零，CSV仅表头，无optimizer步或checkpoint。不是OOM，不自动恢复；旧RUN完整保留。
 依赖使用Ubuntu libpython3.10-dev 3.10.12包解压到/mnt/nimloth/dependencies/python310-dev/root，未更改系统Python；CPATH含其usr/include/python3.10与usr/include，实际无GPU Triton驱动编译通过。launch新增此CPU preflight。另修复视觉冻结输入下默认reentrant checkpoint漏参数梯度，改non-reentrant；真实微型Qwen视觉模块反向传播测试通过。42测试+10subtests通过。
 重试边界：新run ID/空输出，复制已完成format缓存并再次全量核验，原数据/cache不改；不从无checkpoint失败run恢复。训练合同/资源/收敛规则不变；同步新commit后重核完整preflight。
+
+## 2026-09-10T11:56Z 缓存搬迁被门禁拦截
+retry run=20260910T115604Z_format_only_converge_retry，controller529399，commitb700abab；复制后manifest.dir仍旧路径，CPU validator拒绝，11:56:27退出1，未启动GPU。修复复制缓存后仅更新新副本manifest.dir，原manifest及tensor保持不变；加入实际文件复制回归测试。再次使用新run，保留失败目录。

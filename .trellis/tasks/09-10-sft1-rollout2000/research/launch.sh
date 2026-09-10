@@ -67,6 +67,7 @@ if [[ -n ${SFT1_CACHE_SOURCE:-} ]]; then
     [[ $SFT1_CACHE_SOURCE == /mnt/nimloth/outputs/experiments/sft1-rollout2000/* && -f $SFT1_CACHE_SOURCE/PREPROCESS_SUCCEEDED && -f $SFT1_CACHE_SOURCE/cache_validation.json ]]
     [[ $(cat "$SFT1_CACHE_SOURCE/PREPROCESS_SUCCEEDED") == 0 ]]
     cp -a --reflink=auto "$SFT1_CACHE_SOURCE/preprocess_cache" "$RUN/preprocess_cache"
+    "$PY" "$ROOT/.trellis/tasks/09-10-sft1-rollout2000/research/relocate_cache.py" "$SFT1_CACHE_SOURCE/preprocess_cache" "$RUN/preprocess_cache"
     printf '%s\n' "$SFT1_CACHE_SOURCE" > "$RUN/cache_source.txt"
     CUDA_VISIBLE_DEVICES='' "$PY" -m nimloth.training.sft.stage1.trainer "${ARGS[@]}" --cache-only
 else
