@@ -124,17 +124,6 @@ def restore_saved_untied_embeddings(model, adapter_dir: Path) -> tuple[str, str]
     return selected["input"], selected["output"]
 
 
-def ensure_peft_transformers_compat() -> None:
-    import transformers.integrations.tensor_parallel as transformers_tp
-
-    if not hasattr(transformers_tp, "EmbeddingParallel"):
-
-        class _EmbeddingParallelSentinel:
-            pass
-
-        transformers_tp.EmbeddingParallel = _EmbeddingParallelSentinel
-
-
 def verify_adapter_loaded(model, adapter_dir: Path) -> int:
     from safetensors.torch import load_file
 
@@ -181,7 +170,6 @@ def merge_checkpoint(
         trust_remote_code=True,
     )
     sync_vocab_metadata(base, len(processor.tokenizer))
-    ensure_peft_transformers_compat()
     peft_model = PeftModel.from_pretrained(base, adapter_dir)
     verified_tensors = verify_adapter_loaded(peft_model, adapter_dir)
     merged = peft_model.merge_and_unload()

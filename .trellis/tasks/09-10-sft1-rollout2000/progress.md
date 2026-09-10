@@ -62,3 +62,9 @@ run=20260910T115929Z_format_only_converge，controller PID529832，preprocess PI
 
 ## FSDP gate 123938保存同步阻塞
 远程commitb96293a0，gate /mnt/nimloth/outputs/experiments/sft1-rollout2000/20260910T123938Z_fsdp_gate，controller534483，8rank group534491。tiny真实PEFT已到resume_step临时目录README创建，保存阶段collective阻塞，无成功marker。读取实际peft0.20 ModulesToSaveWrapper.adapter_state_dict发现即使提供fullstate仍调用子模块.state_dict()，rank0触发嵌套FSDP集合同步，其他rank在barrier。已核验命令与PGID并SIGTERM准确group534491，未进入capacity/正式训练。修复所有PEFT导出路径后再跑有限门禁；不将本次当保存成功。
+
+## 2026-09-10T12:47Z gate保存已通过，恢复兼容错误；随后SSH认证阻塞
+修复commit8f88eab10e8fc86a4e9a2b0cc949f9300ea3a15f。gate=/mnt/nimloth/outputs/experiments/sft1-rollout2000/20260910T124706Z_fsdp_gate，controller535577/group535585，12:47:25退出1。真实8rank已完成initial_update、save_resume、reference_update，到restore时checkpoint.py无条件import transformers.integrations.tensor_parallel导致ModuleNotFoundError（远程Transformers4.49没有模块）。已成功保存checkpoint不代表恢复成功；capacity未启动。
+后续读取远程依赖时ssh a100-1失败Permission denied(publickey)/Connection closed by UNKNOWN port65535；停止远程操作，请人类恢复连接认证，未反复重试。只证明当前SSH认证失败，不推断撤销授权；恢复后刷新状态再行动。继续本地修复：PEFT0.20无TP模块会在导入TP前return，因此删除自己不必要的无条件compat import与sentinel，使用真实PEFT非TP恢复。
+
+恢复兼容修复完成：删除不必要TP import/sentinel，PEFT真实非TP路径不依赖该可选模块；阻断模块导入的真实加载回归通过，完整62tests+10subtests、Ruff/diff通过，独立审查通过。准备本地Git增量包/tmp/sft1-fsdp-restore.bundle（相对8f88eab1），SSH恢复后同步专用worktree并重核资源/CLI，再新run运行research/run_fsdp_gate.py COMMIT UNIQUE_GATE；两phase必须通过才能启动launch.sh FSDP正式收敛流程。未完成恢复/真实长序列验证，未启动FSDP正式训练。
