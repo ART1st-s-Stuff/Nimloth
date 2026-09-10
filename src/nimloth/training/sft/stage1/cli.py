@@ -38,6 +38,10 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap.add_argument("--output-dir", type=Path, required=True)
     ap.add_argument("--epochs", type=int, default=None)
     ap.add_argument("--until-converged", action="store_true")
+    ap.add_argument(
+        "--max-optimizer-steps", type=int, default=None,
+        help="Pause with a resume checkpoint and exit 75 at this absolute optimizer step.",
+    )
     ap.add_argument("--convergence-min-epochs", type=int)
     ap.add_argument("--convergence-patience-epochs", type=int)
     ap.add_argument("--convergence-min-relative-improvement", type=float)
@@ -187,6 +191,11 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         if action.required and action.default is not None:
             action.required = False
     args = ap.parse_args(argv)
+    if args.max_optimizer_steps is not None:
+        if stage != "format":
+            raise ValueError("--max-optimizer-steps is supported only for format stage1")
+        if args.max_optimizer_steps < 1:
+            raise ValueError("--max-optimizer-steps must be positive")
     args.action_token_loss_weight = validate_action_weight(args.action_token_loss_weight)
     if stage != "format" and args.action_token_loss_weight != 1:
         raise ValueError("action token loss weighting is supported only for format stage1")

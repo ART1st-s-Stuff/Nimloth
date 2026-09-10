@@ -47,3 +47,9 @@ The explicit GPU integration probe is
 It compares uninterrupted and restored next updates exactly, including optimizer
 state, and checks collective generation and epoch export. CPU tests alone do not
 establish FSDP runtime, memory capacity, or model quality.
+
+For bounded diagnostics, `--max-optimizer-steps N` pauses after absolute optimizer
+step N, using the existing complete resume checkpoint path and exit code 75.
+It does not complete an epoch or declare convergence, and does not change the
+learning-rate schedule or objective identity. Resuming at or above N rejects
+before restoring the optimizer; remove or raise the cap to continue training.

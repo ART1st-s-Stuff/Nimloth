@@ -845,6 +845,10 @@ def main(*, stage: str = "format") -> int:
                 raise ValueError("resume checkpoint lacks convergence state")
             convergence = ConvergenceState.from_state_dict(state["convergence_state"])
         global_step = int(state.get("step", 0))
+        if args.max_optimizer_steps is not None and global_step >= args.max_optimizer_steps:
+            raise ValueError(
+                "resume step already reaches --max-optimizer-steps; raise or remove the cap"
+            )
         best_val = float(state.get("best_val", float("inf")))
         if state.get("resume_schema") == RESUME_SCHEMA:
             validate_resume_state(
@@ -967,6 +971,11 @@ def main(*, stage: str = "format") -> int:
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
             global_step += 1
+            if args.max_optimizer_steps is not None and global_step >= args.max_optimizer_steps:
+                stop_after_boundary = True
+                if is_main():
+                    print(json.dumps({"action": "pause_at_optimizer_step_cap",
+                                      "global_step": global_step}))
             step_loss = accum_loss / micro_count
             if is_main():
                 with log_path.open("a", newline="") as f:
