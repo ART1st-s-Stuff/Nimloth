@@ -5,15 +5,15 @@ must remain alive; each launcher gets its own process group. No unexplained fail
 is retried. Runtime limits are not convergence evidence.
 """
 import argparse
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import signal
 import subprocess
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 
 MODULE = 'nimloth.training.sft.stage1.trainer'
 SEGMENT_SECONDS = 6 * 60 * 60
@@ -40,27 +40,49 @@ def descendant(pid, ancestor, parents):
     return False
 
 
-def find_ranks(launcher_pid, run):
-    parents, candidates = {}, []
-    for entry in Path('/proc').iterdir():
+def process_snapshot(proc_root=Path('/proc')):
+    """Snapshot PID identity and ancestry; starttime distinguishes reused PIDs."""
+    result = {}
+    for entry in proc_root.iterdir():
         if not entry.name.isdigit():
             continue
         try:
-            pid = int(entry.name)
-            stat = (entry/'stat').read_text().rsplit(')', 1)[1].split()
-            parents[pid] = int(stat[1])
+            stat = (entry / 'stat').read_text().rsplit(')', 1)[1].split()
+            result[int(entry.name)] = (int(stat[1]), int(stat[19]), stat[0])
+        except (FileNotFoundError, ProcessLookupError, PermissionError, ValueError, IndexError):
+            continue
+    return result
+
+
+def select_ranks(launcher_pid, candidates, parents):
+    # DataLoader children inherit the trainer argv and LOCAL_RANK. Only the
+    # outermost matching trainer under this launch is a distributed rank.
+    owned = [(pid, rank) for pid, rank in candidates
+             if descendant(pid, launcher_pid, parents)]
+    ranks = [(pid, rank) for pid, rank in owned
+             if not any(other != pid and descendant(pid, other, parents)
+                        for other, _ in owned)]
+    if len(ranks) != 8 or {rank for _, rank in ranks} != set(range(8)):
+        raise RuntimeError(f'expected exactly 8 owned training ranks, found {ranks}')
+    return sorted(ranks, key=lambda item: item[1])
+
+
+def find_ranks(launcher_pid, run):
+    snapshot = process_snapshot()
+    parents = {pid: info[0] for pid, info in snapshot.items()}
+    candidates = []
+    for pid in snapshot:
+        entry = Path('/proc') / str(pid)
+        try:
             argv = [x.decode() for x in (entry/'cmdline').read_bytes().split(b'\0') if x]
             if rank_command(argv, run):
                 env = dict(x.split(b'=', 1) for x in (entry/'environ').read_bytes().split(b'\0') if b'=' in x)
                 candidates.append((pid, int(env[b'LOCAL_RANK'])))
         except (FileNotFoundError, ProcessLookupError, PermissionError, KeyError, ValueError, UnicodeDecodeError):
             continue
-    ranks = [(pid, rank) for pid, rank in candidates if descendant(pid, launcher_pid, parents)]
-    if len(ranks) != 8 or {rank for _, rank in ranks} != set(range(8)):
-        raise RuntimeError(f'expected exactly 8 owned training ranks, found {ranks}')
-    if any(os.getpgid(pid) != launcher_pid for pid, _ in ranks):
-        raise RuntimeError('training rank process group mismatch')
-    return sorted(ranks, key=lambda item: item[1])
+    # torchrun workers may each lead their own group. Ownership is ancestry,
+    # not equality to the launcher's PGID.
+    return select_ranks(launcher_pid, candidates, parents)
 
 
 def boundaries(run):
@@ -80,6 +102,7 @@ def new_boundary(run, before):
     path = max(new, key=lambda p: int(p.name.rsplit('_', 1)[1]))
     marker = json.loads((path/'COMMITTED').read_text())
     import torch
+
     from nimloth.training.sft.stage1.checkpoint import validate_resume_state
     state = torch.load(path/'training_state.pt', map_location='cpu', weights_only=False)
     if (marker != {'schema': 'nimloth_early_stage_resume_v1', 'step': state['step']}
@@ -106,36 +129,78 @@ def new_boundary(run, before):
 def paused_exit(returncode, planned, log_text):
     codes = [int(code) for code in re.findall(r'exitcode\s*:\s*(-?\d+)\b', log_text)]
     return (returncode != 0 and planned and bool(codes) and set(codes) == {75}
-            and not re.search(r'CUDA out of memory|OutOfMemoryError', log_text, re.I))
+            and not re.search(r'CUDA out of memory|OutOfMemoryError', log_text, re.IGNORECASE))
 
 
-def terminate_group(process):
-    # Called only on the exact process group established by start_new_session.
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
+def owned_processes(launcher_pid, snapshot):
+    parents = {pid: info[0] for pid, info in snapshot.items()}
+    return {pid: info[1] for pid, info in snapshot.items()
+            if pid == launcher_pid or descendant(pid, launcher_pid, parents)}
+
+
+def same_process(pid, starttime, snapshot):
+    info = snapshot.get(pid)
+    return info is not None and info[1] == starttime and info[2] != 'Z'
+
+
+def remember_owned(launcher_pid, snapshot, owned):
+    # Once the leader's PID has been reused, its new descendants are unrelated.
+    if launcher_pid in owned and not same_process(launcher_pid, owned[launcher_pid], snapshot):
         return
-    try:
-        process.wait(timeout=30)
-    except subprocess.TimeoutExpired:
-        pass
-    # A terminated leader does not prove its children exited.
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    process.wait()
+    for pid, starttime in owned_processes(launcher_pid, snapshot).items():
+        owned.setdefault(pid, starttime)
+
+
+def terminate_group(process, *, owned=None, snapshotter=process_snapshot, send=os.kill,
+                    clock=time.monotonic, sleep=time.sleep):
+    # Capture ownership BEFORE signaling the leader: torchrun workers have
+    # separate groups and can be reparented when their launcher exits.
+    owned = dict(owned or {})
+    remember_owned(process.pid, snapshotter(), owned)
+
+    def signal_owned(sig):
+        for pid, starttime in owned.items():
+            if same_process(pid, starttime, snapshotter()):
+                try:
+                    send(pid, sig)
+                except ProcessLookupError:
+                    pass
+
+    signal_owned(signal.SIGTERM)
+    deadline = clock() + 30
+    def survivors():
+        current = snapshotter()
+        return [pid for pid, starttime in owned.items()
+                if same_process(pid, starttime, current)]
+
+    while survivors() and clock() < deadline:
+        sleep(min(0.1, max(0, deadline - clock())))
+    signal_owned(signal.SIGKILL)
+    kill_deadline = clock() + 5
+    while survivors() and clock() < kill_deadline:
+        sleep(min(0.1, max(0, kill_deadline - clock())))
+    remaining = survivors()
+    if remaining:
+        raise RuntimeError(f'owned processes survived SIGKILL: {remaining}')
+    process.wait(timeout=5)
 
 
 def wait_segment(process, run, event, *, clock=time.monotonic, sleep=time.sleep,
-                 rank_finder=find_ranks, send=os.kill):
+                 rank_finder=find_ranks, send=os.kill, snapshotter=process_snapshot,
+                 terminator=None):
+    if terminator is None:
+        terminator = terminate_group
     start, planned = clock(), False
+    cleanup_started = False
+    owned = {}
     try:
-        while process.poll() is None:
+        while True:
+            remember_owned(process.pid, snapshotter(), owned)
+            if process.poll() is not None:
+                break
             elapsed = clock() - start
             if elapsed >= SEGMENT_SECONDS:
                 event('deadline', pid=process.pid, elapsed=elapsed)
-                terminate_group(process)
                 raise RuntimeError('six-hour segment deadline exceeded; stopped owned group')
             if elapsed >= PAUSE_SECONDS and not planned:
                 ranks = rank_finder(process.pid, run)
@@ -144,9 +209,13 @@ def wait_segment(process, run, event, *, clock=time.monotonic, sleep=time.sleep,
                     send(pid, signal.SIGUSR1)
                 planned = True
             sleep(min(5, max(0.01, SEGMENT_SECONDS - elapsed)))
+        if process.returncode != 0:
+            cleanup_started = True
+            terminator(process, owned=owned)
         return process.returncode, planned
     except BaseException:
-        terminate_group(process)
+        if not cleanup_started:
+            terminator(process, owned=owned)
         raise
 
 
@@ -172,9 +241,8 @@ def main():
     event('controller_started', pid=os.getpid(), commit=args.commit, run=str(run),
           policy=str(policy), segment_seconds=SEGMENT_SECONDS, pause_seconds=PAUSE_SECONDS)
     phase, segment = ('train', 1) if args.preprocessed else ('preprocess', 0)
-    if args.preprocessed:
-        if (run/'PREPROCESS_SUCCEEDED').read_text().strip() != '0':
-            raise RuntimeError('preprocessing is not complete')
+    if args.preprocessed and (run/'PREPROCESS_SUCCEEDED').read_text().strip() != '0':
+        raise RuntimeError('preprocessing is not complete')
     while True:
         log = controller/f'{segment:04d}_{phase}.log'
         before = boundaries(run) if phase != 'preprocess' else {}

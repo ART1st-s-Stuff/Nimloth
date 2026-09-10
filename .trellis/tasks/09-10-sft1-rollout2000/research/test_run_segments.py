@@ -38,7 +38,8 @@ class SegmentControl(unittest.TestCase):
         send = Mock()
         clock = Mock(side_effect=[0, module.PAUSE_SECONDS])
         result = module.wait_segment(process, Path('/run'), Mock(), clock=clock,
-            sleep=Mock(), rank_finder=Mock(return_value=ranks), send=send)
+            sleep=Mock(), rank_finder=Mock(return_value=ranks), send=send,
+            snapshotter=lambda: {}, terminator=Mock())
         self.assertEqual(result, (1, True))
         self.assertEqual([call.args for call in send.call_args_list],
                          [(pid, signal.SIGUSR1) for pid, _ in ranks])
@@ -50,7 +51,8 @@ class SegmentControl(unittest.TestCase):
         with patch.object(module, 'terminate_group') as stop:
             with self.assertRaisesRegex(RuntimeError, 'deadline'):
                 module.wait_segment(process, Path('/run'), Mock(),
-                    clock=Mock(side_effect=[0, module.SEGMENT_SECONDS]), sleep=Mock())
+                    clock=Mock(side_effect=[0, module.SEGMENT_SECONDS]), sleep=Mock(),
+                    snapshotter=lambda: {}, terminator=stop)
         self.assertTrue(stop.called)
 
     def test_no_new_boundary_fails_closed(self):
