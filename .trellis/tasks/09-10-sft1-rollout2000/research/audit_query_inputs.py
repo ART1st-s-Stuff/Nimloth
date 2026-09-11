@@ -18,7 +18,7 @@ from nimloth.backbone.dino_grid import (
 from nimloth.latent import add_special_tokens
 from nimloth.training.sft.stage1.data import NimlothVLSFTDataset
 from nimloth.training.sft.stage2.config import QueryAlignmentConfig
-from nimloth.training.sft.stage2.data import AnswerPrefixDataset, QueryAlignmentCollator
+from nimloth.training.sft.stage2.data import QueryAlignmentCollator
 
 DATASETS = {}
 COLLATOR = None
@@ -26,15 +26,20 @@ QUERY_COUNT = None
 
 
 def audit_one(item):
-    split, row, sample_index = item
-    encoded = COLLATOR([DATASETS[split][sample_index]])
+    split, row = item
+    encoded = COLLATOR([DATASETS[split][row]])
     length = int(encoded["attention_mask"][0].sum().item())
     if length >= 20000:
         raise ValueError(f"input at truncation boundary: {split}/{row}: {length}")
-    if encoded["query_positions"].shape != (1, QUERY_COUNT):
-        raise ValueError(f"query positions must contain exactly {QUERY_COUNT} slots")
-    if encoded["dino_target"].shape != (1, QUERY_COUNT, 1024):
+    answers = int(encoded["query_positions"].shape[0])
+    if encoded["query_positions"].shape != (answers, QUERY_COUNT):
+        raise ValueError(f"every query position row must contain {QUERY_COUNT} slots")
+    if encoded["dino_target"].shape != (answers, QUERY_COUNT, 1024):
         raise ValueError("real DINO target shape mismatch")
+    if encoded["query_batch_indices"].tolist() != [0] * answers:
+        raise ValueError("query positions do not belong to the full trajectory")
+    if set(encoded["answer_indices"][encoded["answer_indices"] >= 0].tolist()) != set(range(answers)):
+        raise ValueError("answer token ownership is incomplete")
     if any(
         not torch.isfinite(value).all()
         for value in encoded.values()
@@ -44,8 +49,9 @@ def audit_one(item):
     return {
         "split": split,
         "row": row,
-        "sample_index": sample_index,
+        "sample_index": row,
         "length": length,
+        "answers": answers,
         "supervised_tokens": int((encoded["labels"] != -100).sum()),
     }
 
@@ -87,7 +93,6 @@ def main():
         max_length=20000,
         query_count=QUERY_COUNT,
         targets=targets,
-        last_answer_only=True,
     )
     jobs, summary = [], {}
     for split, source, records, answers in (
@@ -95,20 +100,17 @@ def main():
         ("val", args.val_jsonl, 193, 2152),
     ):
         dataset = NimlothVLSFTDataset(source, processor=processor)
-        prefixes = AnswerPrefixDataset(dataset)
-        if len(dataset) != records or len(prefixes) != answers:
+        if len(dataset) != records:
             raise ValueError(f"unexpected {split} record/answer counts")
-        DATASETS[split] = prefixes
-        last_indices = {}
-        for index, (row, _) in enumerate(prefixes.index):
-            last_indices[row] = index
-        jobs.extend((split, row, index) for row, index in last_indices.items())
+        DATASETS[split] = dataset
+        jobs.extend((split, row) for row in range(len(dataset)))
         summary[split] = {
             "records": records,
             "answers": answers,
             "jsonl": str(source.resolve()),
             "sha256": file_sha256(source),
             "checked": 0,
+            "checked_answers": 0,
             "max_length": 0,
             "max_sample_index": None,
         }
@@ -116,6 +118,7 @@ def main():
         for result in pool.imap_unordered(audit_one, jobs, chunksize=1):
             split_summary = summary[result["split"]]
             split_summary["checked"] += 1
+            split_summary["checked_answers"] += result["answers"]
             if result["length"] > split_summary["max_length"]:
                 split_summary.update(
                     max_length=result["length"],
@@ -140,12 +143,13 @@ def main():
     for value in summary.values():
         if (
             value["checked"] != value["records"]
+            or value["checked_answers"] != value["answers"]
             or file_sha256(value["jsonl"]) != value["sha256"]
         ):
             raise ValueError("incomplete audit or changed source JSONL")
     report = {
         "status": "passed",
-        "scope": "all trajectories final-answer full-history prefixes",
+        "scope": "all complete trajectories and all answer-aligned query states",
         "model": str(args.model.resolve()),
         "query_count": QUERY_COUNT,
         "grid_size": objective.grid_size,

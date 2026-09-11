@@ -2,7 +2,7 @@
 
 Run once without --resume, then in a fresh torchrun with --resume. The caller
 must bound the combined GPU runs to 15 minutes and supply an audited longest
-answer-prefix index to avoid the optional expensive CPU scan.
+full-trajectory index to avoid the optional expensive CPU scan.
 """
 import argparse
 import faulthandler
@@ -38,7 +38,7 @@ from nimloth.training.sft.stage1.trainer import (
     prepare_query_vocabulary,
 )
 from nimloth.training.sft.stage2.config import QueryAlignmentConfig
-from nimloth.training.sft.stage2.data import AnswerPrefixDataset, QueryAlignmentCollator
+from nimloth.training.sft.stage2.data import QueryAlignmentCollator
 from nimloth.training.sft.stage2.model import QueryAlignmentModel
 
 
@@ -85,9 +85,9 @@ def main():
         identity=DINOV2_LARGE_IDENTITY,
         grid_size=objective.grid_size,
     )
-    dataset = AnswerPrefixDataset(NimlothVLSFTDataset(args.train_jsonl, processor))
+    dataset = NimlothVLSFTDataset(args.train_jsonl, processor)
     collator = QueryAlignmentCollator(processor, 20000, query_count, targets,
-        mask_latent_query_labels=True, last_answer_only=True)
+        mask_latent_query_labels=True)
     selected = [args.sample_index]
     if rank == 0 and selected[0] is None:
         selected[0] = max(range(len(dataset)),
@@ -101,6 +101,7 @@ def main():
         "cache_fingerprint": targets.cache_fingerprint, "sample_index": selected[0],
         "world_size": world, "grid_size": objective.grid_size,
         "grid_tokens": query_count, "grad_accum": 8,
+        "query_batching": "full_trajectory_all_answers_v1",
         "weight_lm": 1.0, "weight_dino": 1.0}
     checkpoint = args.output_dir / "resume_step_00000001"
     state = None

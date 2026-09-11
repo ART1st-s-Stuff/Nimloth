@@ -63,7 +63,9 @@ def _final_norm_module(model) -> torch.nn.Module:
     )
 
 
-def _capture_last_hidden(model, model_inputs: dict[str, torch.Tensor]):
+def _capture_last_hidden(
+    model, model_inputs: dict[str, torch.Tensor], *, full_logits: bool = False
+):
     captured: dict[str, torch.Tensor] = {}
 
     # State extraction reads the final decoder norm through the hook below; it
@@ -71,7 +73,11 @@ def _capture_last_hidden(model, model_inputs: dict[str, torch.Tensor]):
     # one trailing position so long trajectory prefixes do not materialize a
     # full ``[sequence, vocab]`` tensor.  Supervised forwards keep their labels
     # and therefore retain the model's complete LM-loss semantics.
-    if "labels" not in model_inputs:
+    if full_logits:
+        if "labels" in model_inputs:
+            raise ValueError("full-logit capture computes its external loss without labels")
+        model_inputs = {**model_inputs, "logits_to_keep": 0}
+    elif "labels" not in model_inputs:
         model_inputs = {**model_inputs, "logits_to_keep": 1}
 
     def hook(_module, _inputs, output):

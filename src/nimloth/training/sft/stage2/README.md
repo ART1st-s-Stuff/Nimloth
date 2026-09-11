@@ -19,15 +19,15 @@ python -m nimloth.training.sft.stage2 \
 可使用 `--until-converged --convergence-min-epochs 2 --convergence-patience-epochs 2 --convergence-min-relative-improvement 0.01` 训练至收敛，不能同时指定固定 `--epochs`，也不能限制验证批次数。每轮以完整验证的加权总损失 `weight_lm * LM + weight_dino * DINO` 对比上一轮，连续两轮改善不足 1% 且达到最少轮数后停止；`best` 始终选择总损失最低的 checkpoint。预热后学习率保持不变，运行时限不代表收敛。
 有限 GPU 检查可指定 `--max-optimizer-steps N`，在绝对第 N 步保存完整恢复 checkpoint 并以 75 退出，不声明收敛；正式续训移除该预算参数。
 
-`validation_metrics.jsonl`、每轮日志与 W&B 分别记录未加权的 LM、DINO 分量和加权总损失。三者采用同一验证批次均值及跨 rank 求和/计数归约；分布式 sampler 的补齐项仍计入均值。旧 CSV 的 `val_loss` 在 query 阶段表示总损失。模型返回的分量已 detach，不改变反向传播目标。
+`validation_metrics.jsonl`、每轮日志与 W&B 分别记录未加权的 LM、DINO 分量和加权总损失。三者以回答为计数单位跨 batch、梯度累积和 rank 求和归约；分布式 sampler 的补齐项仍计入均值。旧 CSV 的 `val_loss` 在 query 阶段表示总损失。模型返回的分量已 detach，不改变反向传播目标。
 
 ## 模块职责与计算顺序
 
-`AnswerPrefixDataset` 在采样之前为每个回答建立索引，因此 `--batch-size` 按回答计数，每轮覆盖全部回答。每个样本保留截至目标回答的完整历史；collator 只监督最后一个回答，不再把一条长轨迹的全部前缀塞进同一个 batch。`--max-train-records` 仍先按原始轨迹选择，随后展开其全部回答。
+dataset 保持以完整轨迹为样本，因此 `--batch-size` 按轨迹计数，`--max-train-records` 也直接限制原始轨迹。collator 为每个回答记录 query 位置、回答 token 归属和当前观测，但不会复制回答前缀。每条轨迹只执行一次因果 teacher-forcing 前向。
 
-`data.py` 将多轮记录展开为截至每个真实回答的前缀。当前用户轮必须恰好对应一个观测图像，多图歧义会报错。历史轮仅提供上下文，不计算其回答 CE。当前真实非空 CoT、有序连续 query 区间和观测图像必须对齐；缺失或截断回答、query 位置均拒绝，不生成替代思考内容。
+`data.py` 保留完整多轮记录。每个回答之前的当前用户轮必须恰好对应一个观测图像，多图歧义会报错。所有真实回答都计算一次 CE；每个回答内部先对 token CE 求平均，再在回答之间等权平均。真实非空 CoT、有序连续 query 区间和观测图像必须逐回答对齐；缺失或截断回答、query 位置均拒绝，不生成替代思考内容。
 
-`model.py` 在一次 teacher-forcing Qwen 前向中，使用现有 final-norm hook 提取 query hidden states。这些 query 位于真实 CoT 之后、动作之前，按位置经过 `wm.grid.SharedSlotProjector`。CE 监督当前回答，MSE 监督全部投影后的位置。DINO 目标无梯度，形状必须严格相同，不允许广播掩盖错配。
+`model.py` 在一次完整轨迹的 teacher-forcing Qwen 前向中，使用现有 final-norm hook 提取所有回答的 query hidden states。这些 query 位于各自真实 CoT 之后、动作之前，按位置经过 `wm.grid.SharedSlotProjector`。DINO MSE 先在每个回答的全部 K 个位置和特征维上平均，再在回答之间等权平均。DINO 目标无梯度，形状必须严格相同，不允许广播掩盖错配。
 
 数据目标使用既有 `CachedDINOGridTargets`：训练/验证图像索引与 `dino_grid<N>` 附属缓存。backbone 加载器校验固定的 `DINOV2_LARGE_IDENTITY`、来源、图像对应关系、空间顺序和特征维度。此入口消费真实冻结 DINO 特征，不负责生成缓存。为保留观测路径，分词在线执行，不支持 SFT1 仅含 token 的 `--cache-only` / `--require-prebuilt-cache` 模式。
 

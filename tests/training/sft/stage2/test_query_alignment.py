@@ -10,7 +10,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from nimloth.training.sft.stage1.checkpoint import save_checkpoint
 from nimloth.training.sft.stage1.trainer import build_optimizer
 from nimloth.training.sft.stage2.config import QueryAlignmentConfig
-from nimloth.training.sft.stage2.data import answer_examples
+from nimloth.training.sft.stage2.data import answer_observation_paths
 from nimloth.training.sft.stage2.model import QueryAlignmentModel
 from nimloth.wm.grid import SharedSlotProjector, load_sft1_slot_projector
 
@@ -24,11 +24,15 @@ class TinyCausalLM(nn.Module):
         self.lm_head = nn.Linear(6, 16)
         self.config = SimpleNamespace(nimloth_training_stage="query")
 
-    def forward(self, input_ids, labels, **kwargs):
+    def forward(self, input_ids, labels=None, **kwargs):
         hidden = self.model.norm(self.embed_tokens(input_ids).cumsum(1))
         logits = self.lm_head(hidden)
-        loss = nn.functional.cross_entropy(
-            logits[:, :-1].reshape(-1, 16), labels[:, 1:].reshape(-1)
+        loss = (
+            nn.functional.cross_entropy(
+                logits[:, :-1].reshape(-1, 16), labels[:, 1:].reshape(-1)
+            )
+            if labels is not None
+            else None
         )
         return CausalLMOutputWithPast(loss=loss, logits=logits)
 
@@ -71,10 +75,17 @@ def test_projector_build_matches_bfloat16_embedding_dtype():
 
 def inputs():
     return {
-        "input_ids": torch.tensor([[1, 2, 6, 7, 8, 9, 3, 4]]),
-        "labels": torch.tensor([[-100, -100, -100, -100, -100, -100, 3, 4]]),
-        "query_positions": torch.tensor([[2, 3, 4, 5]]),
-        "dino_target": torch.randn(1, 4, 3, requires_grad=True),
+        "input_ids": torch.tensor([[1, 2, 6, 7, 8, 9, 3, 4, 6, 7, 8, 9, 5, 4]]),
+        "labels": torch.tensor(
+            [[-100, -100, -100, -100, -100, -100, 3, 4,
+              -100, -100, -100, -100, 5, 4]]
+        ),
+        "answer_indices": torch.tensor(
+            [[-1, -1, -1, -1, -1, -1, 0, 0, -1, -1, -1, -1, 1, 1]]
+        ),
+        "query_batch_indices": torch.tensor([0, 0]),
+        "query_positions": torch.tensor([[2, 3, 4, 5], [8, 9, 10, 11]]),
+        "dino_target": torch.randn(2, 4, 3, requires_grad=True),
     }
 
 
@@ -89,6 +100,7 @@ def test_combined_loss_reaches_backbone_queries_projector_and_lm_but_not_teacher
     assert not output.lm_loss.requires_grad
     assert not output.dino_loss.requires_grad
     torch.testing.assert_close(output.loss, output.lm_loss + output.dino_loss)
+    torch.testing.assert_close(output.loss_sum, output.loss * output.answer_count)
     output.loss.backward()
     assert batch["dino_target"].grad is None
     assert model.projector.net[0].weight.grad.abs().sum() > 0
@@ -98,12 +110,42 @@ def test_combined_loss_reaches_backbone_queries_projector_and_lm_but_not_teacher
     assert not torch.equal(before, model.projector.net[0].weight)
 
 
+def test_full_trajectory_matches_answer_prefix_losses_in_eval_mode():
+    model = make_model().eval()
+    full = inputs()
+    full_output = model(**full)
+    prefix_outputs = []
+    for answer, end in enumerate((8, 14)):
+        batch = {
+            "input_ids": full["input_ids"][:, :end],
+            "labels": torch.full_like(full["labels"][:, :end], -100),
+            "answer_indices": torch.full_like(full["answer_indices"][:, :end], -1),
+            "query_batch_indices": torch.tensor([0]),
+            "query_positions": full["query_positions"][answer : answer + 1],
+            "dino_target": full["dino_target"][answer : answer + 1],
+        }
+        owned = full["answer_indices"][:, :end] == answer
+        batch["labels"][owned] = full["labels"][:, :end][owned]
+        batch["answer_indices"][owned] = 0
+        prefix_outputs.append(model(**batch))
+    torch.testing.assert_close(
+        full_output.lm_loss,
+        torch.stack([output.lm_loss for output in prefix_outputs]).mean(),
+    )
+    torch.testing.assert_close(
+        full_output.dino_loss,
+        torch.stack([output.dino_loss for output in prefix_outputs]).mean(),
+    )
+
+
 @pytest.mark.parametrize(
     "change,match",
     [
-        (lambda b: b.update(dino_target=torch.zeros(1, 1, 3)), "shape mismatch"),
+        (lambda b: b.update(dino_target=torch.zeros(2, 1, 3)), "shape mismatch"),
         (
-            lambda b: b.update(query_positions=torch.tensor([[3, 2, 4, 5]])),
+            lambda b: b.update(
+                query_positions=torch.tensor([[3, 2, 4, 5], [8, 9, 10, 11]])
+            ),
             "ordered query",
         ),
         (
@@ -143,20 +185,20 @@ def test_checkpoint_restores_projector_and_preserves_stage_for_legacy_wm_loader(
         restored.restore_projector(checkpoint)
 
 
-def test_dialogue_expansion_keeps_real_turn_observations_and_cot():
+def test_answer_observations_keep_real_turn_alignment_and_cot():
     messages = [
         {"role": "user", "content": [{"type": "image", "image": "before.png"}]},
         {"role": "assistant", "content": "<think>turn one observation</think>answer"},
         {"role": "user", "content": [{"type": "image", "image": "after.png"}]},
         {"role": "assistant", "content": "<think>turn two observation</think>answer"},
     ]
-    examples, paths = answer_examples([{"messages": messages}])
-    assert paths == ["before.png", "after.png"]
-    assert examples[0]["messages"] == messages[:2]
-    assert examples[1]["messages"] == messages
+    assert answer_observation_paths([{"messages": messages}]) == [
+        "before.png",
+        "after.png",
+    ]
     messages[-1]["content"] = "<think></think>answer"
     with pytest.raises(ValueError, match="recorded nonempty CoT"):
-        answer_examples([{"messages": messages}])
+        answer_observation_paths([{"messages": messages}])
 
 
 class TextProcessor:
@@ -250,7 +292,7 @@ def records(tmp_path):
     ]
 
 
-def test_real_collation_masks_prompt_padding_queries_and_repeated_history(tmp_path):
+def test_real_collation_encodes_full_trajectory_once_and_indexes_answers(tmp_path):
     from nimloth.backbone.dino_grid import DINOV2_LARGE_IDENTITY, CachedDINOGridTargets
     from nimloth.training.sft.stage1.data import (
         collate_cached_fn,
@@ -281,47 +323,39 @@ def test_real_collation_masks_prompt_padding_queries_and_repeated_history(tmp_pa
     )
     collator = QueryAlignmentCollator(processor, 1000, 4, targets)
     result = collator(batch)
-    assert result["labels"].shape[0] == 2
+    assert result["labels"].shape[0] == 1
     assert (result["labels"] != -100).sum() == (encoded["labels"] != -100).sum()
     assert torch.all(result["labels"][result["attention_mask"] == 0] == -100)
-    assert torch.all(result["labels"].gather(1, result["query_positions"]) == -100)
+    assert result["query_positions"].shape == (2, 4)
+    assert result["query_batch_indices"].tolist() == [0, 0]
+    assert set(result["answer_indices"][result["answer_indices"] >= 0].tolist()) == {0, 1}
+    assert torch.all(
+        result["labels"][
+            result["query_batch_indices"][:, None], result["query_positions"]
+        ]
+        == -100
+    )
     assert not result["dino_target"].requires_grad
     torch.testing.assert_close(result["dino_target"], features.expand(2, -1, -1))
-    # A sampled answer prefix produces one row, without supervising history again.
-    prefix_collator = QueryAlignmentCollator(
-        processor, 1000, 4, targets, last_answer_only=True
-    )
-    prefixes, _ = answer_examples(batch)
-    for index, prefix in enumerate(prefixes):
-        single = prefix_collator([prefix])
-        assert single["input_ids"].shape[0] == 1
-        width = single["input_ids"].shape[1]
-        for key in ("input_ids", "labels", "attention_mask"):
-            torch.testing.assert_close(single[key][0], result[key][index, :width])
-        torch.testing.assert_close(
-            single["query_positions"][0], result["query_positions"][index]
-        )
     logits = torch.randn(
         *result["labels"].shape, len(processor.vocab) + 1, requires_grad=True
     )
     nn.functional.cross_entropy(
-        logits[:, :-1].reshape(-1, logits.shape[-1]),
-        result["labels"][:, 1:].reshape(-1),
+        logits[:, :-1].reshape(-1, logits.shape[-1]), result["labels"][:, 1:].reshape(-1)
     ).backward()
     assert torch.all(logits.grad[:, :-1][result["labels"][:, 1:] == -100] == 0)
     with pytest.raises(ValueError, match="truncation is forbidden"):
         QueryAlignmentCollator(processor, 30, 4, targets)(batch)
     # Even complete query slots do not make a partially truncated action valid.
-    tail_limit = int(result["query_positions"][0, -1]) + 1
+    tail_limit = int(result["query_positions"][-1, -1]) + 1
     with pytest.raises(ValueError, match="truncation is forbidden"):
-        QueryAlignmentCollator(processor, tail_limit, 4, targets)(prefixes[:1])
+        QueryAlignmentCollator(processor, tail_limit, 4, targets)(batch)
 
 
-def test_answer_dataset_indexes_every_answer_once_and_preserves_history(tmp_path):
+def test_answer_observation_paths_cover_every_answer_once(tmp_path):
     import json
 
     from nimloth.training.sft.stage1.data import NimlothVLSFTDataset
-    from nimloth.training.sft.stage2.data import AnswerPrefixDataset
 
     messages = [
         {"role": "system", "content": "navigate"},
@@ -343,17 +377,11 @@ def test_answer_dataset_indexes_every_answer_once_and_preserves_history(tmp_path
         + "\n"
     )
     trajectories = NimlothVLSFTDataset(path, None)
-    dataset = AnswerPrefixDataset(trajectories)
-    assert len(dataset) == 2
     full = trajectories.get_messages(0)
-    assert dataset[0]["messages"] == full[:3]
-    assert dataset[1]["messages"] == full[:5]
-    for index, expected in enumerate(("first.png", "second.png")):
-        examples, paths = answer_examples([dataset[index]], last_answer_only=True)
-        assert len(examples) == 1
-        assert paths == [expected]
-    with pytest.raises(ValueError, match="end at its target"):
-        answer_examples([{"messages": full}], last_answer_only=True)
+    assert answer_observation_paths([{"messages": full}]) == [
+        "first.png",
+        "second.png",
+    ]
 
 
 def test_query_state_is_before_action_and_uses_same_teacher_forced_forward():
@@ -481,6 +509,10 @@ def test_real_tiny_qwen_multimodal_forward_and_backward():
         input_ids=ids,
         attention_mask=torch.ones_like(ids),
         labels=labels,
+        answer_indices=torch.tensor(
+            [[-1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 0]]
+        ),
+        query_batch_indices=torch.tensor([0]),
         query_positions=torch.tensor([[5, 6, 7, 8]]),
         dino_target=torch.ones(1, 4, 3),
         pixel_values=torch.randn(4, 3 * 2 * 14 * 14),

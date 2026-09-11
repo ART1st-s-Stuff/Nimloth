@@ -46,14 +46,31 @@ def sft1_step(model, config, input, output, action_token_ids):
     loss = sum(weights * token_losses) / sum(weights)
     loss.backward()
 
-def sft2_step(model, config, input, output, proj, dino_model, queries):
-    """保持回答格式，同时将query state对齐到当前观测的DINO特征。"""
-    state, model_output = get_state_and_output(model, input, queries)
-    state = proj(state)
+def sft2_step(model, config, trajectories, proj, dino_model, queries):
+    """每条完整轨迹只编码一次，同时监督其中每个回答及其query state。"""
+    # 每个回答使用其之前的对话和观测作为因果上下文；模型不能看到未来token。
+    inputs, answers, observations = build_full_trajectory_batch(trajectories, queries)
+    query_locations = find_query_locations_by_answer(inputs, answers, queries)
+    assert len(answers) == len(observations) == len(query_locations)
+    assert all(len(location.positions) == len(queries) for location in query_locations)
+
+    # 对这一批完整轨迹进行一次teacher-forcing前向，再按回答收集query hidden states。
+    hidden_states, model_output = model.forward_with_hidden_states(inputs)
+    states = proj(gather_by_answer(hidden_states, query_locations))
     with no_grad():
-        dino_feature = dino_model(input.image)
-    loss_lm = lm_loss(model_output, output)
-    loss_dino = mse(state, dino_feature)
+        dino_features = dino_model(observations)
+
+    # 先对每个回答的目标token取平均，再对回答取平均，保持回答等权。
+    answer_lm_losses = [
+        lm_loss_for_answer(model_output, answer)
+        for answer in answers
+    ]
+    loss_lm = mean(answer_lm_losses)
+    # 第t组query只对齐第t个回答所对应的观测；对回答和query位置共同取平均。
+    loss_dino = mean([
+        mean([mse(state_i, dino_i) for state_i, dino_i in zip(state, dino)])
+        for state, dino in zip(states, dino_features)
+    ])
     loss = config.weight_lm * loss_lm + config.weight_dino * loss_dino
     loss.backward()
 

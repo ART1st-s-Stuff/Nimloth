@@ -256,11 +256,18 @@ def evaluate(
             break
         batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
         output = model(**batch)
-        losses = [output.loss.detach()]
         if return_components:
-            losses.extend([output.lm_loss.detach(), output.dino_loss.detach()])
+            losses = [
+                output.loss_sum.detach(),
+                output.lm_loss_sum.detach(),
+                output.dino_loss_sum.detach(),
+            ]
+            batch_count = output.answer_count.detach()
+        else:
+            losses = [output.loss.detach()]
+            batch_count = torch.ones((), device=device, dtype=torch.long)
         total += torch.stack(losses)
-        count += 1
+        count += batch_count
     if dist.is_available() and dist.is_initialized():
         dist.all_reduce(total, op=dist.ReduceOp.SUM)
         dist.all_reduce(count, op=dist.ReduceOp.SUM)
@@ -449,6 +456,7 @@ def _resume_identity(
                 "projector_hidden_dim": args.projector_hidden_dim,
                 "weight_lm": args.weight_lm,
                 "weight_dino": args.weight_dino,
+                "query_batching": "full_trajectory_all_answers_v1",
             }
         )
     return identity
@@ -456,6 +464,8 @@ def _resume_identity(
 
 def main(*, stage: str = "format") -> int:
     args, query_config = parse_args(stage=stage)
+    if query_config is not None and args.action_token_loss_weight != 1:
+        raise ValueError("query alignment uses answer-equal LM loss and requires action weight 1")
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     rank, world, local_rank, device = setup_dist()
@@ -631,10 +641,7 @@ def main(*, stage: str = "format") -> int:
             DINOV2_LARGE_IDENTITY,
             CachedDINOGridTargets,
         )
-        from nimloth.training.sft.stage2.data import (
-            AnswerPrefixDataset,
-            QueryAlignmentCollator,
-        )
+        from nimloth.training.sft.stage2.data import QueryAlignmentCollator
 
         targets = CachedDINOGridTargets.from_cache_root(
             args.dino_cache_root,
@@ -642,15 +649,12 @@ def main(*, stage: str = "format") -> int:
             grid_size=query_config.grid_size,
         )
         args.dino_cache_fingerprint = targets.cache_fingerprint
-        train_ds = AnswerPrefixDataset(train_ds)
-        val_ds = AnswerPrefixDataset(val_ds)
         train_collate = QueryAlignmentCollator(
             processor,
             args.max_length,
             query_config.grid_tokens,
             targets,
             mask_latent_query_labels=args.mask_latent_query_labels,
-            last_answer_only=True,
         )
     loader_workers = args.num_workers if use_cache else 0
     loader_kwargs: dict[str, Any] = {
@@ -963,6 +967,7 @@ def main(*, stage: str = "format") -> int:
         train_sampler.set_epoch(epoch)
         optimizer.zero_grad(set_to_none=True)
         accum_loss = 0.0
+        accum_answer_count = 0
         micro_accum = 0
         next_micro_batch = resume_next_micro_batch if epoch == start_epoch else 0
 
@@ -973,15 +978,28 @@ def main(*, stage: str = "format") -> int:
             epoch_number: int = epoch,
             best_at_epoch_start: float = best_val,
         ) -> None:
-            nonlocal global_step, accum_loss, stop_after_boundary
+            nonlocal global_step, accum_loss, accum_answer_count, stop_after_boundary
             stop_after_boundary = stop_requested
             if world > 1:
                 stop_request = torch.tensor(int(stop_after_boundary), device=device)
                 dist.all_reduce(stop_request, op=dist.ReduceOp.MAX)
                 stop_after_boundary = bool(stop_request.item())
+            if stage == "query":
+                global_count = torch.tensor(accum_answer_count, device=device)
+                global_loss = torch.tensor(accum_loss, device=device)
+                if world > 1:
+                    dist.all_reduce(global_count, op=dist.ReduceOp.SUM)
+                    dist.all_reduce(global_loss, op=dist.ReduceOp.SUM)
+                if global_count.item() <= 0:
+                    raise ValueError("query optimizer step has no supervised answers")
+                gradient_scale = world / global_count.item()
+                step_loss = (global_loss / global_count).item()
+            else:
+                gradient_scale = 1 / micro_count
+                step_loss = accum_loss / micro_count
             for p in model.parameters():
                 if p.grad is not None:
-                    p.grad.div_(micro_count)
+                    p.grad.mul_(gradient_scale)
             clip_grad_norm(model, 1.0)
             optimizer.step()
             scheduler.step()
@@ -992,7 +1010,6 @@ def main(*, stage: str = "format") -> int:
                 if is_main():
                     print(json.dumps({"action": "pause_at_optimizer_step_cap",
                                       "global_step": global_step}))
-            step_loss = accum_loss / micro_count
             if is_main():
                 with log_path.open("a", newline="") as f:
                     csv.writer(f).writerow(
@@ -1021,6 +1038,7 @@ def main(*, stage: str = "format") -> int:
                         step=global_step,
                     )
             accum_loss = 0.0
+            accum_answer_count = 0
 
             if global_step % args.resume_save_steps == 0 or stop_after_boundary:
                 save_resume_checkpoint(
@@ -1060,10 +1078,21 @@ def main(*, stage: str = "format") -> int:
             resume_rank_rng = None
         for batch_index, batch in enumerate(train_iterator, start=next_micro_batch):
             batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
-            loss = training_loss(model, batch, action_token_ids=action_ids,
-                                 action_weight=args.action_token_loss_weight)
+            if stage == "query":
+                output = model(**batch)
+                loss = output.loss_sum
+                batch_answer_count = int(output.answer_count.item())
+            else:
+                loss = training_loss(
+                    model,
+                    batch,
+                    action_token_ids=action_ids,
+                    action_weight=args.action_token_loss_weight,
+                )
+                batch_answer_count = 0
             loss.backward()
             accum_loss += loss.detach().float().item()
+            accum_answer_count += batch_answer_count
             micro_accum += 1
             if micro_accum % args.grad_accum == 0:
                 optimizer_step(micro_count=micro_accum, next_batch=batch_index + 1)

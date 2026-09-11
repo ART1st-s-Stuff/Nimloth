@@ -34,7 +34,13 @@ def test_query_convergence_cli_requires_full_validation_and_no_epoch_cap():
 def test_component_means_share_total_reduction_and_format_api(monkeypatch):
     class Model(torch.nn.Module):
         def forward(self, value):
-            return SimpleNamespace(loss=value * 3, lm_loss=value, dino_loss=value * 2)
+            return SimpleNamespace(
+                loss=value * 3,
+                loss_sum=value * 3,
+                lm_loss_sum=value,
+                dino_loss_sum=value * 2,
+                answer_count=torch.tensor(1),
+            )
 
     model = Model()
     batches = [{"value": torch.tensor(x)} for x in (1.0, 3.0)]

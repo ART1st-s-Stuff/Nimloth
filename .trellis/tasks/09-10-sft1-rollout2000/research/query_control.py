@@ -35,6 +35,7 @@ def validate_boundary(path):
     validate_resume_stage(state, path, 'query')
     assert state['world_size'] == WORLD
     assert state['identity']['stage'] == 'query'
+    assert state['identity']['query_batching'] == 'full_trajectory_all_answers_v1'
     assert state['identity']['convergence']['monitor'] == 'validation_total_loss'
     assert state['optimizer'] and state['scheduler']
     assert len(state['rank_rng_states']) == WORLD

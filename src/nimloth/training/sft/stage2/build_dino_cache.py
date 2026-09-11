@@ -18,7 +18,7 @@ from nimloth.backbone.dino_grid import (
 )
 from nimloth.training.sft.stage1.data import NimlothVLSFTDataset
 from nimloth.training.sft.stage2.config import QueryAlignmentConfig
-from nimloth.training.sft.stage2.data import answer_examples
+from nimloth.training.sft.stage2.data import answer_observation_paths
 
 
 def observation_index(train_jsonl: Path, val_jsonl: Path):
@@ -29,7 +29,7 @@ def observation_index(train_jsonl: Path, val_jsonl: Path):
         dataset = NimlothVLSFTDataset(source, processor=None)
         references = []
         for row in range(len(dataset)):
-            _, paths = answer_examples([dataset[row]])
+            paths = answer_observation_paths([dataset[row]])
             for raw in paths:
                 path = str(Path(raw).resolve())
                 if path not in indices:

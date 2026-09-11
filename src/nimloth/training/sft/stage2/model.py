@@ -6,6 +6,8 @@ from pathlib import Path
 
 import torch
 from torch import nn
+from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from nimloth.backbone.dino_grid import DINOV2_LARGE_IDENTITY
@@ -23,6 +25,10 @@ from .config import QueryAlignmentConfig
 class QueryAlignmentOutput(CausalLMOutputWithPast):
     lm_loss: torch.Tensor | None = None
     dino_loss: torch.Tensor | None = None
+    loss_sum: torch.Tensor | None = None
+    lm_loss_sum: torch.Tensor | None = None
+    dino_loss_sum: torch.Tensor | None = None
+    answer_count: torch.Tensor | None = None
 
 
 class QueryAlignmentModel(nn.Module):
@@ -66,18 +72,34 @@ class QueryAlignmentModel(nn.Module):
     def generate(self, **kwargs):
         return self.language_model.generate(**kwargs)
 
-    def forward(self, *, query_positions, dino_target, **inputs):
+    def forward(
+        self,
+        *,
+        answer_indices,
+        query_batch_indices,
+        query_positions,
+        dino_target,
+        **inputs,
+    ):
         ids = inputs["input_ids"]
-        expected = (ids.shape[0], self.objective.grid_tokens)
+        answer_count = query_positions.shape[0]
+        expected = (answer_count, self.objective.grid_tokens)
         if tuple(query_positions.shape) != expected:
             raise ValueError(f"query position shape must be {expected}")
+        if (
+            tuple(query_batch_indices.shape) != (answer_count,)
+            or query_batch_indices.dtype != torch.long
+            or torch.any(query_batch_indices < 0)
+            or torch.any(query_batch_indices >= ids.shape[0])
+        ):
+            raise ValueError("query batch indices do not identify input trajectories")
         if (
             query_positions.dtype != torch.long
             or torch.any(query_positions < 0)
             or torch.any(query_positions >= ids.shape[1])
         ):
             raise ValueError("query positions are outside the teacher-forced input")
-        selected = ids.gather(1, query_positions)
+        selected = ids[query_batch_indices[:, None], query_positions]
         if not torch.equal(
             selected,
             torch.tensor(self.query_ids, device=ids.device).expand_as(selected),
@@ -85,13 +107,31 @@ class QueryAlignmentModel(nn.Module):
             raise ValueError("query positions do not identify the ordered query tokens")
         if torch.any(query_positions[:, 1:] != query_positions[:, :-1] + 1):
             raise ValueError("query slots must be contiguous")
-        if "labels" not in inputs or not torch.any(inputs["labels"][:, 1:] != -100):
+        if (
+            "labels" not in inputs
+            or answer_indices.shape != inputs["labels"].shape
+            or answer_indices.dtype != torch.long
+        ):
             raise ValueError("query alignment requires target-answer labels")
+        target_owners = answer_indices[:, 1:]
+        supervised = inputs["labels"][:, 1:] != -100
+        if (
+            not torch.equal(target_owners >= 0, supervised)
+            or torch.any(target_owners >= answer_count)
+            or set(target_owners[supervised].tolist()) != set(range(answer_count))
+        ):
+            raise ValueError(
+                "target-answer indices must partition all supervised target tokens"
+            )
         reset_model_rope_state(self.language_model)
-        hidden, output = _capture_last_hidden(self.language_model, inputs)
-        queries = hidden.gather(
-            1, query_positions[..., None].expand(-1, -1, hidden.shape[-1])
+        model_inputs = {key: value for key, value in inputs.items() if key != "labels"}
+        hidden, output = _capture_last_hidden(
+            self.language_model, model_inputs, full_logits=True
         )
+        queries = hidden[
+            query_batch_indices[:, None],
+            query_positions,
+        ]
         state = self.projector(queries)
         if state.shape != dino_target.shape:
             raise ValueError(
@@ -100,13 +140,45 @@ class QueryAlignmentModel(nn.Module):
         target = dino_target.detach().to(device=state.device, dtype=torch.float32)
         if not torch.isfinite(target).all():
             raise ValueError("DINO targets must be finite")
-        query_loss = torch.nn.functional.mse_loss(state.float(), target)
-        loss = (
-            self.objective.weight_lm * output.loss
-            + self.objective.weight_dino * query_loss
+        lm_sums = output.logits.new_zeros(answer_count, dtype=torch.float32)
+        lm_counts = output.logits.new_zeros(answer_count, dtype=torch.float32)
+        positions = supervised.nonzero(as_tuple=False)
+
+        def token_ce(scores, targets):
+            return F.cross_entropy(scores.float(), targets, reduction="none")
+
+        for position_chunk in positions.split(128):
+            targets = inputs["labels"][
+                position_chunk[:, 0], position_chunk[:, 1] + 1
+            ]
+            scores = output.logits[position_chunk[:, 0], position_chunk[:, 1]]
+            losses = (
+                checkpoint(token_ce, scores, targets, use_reentrant=False)
+                if torch.is_grad_enabled() and scores.requires_grad
+                else token_ce(scores, targets)
+            )
+            owners = target_owners[position_chunk[:, 0], position_chunk[:, 1]]
+            lm_sums = lm_sums.scatter_add(0, owners, losses)
+            lm_counts = lm_counts.scatter_add(
+                0, owners, torch.ones_like(losses)
+            )
+        lm_by_answer = lm_sums / lm_counts
+        dino_by_answer = (state.float() - target).square().flatten(1).mean(1)
+        lm_loss_sum = lm_by_answer.sum()
+        dino_loss_sum = dino_by_answer.sum()
+        loss_sum = (
+            self.objective.weight_lm * lm_loss_sum
+            + self.objective.weight_dino * dino_loss_sum
         )
+        count = torch.tensor(answer_count, device=loss_sum.device, dtype=torch.long)
         return QueryAlignmentOutput(
-            loss=loss, lm_loss=output.loss.detach(), dino_loss=query_loss.detach()
+            loss=loss_sum / count,
+            lm_loss=(lm_loss_sum / count).detach(),
+            dino_loss=(dino_loss_sum / count).detach(),
+            loss_sum=loss_sum,
+            lm_loss_sum=lm_loss_sum.detach(),
+            dino_loss_sum=dino_loss_sum.detach(),
+            answer_count=count,
         )
 
     def grid_metadata(self):
