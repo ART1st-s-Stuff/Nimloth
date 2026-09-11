@@ -172,7 +172,8 @@ def merge_checkpoint(
         trust_remote_code=True,
     )
     sync_vocab_metadata(base, len(processor.tokenizer))
-    peft_model = PeftModel.from_pretrained(base, adapter_dir, autocast_adapter_dtype=False)
+    # Preserve saved LoRA precision during verification; the base stays in dtype.
+    peft_model = PeftModel.from_pretrained(base, adapter_dir)
     verified_tensors = verify_adapter_loaded(peft_model, adapter_dir)
     merged = peft_model.merge_and_unload()
     restored_embeddings = restore_saved_untied_embeddings(merged, adapter_dir)
