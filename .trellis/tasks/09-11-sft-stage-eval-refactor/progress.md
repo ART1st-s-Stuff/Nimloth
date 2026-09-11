@@ -22,3 +22,13 @@ PYTHONPATH=src:.:/workspace/remote2/nimloth/external/VAGEN；LD_LIBRARY_PATH包�
 ## 未验证与后续门禁
 没有启动远程训练、环境或GPU评估。真实HF初始化、多GPU训练/恢复、vLLM0.8.5多模态query续接、真实环境success仍需按正式入口远程smoke，不以CPU替身宣称通过。
 实现审查后提交该批源码，再按实验合同核验a100-1的checkpoint、原844服务/依赖、资源和短运行预算。不得恢复之前的临时评估器，不得用一次性Python脚本绕过统一入口。阶段3/RL继续延期。
+
+## 2026-09-11 Stage 1 epoch 5 held-out success rate
+
+- 人类批准先提交重构，再使用 a100-1 当前空闲的 GPU 运行 Stage 1 success rate。重构提交 `b03bab75`；真实 VAGEN 844 配置 preflight 发现 evaluator 多传 `example_count`/`action_sep`，修复及回归测试提交 `e15faf31`。
+- 远程专用 worktree `/mnt/nimloth/.worktree/sft-stage-eval-refactor` 干净且精确位于 `e15faf31c9bc5abdb75d9c68efcca399bf0165a6`。VAGEN 来源 `/mnt/nimloth/sources/vagen`，commit `844378ce8a5727d8274b0c7024573031f9b1296d`。
+- checkpoint 为 Stage 1 epoch 5 完整 HF 导出 `/mnt/nimloth/outputs/experiments/sft2-rollout2000/20260911T072059Z_epoch5_query_converge/base`，`nimloth_training_stage=format`，不是 adapter。范围为 test `base` 60 + `common_sense` 60、seed 1..60、最多 20 步、temperature 0、top-p 1、512 response tokens、TP1、history 5。
+- 两次失败均为 0 episode 并保留独立输出：`20260911T090308Z_stage1_epoch5_test120_gpu7` 在环境 preflight 发现 VAGEN 配置字段不兼容；`20260911T090854Z_stage1_epoch5_test120_gpu7` 在 vLLM 初始化发现漏传已验证 Python 3.10 include `CPATH`。对应服务已精确停止并写入 `FAILED.json`，未自动复用为有效结果。
+- 当前有效运行 `/mnt/nimloth/outputs/experiments/sft-stage-evaluation/20260911T091220Z_stage1_epoch5_test120_gpu7`；evaluation PID `606504`，environment PID `605810`，均绑定 GPU 7。AI2-THOR create/reset/system-prompt/close 和 Triton driver 编译门禁通过；vLLM BF16 模型加载完成，首条 `base_000001` 已原子落盘，当前 1/120、0 success，仅为部分进度。
+- 首条轨迹每步原始生成在一个正确 action block 后继续输出第二个 `<|action_start|>`、`<|endoftext|>` 和重复 `<|im_start|>`；严格 parser 判为 `invalid_response_envelope` 并发送空 no-op，未修复模型输出。完整 success rate 尚未产生。
+- App heartbeat `sft1-success-rate` 每 10 分钟监控进程、GPU、日志和 `rollout_summary.json`；无变化保持安静，完成或失败后记录终态并停止该运行所属环境服务。
