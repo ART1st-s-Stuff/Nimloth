@@ -15,3 +15,7 @@
 `EpisodeRunner` 调用 `VAGENNavigationSession`；collector 只接收公共
 `AgentPolicy`，负责批量选择任务、保存图片和构造统一 trajectory，不依赖具体
 backbone。训练代码不直接调用 VAGEN client。
+
+`source_client.py` 复用原 VAGEN BatchEnvironmentServer HTTP 传输；`early_evaluation.py`
+拥有 VAGEN/B/Query 的真实 direct episode 生命周期、无效响应 no-op 和显式 success 读取。
+它们只用于早期阶段统一评估；上文新版 async client 的 planner/collector 路径不变。

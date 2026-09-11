@@ -7,6 +7,7 @@ episode runtime。两者名称和职责明确分开：
 |------|------|
 | `model.py` | `Agent(nn.Module)`：组合 `Backbone` 与 `WorldModel` |
 | `transcript.py` | 按时间保存 observation、图片、动作和真实 assistant response |
+| `action_prompt.py` | B 训练与 direct 评估共用的 action token 提示词转换，保持观测和图片位置 |
 | `template.py`、`templates/` | prompt 契约与具体模板 |
 | `policy.py` | 行为分布、planner search trace 与直接 Qwen PPO replay 协议 |
 | `planning.py` | 每步真实 Qwen state、WM 多步搜索与首动作执行 |
@@ -68,3 +69,8 @@ episode = EpisodeRunner(runtime).run(session, seed=42, max_steps=20)
 
 environment 提供 system prompt、observation、动作空间、reward 和 success；
 `moveahead` 等环境语义不会硬编码在 Agent prompt 中。
+
+`evaluation_protocol.py` 拥有 VAGEN/B/Query 的 prompt 投影与严格 action 解析，保留真实
+CoT；合法输出显式序列化给原 VAGEN 服务，无效输出只产生可追溯的 no-op。
+
+公共 model/planning 导出按需加载；单独导入 prompt 或早期评估记录不要求外部 LeWM 源码。`from nimloth.agent import Agent, WorldModelPlanner` 保持原公共接口，实际使用时加载其实现。

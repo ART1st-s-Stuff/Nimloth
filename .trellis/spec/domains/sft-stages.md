@@ -38,3 +38,11 @@ stage2需要同观测的真实回答/CoT、完整有序的query slots和冻结DI
 `stage3.algorithm`拥有损失和反传顺序，`stage3.sigreg`拥有跨rank有效状态汇聚及同步随机投影，提取时不改变collective顺序或梯度。canary、动作头专项修复、packed/KV原型及依赖它们的特征审计归`experiments/training/sft/diagnosis`，不得由生产训练导入。Python旧路径不再兼容；保存的tensor/state_dict、目标标识及恢复语义保持不变。
 
 `stage1.cli.parse_args(argv=None, *, stage="format")`负责入口参数校验；`stage1.checkpoint`负责保存及恢复阶段校验；`stage1.trainer`负责模型构建与训练生命周期，不再动态转发数据模块中的任意属性。数据调用者直接依赖`stage1.data`。
+
+## Stage 1 标准训练与早期阶段评估
+
+Stage 1 标准运行入口为 `experiments/training/sft1/train.py`（委托 `stage1.workflow`），标准配置 `configs/training/sft1/format.yaml`。顺序为 action-token prompt 派生、语义动作 token 初始化、预处理缓存、训练/完整恢复；训练核心仍属于 `stage1.trainer`。动作边界初始化来自 EOS，动作编号来自对应语义词的原始 embedding/head；不得重置无关 tensor。Stage 2 不继承 Stage 1 专用默认值。
+
+早期 success rate 通过 `nimloth.training.sft.evaluation --stage vagen|stage1|stage2` 唯一入口路由，各 stage 的 eval 接口负责阶段验收。VAGEN 保留语义动作协议；Stage 1 训练和评估共用 action-token prompt 与动作协议；Stage 2 加载 checkpoint 指定的 query generate/inject 协议。直接评估不运行 WM/value/MCTS，不通过动作约束或强制动作前缀掩盖格式错误。inject 只能在同观测实际生成的 CoT 边界插入训练定义的 query。
+
+早期服务使用原 batch navigation 协议，明确校验服务类型；环境动力学参数与模型 prompt 协议分开配置。模型原文、注入 token、解析结果、实际服务输入及环境反馈均持久化；无效输出不可修成有效动作。成功率来自完整 episode 的真实环境 success，部分完成须报告分母与完成范围。Stage 3/RL 路径本轮不迁移，保持其现有服务与规划合同。

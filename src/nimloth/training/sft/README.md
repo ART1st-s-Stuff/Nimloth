@@ -2,10 +2,10 @@
 
 算法说明见[spec.md](spec.md)。这里将格式训练、Query对齐和WM/value训练放在同一个目录，保留独立且可顺序阅读的阶段流程。
 
-- [`stage1/`](stage1/README.md)：格式监督，复用原格式训练生命周期。
+- [`stage1/`](stage1/README.md)：标准格式监督：语义初始化、prompt 派生、缓存和训练/续训。
 - [`stage2/`](stage2/README.md)：回答CE加query state到冻结DINO空间特征的对齐，共享projector供下一阶段使用。
 - [`stage3/`](stage3/README.md)：原`training/sft2/`实现迁移，保留其数据、梯度、DDP、checkpoint和恢复语义。
-- [`evaluation/`](evaluation/README.md)：`eval_direct`和`eval_wm`的真实环境rollout入口，复用环境、Agent及现有planner。
+- [`evaluation/`](evaluation/README.md)：统一真实环境评估 CLI；早期阶段显式 `--stage vagen|stage1|stage2`，各 stage 拥有 eval；原 WM/RL 路径暂留。
 
 ## 阅读顺序
 

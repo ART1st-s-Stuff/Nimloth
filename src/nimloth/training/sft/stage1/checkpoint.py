@@ -438,3 +438,25 @@ def load_lora_adapter_state(model: torch.nn.Module, adapter_dir: Path) -> None:
                 }
             )
         )
+
+
+def prune_intermediate_checkpoints(output_dir: Path, epoch: int, global_step: int) -> None:
+    """Delete only committed step saves covered by the published epoch boundary."""
+    completed = output_dir / f"epoch_{epoch:03d}"
+    if not (completed / COMMITTED_MARKER).is_file():
+        raise ValueError("Cannot prune without a committed epoch checkpoint")
+    boundary = torch.load(completed / "training_state.pt", map_location="cpu", weights_only=False)
+    if boundary.get("epoch") != epoch or boundary.get("step") != global_step:
+        raise ValueError("Epoch checkpoint does not match the completed boundary")
+    if boundary.get("training_stage") != "format" or not boundary.get("identity"):
+        raise ValueError("Only an identified format checkpoint permits pruning")
+    for path in output_dir.glob("resume_step_*"):
+        suffix = path.name.removeprefix("resume_step_")
+        if path.is_symlink() or not suffix.isdigit() or int(suffix) > global_step:
+            continue
+        if path.is_dir() and (path / COMMITTED_MARKER).is_file():
+            saved = torch.load(path / "training_state.pt", map_location="cpu", weights_only=False)
+            if (saved.get("step") != int(suffix)
+                    or not objective_identities_match(saved.get("identity"), boundary["identity"])):
+                raise ValueError(f"Refusing to delete an unrelated checkpoint: {path}")
+            shutil.rmtree(path)

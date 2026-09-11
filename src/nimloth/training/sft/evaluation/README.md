@@ -1,36 +1,51 @@
 # SFT 环境 rollout 评估
 
-`EvaluationConfig` 是显式、经过校验的评估请求；`eval_direct(config)` 和
-`eval_wm(config)` 均执行真实 VAGEN episode，而不是离线训练 loss validation。
+## VAGEN、Stage 1、Stage 2 的正式入口
+
+早期阶段使用统一 CLI，显式分派到
+`stage1.eval.evaluate`、`stage2.eval.evaluate`；VAGEN 分支保留原语义动作协议。
 
 ```bash
 python -m nimloth.training.sft.evaluation \
-  --mode direct --checkpoint /path/to/full-hf-checkpoint \
-  --env-url http://environment-server --output-dir /path/to/new-output \
+  --stage stage1 --checkpoint /path/to/exported-full-hf \
+  --env-url http://127.0.0.1:5000 --output-dir /path/to/new-output \
   --eval-sets base common_sense --split test --episodes-per-eval-set 60 \
   --seed-offset 1 --max-steps 20 --temperature 0 --top-p 1 \
-  --max-response-tokens 512 --tensor-parallel-size 4
+  --max-response-tokens 512 --tensor-parallel-size 2 \
+  --history-turns 5 --generation-seed 0 --success-threshold 1.5 --step-length 0.5
 ```
 
-WM评估将 `--mode direct` 换成 `--mode wm`，并显式提供
-`--num-simulations`、`--exploration-constant`、`--planner-device`。
-WM checkpoint 必须通过 SFT3（旧SFT2）的完整、epoch-complete、H=1、
-DINO-grid / outgoing-action MC value 合同；预测深度来自该 checkpoint 的
-`prediction_horizon`。格式/Query阶段 checkpoint 不可充当 WM checkpoint。
+`--stage vagen|stage1|stage2` 使用原 VAGEN `844378c` BatchEnvironmentServer API，
+**不能连接新版 async GymImageEnv 服务**。服务源与客户端协议必须匹配；不会自动
+回退另一实现。环境提供原始 `grounding_worldmodeling` system/observation prompt；
+Stage 1 使用训练共享的 action-token prompt 转换，Stage 2 再按 checkpoint 的有序 query 格式转换。
+物理动作和 success 定义不因 prompt 协议变化。原 WM/RL 路径维持现状。
 
-- `cli.py`：把同一 episode、seed、生成和步数配置接到两种路径；保存并校验
-  `evaluation_contract.json`，resume 改变输入或策略参数时拒绝。
-- `rollout.py`：迁入原 RL rollout producer，复用 QwenVLLMAgentPolicy、
-  VAGENNavigationRolloutCollector、AgentRuntime 和 EpisodeRunner；原
-  `experiments/training/rl/rollout_env.py` 保留兼容转发。
-- direct：每个真实观测生成回答并执行解析出的动作，不加载 WM。
-- WM：现有 PlanningPolicy 在每个真实观测生成对应真实 CoT/state，调用现有
-  MCTS，只执行首动作；下一观测重新生成并搜索。末边评分为
-  `Q(predicted_state[K-1], action[K])`，不累加各深度 MC-return prediction。
-- 两种路径都保存真实 terminal CoT，不执行 terminal draft action。
-- `rollout_summary.json` 共享 overall / by_eval_set 的 success_rate、avg_reward、
-  avg_steps；WM模拟步不计入环境步数。episode顺序、每集合seed和上限一致。
+`early_checkpoint.py` 校验 full HF 阶段及 Query 的 projector/metadata；adapter 必须先通过
+`python -m nimloth.training.sft.stage1.checkpoint_export --help` 所列正式参数导出。
+Stage 2 支持保存的 `generate` 和 `inject`：前者完全由模型生成；后者只在模型实际生成
+`</think>` 后插入 query slots，随后无约束生成动作。不会补 CoT、动作边界或合法动作。
+该路径不加载外部 WM、value head、DINO teacher，也不运行 MCTS。
 
-命令是运行接口示例，不表示已执行评估。真实执行需要 CUDA/vLLM、完整模型和
-环境服务，并遵循项目独立实验授权；CPU接口检查只验证接线与调用合同。
-旧SFT3的 `stage3.evaluate.evaluate` 仍为离线 loss validation。
+`early.py` 组合配置、checkpoint 指纹及真实环境循环。`environment/navigation/early_evaluation.py`
+负责 session 生命周期；`backbone/qwen25vl/early_generation.py` 保留 action special tokens
+和 sampled/inserted token 来源。严格格式通过的输出显式转为原服务的语义 answer；Nimloth 不通过则发送
+空 no-op（VAGEN 基线始终原文送入原 parser），保存原文及实际 service response，绝不把无效模型输出修成合法动作。
+
+每个 episode 原子保存 `episodes/<id>/record.json`，逐步保存 prompt、观测图片、原始响应、
+采样/注入 token、实际服务文本及环境反馈；success 只读取 `metrics.traj_metrics.success`。
+终止观测按相同显式生成参数生成并保存真实回答/CoT，但不执行其中的动作。`rollout_summary.json` 同时报告
+requested/completed/successes/complete，部分结果不能解释为全量 success rate。
+恢复追加 `--resume`，合同、checkpoint 或 episode identity 变化均拒绝。只统计已有记录用
+同一命令追加 `--resume --summarize-only`，不会加载 GPU 模型或启动环境。少于标准 base60+
+common_sense60 的运行标记为 `custom_or_smoke`。以上接口测试不代表已完成真实环境验收。
+
+原 Batch 服务的 base/common_sense 是固定 held-out test 资产；早期分支拒绝 val/eval 标签，避免对同一数据伪造不同 split。
+
+## 暂未迁移的 WM/RL 入口
+
+现有 `--mode direct|wm` 与 `eval_direct(config)` / `eval_wm(config)` 保留原运行行为，
+供原 WM/RL 调用者使用；Stage 1/2 必须显式使用上面的 `--stage`。
+WM 模式继续验证完整阶段 checkpoint，并要求显式搜索参数；每个真实观测重新规划，
+只执行首动作，末边评分为 `Q(predicted_state[K-1], action[K])`。本轮未重构这些路径。
+离线训练 validation loss 不属于 success rate。

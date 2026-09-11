@@ -22,6 +22,12 @@ class EvaluationConfig:
     top_p: float
     max_response_tokens: int
     tensor_parallel_size: int
+    summarize_only: bool = False
+    stage: Literal["vagen", "stage1", "stage2"] | None = None
+    history_turns: int = 5
+    generation_seed: int = 0
+    success_threshold: float = 1.5
+    step_length: float = 0.5
     num_simulations: int | None = None
     exploration_constant: float | None = None
     planner_device: str | None = None
@@ -37,6 +43,23 @@ class EvaluationConfig:
         object.__setattr__(self, "checkpoint", Path(self.checkpoint))
         object.__setattr__(self, "output_dir", Path(self.output_dir))
         object.__setattr__(self, "eval_sets", tuple(self.eval_sets))
+        if self.summarize_only and (self.stage is None or not self.resume):
+            raise ValueError("summarize-only requires an early --stage and --resume")
+        if self.stage not in {None, "vagen", "stage1", "stage2"}:
+            raise ValueError("unknown early evaluation stage")
+        if self.stage is not None and (self.split != "test" or not set(self.eval_sets) <= {"base", "common_sense"}):
+            raise ValueError("early VAGEN source supports only base/common_sense held-out test assets")
+        if self.stage is not None and self.episodes_per_eval_set > 60:
+            raise ValueError("early held-out assets contain 60 unique episodes per set")
+        if self.stage is not None and self.mode != "direct":
+            raise ValueError("early stages require direct evaluation")
+        if type(self.history_turns) is not int or self.history_turns < 0:
+            raise ValueError("history_turns must be non-negative")
+        if type(self.generation_seed) is not int or type(self.seed_offset) is not int:
+            raise ValueError("seeds must be integers")
+        for value in (self.success_threshold, self.step_length):
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError("navigation dynamics must be finite and positive")
         if self.mode not in {"direct", "wm"}:
             raise ValueError("evaluation mode must be direct or wm")
         if self.split not in {"val", "test", "eval"}:

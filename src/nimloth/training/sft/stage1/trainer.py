@@ -1171,6 +1171,10 @@ def main(*, stage: str = "format") -> int:
             convergence_state=convergence.state_dict() if convergence_policy else None,
             rank_rng_states=epoch_rng_states,
         )
+        if stage == "format" and args.prune_intermediate_checkpoints and is_main():
+            from .checkpoint import prune_intermediate_checkpoints
+
+            prune_intermediate_checkpoints(args.output_dir, epoch, global_step)
         if val_loss < previous_best_val:
             save_checkpoint(
                 model,

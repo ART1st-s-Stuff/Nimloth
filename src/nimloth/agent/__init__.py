@@ -3,33 +3,22 @@
 from nimloth.agent.policy import (
     ActionLogProbReplay,
     AgentPolicy,
+    PlannerPolicyTrace,
+    PolicyDecision,
     PolicyReplayInput,
     PolicyReplayOutput,
-    PlannerPolicyTrace,
     PolicyState,
     PolicyStateTokenBudgetExceeded,
     PolicyTokenTrace,
-    PolicyDecision,
     behavior_log_probs,
     categorical_entropy_from_log_probs,
     sample_policy_decision,
     validate_action_log_probs,
 )
-from nimloth.agent.planning import (
-    PlanningPolicy,
-    WorldModelPlan,
-    WorldModelPlanner,
-)
-from nimloth.agent.model import (
-    Agent,
-    AgentOutput,
-    AgentRolloutOutput,
-    AgentStateOutput,
-)
 from nimloth.agent.registry import create_prompt_template
-from nimloth.agent.serialization import prompt_template_spec_from_record
 from nimloth.agent.runner import AgentEpisode, EpisodeRunner
 from nimloth.agent.runtime import AgentAction, AgentRuntime
+from nimloth.agent.serialization import prompt_template_spec_from_record
 from nimloth.agent.template import (
     AgentPrompt,
     AgentPromptTemplate,
@@ -79,3 +68,22 @@ __all__ = [
     "sample_policy_decision",
     "validate_action_log_probs",
 ]
+
+
+# Prompt/direct-policy users do not need the optional world-model implementation.
+# Preserve public model/planner imports, loading them only when requested.
+def __getattr__(name: str):
+    from importlib import import_module
+
+    modules = {
+        "Agent": "model", "AgentOutput": "model",
+        "AgentRolloutOutput": "model", "AgentStateOutput": "model",
+        "PlanningPolicy": "planning", "WorldModelPlan": "planning",
+        "WorldModelPlanner": "planning",
+    }
+    module = modules.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(f"{__name__}.{module}"), name)
+    globals()[name] = value
+    return value

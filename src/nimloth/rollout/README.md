@@ -68,3 +68,6 @@ planner训练逐真实transition重算一次完整prefix并立即backward，不�
 Qwen graph。窗口模块只负责保持顺序，不计算
 advantage。fresh逐步reward用于完整episode return；真正terminal从0 bootstrap，
 时间上限truncation必须由训练配置显式选择bootstrap语义。
+
+`early_records.py` 保存早期阶段 success eval 的原子 episode 记录，校验恢复 identity，
+并明确区分 partial/complete 统计；这些记录不冒充含 WM/state 的训练轨迹 schema。

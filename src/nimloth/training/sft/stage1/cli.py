@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 from nimloth.latent import (
@@ -37,7 +38,7 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap.add_argument("--val-jsonl", type=Path, required=True)
     ap.add_argument("--output-dir", type=Path, required=True)
     ap.add_argument("--epochs", type=int, default=None)
-    ap.add_argument("--until-converged", action="store_true")
+    ap.add_argument("--until-converged", action=argparse.BooleanOptionalAction, default=False)
     ap.add_argument(
         "--max-optimizer-steps", type=int, default=None,
         help="Pause with a resume checkpoint and exit 75 at this absolute optimizer step.",
@@ -83,9 +84,10 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap.add_argument("--max-val-batches", type=int, default=-1)
     ap.add_argument("--max-images-per-record", type=int, default=-1)
     ap.add_argument("--attn-implementation", default="sdpa")
-    ap.add_argument("--gradient-checkpointing", action="store_true", default=True)
+    ap.add_argument("--gradient-checkpointing", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--prune-intermediate-checkpoints", action=argparse.BooleanOptionalAction, default=False)
     ap.add_argument(
         "--resume-save-steps",
         type=int,
@@ -191,6 +193,13 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         if action.required and action.default is not None:
             action.required = False
     args = ap.parse_args(argv)
+    explicit_flags = {value.split("=", 1)[0] for value in (sys.argv[1:] if argv is None else argv)}
+    if not args.until_converged and "--no-until-converged" in explicit_flags:
+        # 显式固定轮数覆盖同时关闭 YAML 继承的收敛参数，CLI 矛盾参数仍报错。
+        for field in ("convergence_min_epochs", "convergence_patience_epochs",
+                      "convergence_min_relative_improvement"):
+            if "--" + field.replace("_", "-") not in explicit_flags:
+                setattr(args, field, None)
     if args.max_optimizer_steps is not None and args.max_optimizer_steps < 1:
         raise ValueError("--max-optimizer-steps must be positive")
     args.action_token_loss_weight = validate_action_weight(args.action_token_loss_weight)

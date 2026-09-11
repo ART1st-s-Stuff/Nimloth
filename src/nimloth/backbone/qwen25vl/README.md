@@ -28,3 +28,6 @@ loss-mask 位置的 vocabulary logits，reasoning 使用屏蔽 Nimloth 注入 to
 action 使用八 token 词表；注入或强制补全的 token 不进入 PPO。
 latent query的注入边界按tokenizer解码后的字面`</think>`匹配，而不是假设该文本只有
 一种token ID切分；达到reasoning上限时才强制补入canonical close token序列。
+
+`early_generation.py` 是格式/Query阶段的原始生成入口：保留特殊 token，区分真实采样和
+query 注入。与 planner turn backend 分离，不约束动作、不补 reasoning 或动作边界。

@@ -1,0 +1,33 @@
+# Standard Stage 1 format training: semantic initialization and prompt preparation
+# precede cached training.
+tuning:
+  lora: true
+  lora_r: 64
+  lora_alpha: 128
+  lora_dropout: 0.05
+train:
+  distributed_strategy: fsdp
+  until_converged: true
+  convergence_min_epochs: 2
+  convergence_patience_epochs: 2
+  convergence_min_relative_improvement: 0.01
+  batch_size: 1
+  grad_accum: 8
+  action_token_loss_weight: 8
+  lr: 1.0e-6
+  embedding_lr: 5.0e-6
+  weight_decay: 0.01
+  warmup_ratio: 0.05
+  max_length: 20000
+  max_pixels: 100352
+  min_pixels: 3136
+  attn_implementation: flash_attention_2
+  gradient_checkpointing: true
+  resume_save_steps: 10
+  prune_intermediate_checkpoints: true
+  cache_pixel_dtype: bfloat16
+  preprocess_workers: 8
+  num_workers: 4
+  format_eval_samples: 32
+  seed: 42
+  no_wandb: true

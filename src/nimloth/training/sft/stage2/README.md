@@ -36,3 +36,7 @@ python -m nimloth.training.sft.stage2 \
 Checkpoint 保存 `training_stage=query`、语言模型或 adapter，以及 `slot_projector.pt` 和 `grid_state_config.json`。配置记录 teacher 身份、query token ID、projector 维度和目标权重；恢复或从 query checkpoint 初始化时先严格校验，再恢复 projector。
 
 LoRA 合并导出保留 projector 文件及阶段元数据，SFT3 使用同一 projector 格式。完整恢复包含优化器、调度器、epoch/微批次游标、每 rank 随机数状态及收敛历史；query 收敛监控身份为 `validation_total_loss`。CPU 测试覆盖标签、梯度、空间对齐、收敛与导出接口，不作为真实 GPU 训练或 rollout 质量证据。
+
+`eval.py:evaluate(EvaluationConfig)` 为本阶段的真实环境 success rate 接口，统一由
+`python -m nimloth.training.sft.evaluation --stage stage2 ...` 调用；与离线 loss validation
+分开，不加载 WM/value/MCTS。完整参数、导出前置条件和恢复合同见上层 evaluation/README.md。

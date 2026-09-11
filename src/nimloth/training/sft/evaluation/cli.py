@@ -5,14 +5,22 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from nimloth.training.sft.evaluation.config import EvaluationConfig
 from nimloth.training.sft.evaluation.rollout import _NAV_DATASETS
 from nimloth.training.sft.evaluation.rollout import main as rollout_main
-from nimloth.training.sft.stage3.mcts_evaluation import (
-    SFT2MCTSEvaluationContract,
-    load_sft2_mcts_evaluation_contract,
-)
+
+if TYPE_CHECKING:
+    from nimloth.training.sft.stage3.mcts_evaluation import SFT2MCTSEvaluationContract
+
+
+def load_sft2_mcts_evaluation_contract(checkpoint):
+    from nimloth.training.sft.stage3.mcts_evaluation import (
+        load_sft2_mcts_evaluation_contract as load,
+    )
+    return load(checkpoint)
+
 
 _HELD_OUT_DATASETS = tuple(
     dataset for dataset in _NAV_DATASETS if not dataset.endswith("_train")
@@ -23,7 +31,13 @@ def parse_args(argv: list[str] | None = None) -> EvaluationConfig:
     ap = argparse.ArgumentParser(
         description="SFT direct/WM real-environment rollout evaluation"
     )
-    ap.add_argument("--mode", choices=("direct", "wm"), required=True)
+    ap.add_argument("--mode", choices=("direct", "wm"), default=None)
+    ap.add_argument("--summarize-only", action="store_true")
+    ap.add_argument("--stage", choices=("vagen", "stage1", "stage2"))
+    ap.add_argument("--history-turns", type=int, default=5)
+    ap.add_argument("--generation-seed", type=int, default=0)
+    ap.add_argument("--success-threshold", type=float, default=1.5)
+    ap.add_argument("--step-length", type=float, default=0.5)
     ap.add_argument("--checkpoint", type=Path, required=True)
     ap.add_argument("--env-url", required=True)
     ap.add_argument("--output-dir", type=Path, required=True)
@@ -55,7 +69,12 @@ def parse_args(argv: list[str] | None = None) -> EvaluationConfig:
         choices=("mp", "ray"),
         default=None,
     )
-    return EvaluationConfig(**vars(ap.parse_args(argv)))
+    values = vars(ap.parse_args(argv))
+    if values["mode"] is None:
+        if values["stage"] is None:
+            ap.error("provide --stage for early evaluation or --mode for existing planner paths")
+        values["mode"] = "direct"
+    return EvaluationConfig(**values)
 
 
 def build_rollout_argv(
@@ -173,6 +192,15 @@ def write_or_validate_contract(
 
 def run_evaluation(args: EvaluationConfig) -> int:
     """Run real episodes; offline training loss validation is a separate API."""
+    if args.stage == "stage1":
+        from nimloth.training.sft.stage1.eval import evaluate
+        return evaluate(args)
+    if args.stage == "stage2":
+        from nimloth.training.sft.stage2.eval import evaluate
+        return evaluate(args)
+    if args.stage == "vagen":
+        from .early import run_early_evaluation
+        return run_early_evaluation(args)
     contract = (
         load_sft2_mcts_evaluation_contract(args.checkpoint)
         if args.mode == "wm" else None

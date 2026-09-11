@@ -86,23 +86,14 @@ python ${REPO}/experiments/training/sft1/convert_rollouts.py \
   --rollout-step ${ROLLOUT_DUMP_STEP}
 ```
 
-## 2. SFT1 k=8
+## 2. Stage 1
 
-```bash
-export LATENT_TOKEN_COUNT=8
-export MASK_LATENT_QUERY_LABELS=1
-export BASELINE_RUN_NAME=${SOURCE_RUN_NAME}
-export EXPERIMENT_NAME=sft1_${SOURCE_RUN_NAME}_k8
-export WANDB_RUN_NAME=${EXPERIMENT_NAME}
-export TRAIN_OUT=${SFT1_OUTPUT_DATE_ROOT}/${EXPERIMENT_NAME}
-export TRAIN_JSONL=${RECORDS_ROOT}/train_success.jsonl
-export VAL_JSONL=${RECORDS_ROOT}/val_all.jsonl
+旧 K8 Stage 1 流程已由标准 format-only Stage 1 替代。使用
+`experiments/training/sft1/train.py` 和 `configs/training/sft1/format.yaml`；
+参见该目录 README 的完整参数。Stage 1 不含 latent/query，按验证 LM loss 训练至收敛。
 
-# CPU cache job first; 8-GPU training starts only after it succeeds.
-bash experiments/training/sft1/submit_cache_then_train_8gpu.sh
-```
-
-SFT1 code normalizes rendered latent blocks to k=8 and masks latent query token labels by default. Cached image tensors use BF16 by default, and `REQUIRE_PREBUILT_CACHE=1` prevents GPU-side cache rebuilding.
+本历史 WM 流程需要的 query 必须由新 Stage 2 训练并通过阶段 checkpoint 校验，
+不能直接将 format checkpoint 当作 K8 state 模型。
 
 ## 3. SFT2 k=8
 
