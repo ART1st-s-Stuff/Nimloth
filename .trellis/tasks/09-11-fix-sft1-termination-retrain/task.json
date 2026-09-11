@@ -1,0 +1,28 @@
+{
+  "id": "fix-sft1-termination-retrain",
+  "name": "fix-sft1-termination-retrain",
+  "title": "修复SFT1终止格式并重新训练",
+  "description": "修正SFT1严格格式验收与EOS/动作token权重关系，从原始hf_actor训练到收敛并执行标准held-out评估",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-09-11",
+  "completedAt": null,
+  "branch": "codex/fix-sft1-termination-retrain",
+  "base_branch": "codex/sft-stage-eval-refactor",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "09-05-unify-sft-training-evaluation",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "kind": "experiment"
+  }
+}

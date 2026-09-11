@@ -1,0 +1,5 @@
+{"file":".trellis/spec/domains/sft-stages.md","reason":"Stage 1 training, semantic initialization, and unified early evaluation contract"}
+{"file":".trellis/spec/experiments/task-contract.md","reason":"Remote training and evaluation launch, monitoring, and evidence requirements"}
+{"file":".trellis/spec/experiments/data-and-splits.md","reason":"Success-subset provenance, split isolation, and coverage gate"}
+{"file":".trellis/spec/experiments/outputs-checkpoints-and-evidence.md","reason":"Unique outputs, resume identity, checkpoint cleanup, and result boundaries"}
+{"file":".trellis/tasks/09-11-fix-sft1-termination-retrain/research/zero-success-diagnosis-20260911.md","reason":"Observed termination failure and current source mismatch"}

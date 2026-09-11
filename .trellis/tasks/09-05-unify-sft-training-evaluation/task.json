@@ -18,7 +18,9 @@
   "commit": null,
   "pr_url": null,
   "subtasks": [],
-  "children": [],
+  "children": [
+    "09-11-fix-sft1-termination-retrain"
+  ],
   "parent": null,
   "relatedFiles": [],
   "notes": "",
