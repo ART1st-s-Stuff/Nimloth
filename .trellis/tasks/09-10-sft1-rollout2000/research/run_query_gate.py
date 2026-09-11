@@ -62,7 +62,8 @@ def main():
     env = os.environ.copy()
     env.update(PYTHONPATH=str(checkout / 'src'), CUDA_VISIBLE_DEVICES='0,1,2,3,4,5,6',
                OMP_NUM_THREADS='4', MKL_NUM_THREADS='4', TOKENIZERS_PARALLELISM='false',
-               PYTHONUNBUFFERED='1', PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True',
+               PYTHONUNBUFFERED='1', PYTHONDONTWRITEBYTECODE='1',
+               PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True',
                CPATH='/mnt/nimloth/dependencies/python310-dev/root/usr/include/python3.10:/mnt/nimloth/dependencies/python310-dev/root/usr/include')
     command = ['/mnt/nimloth/venv/bin/python3', '-m', 'torch.distributed.run', '--standalone',
                '--nnodes=1', '--nproc-per-node=7', str(Path(__file__).with_name('query_capacity_probe.py')),

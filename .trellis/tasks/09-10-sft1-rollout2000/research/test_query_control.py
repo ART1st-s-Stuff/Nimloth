@@ -1,6 +1,7 @@
 """Serialized tiny checkpoint checks; not a seven-GPU training substitute."""
 import json
 from dataclasses import asdict
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -43,6 +44,11 @@ def test_query_gate_attempt_uses_distinct_preserved_outputs(tmp_path):
     )
     with pytest.raises(ValueError, match="invalid gate attempt name"):
         attempt_paths(tmp_path, "../retry")
+
+
+def test_query_gate_disables_runtime_bytecode_cache():
+    source = Path(__file__).with_name("run_query_gate.py").read_text()
+    assert "PYTHONDONTWRITEBYTECODE='1'" in source
 
 
 def saved_epoch(tmp_path):
