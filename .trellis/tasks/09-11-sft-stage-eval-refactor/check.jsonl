@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/domains/sft-stages.md", "reason": "阶段、checkpoint 与评估合同"}
+{"file": ".trellis/spec/python/structure-and-module-indexes.md", "reason": "目录结构和模块归属"}
+{"file": ".trellis/spec/python/configuration-and-interfaces.md", "reason": "typed config 和 CLI 边界"}
+{"file": ".trellis/spec/governance/cot-and-state.md", "reason": "真实 CoT/state 与动作语义"}

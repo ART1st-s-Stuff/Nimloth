@@ -1,0 +1,30 @@
+{
+  "id": "sft-stage-eval-refactor",
+  "name": "sft-stage-eval-refactor",
+  "title": "标准化B训练并重构SFT三阶段评估",
+  "description": "以B替换旧Stage1流程，统一VAGEN、SFT1/2直接策略与SFT3/RL MCTS的success rate评估入口并删除被替代代码",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-09-11",
+  "completedAt": null,
+  "branch": "codex/sft-stage-eval-refactor",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "worktree_path": "/workspace/remote2/nimloth/.worktree/sft-stage-eval-refactor",
+    "branch": "codex/sft-stage-eval-refactor",
+    "base_commit": "d85732c8"
+  }
+}
