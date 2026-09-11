@@ -7,7 +7,11 @@ from types import SimpleNamespace
 import pytest
 import torch
 from query_control import cleanup_epochs, validate_boundary
-from run_query_gate import attempt_paths, validate_checkout
+from run_query_gate import (
+    attempt_paths,
+    validate_checkout,
+    wait_selected_gpus_idle,
+)
 from safetensors.torch import save_file
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
@@ -49,6 +53,19 @@ def test_query_gate_attempt_uses_distinct_preserved_outputs(tmp_path):
 def test_query_gate_disables_runtime_bytecode_cache():
     source = Path(__file__).with_name("run_query_gate.py").read_text()
     assert "PYTHONDONTWRITEBYTECODE='1'" in source
+
+
+def test_query_gate_waits_for_post_process_gpu_utilization(monkeypatch):
+    samples = iter([
+        "0, 0, 0\n6, 0, 100\n7, 0, 0\n",
+        "0, 0, 0\n6, 0, 0\n7, 0, 0\n",
+    ])
+    monkeypatch.setattr(
+        "run_query_gate.subprocess.check_output",
+        lambda *args, **kwargs: next(samples),
+    )
+    monkeypatch.setattr("run_query_gate.time.sleep", lambda _: None)
+    wait_selected_gpus_idle(30)
 
 
 def saved_epoch(tmp_path):

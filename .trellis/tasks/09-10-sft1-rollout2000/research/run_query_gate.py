@@ -46,6 +46,29 @@ def attempt_paths(root: Path, attempt: str) -> tuple[Path, Path]:
     return root / f'gate_control{suffix}', root / f'gate{suffix}'
 
 
+def wait_selected_gpus_idle(timeout_seconds: float) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        rows = subprocess.check_output(
+            [
+                'nvidia-smi',
+                '--query-gpu=index,memory.used,utilization.gpu',
+                '--format=csv,noheader,nounits',
+            ],
+            text=True,
+        ).splitlines()
+        busy = []
+        for row in rows:
+            gpu, memory, utilization = map(int, row.split(','))
+            if gpu < 7 and (memory >= 100 or utilization != 0):
+                busy.append(row)
+        if not busy:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f'selected GPUs did not become idle: {busy}')
+        time.sleep(1)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=Path, required=True)
@@ -73,11 +96,9 @@ def main():
     start = time.monotonic()
     with (output / 'events.jsonl').open('x') as events:
         for phase in ('initial', 'resume'):
-            gpu_rows = subprocess.check_output(['nvidia-smi', '--query-gpu=index,memory.used,utilization.gpu', '--format=csv,noheader,nounits'], text=True).splitlines()
-            for row in gpu_rows:
-                gpu, memory, utilization = map(int, row.split(','))
-                if gpu < 7:
-                    assert memory < 100 and utilization == 0, row
+            # CUDA utilization can remain nonzero for one sample after the
+            # initial process exits even though its memory is already released.
+            wait_selected_gpus_idle(0 if phase == 'initial' else 30)
             argv = command + (['--resume'] if phase == 'resume' else [])
             owned = {}
             with (output / f'{phase}.log').open('x') as log:
