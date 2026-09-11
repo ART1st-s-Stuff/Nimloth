@@ -1,7 +1,21 @@
 import json
 
+import pytest
+
 from nimloth.agent.action_prompt import format_action_prompt
 from nimloth.training.sft.stage1.preparation import prepare_records
+from nimloth.training.sft.stage1.workflow import validate_prepared_splits
+
+
+def source_identity(seed, *, split="train", eval_set="base", source_index=None):
+    return {
+        "source_index": seed if source_index is None else source_index,
+        "source_key": f"{eval_set}:{seed}",
+        "eval_set": eval_set,
+        "seed": seed,
+        "batch": 1,
+        "split": split,
+    }
 
 
 def test_prompt_protocol_is_idempotent_and_semantic():
@@ -15,7 +29,7 @@ def test_prompt_protocol_is_idempotent_and_semantic():
 
 def test_preparation_preserves_targets_and_images(tmp_path):
     target = '<think>real recorded thought</think><|latent_state_0|><|action_start|><|action_(0)|><|action_end|>'
-    row = {'id': 'r', 'messages': [{'role': 'user', 'content': [
+    row = {'id': 'r', 'source_identity': source_identity(1), 'messages': [{'role': 'user', 'content': [
         {'type': 'text', 'text': '<answer>moveahead</answer>'},
         {'type': 'image', 'image': 'original.png'}]}, {'role': 'assistant', 'content': target}]}
     source, out = tmp_path / 'in.jsonl', tmp_path / 'out.jsonl'
@@ -26,6 +40,110 @@ def test_preparation_preserves_targets_and_images(tmp_path):
     assert saved['messages'][0]['content'][1] == row['messages'][0]['content'][1]
     assert json.loads(source.read_text()) == row
     assert manifest['records'] == 1
+
+
+def test_success_only_preparation_filters_and_audits_records(tmp_path):
+    rows = [
+        {
+            'id': 'kept',
+            'source_identity': source_identity(1),
+            'success': True,
+            'action_indices': list(range(8)),
+            'messages': [{'role': 'user', 'content': '<answer>moveahead</answer>'}],
+        },
+        {
+            'id': 'excluded',
+            'source_identity': source_identity(2),
+            'success': False,
+            'action_indices': [0],
+            'messages': [{'role': 'user', 'content': '<answer>moveahead</answer>'}],
+        },
+    ]
+    source, output = tmp_path / 'source.jsonl', tmp_path / 'selected.jsonl'
+    source.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+    manifest = prepare_records(
+        source, output, success_only=True, require_all_actions=True
+    )
+    assert [json.loads(line)['id'] for line in output.read_text().splitlines()] == [
+        'kept'
+    ]
+    assert manifest['selection'] == 'success_is_true'
+    assert manifest['source_records'] == 2
+    assert manifest['records'] == 1
+    assert manifest['trajectory_records'] == 1
+    assert manifest['assistant_turns'] == 0
+    assert manifest['excluded_records'] == 1
+    assert manifest['action_counts'] == {str(index): 1 for index in range(8)}
+
+
+def test_success_only_preparation_rejects_unknown_success_and_missing_actions(tmp_path):
+    for row, match in [
+        ({'id': 'missing', 'source_identity': source_identity(3), 'messages': []}, 'boolean success'),
+        ({'id': 'string', 'source_identity': source_identity(4), 'success': 'true', 'messages': []}, 'boolean success'),
+        (
+            {'id': 'partial', 'source_identity': source_identity(5), 'success': True, 'action_indices': [0], 'messages': []},
+            'lacks action indices',
+        ),
+    ]:
+        source = tmp_path / f"{row['id']}.jsonl"
+        output = tmp_path / f"{row['id']}-out.jsonl"
+        source.write_text(json.dumps(row) + '\n')
+        with pytest.raises((TypeError, ValueError), match=match):
+            prepare_records(
+                source, output, success_only=True, require_all_actions=True
+            )
+
+
+def test_prepared_split_relationship_requires_full_heldout_superset(tmp_path):
+    def write(name, rows):
+        path = tmp_path / name
+        path.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        return path
+
+    train = write('train.jsonl', [{'id': 'train', 'source_identity': source_identity(1), 'messages': []}])
+    val_identity = source_identity(2, split='val')
+    val = write('val.jsonl', [{'id': 'val', 'source_identity': val_identity, 'messages': []}])
+    complete = write(
+        'format.jsonl',
+        [
+            {'id': 'val', 'source_identity': val_identity, 'messages': []},
+            {'id': 'failed-val', 'source_identity': source_identity(3, split='val'), 'messages': []},
+        ],
+    )
+    validate_prepared_splits(train, val, complete)
+    overlap = write('overlap.jsonl', [{'id': 'train', 'source_identity': source_identity(1), 'messages': []}])
+    with pytest.raises(ValueError, match='Training and format-eval'):
+        validate_prepared_splits(train, val, overlap)
+    missing = write('missing.jsonl', [{'id': 'other', 'source_identity': source_identity(4, split='val'), 'messages': []}])
+    with pytest.raises(ValueError, match='absent from format-eval'):
+        validate_prepared_splits(train, val, missing)
+
+
+def test_prepared_split_rejects_semantic_overlap_even_when_ids_differ(tmp_path):
+    def write(name, row):
+        path = tmp_path / name
+        path.write_text(json.dumps(row) + '\n')
+        return path
+
+    train = write(
+        'train.jsonl',
+        {'id': 'train-id', 'source_identity': source_identity(9), 'messages': []},
+    )
+    heldout_identity = source_identity(9, split='val', source_index=999)
+    heldout = write(
+        'heldout.jsonl',
+        {'id': 'different-id', 'source_identity': heldout_identity, 'messages': []},
+    )
+    with pytest.raises(ValueError, match='semantic sources overlap'):
+        validate_prepared_splits(train, heldout, heldout)
+
+
+def test_preparation_refuses_to_invent_source_identity(tmp_path):
+    source = tmp_path / 'source.jsonl'
+    output = tmp_path / 'output.jsonl'
+    source.write_text(json.dumps({'id': 'unknown', 'messages': []}) + '\n')
+    with pytest.raises(TypeError, match='has no source_identity'):
+        prepare_records(source, output)
 
 
 def test_stage1_prompt_matches_historical_selected_experiment():
@@ -81,7 +199,9 @@ def test_workflow_refuses_resume_configuration_drift(tmp_path):
         path.write_text('data')
     with pytest.raises(ValueError, match='differ'):
         main(['--source-model', str(tmp_path / 'model'), '--train-jsonl', str(train),
-              '--val-jsonl', str(val), '--output-dir', str(root), '--config', str(config), '--resume'])
+              '--val-jsonl', str(val), '--format-eval-jsonl', str(val),
+              '--output-dir', str(root), '--config', str(config),
+              '--success-only', '--resume'])
 
 
 def test_workflow_resume_allows_cap_change_but_rejects_model_change(tmp_path, monkeypatch):
@@ -98,13 +218,17 @@ def test_workflow_resume_allows_cap_change_but_rejects_model_change(tmp_path, mo
     model.mkdir()
     (model / 'config.json').write_text('{}')
     train, val = tmp_path / 'train', tmp_path / 'val'
-    for name, path in [('train', train), ('val', val)]:
-        path.write_text(json.dumps({'id': name, 'messages': [{'role': 'user', 'content': '<answer>moveahead</answer>'}]}) + '\n')
+    for seed, (name, path) in enumerate([('train', train), ('val', val)], start=1):
+        path.write_text(json.dumps({'id': name, 'success': True,
+            'source_identity': source_identity(seed, split=name), 'split': name,
+            'action_indices': list(range(8)),
+            'messages': [{'role': 'user', 'content': '<answer>moveahead</answer>'}]}) + '\n')
     config = tmp_path / 'config'
     config.write_text('train: {}')
     root = tmp_path / 'run'
     args = ['--source-model', str(model), '--train-jsonl', str(train), '--val-jsonl', str(val),
-            '--output-dir', str(root), '--config', str(config)]
+            '--format-eval-jsonl', str(val),
+            '--output-dir', str(root), '--config', str(config), '--success-only']
     assert workflow.main(args + ['--max-optimizer-steps', '20']) == 0
     assert workflow.main(args + ['--resume', '--max-optimizer-steps=40']) == 0
     assert workflow.main(args + ['--resume']) == 0

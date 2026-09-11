@@ -16,6 +16,7 @@ import torch.distributed as dist
 
 from .distributed import is_main
 from .fsdp import checkpoint_state, save_full_pretrained
+from .loss import ACTION_TOKEN_LOSS_SCOPE
 
 if TYPE_CHECKING:
     from transformers import AutoProcessor
@@ -163,6 +164,11 @@ def save_resume_checkpoint(
                     "format_answer_ce_v2" if latent_token_count is None else None
                 )
                 module.config.nimloth_action_token_loss_weight = identity.get("action_token_loss_weight", 1.0)
+                module.config.nimloth_action_token_loss_scope = (
+                    ACTION_TOKEN_LOSS_SCOPE
+                    if latent_token_count is None
+                    else None
+                )
                 module.config.nimloth_latent_token_count = latent_token_count
                 module.config.nimloth_latent_query_mode = latent_query_mode
                 if full_weights is not None:
@@ -184,6 +190,11 @@ def save_resume_checkpoint(
                     "lora": lora,
                     "base_model_path": str(base_model_path),
                     "format_objective": "format_answer_ce_v2" if latent_token_count is None else None,
+                    "action_token_loss_scope": (
+                        ACTION_TOKEN_LOSS_SCOPE
+                        if latent_token_count is None
+                        else None
+                    ),
                     "latent_token_count": latent_token_count,
                     "latent_query_mode": latent_query_mode,
                     "mask_latent_query_labels": mask_latent_query_labels,
@@ -243,6 +254,9 @@ def save_checkpoint(
         "format_answer_ce_v2" if latent_token_count is None else None
     )
     module.config.nimloth_action_token_loss_weight = (identity or {}).get("action_token_loss_weight", 1.0)
+    module.config.nimloth_action_token_loss_scope = (
+        ACTION_TOKEN_LOSS_SCOPE if latent_token_count is None else None
+    )
     module.config.nimloth_latent_token_count = latent_token_count
     module.config.nimloth_latent_query_mode = latent_query_mode
     if full_weights is not None:
@@ -258,7 +272,10 @@ def save_checkpoint(
         "best_val": best_val,
         "lora": lora,
         "format_objective": "format_answer_ce_v2" if latent_token_count is None else None,
-                    "latent_token_count": latent_token_count,
+        "action_token_loss_scope": (
+            ACTION_TOKEN_LOSS_SCOPE if latent_token_count is None else None
+        ),
+        "latent_token_count": latent_token_count,
         "latent_query_mode": latent_query_mode,
         "mask_latent_query_labels": mask_latent_query_labels,
         "training_stage": getattr(module.config, "nimloth_training_stage", "format"),
@@ -299,6 +316,13 @@ def validate_resume_stage(
         raise ValueError("WM/value checkpoint cannot resume an early training stage")
     if expected == "format" and state.get("format_objective") != "format_answer_ce_v2":
         raise ValueError("legacy query-bearing checkpoint cannot resume format-only supervision")
+    if (
+        expected == "format"
+        and state.get("action_token_loss_scope") != ACTION_TOKEN_LOSS_SCOPE
+    ):
+        raise ValueError(
+            "checkpoint action-token loss scope cannot resume current Stage 1"
+        )
     saved_stage = state.get("training_stage")
     if saved_stage is None:
         legacy_keys = {"step", "epoch", "best_val", "lora"}

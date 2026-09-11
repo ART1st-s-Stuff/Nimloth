@@ -77,7 +77,7 @@ def main():
         for _ in range(2):
             loss = training_loss(
                 model, {"input_ids": inputs, "labels": inputs, "use_cache": False},
-                action_token_ids=tuple(range(6, 16)),
+                action_token_ids=tuple(range(6, 14)),
                 action_weight=args.action_token_loss_weight,
             )
             assert torch.isfinite(loss)
@@ -95,7 +95,8 @@ def main():
     print(f"rank={rank} phase=save_resume", flush=True)
     checkpoint = save_resume_checkpoint(model, TestProcessor(), args.output_dir,
         optimizer=optimizer, scheduler=scheduler, global_step=1, epoch=1,
-        next_micro_batch=2, best_val=1.0, identity={"test": "fsdp", "action_token_loss_weight": args.action_token_loss_weight},
+        next_micro_batch=2, best_val=1.0, identity={"test": "fsdp", "action_token_loss_weight": args.action_token_loss_weight,
+            "action_token_loss_scope": "action_number_tokens_v1"},
         rank=rank, world=dist.get_world_size(), lora=True, base_model_path=Path("test"),
         latent_token_count=None, mask_latent_query_labels=None, latent_query_mode=None,
         convergence_state={"test": "preserved"})

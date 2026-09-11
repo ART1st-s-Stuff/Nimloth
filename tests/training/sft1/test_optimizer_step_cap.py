@@ -13,6 +13,7 @@ import torch
 from nimloth.training.sft.stage1.cli import parse_args
 
 BASE = ["--model", "/model", "--train-jsonl", "/train", "--val-jsonl", "/val",
+        "--format-eval-jsonl", "/format-eval",
         "--output-dir", "/output"]
 
 
@@ -22,7 +23,9 @@ def test_cap_cli_is_optional_positive_for_both_stages():
     for value in ("0", "-1"):
         with pytest.raises(ValueError, match="positive"):
             parse_args(BASE + ["--max-optimizer-steps", value])
-    assert parse_args(BASE + ["--max-optimizer-steps", "20", "--dino-cache-root", "/dino"], stage="query")[0].max_optimizer_steps == 20
+    query_base = [value for index, value in enumerate(BASE)
+                  if index not in (6, 7)]
+    assert parse_args(query_base + ["--max-optimizer-steps", "20", "--dino-cache-root", "/dino"], stage="query")[0].max_optimizer_steps == 20
 
 
 @pytest.mark.parametrize("batches,initial_step,expected_cursor", [(20, 0, 8), (6, 0, 6), (20, 1, 4)])

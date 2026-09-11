@@ -109,6 +109,7 @@ def _run(tmp_path: Path, *, interrupt: bool):
         )
         validate_resume_stage(state, checkpoint, "format")
         assert state["format_objective"] == "format_answer_ce_v2"
+        assert state["action_token_loss_scope"] == "action_number_tokens_v1"
         assert state["latent_token_count"] is None
         assert state["latent_query_mode"] is None
         validate_resume_state(state, expected_identity=identity, rank=0, world=1)

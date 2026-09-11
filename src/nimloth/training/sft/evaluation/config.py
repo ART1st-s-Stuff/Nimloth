@@ -22,6 +22,7 @@ class EvaluationConfig:
     top_p: float
     max_response_tokens: int
     tensor_parallel_size: int
+    format_gate_jsonl: Path | None = None
     summarize_only: bool = False
     stage: Literal["vagen", "stage1", "stage2"] | None = None
     history_turns: int = 5
@@ -42,11 +43,17 @@ class EvaluationConfig:
     def __post_init__(self) -> None:
         object.__setattr__(self, "checkpoint", Path(self.checkpoint))
         object.__setattr__(self, "output_dir", Path(self.output_dir))
+        if self.format_gate_jsonl is not None:
+            object.__setattr__(self, "format_gate_jsonl", Path(self.format_gate_jsonl))
         object.__setattr__(self, "eval_sets", tuple(self.eval_sets))
         if self.summarize_only and (self.stage is None or not self.resume):
             raise ValueError("summarize-only requires an early --stage and --resume")
         if self.stage not in {None, "vagen", "stage1", "stage2"}:
             raise ValueError("unknown early evaluation stage")
+        if self.stage == "stage1" and self.format_gate_jsonl is None:
+            raise ValueError("Stage 1 evaluation requires --format-gate-jsonl")
+        if self.stage != "stage1" and self.format_gate_jsonl is not None:
+            raise ValueError("format-gate-jsonl is Stage 1 only")
         if self.stage is not None and (self.split != "test" or not set(self.eval_sets) <= {"base", "common_sense"}):
             raise ValueError("early VAGEN source supports only base/common_sense held-out test assets")
         if self.stage is not None and self.episodes_per_eval_set > 60:

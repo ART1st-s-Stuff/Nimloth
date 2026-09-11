@@ -39,6 +39,12 @@ def parse_args(argv: list[str] | None = None) -> EvaluationConfig:
     ap.add_argument("--success-threshold", type=float, default=1.5)
     ap.add_argument("--step-length", type=float, default=0.5)
     ap.add_argument("--checkpoint", type=Path, required=True)
+    ap.add_argument(
+        "--format-gate-jsonl",
+        type=Path,
+        default=None,
+        help="complete heldout JSONL for the mandatory Stage 1 32-prompt gate",
+    )
     ap.add_argument("--env-url", required=True)
     ap.add_argument("--output-dir", type=Path, required=True)
     ap.add_argument("--resume", action="store_true")

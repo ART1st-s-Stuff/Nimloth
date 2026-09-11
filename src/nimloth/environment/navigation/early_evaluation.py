@@ -45,6 +45,30 @@ def environment_success(info: dict) -> bool:
     return value
 
 
+def parse_early_generation(protocol: Any, generator: Any, generated: Any) -> tuple[dict, dict | None]:
+    """Apply the Stage 1 token-termination gate before the shared body parser."""
+
+    if protocol.stage != "stage1":
+        return protocol.parse(generated.text), None
+    from nimloth.backbone.qwen25vl.early_generation import (
+        validate_stage1_raw_generation,
+    )
+
+    validation = validate_stage1_raw_generation(generated, generator.tokenizer)
+    evidence = asdict(validation)
+    if not validation.format_correct:
+        parsed = {
+            "format_correct": False,
+            "action_index": None,
+            "service_response": "",
+            "error": validation.reason,
+        }
+        return parsed, evidence
+    if validation.parser_result is None:
+        raise RuntimeError("valid Stage 1 termination lacks parser evidence")
+    return validation.parser_result, evidence
+
+
 def run_direct_episodes(config: EarlyEnvironmentConfig, protocol: Any, generator: Any) -> int:
     identities = config.identities()
     summarize(config.output_dir, identities)  # validate completed records before reuse
@@ -60,7 +84,7 @@ def run_direct_episodes(config: EarlyEnvironmentConfig, protocol: Any, generator
             try:
                 env_config = source_environment_config(config, identity['eval_set'])
                 client.create_environments_batch({session_id: env_config})
-                observation, reset_info = client.reset_batch({session_id: identity['seed']})[session_id]
+                observation, _reset_info = client.reset_batch({session_id: identity['seed']})[session_id]
                 source_system = client.get_system_prompts_batch([session_id])[session_id]
                 if not source_system.strip():
                     raise ValueError('environment system prompt is empty')
@@ -80,7 +104,9 @@ def run_direct_episodes(config: EarlyEnvironmentConfig, protocol: Any, generator
                     first_turn = max(0, step - config.history_turns)
                     context = [messages[0], *messages[1 + 2 * first_turn:]]
                     generated = generator.generate(context, images[first_turn:])
-                    parsed = protocol.parse(generated.text)
+                    parsed, termination = parse_early_generation(
+                        protocol, generator, generated
+                    )
                     # Invalid raw strings can contain an accidentally valid legacy answer.
                     # Send an explicit empty no-op, and persist BOTH texts without repairing it.
                     service_text = parsed['service_response']
@@ -89,7 +115,9 @@ def run_direct_episodes(config: EarlyEnvironmentConfig, protocol: Any, generator
                     total_reward += reward
                     messages.append({'role': 'assistant', 'content': generated.text})
                     turn = {'step': step, 'source_observation': source_text, 'messages': context,
-                            'generation': asdict(generated), 'parse': parsed,
+                            'generation': asdict(generated),
+                            'termination_validation': termination,
+                            'parse': parsed,
                             'service_response': service_text, 'environment_info': info,
                             'reward': reward, 'done': done, 'success': success}
                     turns.append(turn)
@@ -104,8 +132,13 @@ def run_direct_episodes(config: EarlyEnvironmentConfig, protocol: Any, generator
                 first_turn = max(0, len(turns) - config.history_turns)
                 terminal_context = [messages[0], *messages[1 + 2 * first_turn:]]
                 terminal_generation = generator.generate(terminal_context, images[first_turn:])
+                terminal_parse, terminal_validation = parse_early_generation(
+                    protocol, generator, terminal_generation
+                )
                 terminal = {'source_observation': terminal_text, 'messages': terminal_context,
-                            'generation': asdict(terminal_generation), 'executed': False}
+                            'generation': asdict(terminal_generation),
+                            'termination_validation': terminal_validation,
+                            'parse': terminal_parse, 'executed': False}
                 write_json(output / 'terminal.json', terminal)
                 record = {'terminal': terminal, 'identity': identity, 'stage': protocol.stage, 'source_system_prompt': source_system,
                           'system_prompt': messages[0]['content'], 'environment_config': env_config,

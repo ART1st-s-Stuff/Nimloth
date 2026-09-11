@@ -93,6 +93,7 @@ def test_cli_requires_explicit_policy_and_rejects_epoch_budget() -> None:
     from nimloth.training.sft.stage1.cli import parse_args
 
     base = ["--model", "/model", "--train-jsonl", "/train", "--val-jsonl", "/val",
+            "--format-eval-jsonl", "/format-eval",
             "--output-dir", "/output", "--until-converged"]
     with pytest.raises(ValueError, match="all three"):
         parse_args(base)

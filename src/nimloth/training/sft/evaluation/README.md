@@ -8,12 +8,23 @@
 ```bash
 python -m nimloth.training.sft.evaluation \
   --stage stage1 --checkpoint /path/to/exported-full-hf \
+  --format-gate-jsonl /path/to/full-heldout.jsonl \
   --env-url http://127.0.0.1:5000 --output-dir /path/to/new-output \
   --eval-sets base common_sense --split test --episodes-per-eval-set 60 \
   --seed-offset 1 --max-steps 20 --temperature 0 --top-p 1 \
   --max-response-tokens 512 --tensor-parallel-size 2 \
   --history-turns 5 --generation-seed 0 --success-threshold 1.5 --step-length 0.5
 ```
+
+Stage 1 的 `--format-gate-jsonl` 必须是完整 heldout JSONL。统一入口先按文件
+顺序固定选择前 32 条，使用随后环境 rollout 相同的 `EarlyVLLMGenerator` 和实际
+Stage 1 prompt 做无约束生成。每条保存 prompt、图片路径及 hash、采样 token、
+finish/stop reason、未裁剪解码文本、EOS 前正文和严格 parser 结果。只有至少
+31/32 同时生成真实 EOS、未达到长度上限、EOS 后仅有 padding 且正文严格合法，
+才继续 Base 60 + Common Sense 60 环境评估；否则命令返回 2，保留证据且不启动
+episode。门禁不使用环境结果、WM、value head 或 MCTS。Stage 1 导出 checkpoint
+还必须声明 `format_answer_ce_v2`、动作编号专用权重范围和权重 8，旧导出会在
+分配 GPU 前拒绝。
 
 `--stage vagen|stage1|stage2` 使用原 VAGEN `844378c` BatchEnvironmentServer API，
 **不能连接新版 async GymImageEnv 服务**。服务源与客户端协议必须匹配；不会自动
@@ -31,6 +42,8 @@ Stage 2 支持保存的 `generate` 和 `inject`：前者完全由模型生成；
 负责 session 生命周期；`backbone/qwen25vl/early_generation.py` 保留 action special tokens
 和 sampled/inserted token 来源。严格格式通过的输出显式转为原服务的语义 answer；Nimloth 不通过则发送
 空 no-op（VAGEN 基线始终原文送入原 parser），保存原文及实际 service response，绝不把无效模型输出修成合法动作。
+Stage 1 门禁和环境逐步执行复用同一 RawGeneration 终止校验；缺 EOS、长度截断、
+EOS 后非 padding、采样 token 与保存文本不一致均不会进入正文 parser，并向环境发送空 no-op。
 
 每个 episode 原子保存 `episodes/<id>/record.json`，逐步保存 prompt、观测图片、原始响应、
 采样/注入 token、实际服务文本及环境反馈；success 只读取 `metrics.traj_metrics.success`。

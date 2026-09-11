@@ -13,6 +13,7 @@ train:
   convergence_min_relative_improvement: 0.01
   batch_size: 1
   grad_accum: 8
+  # Applies only to the eight <|action_(i)|> tokens; boundaries and EOS stay at 1.
   action_token_loss_weight: 8
   lr: 1.0e-6
   embedding_lr: 5.0e-6

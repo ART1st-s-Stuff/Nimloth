@@ -1,11 +1,11 @@
 # 执行计划
 
-- [ ] 建立独立 child-task worktree/branch，核验基点包含已提交的 Stage 1 统一评估入口，保留并发 `external/le-wm` 状态。
-- [ ] 修改 Stage 1 加权 CE：八个动作编号权重 8，边界/EOS/其余为 1；新增明确 objective/checkpoint 身份并拒绝旧目标恢复。
-- [ ] 将训练期 Stage 1 格式评估改为 token 终止检查加共享严格正文解析；保留 Stage 2 query 专用行为。
-- [ ] 更新 `src/nimloth/training/sft/spec.md` 的 Stage 1 伪代码、Stage 1 README 和标准配置说明，使权重范围及严格终止验收与实现一致。
-- [ ] 增加逐 token loss、shift/mask/归一化、BF16 梯度、checkpoint 兼容、EOS/length/tail/repeated-action 及训练/正式 parser 一致性测试。
-- [ ] 运行聚焦测试、受影响 SFT/agent 测试、Ruff/compile 和 Trellis check；修复审查发现的问题后提交代码。
+- [x] 建立独立 child-task worktree/branch，核验基点包含已提交的 Stage 1 统一评估入口，保留并发 `external/le-wm` 状态。
+- [x] 修改 Stage 1 加权 CE：八个动作编号权重 8，边界/EOS/其余为 1；新增明确 objective/checkpoint 身份并拒绝旧目标恢复。
+- [x] 将训练期 Stage 1 格式评估改为 token 终止检查加共享严格正文解析；保留 Stage 2 query 专用行为。
+- [x] 更新 `src/nimloth/training/sft/spec.md` 的 Stage 1 伪代码、Stage 1 README 和标准配置说明，使权重范围及严格终止验收与实现一致。
+- [x] 增加逐 token loss、shift/mask/归一化、BF16 梯度、checkpoint 兼容、EOS/length/tail/repeated-action 及训练/正式 parser 一致性测试。
+- [x] 运行聚焦测试、受影响 SFT/agent 测试、Ruff/compile 和 Trellis check；修复审查发现的问题后提交代码。
 - [ ] 在 a100-1 只读核验并发布成功 train/heldout 派生视图：记录数、turn 数、动作分布、hash、split overlap 和图片/标签完整性；覆盖不足则停止。
 - [ ] 从原始 `hf_actor` 建立并核验新的语义初始化产物；按成功子集建立或严格复用逐记录 cache，发布不可覆盖 manifest。
 - [ ] 刷新 a100-1 GPU/进程状态，记录完整 launch contract，运行 8-GPU FSDP 有限更新、保存、恢复及严格生成门禁。

@@ -9,13 +9,14 @@ from torch.nn import functional as F
 from nimloth.training.sft.stage1.checkpoint import RESUME_SCHEMA, validate_resume_state
 from nimloth.training.sft.stage1.cli import parse_args
 from nimloth.training.sft.stage1.loss import (
-    resolve_action_token_ids,
+    ACTION_TOKEN_LOSS_SCOPE,
+    resolve_action_number_token_ids,
     training_loss,
     validate_action_weight,
     weighted_answer_loss,
 )
 
-IDS = tuple(range(2, 12))
+IDS = tuple(range(4, 12))
 
 
 @pytest.mark.parametrize("weight", [1.0, 10.0])
@@ -75,7 +76,7 @@ def test_invalid_weight(weight):
         validate_action_weight(weight)
 
 
-@pytest.mark.parametrize("ids", [IDS[:-1], (2,) * 10, tuple(range(4, 14))])
+@pytest.mark.parametrize("ids", [IDS[:-1], (2,) * 8, tuple(range(6, 14))])
 def test_invalid_ids(ids):
     with pytest.raises(ValueError):
         weighted_answer_loss(torch.zeros(1, 2, 13), torch.tensor([[-100, 1]]), ids, 2)
@@ -95,13 +96,13 @@ def test_atomic_tokens():
             return [self.convert_tokens_to_ids(token)]
 
     tokenizer = Tokenizer()
-    assert resolve_action_token_ids(tokenizer) == IDS
+    assert resolve_action_number_token_ids(tokenizer) == IDS
     tokenizer.encode = lambda *args, **kwargs: [1, 2]
     with pytest.raises(ValueError, match="atomic"):
-        resolve_action_token_ids(tokenizer)
+        resolve_action_number_token_ids(tokenizer)
 
 
-def test_resume_missing_weight_means_one_and_change_rejected():
+def test_resume_rejects_old_action_token_scope_even_at_same_weight():
     state = {
         "resume_schema": RESUME_SCHEMA,
         "identity": {"stage": "format"},
@@ -111,16 +112,14 @@ def test_resume_missing_weight_means_one_and_change_rejected():
         "epoch": 1,
         "next_micro_batch": 0,
     }
-    validate_resume_state(
-        state,
-        expected_identity={"stage": "format", "action_token_loss_weight": 1.0},
-        rank=0,
-        world=1,
-    )
     with pytest.raises(ValueError, match="identity mismatch"):
         validate_resume_state(
             state,
-            expected_identity={"stage": "format", "action_token_loss_weight": 10.0},
+            expected_identity={
+                "stage": "format",
+                "action_token_loss_weight": 1.0,
+                "action_token_loss_scope": ACTION_TOKEN_LOSS_SCOPE,
+            },
             rank=0,
             world=1,
         )
@@ -134,14 +133,17 @@ def test_cli_stage_boundary():
         "/tmp/train",
         "--val-jsonl",
         "/tmp/val",
+        "--format-eval-jsonl",
+        "/tmp/format-eval",
         "--output-dir",
         "/tmp/out",
     ]
     args, _ = parse_args(flags + ["--action-token-loss-weight", "10"])
     assert args.action_token_loss_weight == 10
+    query_flags = flags[:6] + flags[8:]
     with pytest.raises(ValueError, match="only for format"):
         parse_args(
-            flags
+            query_flags
             + ["--dino-cache-root", "/tmp/dino", "--action-token-loss-weight", "10"],
             stage="query",
         )
@@ -159,9 +161,9 @@ def test_real_tokenizer_registered_protocol():
         unk_token="[UNK]",
     )
     add_special_tokens(tokenizer, latent_token_count=None)
-    ids = resolve_action_token_ids(tokenizer)
-    assert len(ids) == 10
-    assert tokenizer.convert_ids_to_tokens(ids[2]) == "<|action_(0)|>"
+    ids = resolve_action_number_token_ids(tokenizer)
+    assert len(ids) == 8
+    assert tokenizer.convert_ids_to_tokens(ids[0]) == "<|action_(0)|>"
     assert tokenizer.convert_ids_to_tokens(ids[-1]) == "<|action_(7)|>"
 
 
@@ -178,6 +180,8 @@ def test_yaml_weight_reaches_cli(tmp_path):
             "/tmp/train",
             "--val-jsonl",
             "/tmp/val",
+            "--format-eval-jsonl",
+            "/tmp/format-eval",
             "--output-dir",
             "/tmp/out",
         ]

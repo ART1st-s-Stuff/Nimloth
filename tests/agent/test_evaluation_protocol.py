@@ -16,11 +16,48 @@ def test_stage_protocols_and_service_text():
 
 
 @pytest.mark.parametrize('response', [ACTION, COT + ACTION + 'junk', COT + ACTION * 2,
+    (COT + ACTION) * 2,
     COT + '<|latent_state|>' + ACTION, COT + '<answer>moveahead</answer>'])
 def test_invalid_never_becomes_action(response):
     parsed = EarlyProtocol('stage1').parse(response)
     assert not parsed['format_correct']
     assert parsed['service_response'] == ''
+
+
+@pytest.mark.parametrize('field', ['observation', 'reasoning', 'prediction'])
+@pytest.mark.parametrize('nested', ['think', 'observation', 'reasoning', 'prediction'])
+def test_cot_fields_cannot_contain_protocol_xml_boundaries(field, nested):
+    crossed = COT.replace(
+        f'</{field}>',
+        f'<{nested}>nested</{nested}></{field}>',
+        1,
+    )
+    assert not EarlyProtocol('stage1').parse(crossed + ACTION)['format_correct']
+
+
+def test_each_cot_field_must_be_nonempty():
+    contents = {
+        'observation': 'chair',
+        'reasoning': 'approach',
+        'prediction': 'nearer',
+    }
+    for field, content in contents.items():
+        empty = COT.replace(
+            f'<{field}>{content}</{field}>',
+            f'<{field}> </{field}>',
+        )
+        assert not EarlyProtocol('stage1').parse(empty + ACTION)['format_correct']
+
+
+def test_cot_fields_cannot_hide_an_action_or_query_block():
+    for marker in (
+        ACTION,
+        '<|action_(8)|>',
+        '<|latent_state|>',
+        '<answer>moveahead</answer>',
+    ):
+        hidden = COT.replace('chair', 'chair' + marker)
+        assert not EarlyProtocol('stage1').parse(hidden + ACTION)['format_correct']
 
 
 def test_query_order_and_prompt():

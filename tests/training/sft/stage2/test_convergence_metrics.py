@@ -6,7 +6,12 @@ import pytest
 import torch
 
 from nimloth.training.sft.stage1.cli import parse_args
-from nimloth.training.sft.stage1.trainer import convergence_monitor, evaluate
+from nimloth.training.sft.stage1.trainer import (
+    convergence_monitor,
+    distributed_validation_inclusion,
+    evaluate,
+    validation_sampling_contract,
+)
 
 
 def test_query_convergence_cli_requires_full_validation_and_no_epoch_cap():
@@ -29,6 +34,22 @@ def test_query_convergence_cli_requires_full_validation_and_no_epoch_cap():
         parse_args(argv + ["--max-val-batches", "1"], stage="query")
     with pytest.raises(ValueError, match="cannot be combined"):
         parse_args(argv + ["--epochs", "5"], stage="query")
+
+
+def test_nondivisible_distributed_validation_counts_each_record_once():
+    inclusions = [
+        distributed_validation_inclusion(193, world=8, rank=rank)
+        for rank in range(8)
+    ]
+    assert {len(values) for values in inclusions} == {25}
+    assert sum(sum(values) for values in inclusions) == 193
+    assert sum(not value for values in inclusions for value in values) == 7
+    assert validation_sampling_contract(
+        'format', dataset_size=193, world=8, rank=7, configured_batch_size=4
+    ) == (1, inclusions[7])
+    assert validation_sampling_contract(
+        'query', dataset_size=193, world=8, rank=7, configured_batch_size=4
+    ) == (4, None)
 
 
 def test_component_means_share_total_reduction_and_format_api(monkeypatch):

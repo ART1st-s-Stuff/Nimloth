@@ -3,7 +3,7 @@
   "name": "fix-sft1-termination-retrain",
   "title": "修复SFT1终止格式并重新训练",
   "description": "修正SFT1严格格式验收与EOS/动作token权重关系，从原始hf_actor训练到收敛并执行标准held-out评估",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": null,
@@ -23,6 +23,8 @@
   "relatedFiles": [],
   "notes": "",
   "meta": {
-    "kind": "experiment"
+    "kind": "experiment",
+    "worktree_path": "/workspace/remote2/nimloth/.worktree/fix-sft1-termination-retrain",
+    "base_commit": "70944b3472d5c53c5f3fe9b1c72858ba36ebea92"
   }
 }

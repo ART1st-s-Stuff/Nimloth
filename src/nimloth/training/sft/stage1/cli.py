@@ -36,6 +36,13 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap.add_argument("--model", type=Path, required=True)
     ap.add_argument("--train-jsonl", type=Path, required=True)
     ap.add_argument("--val-jsonl", type=Path, required=True)
+    if stage == "format":
+        ap.add_argument(
+            "--format-eval-jsonl",
+            type=Path,
+            required=True,
+            help="Complete heldout prompts used only for free-generation format checks.",
+        )
     ap.add_argument("--output-dir", type=Path, required=True)
     ap.add_argument("--epochs", type=int, default=None)
     ap.add_argument("--until-converged", action=argparse.BooleanOptionalAction, default=False)
@@ -258,5 +265,7 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         args.mask_latent_query_labels = None
     if args.resume_save_steps < 1:
         raise ValueError("--resume-save-steps must be >= 1")
+    if stage == "format" and args.format_eval_samples != 32:
+        raise ValueError("Stage 1 requires exactly 32 format-eval samples")
 
     return args, query_config

@@ -1,4 +1,8 @@
-from nimloth.backbone.qwen25vl.early_generation import decode_response
+from nimloth.backbone.qwen25vl.early_generation import (
+    RawGeneration,
+    decode_response,
+    validate_stage1_raw_generation,
+)
 
 
 class Tokenizer:
@@ -6,11 +10,60 @@ class Tokenizer:
     pad_token_id = 1
     def decode(self, ids, **kwargs):
         assert kwargs['skip_special_tokens'] is False
-        return ''.join({2: '<|action_start|>', 3: '<|action_(0)|>', 4: '<|action_end|>'}[i] for i in ids)
+        return ''.join({
+            0: '<|im_end|>',
+            1: '<|pad|>',
+            2: '<|action_start|>',
+            3: '<|action_(0)|>',
+            4: '<|action_end|>',
+        }[i] for i in ids)
 
 
 def test_raw_special_tokens_not_removed():
     assert decode_response(Tokenizer(), [2, 3, 4, 0, 1]) == '<|action_start|><|action_(0)|><|action_end|>'
+
+
+def test_stage1_raw_generation_requires_eos_length_and_strict_body():
+    answer = (
+        '<think><observation>chair</observation><reasoning>approach</reasoning>'
+        '<prediction>nearer</prediction></think>'
+        '<|action_start|><|action_(0)|><|action_end|>'
+    )
+
+    class StrictTokenizer:
+        eos_token_id = 0
+        pad_token_id = 1
+
+        def decode(self, ids, **kwargs):
+            assert kwargs == {
+                'skip_special_tokens': False,
+                'clean_up_tokenization_spaces': False,
+            }
+            return ''.join({2: answer, 0: '<|im_end|>', 1: '<|pad|>', 9: 'junk'}[i] for i in ids)
+
+    tokenizer = StrictTokenizer()
+    valid = validate_stage1_raw_generation(
+        RawGeneration(answer, (2, 0, 1), (), 'stop'), tokenizer
+    )
+    assert valid.format_correct and valid.parsed_body == answer
+    assert valid.raw_response == answer + '<|im_end|><|pad|>'
+    assert validate_stage1_raw_generation(
+        RawGeneration(answer, (2,), (), 'stop'), tokenizer
+    ).reason == 'missing_eos'
+    missing_mismatch = validate_stage1_raw_generation(
+        RawGeneration('tampered', (2,), (), 'stop'), tokenizer
+    )
+    assert missing_mismatch.reason == 'missing_eos'
+    assert not missing_mismatch.generation_text_matches
+    assert validate_stage1_raw_generation(
+        RawGeneration(answer, (2, 0), (), 'length'), tokenizer
+    ).reason == 'length_reached'
+    assert validate_stage1_raw_generation(
+        RawGeneration(answer, (2, 0, 9), (), 'stop'), tokenizer
+    ).reason == 'content_after_eos'
+    assert validate_stage1_raw_generation(
+        RawGeneration('tampered', (2, 0), (), 'stop'), tokenizer
+    ).reason == 'generation_text_mismatch'
 
 
 def test_inject_only_after_actual_generated_boundary(monkeypatch):

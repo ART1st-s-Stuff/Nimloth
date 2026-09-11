@@ -15,7 +15,10 @@ from nimloth.training.sft.stage1.data import (
     encode_sample_with_labels,
     render_stage_text,
 )
-from nimloth.training.sft.stage1.trainer import nimloth_format_correct
+from nimloth.training.sft.stage1.trainer import (
+    nimloth_format_correct,
+    validate_stage1_generated_response,
+)
 
 
 class TextProcessor:
@@ -141,6 +144,8 @@ def cli_base():
         "train",
         "--val-jsonl",
         "val",
+        "--format-eval-jsonl",
+        "format-eval",
         "--output-dir",
         "out",
     ]
@@ -181,12 +186,58 @@ def test_format_cli_rejects_query_environment(monkeypatch, name):
 
 
 def test_format_metric_requires_cot_and_action_without_latent_block():
-    answer = "<think>Real reasoning</think><|action_start|><|action_(2)|><|action_end|>"
+    from nimloth.agent.evaluation_protocol import EarlyProtocol
+
+    answer = (
+        "<think><observation>chair</observation>"
+        "<reasoning>approach</reasoning>"
+        "<prediction>nearer</prediction></think>"
+        "<|action_start|><|action_(2)|><|action_end|>"
+    )
     assert nimloth_format_correct(answer)
+    assert nimloth_format_correct(answer) == bool(
+        EarlyProtocol("stage1").parse(answer)["format_correct"]
+    )
     assert not nimloth_format_correct(
         answer.replace("</think>", "</think>" + latent_state_block(4))
     )
     assert not nimloth_format_correct("<|action_start|><|action_(2)|><|action_end|>")
+    assert not nimloth_format_correct(answer + "trailing")
+    assert not nimloth_format_correct(answer + answer)
+
+
+def test_stage1_generation_requires_real_eos_and_padding_only_suffix():
+    answer = (
+        "<think><observation>chair</observation>"
+        "<reasoning>approach</reasoning>"
+        "<prediction>nearer</prediction></think>"
+        "<|action_start|><|action_(2)|><|action_end|>"
+    )
+
+    class Tokenizer:
+        eos_token_id = 90
+        pad_token_id = 91
+
+        def decode(self, ids, **kwargs):
+            assert kwargs == {
+                "skip_special_tokens": False,
+                "clean_up_tokenization_spaces": False,
+            }
+            return answer if ids == [1] else answer + "trailing"
+
+    tokenizer = Tokenizer()
+    assert validate_stage1_generated_response([1, 90, 91], tokenizer).format_correct
+    assert (
+        validate_stage1_generated_response([1, 91], tokenizer).reason
+        == "missing_eos"
+    )
+    assert (
+        validate_stage1_generated_response([1, 90, 2], tokenizer).reason
+        == "content_after_eos"
+    )
+    invalid = validate_stage1_generated_response([2, 90], tokenizer)
+    assert not invalid.format_correct
+    assert invalid.reason == "invalid_response_envelope"
 
 
 def test_cache_fingerprint_separates_format_from_query(tmp_path):

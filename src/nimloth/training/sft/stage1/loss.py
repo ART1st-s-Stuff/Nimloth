@@ -1,4 +1,4 @@
-"""回答 token 的因果 CE；动作 token 加权不改变标签缓存或参数精度。"""
+"""回答 token 的因果 CE；仅动作编号加权，不改变标签缓存或参数精度。"""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ from torch.utils.checkpoint import checkpoint
 
 from nimloth.latent import LatentActionTokens
 
+ACTION_TOKEN_LOSS_SCOPE = "action_number_tokens_v1"
+
 
 def validate_action_weight(weight: float) -> float:
     weight = float(weight)
@@ -19,17 +21,19 @@ def validate_action_weight(weight: float) -> float:
     return weight
 
 
-def resolve_action_token_ids(tokenizer) -> tuple[int, ...]:
+def resolve_action_number_token_ids(tokenizer) -> tuple[int, ...]:
     protocol = LatentActionTokens()
-    tokens = (protocol.action_start, protocol.action_end, *protocol.action_tokens)
+    tokens = protocol.action_tokens
     ids = tuple(tokenizer.convert_tokens_to_ids(token) for token in tokens)
     if any(not isinstance(i, int) or i < 0 or i == tokenizer.unk_token_id for i in ids):
-        raise ValueError("all ten action tokens must exist in the tokenizer")
-    if len(set(ids)) != 10 or any(
+        raise ValueError("all eight action-number tokens must exist in the tokenizer")
+    if len(set(ids)) != 8 or any(
         tokenizer.encode(token, add_special_tokens=False) != [i]
         for token, i in zip(tokens, ids)
     ):
-        raise ValueError("all ten action tokens must have distinct atomic token IDs")
+        raise ValueError(
+            "all eight action-number tokens must have distinct atomic token IDs"
+        )
     return ids
 
 
@@ -45,11 +49,13 @@ def weighted_answer_loss(
     weight = validate_action_weight(action_weight)
     ids = tuple(action_token_ids)
     if (
-        len(ids) != 10
-        or len(set(ids)) != 10
+        len(ids) != 8
+        or len(set(ids)) != 8
         or any(type(i) is not int or i < 0 or i >= logits.shape[-1] for i in ids)
     ):
-        raise ValueError("expected ten distinct in-vocabulary action token IDs")
+        raise ValueError(
+            "expected eight distinct in-vocabulary action-number token IDs"
+        )
     if logits.ndim != 3 or labels.shape != logits.shape[:2] or chunk_size < 1:
         raise ValueError(
             "expected aligned [batch, sequence, vocabulary] logits and labels"

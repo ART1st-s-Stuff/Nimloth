@@ -12,12 +12,39 @@ def checkpoint(tmp_path, **config):
 
 
 def test_format_no_k(tmp_path):
-    path = checkpoint(tmp_path, nimloth_training_stage='format')
+    path = checkpoint(
+        tmp_path,
+        nimloth_training_stage='format',
+        nimloth_format_objective='format_answer_ce_v2',
+        nimloth_action_token_loss_scope='action_number_tokens_v1',
+        nimloth_action_token_loss_weight=8.0,
+    )
     assert load_early_checkpoint(path, 'stage1').query_count is None
     with pytest.raises(ValueError, match='stage mismatch'):
         load_early_checkpoint(path, 'stage2')
     with pytest.raises(ValueError, match='VAGEN'):
         load_early_checkpoint(path, 'vagen')
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"nimloth_format_objective": "old"},
+        {"nimloth_action_token_loss_scope": "action_boundaries_and_numbers"},
+        {"nimloth_action_token_loss_weight": 1.0},
+    ],
+)
+def test_format_rejects_old_loss_identity(tmp_path, override):
+    config = {
+        "nimloth_training_stage": "format",
+        "nimloth_format_objective": "format_answer_ce_v2",
+        "nimloth_action_token_loss_scope": "action_number_tokens_v1",
+        "nimloth_action_token_loss_weight": 8.0,
+        **override,
+    }
+    path = checkpoint(tmp_path, **config)
+    with pytest.raises(ValueError, match="mismatch"):
+        load_early_checkpoint(path, "stage1")
 
 
 @pytest.mark.parametrize('mode', ['inject', 'generate'])
@@ -29,10 +56,18 @@ def test_query_requires_artifacts(tmp_path, mode):
     from dataclasses import asdict
 
     from nimloth.backbone.dino_grid import DINOV2_LARGE_IDENTITY
-    metadata = dict(training_stage='query', objective=dict(grid_size=1, projector_hidden_dim=4),
-                    grid_tokens=1, ordering='row_major', shared_slot_projector=True,
-                    dino_identity=asdict(DINOV2_LARGE_IDENTITY), projector_hidden_dim=4,
-                    qwen_hidden_dim=4, state_dim=1024, query_token_ids=[7])
+    metadata = {
+        'training_stage': 'query',
+        'objective': {'grid_size': 1, 'projector_hidden_dim': 4},
+        'grid_tokens': 1,
+        'ordering': 'row_major',
+        'shared_slot_projector': True,
+        'dino_identity': asdict(DINOV2_LARGE_IDENTITY),
+        'projector_hidden_dim': 4,
+        'qwen_hidden_dim': 4,
+        'state_dim': 1024,
+        'query_token_ids': [7],
+    }
     (path / 'grid_state_config.json').write_text(json.dumps(metadata))
     (path / 'tokenizer.json').write_text(json.dumps({'added_tokens': [{'content': '<|latent_state|>', 'id': 7}]}))
     assert load_early_checkpoint(path, 'stage2').query_mode == mode

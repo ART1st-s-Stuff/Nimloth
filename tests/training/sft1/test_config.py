@@ -32,11 +32,12 @@ def test_fsdp_yaml_is_explicit(tmp_path):
 def test_fsdp_cli_supports_both_early_stages():
     from nimloth.training.sft.stage1.cli import parse_args
 
-    common = ["--model", "/tmp/model", "--train-jsonl", "/tmp/train.jsonl",
-              "--val-jsonl", "/tmp/val.jsonl", "--output-dir", "/tmp/output"]
+    query_common = ["--model", "/tmp/model", "--train-jsonl", "/tmp/train.jsonl",
+                    "--val-jsonl", "/tmp/val.jsonl", "--output-dir", "/tmp/output"]
+    common = [*query_common, "--format-eval-jsonl", "/tmp/format-eval.jsonl"]
     assert parse_args(common)[0].distributed_strategy == "ddp"
     assert parse_args(common + ["--distributed-strategy", "fsdp"])[0].distributed_strategy == "fsdp"
-    args, _ = parse_args(common + ["--distributed-strategy", "fsdp", "--dino-cache-root", "/tmp/dino"], stage="query")
+    args, _ = parse_args(query_common + ["--distributed-strategy", "fsdp", "--dino-cache-root", "/tmp/dino"], stage="query")
     assert args.distributed_strategy == "fsdp"
     assert args.action_token_loss_weight == 1
 
@@ -45,7 +46,8 @@ def test_format_cli_can_override_convergence_and_checkpointing():
     from nimloth.training.sft.stage1.cli import parse_args
     common = ['--config', str(ROOT / 'configs/training/sft1/format.yaml'),
               '--model', '/tmp/model', '--train-jsonl', '/tmp/train',
-              '--val-jsonl', '/tmp/val', '--output-dir', '/tmp/run']
+              '--val-jsonl', '/tmp/val', '--format-eval-jsonl', '/tmp/format-eval',
+              '--output-dir', '/tmp/run']
     args, _ = parse_args(common + ['--epochs', '2', '--no-until-converged',
                                   '--no-gradient-checkpointing'])
     assert args.epochs == 2
@@ -57,3 +59,5 @@ def test_format_cli_can_override_convergence_and_checkpointing():
     with pytest.raises(ValueError, match='convergence policy requires'):
         parse_args(common + ['--epochs', '2', '--no-until-converged',
                              '--convergence-min-epochs', '2'])
+    with pytest.raises(ValueError, match='exactly 32'):
+        parse_args(common + ['--format-eval-samples', '31'])

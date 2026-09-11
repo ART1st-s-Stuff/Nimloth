@@ -35,16 +35,43 @@ def wm_predict(wm, value_head, state, actions, num_steps):
         predicted_states.append(state)
     return stack(predicted_states), stack(predicted_values)
 
-def sft1_step(model, config, input, output, action_token_ids):
-    """训练回答格式，对目标回答中的动作 token 赋予更高权重。"""
+def sft1_step(model, config, input, output, action_number_token_ids):
+    """训练回答格式，仅对目标回答中的动作编号 token 赋予更高权重。"""
     model_output = model(input)  # teacher forcing，目标为output
     # 按下一 token 预测对齐，仅保留目标回答的有效监督位置。
     token_losses, target_tokens = token_lm_losses(model_output, output)
-    # action_token_ids 包含动作起始、动作结束及各动作编号 token。
-    # 动作权重大于1，其余回答 token（包括EOS）的权重为1。
-    weights = where(isin(target_tokens, action_token_ids), config.action_weight, 1)
+    # action_number_token_ids 只包含八个 <|action_(i)|>；动作边界、EOS
+    # 和其他回答 token 的权重都是1。
+    weights = where(
+        isin(target_tokens, action_number_token_ids), config.action_weight, 1
+    )
     loss = sum(weights * token_losses) / sum(weights)
     loss.backward()
+
+def sft1_format_correct(generated_token_ids, tokenizer):
+    """训练期格式指标与正式Stage 1 rollout使用同一正文解析合同。"""
+    eos_position = first_position(generated_token_ids, tokenizer.eos_token_id)
+    if eos_position is None:
+        return False, "missing_eos"
+    if any_not_padding(generated_token_ids[eos_position + 1:], tokenizer.pad_token_id):
+        return False, "content_after_eos"
+    body = tokenizer.decode(generated_token_ids[:eos_position])
+    # strict_stage1_parse 要求完整非空CoT、恰好一个合法动作块且无尾随内容。
+    return strict_stage1_parse(body)
+
+def sft1_static_format_gate(exported_model, full_heldout, config):
+    """正式环境评估前，以同一个无约束vLLM生成器检查固定32条prompt。"""
+    generator = EarlyVLLMGenerator(exported_model, config)
+    selected = first_32_in_file_order(full_heldout)
+    results = []
+    for record in selected:
+        prompt, images, lineage = stage1_prompt_and_image_lineage(record)
+        raw = generator.generate(prompt, images)
+        # 同一校验器也在真实环境每一步parse前调用；失败动作是空no-op。
+        checked = validate_stage1_raw_generation(raw, generator.tokenizer)
+        save_immutable_evidence(lineage, raw, checked)
+        results.append(checked.format_correct)
+    return sum(results) >= 31, generator
 
 def sft2_step(model, config, input, output, proj, dino_model, queries):
     """保持回答格式，同时将query state对齐到当前观测的DINO特征。"""
@@ -101,7 +128,11 @@ def eval_direct(model, env, episodes, config):
             for t in range(config.max_steps):
                 input = make_input(episode.instruction, observation, history)
                 output = model.generate(input)
-                action = parse_action(output)
+                if config.stage == "stage1":
+                    checked = validate_stage1_raw_generation(output, model.tokenizer)
+                    action = parse_action(checked.parsed_body) if checked.format_correct else empty_noop
+                else:
+                    action = parse_action(output)  # VAGEN/Stage2保持各自协议
                 next_observation, reward, done, info = env.step(action)
                 trajectory.append((observation, action, reward, info))
                 history.append((observation, output, action))

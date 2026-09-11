@@ -372,7 +372,9 @@ def test_cli_selects_real_stage_and_validates_grid_before_model_load(tmp_path):
         "--output-dir",
         "out",
     ]
-    args, objective = parse_args(base)
+    args, objective = parse_args(
+        base + ["--format-eval-jsonl", "format-eval"]
+    )
     assert objective is None and not args.no_cache
     args, objective = parse_args(
         base + ["--dino-cache-root", "cache", "--weight-dino", "2"], stage="query"
@@ -399,8 +401,20 @@ def test_resume_stage_distinguishes_legacy_format_from_wm_and_query(tmp_path):
     legacy = {"step": 3, "epoch": 1, "best_val": 0.5, "lora": True}
     with pytest.raises(ValueError, match="legacy query-bearing"):
         validate_resume_stage(legacy, tmp_path, "format")
+    with pytest.raises(ValueError, match="loss scope"):
+        validate_resume_stage(
+            {**legacy, "format_objective": "format_answer_ce_v2"},
+            tmp_path,
+            "format",
+        )
     validate_resume_stage(
-        {**legacy, "format_objective": "format_answer_ce_v2"}, tmp_path, "format"
+        {
+            **legacy,
+            "format_objective": "format_answer_ce_v2",
+            "action_token_loss_scope": "action_number_tokens_v1",
+        },
+        tmp_path,
+        "format",
     )
     with pytest.raises(ValueError, match="stage mismatch"):
         validate_resume_stage(legacy, tmp_path, "query")

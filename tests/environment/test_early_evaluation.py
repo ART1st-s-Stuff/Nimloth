@@ -58,6 +58,18 @@ def test_real_loop_contract_noop_terminal_and_resume(tmp_path, monkeypatch):
         def close_batch(self, *args): pass
     class Generator:
         calls = 0
+        tokenizer = type(
+            'Tokenizer',
+            (),
+            {
+                'eos_token_id': 0,
+                'pad_token_id': 1,
+                'decode': lambda self, ids, **kwargs: ''.join(
+                    {0: '<|im_end|>', 1: '<|pad|>', 2: 'malformed<answer>moveahead</answer>'}[i]
+                    for i in ids
+                ),
+            },
+        )()
         def generate(self, messages, images):
             self.calls += 1
             return RawGeneration('malformed<answer>moveahead</answer>', (2,), (), 'length')
@@ -71,6 +83,53 @@ def test_real_loop_contract_noop_terminal_and_resume(tmp_path, monkeypatch):
     record = json.loads((tmp_path / 'episodes/base_000001/record.json').read_text())
     assert record['terminal']['executed'] is False
     assert record['turns'][0]['generation']['text'] == 'malformed<answer>moveahead</answer>'
+    assert record['turns'][0]['termination_validation']['reason'] == 'length_reached'
+    assert record['turns'][0]['termination_validation']['raw_response'] == (
+        'malformed<answer>moveahead</answer>'
+    )
+    assert record['turns'][0]['parse']['service_response'] == ''
     assert record['success'] is False
     module.run_direct_episodes(config, EarlyProtocol('stage1'), generator)
     assert generator.calls == 2
+
+
+def test_stage1_environment_parses_only_eos_terminated_body():
+    from nimloth.agent.evaluation_protocol import EarlyProtocol
+    from nimloth.backbone.qwen25vl.early_generation import RawGeneration
+    from nimloth.environment.navigation.early_evaluation import parse_early_generation
+
+    answer = (
+        '<think><observation>chair</observation><reasoning>approach</reasoning>'
+        '<prediction>nearer</prediction></think>'
+        '<|action_start|><|action_(0)|><|action_end|>'
+    )
+
+    class Tokenizer:
+        eos_token_id = 0
+        pad_token_id = 1
+
+        def decode(self, ids, **kwargs):
+            return ''.join({2: answer, 0: '<|im_end|>', 1: '<|pad|>'}[i] for i in ids)
+
+    generator = type('Generator', (), {'tokenizer': Tokenizer()})()
+    parsed, evidence = parse_early_generation(
+        EarlyProtocol('stage1'),
+        generator,
+        RawGeneration(answer, (2, 0, 1), (), 'stop'),
+    )
+    assert parsed['format_correct']
+    assert parsed['service_response'].endswith('<answer>moveahead</answer>')
+    assert evidence['raw_response'].endswith('<|im_end|><|pad|>')
+    assert evidence['parsed_body'] == answer
+    mismatched, mismatch_evidence = parse_early_generation(
+        EarlyProtocol('stage1'),
+        generator,
+        RawGeneration('tampered', (2, 0), (), 'stop'),
+    )
+    assert mismatch_evidence['parser_result']['format_correct']
+    assert mismatched == {
+        'format_correct': False,
+        'action_index': None,
+        'service_response': '',
+        'error': 'generation_text_mismatch',
+    }

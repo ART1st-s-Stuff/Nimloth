@@ -17,6 +17,7 @@ import random
 import re
 import signal
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -31,11 +32,15 @@ from transformers import (
     get_cosine_schedule_with_warmup,
 )
 
+from nimloth.agent.evaluation_protocol import EarlyProtocol
+from nimloth.backbone.qwen25vl.early_generation import (
+    Stage1RawGenerationValidation,
+    validate_stage1_sampled_tokens,
+)
 from nimloth.latent import (
     add_special_tokens,
     initialize_extra_latent_token_embeddings,
     latent_state_block,
-    latent_state_tokens,
     special_token_ids,
 )
 
@@ -72,23 +77,41 @@ from .fsdp import (
     load_optimizer_state,
     wrap_fsdp,
 )
-from .loss import resolve_action_token_ids, training_loss
-
-
-def _nimloth_format_re(latent_token_count: int | None = None) -> re.Pattern[str]:
-    latent_block = r"\s*".join(
-        re.escape(token) for token in (latent_state_tokens(latent_token_count) if latent_token_count is not None else ())
-    )
-    return re.compile(
-        r"<think>.*?</think>\s*"
-        + latent_block
-        + r"\s*<\|action_start\|>\s*<\|action_\(\d+\)\|\>\s*<\|action_end\|>",
-        re.DOTALL,
-    )
+from .loss import (
+    ACTION_TOKEN_LOSS_SCOPE,
+    resolve_action_number_token_ids,
+    training_loss,
+)
 
 
 def nimloth_format_correct(text: str, *, latent_token_count: int | None = None) -> bool:
-    return bool(_nimloth_format_re(latent_token_count).search(text))
+    stage = "stage1" if latent_token_count is None else "stage2"
+    return bool(
+        EarlyProtocol(stage, latent_token_count, "generate")
+        .parse(text)["format_correct"]
+    )
+
+
+def validate_stage1_generated_response(
+    generated_token_ids: torch.Tensor | list[int],
+    tokenizer: Any,
+    *,
+    max_new_tokens: int = 128,
+) -> Stage1RawGenerationValidation:
+    """Adapt HF generation to the shared Stage 1 sampled-token validator."""
+    token_ids = [int(token_id) for token_id in generated_token_ids]
+    eos_token_id = tokenizer.eos_token_id
+    eos_generated = isinstance(eos_token_id, int) and eos_token_id in token_ids
+    finish_reason = (
+        "length"
+        if len(token_ids) >= max_new_tokens and not eos_generated
+        else "stop"
+    )
+    return validate_stage1_sampled_tokens(
+        token_ids,
+        tokenizer,
+        finish_reason=finish_reason,
+    )
 
 
 def action_block_format_correct(text: str) -> bool:
@@ -122,19 +145,33 @@ def evaluate_format(
     *,
     latent_token_count: int | None = None,
     latent_query_mode: str | None = None,
-) -> float:
+) -> tuple[float, dict[str, int], list[dict[str, Any]]]:
     if dist.is_available() and dist.is_initialized() and not is_main() and not is_fsdp(model):
-        return 0.0
+        return 0.0, {}, []
     module = model.module if hasattr(model, "module") else model
     was_training = module.training
     module.eval()
     correct = 0
     total = 0
-    n = min(max_samples, len(dataset))
+    reasons: Counter[str] = Counter()
+    samples: list[dict[str, Any]] = []
+    strict_stage1 = latent_query_mode is None
+    if strict_stage1 and max_samples != 32:
+        raise ValueError("Stage 1 format evaluation requires exactly 32 samples")
+    if strict_stage1 and len(dataset) < max_samples:
+        raise ValueError(
+            f"Stage 1 format-eval dataset has {len(dataset)} records; need 32"
+        )
+    n = max_samples if strict_stage1 else min(max_samples, len(dataset))
     for idx in range(n):
         messages = dataset.get_messages(idx)
         prompt_msgs = prompt_messages_before_first_assistant(messages)
         if not prompt_msgs:
+            if strict_stage1:
+                raise ValueError(
+                    f"Stage 1 format-eval record {dataset.records[idx]['id']!r} "
+                    "has no prompt before the first assistant turn"
+                )
             continue
         images = collect_images(prompt_msgs)
         text = processor.apply_chat_template(
@@ -163,17 +200,57 @@ def evaluate_format(
                 **({"synced_gpus": True} if is_fsdp(model) else {}),
             )
         new_ids = output_ids[0, inputs["input_ids"].shape[1] :]
-        decoded = processor.decode(new_ids, skip_special_tokens=False)
         total += 1
         if latent_query_mode == "inject":
-            correct += int(action_block_format_correct(decoded))
-        else:
-            correct += int(
-                nimloth_format_correct(decoded, latent_token_count=latent_token_count)
+            decoded = processor.decode(new_ids, skip_special_tokens=False)
+            is_correct = action_block_format_correct(decoded)
+            correct += int(is_correct)
+            reason = "ok" if is_correct else "invalid_action_block"
+            reasons[reason] += 1
+        elif latent_query_mode is not None:
+            decoded = processor.decode(new_ids, skip_special_tokens=False)
+            is_correct = nimloth_format_correct(
+                decoded, latent_token_count=latent_token_count
             )
+            correct += int(is_correct)
+            reason = "ok" if is_correct else "invalid_response_envelope"
+            reasons[reason] += 1
+        else:
+            result = validate_stage1_generated_response(
+                new_ids, processor.tokenizer
+            )
+            correct += int(result.format_correct)
+            reasons[result.reason] += 1
+            decoded = result.parsed_body
+            is_correct = result.format_correct
+            reason = result.reason
+        samples.append(
+            {
+                "dataset_index": idx,
+                "record_id": str(dataset.records[idx]["id"]),
+                "sampled_token_ids": [int(token_id) for token_id in new_ids],
+                "raw_response": (
+                    result.raw_response
+                    if latent_query_mode is None
+                    else decoded
+                ),
+                "parsed_body": (
+                    result.parsed_body
+                    if latent_query_mode is None
+                    else decoded
+                ),
+                "eos_generated": (
+                    isinstance(processor.tokenizer.eos_token_id, int)
+                    and processor.tokenizer.eos_token_id
+                    in [int(token_id) for token_id in new_ids]
+                ),
+                "format_correct": is_correct,
+                "reason": reason,
+            }
+        )
     if was_training:
         module.train()
-    return correct / max(total, 1)
+    return correct / max(total, 1), dict(sorted(reasons.items())), samples
 
 
 def is_peft_model(model: torch.nn.Module) -> bool:
@@ -245,8 +322,13 @@ def apply_lora(model: Qwen2_5_VLForConditionalGeneration, args: argparse.Namespa
 
 @torch.no_grad()
 def evaluate(
-    model, loader, device: torch.device, max_batches: int = -1,
-    *, return_components: bool = False,
+    model,
+    loader,
+    device: torch.device,
+    max_batches: int = -1,
+    *,
+    return_components: bool = False,
+    include_batches: list[bool] | None = None,
 ) -> float | dict[str, float]:
     model.eval()
     total = torch.zeros(3 if return_components else 1, device=device)
@@ -256,6 +338,8 @@ def evaluate(
             break
         batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
         output = model(**batch)
+        if include_batches is not None and not include_batches[i]:
+            continue
         losses = [output.loss.detach()]
         if return_components:
             losses.extend([output.lm_loss.detach(), output.dino_loss.detach()])
@@ -274,6 +358,37 @@ def evaluate(
             means.tolist(), strict=True,
         ))
     return means.item()
+
+
+def distributed_validation_inclusion(
+    dataset_size: int, *, world: int, rank: int
+) -> list[bool]:
+    """Exclude DistributedSampler padding while retaining equal forward counts."""
+    if dataset_size < 1 or world < 1 or rank not in range(world):
+        raise ValueError("invalid validation dataset/distributed identity")
+    per_rank = math.ceil(dataset_size / world)
+    padded_size = per_rank * world
+    inclusion = [True] * dataset_size + [False] * (padded_size - dataset_size)
+    return inclusion[rank:padded_size:world]
+
+
+def validation_sampling_contract(
+    stage: str,
+    *,
+    dataset_size: int,
+    world: int,
+    rank: int,
+    configured_batch_size: int,
+) -> tuple[int, list[bool] | None]:
+    """Keep exact-record Stage 1 validation isolated from Stage 2 batching."""
+
+    if stage == "format":
+        return 1, distributed_validation_inclusion(
+            dataset_size, world=world, rank=rank
+        )
+    if stage == "query":
+        return configured_batch_size, None
+    raise ValueError(f"unknown training stage: {stage}")
 
 
 def convergence_monitor(stage: str) -> str:
@@ -365,6 +480,7 @@ def upload_dataset_artifact(
     run: Any,
     train_jsonl: Path,
     val_jsonl: Path,
+    format_eval_jsonl: Path | None = None,
 ) -> None:
     import wandb
 
@@ -375,12 +491,18 @@ def upload_dataset_artifact(
     )
     artifact.add_file(str(train_jsonl), name=train_jsonl.name)
     artifact.add_file(str(val_jsonl), name=val_jsonl.name)
+    if format_eval_jsonl is not None:
+        artifact.add_file(str(format_eval_jsonl), name=format_eval_jsonl.name)
     manifest = train_jsonl.parent / "manifest.json"
     if manifest.is_file():
         artifact.add_file(str(manifest), name="manifest.json")
     run.log_artifact(artifact)
     run.summary["train_records"] = sum(1 for _ in train_jsonl.open() if _.strip())
     run.summary["val_records"] = sum(1 for _ in val_jsonl.open() if _.strip())
+    if format_eval_jsonl is not None:
+        run.summary["format_eval_records"] = sum(
+            1 for line in format_eval_jsonl.open() if line.strip()
+        )
 
 
 def _file_sha256(path: Path) -> str:
@@ -389,6 +511,46 @@ def _file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _publish_format_samples(
+    output_dir: Path,
+    *,
+    epoch: int,
+    global_step: int,
+    source: Path,
+    samples: list[dict[str, Any]],
+) -> Path:
+    directory = output_dir / "format_eval"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"epoch_{epoch:03d}_step_{global_step:08d}.jsonl"
+    payload = "".join(json.dumps(sample, ensure_ascii=False) + "\n" for sample in samples)
+    if path.exists():
+        if path.read_text(encoding="utf-8") != payload:
+            raise FileExistsError(f"refusing to replace different format samples: {path}")
+    else:
+        path.write_text(payload, encoding="utf-8")
+    manifest = {
+        "epoch": epoch,
+        "global_step": global_step,
+        "source": str(source.resolve()),
+        "source_sha256": _file_sha256(source),
+        "samples": len(samples),
+        "denominator": len(samples),
+        "sample_record_ids": [sample["record_id"] for sample in samples],
+        "jsonl": str(path),
+        "jsonl_sha256": _file_sha256(path),
+    }
+    manifest_path = path.with_suffix(".manifest.json")
+    manifest_payload = json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+    if manifest_path.exists():
+        if manifest_path.read_text(encoding="utf-8") != manifest_payload:
+            raise FileExistsError(
+                f"refusing to replace different format manifest: {manifest_path}"
+            )
+    else:
+        manifest_path.write_text(manifest_payload, encoding="utf-8")
+    return path
 
 
 def _resume_identity(
@@ -430,6 +592,16 @@ def _resume_identity(
         "lora_dropout": args.lora_dropout,
         "lora_target_modules": args.lora_target_modules,
     }
+    if stage == "format":
+        identity.update(
+            {
+                "action_token_loss_scope": ACTION_TOKEN_LOSS_SCOPE,
+                "format_eval_jsonl": str(args.format_eval_jsonl.resolve()),
+                "format_eval_jsonl_sha256": _file_sha256(
+                    args.format_eval_jsonl
+                ),
+            }
+        )
     if getattr(args, "distributed_strategy", "ddp") == "fsdp":
         identity["distributed_strategy"] = "fsdp_full_shard_orig_params_v1"
     if getattr(args, "until_converged", False):
@@ -471,7 +643,11 @@ def main(*, stage: str = "format") -> int:
     token_id_map = special_token_ids(
         processor.tokenizer, latent_token_count=args.latent_token_count
     )
-    action_ids = resolve_action_token_ids(processor.tokenizer) if stage == "format" else ()
+    action_ids = (
+        resolve_action_number_token_ids(processor.tokenizer)
+        if stage == "format"
+        else ()
+    )
     if is_main():
         print(json.dumps({"action_token_loss_weight": args.action_token_loss_weight, "weighted_action_token_ids": action_ids}))
         print(
@@ -496,7 +672,12 @@ def main(*, stage: str = "format") -> int:
     if not args.cache_only:
         wandb_run = maybe_init_wandb(args)
         if wandb_run is not None:
-            upload_dataset_artifact(wandb_run, args.train_jsonl, args.val_jsonl)
+            upload_dataset_artifact(
+                wandb_run,
+                args.train_jsonl,
+                args.val_jsonl,
+                args.format_eval_jsonl if stage == "format" else None,
+            )
 
     use_cache = not args.no_cache
     if args.cache_only and not use_cache:
@@ -549,6 +730,16 @@ def main(*, stage: str = "format") -> int:
         args.max_val_records,
         args.max_images_per_record,
         cache_dir=val_cache_dir,
+    )
+    format_eval_ds = (
+        NimlothVLSFTDataset(
+            args.format_eval_jsonl,
+            processor,
+            -1,
+            args.max_images_per_record,
+        )
+        if stage == "format"
+        else val_ds
     )
 
     if use_cache:
@@ -625,7 +816,6 @@ def main(*, stage: str = "format") -> int:
             )
         )
     )
-    format_eval_ds = val_ds
     if query_config is not None:
         from nimloth.backbone.dino_grid import (
             DINOV2_LARGE_IDENTITY,
@@ -670,6 +860,13 @@ def main(*, stage: str = "format") -> int:
         if world > 1
         else None
     )
+    val_batch_size, val_include_batches = validation_sampling_contract(
+        stage,
+        dataset_size=len(val_ds),
+        world=world,
+        rank=rank,
+        configured_batch_size=args.batch_size,
+    )
     train_loader = DataLoader(
         train_ds,
         batch_size=args.batch_size,
@@ -679,7 +876,10 @@ def main(*, stage: str = "format") -> int:
     )
     val_loader = DataLoader(
         val_ds,
-        batch_size=args.batch_size,
+        # Stage 1 uses a scalar loss per record so padded cross-rank forwards
+        # retain collective order without entering the exact-record mean.
+        # Stage 2 retains its established batched aggregate and throughput.
+        batch_size=val_batch_size,
         sampler=val_sampler,
         shuffle=False,
         **loader_kwargs,
@@ -1108,13 +1308,24 @@ def main(*, stage: str = "format") -> int:
             torch.cuda.empty_cache()
         if stage == "query":
             val_metrics = evaluate(
-                model, val_loader, device, args.max_val_batches, return_components=True
+                model,
+                val_loader,
+                device,
+                args.max_val_batches,
+                return_components=True,
+                include_batches=val_include_batches,
             )
             val_loss = val_metrics["validation_total_loss"]
         else:
-            val_loss = evaluate(model, val_loader, device, args.max_val_batches)
+            val_loss = evaluate(
+                model,
+                val_loader,
+                device,
+                args.max_val_batches,
+                include_batches=val_include_batches,
+            )
             val_metrics = {"validation_lm_loss": val_loss}
-        format_rate = evaluate_format(
+        format_rate, format_reasons, format_samples = evaluate_format(
             model,
             processor,
             format_eval_ds,
@@ -1133,10 +1344,22 @@ def main(*, stage: str = "format") -> int:
         previous_best_val = best_val
         best_val = min(best_val, val_loss)
         if is_main():
+            format_sample_path = _publish_format_samples(
+                args.output_dir,
+                epoch=epoch,
+                global_step=global_step,
+                source=(
+                    args.format_eval_jsonl if stage == "format" else args.val_jsonl
+                ),
+                samples=format_samples,
+            )
             with (args.output_dir / "validation_metrics.jsonl").open("a") as f:
                 f.write(json.dumps({
                     "epoch": epoch, "global_step": global_step,
                     "monitor": convergence_monitor(stage), **val_metrics,
+                    "format_correct_rate": format_rate,
+                    "format_failure_reasons": format_reasons,
+                    "format_samples": str(format_sample_path),
                 }) + "\n")
             with log_path.open("a", newline="") as f:
                 csv.writer(f).writerow(
@@ -1207,6 +1430,7 @@ def main(*, stage: str = "format") -> int:
                         **val_metrics,
                         "convergence": convergence.state_dict() if convergence_policy else None,
                         "format_correct_rate": format_rate,
+                        "format_failure_reasons": format_reasons,
                         "format_eval_protocol": args.latent_query_mode,
                         "best_val": best_val,
                     }

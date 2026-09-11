@@ -33,6 +33,20 @@ def load_early_checkpoint(path: Path, stage: str) -> EarlyProtocol:
     if stage == 'stage1':
         if count is not None or mode is not None:
             raise ValueError('format checkpoint must not enable query slots')
+        from nimloth.training.sft.stage1.data import FORMAT_OBJECTIVE
+        from nimloth.training.sft.stage1.loss import ACTION_TOKEN_LOSS_SCOPE
+
+        expected = {
+            'nimloth_format_objective': FORMAT_OBJECTIVE,
+            'nimloth_action_token_loss_scope': ACTION_TOKEN_LOSS_SCOPE,
+            'nimloth_action_token_loss_weight': 8.0,
+        }
+        for name, value in expected.items():
+            if config.get(name) != value:
+                raise ValueError(
+                    f'format checkpoint {name} mismatch: expected {value!r}, '
+                    f'found {config.get(name)!r}'
+                )
         return EarlyProtocol(stage)
     if type(count) is not int or count < 1 or mode not in {'inject', 'generate'}:
         raise ValueError('query checkpoint requires positive K and explicit inject/generate mode')

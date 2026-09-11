@@ -184,6 +184,14 @@ def merge_checkpoint(
         )
         format_objective = training_state.get("format_objective")
         merged.config.nimloth_format_objective = format_objective
+        identity = training_state.get("identity")
+        identity = identity if isinstance(identity, dict) else {}
+        merged.config.nimloth_action_token_loss_weight = identity.get(
+            "action_token_loss_weight", 1.0
+        )
+        merged.config.nimloth_action_token_loss_scope = training_state.get(
+            "action_token_loss_scope"
+        )
         merged.config.nimloth_latent_token_count = (
             None
             if format_objective == "format_answer_ce_v2"
