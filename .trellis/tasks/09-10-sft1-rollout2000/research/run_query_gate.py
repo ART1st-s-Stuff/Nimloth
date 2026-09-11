@@ -10,6 +10,34 @@ from pathlib import Path
 from run_segments import process_snapshot, remember_owned, terminate_group, utc_now
 
 
+def validate_checkout(checkout: Path, expected_commit: str) -> None:
+    actual_commit = subprocess.check_output(
+        ['git', 'rev-parse', 'HEAD'], cwd=checkout, text=True
+    ).strip()
+    assert actual_commit == expected_commit, (actual_commit, expected_commit)
+    assert not subprocess.check_output(
+        ['git', 'status', '--porcelain'], cwd=checkout, text=True
+    ).strip()
+
+    dependency = checkout / 'external' / 'le-wm'
+    expected_dependency = subprocess.check_output(
+        ['git', 'rev-parse', 'HEAD:external/le-wm'], cwd=checkout, text=True
+    ).strip()
+    if not (dependency / 'module.py').is_file():
+        raise RuntimeError(
+            f'le-wm checkout is missing {dependency / "module.py"}; '
+            'initialize the pinned submodule before launching the query gate'
+        )
+    actual_dependency = subprocess.check_output(
+        ['git', 'rev-parse', 'HEAD'], cwd=dependency, text=True
+    ).strip()
+    if actual_dependency != expected_dependency:
+        raise RuntimeError(
+            'le-wm checkout does not match the pinned gitlink: '
+            f'{actual_dependency} != {expected_dependency}'
+        )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=Path, required=True)
@@ -17,8 +45,7 @@ def main():
     parser.add_argument('--train-jsonl', type=Path, required=True)
     args = parser.parse_args()
     checkout = Path(__file__).resolve().parents[4]
-    assert subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=checkout, text=True).strip() == args.commit
-    assert not subprocess.check_output(['git', 'status', '--porcelain'], cwd=checkout, text=True).strip()
+    validate_checkout(checkout, args.commit)
     audit = json.loads((args.root / 'input_audit.json').read_text())
     index = audit['train_max_sample_index']
     output = args.root / 'gate_control'

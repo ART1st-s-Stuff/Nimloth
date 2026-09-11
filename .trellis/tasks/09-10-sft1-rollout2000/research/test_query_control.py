@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from query_control import cleanup_epochs, validate_boundary
+from run_query_gate import validate_checkout
 from safetensors.torch import save_file
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
@@ -18,6 +19,21 @@ from nimloth.training.sft.stage1.convergence import ConvergencePolicy, Convergen
 from nimloth.training.sft.stage2.config import QueryAlignmentConfig
 from nimloth.training.sft.stage2.model import QueryAlignmentModel
 from nimloth.wm.grid import SharedSlotProjector
+
+
+def test_query_gate_rejects_uninitialized_lewm_before_gpu_launch(
+    tmp_path, monkeypatch
+):
+    checkout = tmp_path / "checkout"
+    (checkout / "external" / "le-wm").mkdir(parents=True)
+    responses = iter(["source-commit\n", "", "dependency-commit\n"])
+
+    def fake_check_output(*args, **kwargs):
+        return next(responses)
+
+    monkeypatch.setattr("run_query_gate.subprocess.check_output", fake_check_output)
+    with pytest.raises(RuntimeError, match="initialize the pinned submodule"):
+        validate_checkout(checkout, "source-commit")
 
 
 def saved_epoch(tmp_path):
