@@ -17,6 +17,7 @@ from nimloth.backbone.dino_grid import (
     file_sha256,
 )
 from nimloth.training.sft.stage1.data import NimlothVLSFTDataset
+from nimloth.training.sft.stage2.config import QueryAlignmentConfig
 from nimloth.training.sft.stage2.data import answer_examples
 
 
@@ -88,12 +89,16 @@ def load_teacher(path: Path, device: torch.device, grid_size: int, batch_size: i
 
 
 def build(args):
-    if args.grid_size != 4 or not 1 <= args.batch_size <= 32:
-        raise ValueError("Stage 2 requires grid 4 and bounded batch size 1..32")
+    objective = QueryAlignmentConfig(grid_size=args.grid_size)
+    if not 1 <= args.batch_size <= 32:
+        raise ValueError("DINO cache batch size must be between 1 and 32")
     args.output.mkdir(parents=True, exist_ok=False)
     images, splits = observation_index(args.train_jsonl, args.val_jsonl)
     teacher, provenance = load_teacher(
-        args.teacher_path, torch.device(args.device), args.grid_size, args.batch_size
+        args.teacher_path,
+        torch.device(args.device),
+        objective.grid_size,
+        args.batch_size,
     )
     shards = []
     # A shard contains one bounded teacher batch; clear the online memo after writing.
@@ -124,7 +129,7 @@ def build(args):
         "format": STANDALONE_DINO_GRID_CACHE_FORMAT,
         "identity": asdict(DINOV2_LARGE_IDENTITY),
         "teacher_provenance": provenance,
-        "grid_size": args.grid_size,
+        "grid_size": objective.grid_size,
         "feature_dtype": "float32",
         "images": images,
         "splits": splits,
@@ -135,7 +140,7 @@ def build(args):
     validated = CachedDINOGridTargets.from_cache_root(
         args.output,
         identity=DINOV2_LARGE_IDENTITY,
-        grid_size=args.grid_size,
+        grid_size=objective.grid_size,
         _allow_incomplete=True,
     )
     (args.output / "COMPLETED").write_text(validated.cache_fingerprint + "\n")

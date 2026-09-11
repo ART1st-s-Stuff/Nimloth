@@ -64,6 +64,7 @@ def main():
     parser.add_argument("--dino-cache-root", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--sample-index", type=int)
+    parser.add_argument("--grid-size", type=int, default=4)
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
     faulthandler.dump_traceback_later(180, repeat=True)
@@ -76,11 +77,16 @@ def main():
     processor = AutoProcessor.from_pretrained(args.model)
     processor.image_processor.min_pixels = 3136
     processor.image_processor.max_pixels = 100352
-    added = add_special_tokens(processor.tokenizer, latent_token_count=16)
+    objective = QueryAlignmentConfig(grid_size=args.grid_size)
+    query_count = objective.grid_tokens
+    added = add_special_tokens(processor.tokenizer, latent_token_count=query_count)
     targets = CachedDINOGridTargets.from_cache_root(
-        args.dino_cache_root, identity=DINOV2_LARGE_IDENTITY, grid_size=4)
+        args.dino_cache_root,
+        identity=DINOV2_LARGE_IDENTITY,
+        grid_size=objective.grid_size,
+    )
     dataset = AnswerPrefixDataset(NimlothVLSFTDataset(args.train_jsonl, processor))
-    collator = QueryAlignmentCollator(processor, 20000, 16, targets,
+    collator = QueryAlignmentCollator(processor, 20000, query_count, targets,
         mask_latent_query_labels=True, last_answer_only=True)
     selected = [args.sample_index]
     if rank == 0 and selected[0] is None:
@@ -93,7 +99,8 @@ def main():
     identity = {"scope": "real_query_capacity_gate", "model": str(args.model),
         "data_sha256": hashlib.sha256(args.train_jsonl.read_bytes()).hexdigest(),
         "cache_fingerprint": targets.cache_fingerprint, "sample_index": selected[0],
-        "world_size": world, "grid_tokens": 16, "grad_accum": 8,
+        "world_size": world, "grid_size": objective.grid_size,
+        "grid_tokens": query_count, "grad_accum": 8,
         "weight_lm": 1.0, "weight_dino": 1.0}
     checkpoint = args.output_dir / "resume_step_00000001"
     state = None
@@ -106,15 +113,19 @@ def main():
         torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2")
     enable_gradient_checkpointing(language)
     prepare_query_vocabulary(language, len(processor.tokenizer),
-        special_token_ids(processor.tokenizer, latent_token_count=16),
-        added_tokens=added, latent_token_count=16)
+        special_token_ids(processor.tokenizer, latent_token_count=query_count),
+        added_tokens=added, latent_token_count=query_count)
     language = apply_lora(language, argparse.Namespace(lora_r=64, lora_alpha=128,
         lora_dropout=0.05, gradient_checkpointing=True,
         lora_target_modules="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"))
     if args.resume:
         load_lora_adapter_state(language, checkpoint)
         assert verify_adapter_loaded(language, checkpoint) > 0
-    model = QueryAlignmentModel.build(language, processor.tokenizer, QueryAlignmentConfig())
+    model = QueryAlignmentModel.build(
+        language,
+        processor.tokenizer,
+        objective,
+    )
     assert all(p.dtype == torch.bfloat16 for p in model.projector.parameters())
     if args.resume:
         model.restore_projector(checkpoint)
@@ -160,7 +171,8 @@ def main():
     save_resume_checkpoint(model, processor, args.output_dir, optimizer=optimizer,
         scheduler=scheduler, global_step=step, epoch=1, next_micro_batch=step * 8,
         best_val=float("inf"), identity=identity, rank=rank, world=world, lora=True,
-        base_model_path=args.model, latent_token_count=16, mask_latent_query_labels=True,
+        base_model_path=args.model, latent_token_count=query_count,
+        mask_latent_query_labels=True,
         latent_query_mode="inject")
     peak = torch.tensor(torch.cuda.max_memory_allocated(device), device=device)
     dist.all_reduce(peak, op=dist.ReduceOp.MAX)

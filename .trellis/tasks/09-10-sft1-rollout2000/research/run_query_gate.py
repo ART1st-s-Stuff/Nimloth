@@ -10,6 +10,8 @@ from pathlib import Path
 
 from run_segments import process_snapshot, remember_owned, terminate_group, utc_now
 
+from nimloth.training.sft.stage2.config import QueryAlignmentConfig
+
 
 def validate_checkout(checkout: Path, expected_commit: str) -> None:
     actual_commit = subprocess.check_output(
@@ -75,7 +77,9 @@ def main():
     parser.add_argument('--commit', required=True)
     parser.add_argument('--train-jsonl', type=Path, required=True)
     parser.add_argument('--attempt', default='')
+    parser.add_argument('--grid-size', type=int, default=4)
     args = parser.parse_args()
+    objective = QueryAlignmentConfig(grid_size=args.grid_size)
     checkout = Path(__file__).resolve().parents[4]
     validate_checkout(checkout, args.commit)
     audit = json.loads((args.root / 'input_audit.json').read_text())
@@ -92,7 +96,7 @@ def main():
                '--nnodes=1', '--nproc-per-node=7', str(Path(__file__).with_name('query_capacity_probe.py')),
                '--model', str(args.root / 'base'), '--train-jsonl', str(args.train_jsonl),
                '--dino-cache-root', str(args.root / 'dino_cache'), '--output-dir', str(gate_output),
-               '--sample-index', str(index)]
+               '--sample-index', str(index), '--grid-size', str(objective.grid_size)]
     start = time.monotonic()
     with (output / 'events.jsonl').open('x') as events:
         for phase in ('initial', 'resume'):

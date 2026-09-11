@@ -46,6 +46,18 @@ def make_model():
     )
 
 
+@pytest.mark.parametrize("grid_size", [1, 3, 8])
+def test_grid_size_accepts_any_positive_integer(grid_size):
+    objective = QueryAlignmentConfig(grid_size=grid_size)
+    assert objective.grid_tokens == grid_size**2
+
+
+@pytest.mark.parametrize("grid_size", [0, -1])
+def test_grid_size_rejects_nonpositive_values(grid_size):
+    with pytest.raises(ValueError, match="positive"):
+        QueryAlignmentConfig(grid_size=grid_size)
+
+
 def test_projector_build_matches_bfloat16_embedding_dtype():
     lm = TinyCausalLM().to(dtype=torch.bfloat16)
     lm.config.hidden_size = 6

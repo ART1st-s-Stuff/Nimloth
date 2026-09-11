@@ -11,7 +11,7 @@ python -m nimloth.training.sft.stage2 \
 
 ## 配置与训练参数
 
-`--latent-token-count` 必须等于 `--grid-size` 的平方，默认对应 4×4 网格的 16 个位置。损失权重由 `--weight-lm` 和 `--weight-dino` 指定，二者均须为正；`--projector-hidden-dim` 指定投影维度。YAML 可通过 `query_alignment` 提供这些参数，其余训练设置复用 SFT1。
+`--grid-size` 接受任意正整数，查询位置数 K 统一由 `grid_size²` 推导，因此 `--latent-token-count` 必须与它相等；默认 4×4 网格对应 K=16。独立 DINO 缓存构建、输入审计、容量门禁和训练必须传入相同的 grid size，不同 grid size 的缓存不能混用。损失权重由 `--weight-lm` 和 `--weight-dino` 指定，二者均须为正；`--projector-hidden-dim` 指定投影维度。YAML 可通过 `query_alignment` 提供这些参数，其余训练设置复用 SFT1。
 
 默认全量训练 Qwen；选择 `--lora` 时沿用 adapter、embedding 和输出 head 的训练方式。共享 slot projector 始终加入优化器。
 新建 projector 使用语言模型输入 embedding 的 dtype/device（BF16 模型不会新建 FP32 projector 参数）。多卡可指定 `--distributed-strategy fsdp`；语言模型和 projector 均参与分片、完整保存与恢复。

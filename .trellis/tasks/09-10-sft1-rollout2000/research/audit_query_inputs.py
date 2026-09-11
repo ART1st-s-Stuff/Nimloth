@@ -17,10 +17,12 @@ from nimloth.backbone.dino_grid import (
 )
 from nimloth.latent import add_special_tokens
 from nimloth.training.sft.stage1.data import NimlothVLSFTDataset
+from nimloth.training.sft.stage2.config import QueryAlignmentConfig
 from nimloth.training.sft.stage2.data import AnswerPrefixDataset, QueryAlignmentCollator
 
 DATASETS = {}
 COLLATOR = None
+QUERY_COUNT = None
 
 
 def audit_one(item):
@@ -29,9 +31,9 @@ def audit_one(item):
     length = int(encoded["attention_mask"][0].sum().item())
     if length >= 20000:
         raise ValueError(f"input at truncation boundary: {split}/{row}: {length}")
-    if encoded["query_positions"].shape != (1, 16):
-        raise ValueError("query positions must contain exactly sixteen slots")
-    if encoded["dino_target"].shape != (1, 16, 1024):
+    if encoded["query_positions"].shape != (1, QUERY_COUNT):
+        raise ValueError(f"query positions must contain exactly {QUERY_COUNT} slots")
+    if encoded["dino_target"].shape != (1, QUERY_COUNT, 1024):
         raise ValueError("real DINO target shape mismatch")
     if any(
         not torch.isfinite(value).all()
@@ -49,7 +51,7 @@ def audit_one(item):
 
 
 def main():
-    global COLLATOR
+    global COLLATOR, QUERY_COUNT
     parser = argparse.ArgumentParser(description=__doc__)
     for field in (
         "model",
@@ -60,7 +62,9 @@ def main():
     ):
         parser.add_argument(f"--{field}", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--grid-size", type=int, default=4)
     args = parser.parse_args()
+    objective = QueryAlignmentConfig(grid_size=args.grid_size)
     if not 1 <= args.workers <= 8:
         raise ValueError("workers must be between one and eight")
     if args.output_json.exists():
@@ -71,14 +75,17 @@ def main():
     processor = AutoProcessor.from_pretrained(args.model, local_files_only=True)
     processor.image_processor.min_pixels = 3136
     processor.image_processor.max_pixels = 100352
-    added = add_special_tokens(processor.tokenizer, latent_token_count=16)
+    QUERY_COUNT = objective.grid_tokens
+    added = add_special_tokens(processor.tokenizer, latent_token_count=QUERY_COUNT)
     targets = CachedDINOGridTargets.from_cache_root(
-        args.dino_cache_root, identity=DINOV2_LARGE_IDENTITY, grid_size=4
+        args.dino_cache_root,
+        identity=DINOV2_LARGE_IDENTITY,
+        grid_size=objective.grid_size,
     )
     COLLATOR = QueryAlignmentCollator(
         processor=processor,
         max_length=20000,
-        query_count=16,
+        query_count=QUERY_COUNT,
         targets=targets,
         last_answer_only=True,
     )
@@ -140,7 +147,8 @@ def main():
         "status": "passed",
         "scope": "all trajectories final-answer full-history prefixes",
         "model": str(args.model.resolve()),
-        "query_count": 16,
+        "query_count": QUERY_COUNT,
+        "grid_size": objective.grid_size,
         "max_length": 20000,
         "min_pixels": 3136,
         "max_pixels": 100352,
