@@ -15,7 +15,7 @@
   "branch": "codex/fix-sft1-termination-retrain",
   "base_branch": "codex/sft-stage-eval-refactor",
   "worktree_path": null,
-  "commit": null,
+  "commit": "2a8ac7122c8e1f389e01cd360cb592cb9d308d80",
   "pr_url": null,
   "subtasks": [],
   "children": [],
