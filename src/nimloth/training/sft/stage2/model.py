@@ -25,10 +25,10 @@ from .config import QueryAlignmentConfig
 class QueryAlignmentOutput(CausalLMOutputWithPast):
     lm_loss: torch.Tensor | None = None
     dino_loss: torch.Tensor | None = None
-    loss_sum: torch.Tensor | None = None
     lm_loss_sum: torch.Tensor | None = None
     dino_loss_sum: torch.Tensor | None = None
     answer_count: torch.Tensor | None = None
+    lm_answer_count: torch.Tensor | None = None
 
 
 class QueryAlignmentModel(nn.Module):
@@ -76,6 +76,7 @@ class QueryAlignmentModel(nn.Module):
         self,
         *,
         answer_indices,
+        lm_answer_mask,
         query_batch_indices,
         query_positions,
         dino_target,
@@ -83,6 +84,8 @@ class QueryAlignmentModel(nn.Module):
     ):
         ids = inputs["input_ids"]
         answer_count = query_positions.shape[0]
+        if lm_answer_mask.dtype != torch.bool or lm_answer_mask.shape != (answer_count,):
+            raise ValueError("LM answer mask must be a boolean for every answer")
         expected = (answer_count, self.objective.grid_tokens)
         if tuple(query_positions.shape) != expected:
             raise ValueError(f"query position shape must be {expected}")
@@ -93,6 +96,9 @@ class QueryAlignmentModel(nn.Module):
             or torch.any(query_batch_indices >= ids.shape[0])
         ):
             raise ValueError("query batch indices do not identify input trajectories")
+        for row in query_batch_indices.unique():
+            if lm_answer_mask[query_batch_indices == row].unique().numel() != 1:
+                raise ValueError("all answers in a trajectory must share its success mask")
         if (
             query_positions.dtype != torch.long
             or torch.any(query_positions < 0)
@@ -164,26 +170,25 @@ class QueryAlignmentModel(nn.Module):
             )
         lm_by_answer = lm_sums / lm_counts
         dino_by_answer = (state.float() - target).square().flatten(1).mean(1)
-        lm_loss_sum = lm_by_answer.sum()
+        lm_loss_sum = (lm_by_answer * lm_answer_mask).sum()
+        lm_count = lm_answer_mask.sum()
         dino_loss_sum = dino_by_answer.sum()
-        loss_sum = (
-            self.objective.weight_lm * lm_loss_sum
-            + self.objective.weight_dino * dino_loss_sum
-        )
-        count = torch.tensor(answer_count, device=loss_sum.device, dtype=torch.long)
+        count = torch.tensor(answer_count, device=lm_loss_sum.device, dtype=torch.long)
         return QueryAlignmentOutput(
-            loss=loss_sum / count,
-            lm_loss=(lm_loss_sum / count).detach(),
+            loss=(self.objective.weight_lm * lm_loss_sum / lm_count.clamp_min(1)
+                  + self.objective.weight_dino * dino_loss_sum / count),
+            lm_loss=(lm_loss_sum / lm_count.clamp_min(1)).detach(),
             dino_loss=(dino_loss_sum / count).detach(),
-            loss_sum=loss_sum,
-            lm_loss_sum=lm_loss_sum.detach(),
-            dino_loss_sum=dino_loss_sum.detach(),
+            lm_loss_sum=lm_loss_sum,
+            dino_loss_sum=dino_loss_sum,
             answer_count=count,
+            lm_answer_count=lm_count,
         )
 
     def grid_metadata(self):
         return {
             "training_stage": "query",
+            "lm_supervision": "successful_trajectory_answers_v1",
             "objective": asdict(self.objective),
             "dino_identity": asdict(DINOV2_LARGE_IDENTITY),
             "grid_tokens": self.projector.grid_tokens,

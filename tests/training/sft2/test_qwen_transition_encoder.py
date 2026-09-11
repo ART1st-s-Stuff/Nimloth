@@ -212,3 +212,25 @@ def test_supervised_cached_rows_require_labels_on_every_row() -> None:
             [_encoded_row(1, labels=True), _encoded_row(2, labels=False)],
             include_labels=True,
         )
+
+
+@pytest.mark.parametrize("success", [True, False])
+def test_success_mask_and_counts_follow_full_trajectory_metadata(success):
+    assembler = _assembler()
+    item = _item("a", [{"role": "user", "content": "next"}])
+    item["success"] = success
+    assert assembler.supervision_counts([item]) == (1, int(success))
+    with patch("nimloth.backbone.qwen25vl.input.build_qwen_batch",
+               return_value={"input_ids": torch.zeros((1, 4), dtype=torch.long)}):
+        batch = assembler.prepare([item])
+    assert batch.current.tensors["lm_row_weights"].tolist() == [float(success)]
+    assert batch.sample_weights.tolist() == [1.]
+    assert batch.current_value_targets.tolist() == [1.]
+
+
+@pytest.mark.parametrize("success", [None, "false", 0])
+def test_missing_or_non_boolean_success_is_rejected(success):
+    item = _item("a", [])
+    item["success"] = success
+    with pytest.raises(ValueError, match="success boolean"):
+        _assembler().supervision_counts([item])

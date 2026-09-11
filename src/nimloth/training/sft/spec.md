@@ -47,7 +47,8 @@ def sft1_step(model, config, input, output, action_token_ids):
     loss.backward()
 
 def sft2_step(model, config, trajectories, proj, dino_model, queries):
-    """每条完整轨迹只编码一次，同时监督其中每个回答及其query state。"""
+    """全部轨迹对齐query/DINO，只有成功轨迹的回答参与LM监督。"""
+    # success来自原始完整轨迹的任务结果，不由单步动作或窗口结果推断。
     # 每个回答使用其之前的对话和观测作为因果上下文；模型不能看到未来token。
     inputs, answers, observations = build_full_trajectory_batch(trajectories, queries)
     query_locations = find_query_locations_by_answer(inputs, answers, queries)
@@ -60,13 +61,15 @@ def sft2_step(model, config, trajectories, proj, dino_model, queries):
     with no_grad():
         dino_features = dino_model(observations)
 
-    # 先对每个回答的目标token取平均，再对回答取平均，保持回答等权。
+    # 先对每个成功轨迹回答的目标token取平均，再对这些回答等权平均。
     answer_lm_losses = [
         lm_loss_for_answer(model_output, answer)
         for answer in answers
+        if answer.trajectory.success
     ]
-    loss_lm = mean(answer_lm_losses)
-    # 第t组query只对齐第t个回答所对应的观测；对回答和query位置共同取平均。
+    loss_lm = mean(answer_lm_losses) if answer_lm_losses else 0
+    # 成功和失败轨迹的全部回答都参与DINO对齐，失败回答仍提供因果上下文。
+    # 第t组query只对齐第t个回答的观测；对全部回答和query位置共同取平均。
     loss_dino = mean([
         mean([mse(state_i, dino_i) for state_i, dino_i in zip(state, dino)])
         for state, dino in zip(states, dino_features)
@@ -76,7 +79,8 @@ def sft2_step(model, config, trajectories, proj, dino_model, queries):
 
 def sft3_window(model, target_model, config, window, proj,
               dino_model, wm, value_head, queries):
-    """以轨迹中的连续T步窗口训练WM和value head（H=1）。"""
+    """从全部轨迹采样连续T步窗口训练WM/value，仅成功轨迹参与LM监督（H=1）。"""
+    # success继承原始完整轨迹的任务结果；失败轨迹也保留真实动作、观测和回报。
     # 窗口含T+1个真实观测、T个执行动作，以及各动作对应的MC return。
     # MC return来自原轨迹的后续回报，不在窗口末尾截断。
     # 只编码窗口起点作为预测输入，后续状态由WM递推得到。
@@ -92,11 +96,13 @@ def sft3_window(model, target_model, config, window, proj,
         target_states = proj(target_model.get_embeddings(window.observations[1:], queries))
         dino_features = dino_model(window.observations[1:].images) if config.weight_dino > 0 else None
 
-    loss_lm = lm_loss(model_output, window.outputs[0])
+    loss_lm = lm_loss(model_output, window.outputs[0]) if window.trajectory.success else 0
     loss_wm = mse(predicted_states, target_states)
     loss_value = mse(predicted_values, window.mc_returns)
     loss_dino = mse(predicted_states, dino_features) if dino_features is not None else 0
-    # MSE对所有预测步取平均，WM权重随训练进度逐渐增加。
+    # WM/value/DINO对成功和失败窗口的所有预测步取平均，不按success屏蔽。
+    # 批量或多卡归约时，LM只按成功窗口计数；没有成功窗口时为0。
+    # WM权重随训练进度逐渐增加。
     loss = (config.weight_lm * loss_lm + config.weight_wm * loss_wm
             + config.weight_value * loss_value + config.weight_dino * loss_dino)
     loss.backward()

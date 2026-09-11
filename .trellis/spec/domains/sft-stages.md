@@ -38,3 +38,6 @@ stage2需要同观测的真实回答/CoT、完整有序的query slots和冻结DI
 `stage3.algorithm`拥有损失和反传顺序，`stage3.sigreg`拥有跨rank有效状态汇聚及同步随机投影，提取时不改变collective顺序或梯度。canary、动作头专项修复、packed/KV原型及依赖它们的特征审计归`experiments/training/sft/diagnosis`，不得由生产训练导入。Python旧路径不再兼容；保存的tensor/state_dict、目标标识及恢复语义保持不变。
 
 `stage1.cli.parse_args(argv=None, *, stage="format")`负责入口参数校验；`stage1.checkpoint`负责保存及恢复阶段校验；`stage1.trainer`负责模型构建与训练生命周期，不再动态转发数据模块中的任意属性。数据调用者直接依赖`stage1.data`。
+
+## 经审查的选择性 LM 监督
+Stage2 使用全部轨迹的回答对齐 DINO，只对成功轨迹的回答计算 LM；Stage3 使用全部窗口的 WM/value/DINO，只对成功轨迹起点回答计算 LM。success 必须来自完整轨迹的显式布尔字段，缺失拒绝。LM 分母为成功回答/窗口数，其他监督分母为全部有效回答/窗口数，跨累积组和 rank 分别归约；全失败组 LM 为图连接的零。恢复身份须拒绝旧全部轨迹 LM 目标的优化器状态。

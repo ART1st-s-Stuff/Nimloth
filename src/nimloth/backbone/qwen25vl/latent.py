@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 import torch
+from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 
 from nimloth.latent import (
     extract_latent_state,
@@ -143,6 +145,7 @@ def extract_qwen_latents(
     device: torch.device,
     *,
     latent_token_count: int = 1,
+    lm_row_weights: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """Extract configured latent query hidden states from a Qwen batch.
 
@@ -151,7 +154,33 @@ def extract_qwen_latents(
     """
 
     model_inputs = {k: v.to(device, non_blocking=True) for k, v in enc.items()}
-    hidden, output = _capture_last_hidden(model, model_inputs)
+    labels = model_inputs.pop("labels") if lm_row_weights is not None else None
+    hidden, output = _capture_last_hidden(model, model_inputs, full_logits=labels is not None)
+    lm_loss = output.loss
+    if labels is not None:
+        weights = lm_row_weights.to(device)
+        if weights.shape != (labels.shape[0],) or not torch.all((weights == 0) | (weights == 1)):
+            raise ValueError("LM row weights must be zero or one for each input row")
+        # 每个窗口先独立求 token 均值，避免长回答改变窗口权重。
+        row_losses = []
+        for row in range(labels.shape[0]):
+            valid = labels[row, 1:] != -100
+            if not valid.any():
+                raise ValueError("LM window has no supervised answer tokens")
+            positions = valid.nonzero(as_tuple=True)[0]
+            row_sum = output.logits.new_zeros((), dtype=torch.float32)
+            def token_ce(scores, targets):
+                return F.cross_entropy(scores.float(), targets, reduction="sum")
+            for positions_chunk in positions.split(128):
+                scores = output.logits[row, positions_chunk]
+                targets = labels[row, positions_chunk + 1]
+                row_sum = row_sum + (
+                    checkpoint(token_ce, scores, targets, use_reentrant=False)
+                    if torch.is_grad_enabled() and scores.requires_grad
+                    else token_ce(scores, targets)
+                )
+            row_losses.append(row_sum / positions.numel())
+        lm_loss = (torch.stack(row_losses) * weights).sum() / weights.sum().clamp_min(1)
     tokens = LatentActionTokens()
     rows: list[torch.Tensor] = []
     input_ids = enc["input_ids"].detach().cpu()
@@ -167,4 +196,4 @@ def extract_qwen_latents(
                 latent_token_count=latent_token_count,
             )
             rows.append(extract_latent_state_block(hidden[row : row + 1], latent_block))
-    return torch.stack(rows, dim=0), output.loss
+    return torch.stack(rows, dim=0), lm_loss

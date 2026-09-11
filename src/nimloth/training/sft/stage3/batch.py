@@ -265,6 +265,10 @@ class SFT2BatchBuilder(Protocol):
 
     def collate_transition_samples(self, batch: list[Any]) -> Any: ...
 
+    device: torch.device
+
+    def supervision_counts(self, raw_batch: Any) -> tuple[int, int]: ...
+
     def prepare(self, raw_batch: Any) -> SFT2Batch | SFT2RolloutBatch: ...
 
 
@@ -324,6 +328,17 @@ class SFT2BatchAssembler:
             items.append(item)
         return items
 
+    def supervision_counts(self, raw_batch: Any) -> tuple[int, int]:
+        """Count real and successful starting windows without encoding images."""
+        if isinstance(raw_batch, (SFT2Batch, SFT2RolloutBatch)):
+            return (int(raw_batch.sample_weights.sum()),
+                    int(raw_batch.current.tensors["lm_row_weights"].sum()))
+        rows = raw_batch["items"] if isinstance(raw_batch, dict) else raw_batch
+        items = [self._metadata(item) for item in rows]
+        starts = [item for item in items if item["is_current_step"]]
+        return (sum(int(item["loss_weight"]) for item in starts),
+                sum(int(item["loss_weight"]) * item["success"] for item in starts))
+
     def prepare(self, raw_batch: Any) -> SFT2Batch | SFT2RolloutBatch:
         """构造 current/next 模型输入和对齐后的 transition target。"""
 
@@ -361,6 +376,13 @@ class SFT2BatchAssembler:
             online_tail = None
             cached_next = None
 
+        current = BackboneBatch(tensors={
+            **current.tensors,
+            "lm_row_weights": torch.tensor([
+                float(item["success"]) * item["loss_weight"]
+                for item in items if item["is_current_step"]
+            ], device=self.device),
+        })
         if self._is_future_rollout(items):
             return self._prepare_future_rollout(
                 items,
@@ -744,6 +766,8 @@ class SFT2BatchAssembler:
         return unique_keys, key_to_row
 
     def _metadata(self, item: dict[str, Any]) -> dict[str, Any]:
+        if type(item.get("success")) is not bool:
+            raise ValueError("transition requires explicit trajectory success boolean")
         current_messages = item.get("messages")
         if not isinstance(current_messages, list):
             raise ValueError("transition is missing current Agent messages")
@@ -756,7 +780,7 @@ class SFT2BatchAssembler:
             "step_index": int(item.get("step_index", 0)),
             "action_index": int(item["action_index"]),
             "action_value_target": float(item["action_value_target"]),
-            "success": bool(item.get("success", False)),
+            "success": item["success"],
             "messages": current_messages,
             "next_messages": next_messages,
             "context_length": int(

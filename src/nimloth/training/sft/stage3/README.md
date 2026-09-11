@@ -43,3 +43,9 @@ rank-local `history_cache.py` 读取 detached tensor。这与 T 个未来预测�
 专项 canary、动作头修复、特征定位审计和 packed/KV 研究原型位于 `experiments/training/sft/diagnosis/`。这些工具可调用训练组件，训练组件不依赖实验工具。
 
 旧 `nimloth.training.sft2` Python 包已移除，代码调用者应使用 `nimloth.training.sft.stage3`。既有 `SFT2*` 类型名、配置字段和 `decision_state_executed_action_mc_v3` 仍描述相同 WM/value 目标，不会被新 Query 对齐阶段静默接受。历史产物不改写；通过实际 checkpoint 加载与恢复测试校验迁移。
+
+## 成功轨迹的 LM 监督
+
+训练数据必须包含成功和失败轨迹，不接受 `success_only` 过滤。`batch.py` 将完整轨迹的显式布尔 `success` 传入起点的 `lm_row_weights`；缺失标记拒绝。成功窗口的起点回答先独立计算 token CE 均值，再按成功窗口求平均。失败窗口保留全部真实输入、动作、回报及 WM/value/DINO 监督。全失败组 LM 为图连接的零。
+
+`loop.py` 在一个更新组内统计全部有效窗口数和成功窗口数，跨 rank 归约后分别缩放主损失及 LM。SIGReg 保留原独立反传协议。验证仍沿用状态预测指标；训练 LM 指标按成功窗口数汇总。恢复身份新增监督范围与归一化版本，不能复用旧 LM 目标的优化器状态。

@@ -52,6 +52,7 @@ def audit_one(item):
         "sample_index": row,
         "length": length,
         "answers": answers,
+        "lm_answers": int(encoded["lm_answer_mask"].sum()),
         "supervised_tokens": int((encoded["labels"] != -100).sum()),
     }
 
@@ -95,22 +96,23 @@ def main():
         targets=targets,
     )
     jobs, summary = [], {}
-    for split, source, records, answers in (
-        ("train", args.train_jsonl, 1709, 20212),
-        ("val", args.val_jsonl, 193, 2152),
+    for split, source in (
+        ("train", args.train_jsonl),
+        ("val", args.val_jsonl),
     ):
         dataset = NimlothVLSFTDataset(source, processor=processor)
-        if len(dataset) != records:
-            raise ValueError(f"unexpected {split} record/answer counts")
+        records = len(dataset)
+        if records < 1:
+            raise ValueError(f"{split} dataset has no trajectories")
         DATASETS[split] = dataset
         jobs.extend((split, row) for row in range(len(dataset)))
         summary[split] = {
             "records": records,
-            "answers": answers,
             "jsonl": str(source.resolve()),
             "sha256": file_sha256(source),
             "checked": 0,
             "checked_answers": 0,
+            "successful_lm_answers": 0,
             "max_length": 0,
             "max_sample_index": None,
         }
@@ -119,6 +121,7 @@ def main():
             split_summary = summary[result["split"]]
             split_summary["checked"] += 1
             split_summary["checked_answers"] += result["answers"]
+            split_summary["successful_lm_answers"] += result["lm_answers"]
             if result["length"] > split_summary["max_length"]:
                 split_summary.update(
                     max_length=result["length"],
@@ -143,10 +146,11 @@ def main():
     for value in summary.values():
         if (
             value["checked"] != value["records"]
-            or value["checked_answers"] != value["answers"]
+            or value["checked_answers"] < value["records"]
             or file_sha256(value["jsonl"]) != value["sha256"]
         ):
             raise ValueError("incomplete audit or changed source JSONL")
+        value["answers"] = value["checked_answers"]
     report = {
         "status": "passed",
         "scope": "all complete trajectories and all answer-aligned query states",

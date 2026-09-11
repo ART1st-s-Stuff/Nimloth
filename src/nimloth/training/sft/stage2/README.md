@@ -19,13 +19,13 @@ python -m nimloth.training.sft.stage2 \
 可使用 `--until-converged --convergence-min-epochs 2 --convergence-patience-epochs 2 --convergence-min-relative-improvement 0.01` 训练至收敛，不能同时指定固定 `--epochs`，也不能限制验证批次数。每轮以完整验证的加权总损失 `weight_lm * LM + weight_dino * DINO` 对比上一轮，连续两轮改善不足 1% 且达到最少轮数后停止；`best` 始终选择总损失最低的 checkpoint。预热后学习率保持不变，运行时限不代表收敛。
 有限 GPU 检查可指定 `--max-optimizer-steps N`，在绝对第 N 步保存完整恢复 checkpoint 并以 75 退出，不声明收敛；正式续训移除该预算参数。
 
-`validation_metrics.jsonl`、每轮日志与 W&B 分别记录未加权的 LM、DINO 分量和加权总损失。三者以回答为计数单位跨 batch、梯度累积和 rank 求和归约；分布式 sampler 的补齐项仍计入均值。旧 CSV 的 `val_loss` 在 query 阶段表示总损失。模型返回的分量已 detach，不改变反向传播目标。
+`validation_metrics.jsonl`、每轮日志与 W&B 分别记录未加权的 LM、DINO 分量和加权总损失。LM 只以成功轨迹的回答计数，DINO 以全部回答计数，分别跨 batch、梯度累积和 rank 求和归约；分布式 sampler 的补齐项仍计入均值。旧 CSV 的 `val_loss` 在 query 阶段表示总损失。模型返回的均值指标已 detach；两个可微分量之和分别用于各自分母的反向传播。
 
 ## 模块职责与计算顺序
 
 dataset 保持以完整轨迹为样本，因此 `--batch-size` 按轨迹计数，`--max-train-records` 也直接限制原始轨迹。collator 为每个回答记录 query 位置、回答 token 归属和当前观测，但不会复制回答前缀。每条轨迹只执行一次因果 teacher-forcing 前向。
 
-`data.py` 保留完整多轮记录。每个回答之前的当前用户轮必须恰好对应一个观测图像，多图歧义会报错。所有真实回答都计算一次 CE；每个回答内部先对 token CE 求平均，再在回答之间等权平均。真实非空 CoT、有序连续 query 区间和观测图像必须逐回答对齐；缺失或截断回答、query 位置均拒绝，不生成替代思考内容。
+`data.py` 保留完整多轮记录。每个回答之前的当前用户轮必须恰好对应一个观测图像，多图歧义会报错。每条记录必须显式提供完整轨迹的布尔 `success`。只有成功轨迹的回答计算 LM 监督；失败回答仍作为真实因果上下文参与前向和 DINO 对齐。每个回答内部先对 token CE 求平均，再在成功回答之间等权平均；全失败更新组 LM 为图连接的零。真实非空 CoT、有序连续 query 区间和观测图像必须逐回答对齐；缺失或截断回答、query 位置均拒绝，不生成替代思考内容。
 
 `model.py` 在一次完整轨迹的 teacher-forcing Qwen 前向中，使用现有 final-norm hook 提取所有回答的 query hidden states。这些 query 位于各自真实 CoT 之后、动作之前，按位置经过 `wm.grid.SharedSlotProjector`。DINO MSE 先在每个回答的全部 K 个位置和特征维上平均，再在回答之间等权平均。DINO 目标无梯度，形状必须严格相同，不允许广播掩盖错配。
 
@@ -36,3 +36,5 @@ dataset 保持以完整轨迹为样本，因此 `--batch-size` 按轨迹计数�
 Checkpoint 保存 `training_stage=query`、语言模型或 adapter，以及 `slot_projector.pt` 和 `grid_state_config.json`。配置记录 teacher 身份、query token ID、projector 维度和目标权重；恢复或从 query checkpoint 初始化时先严格校验，再恢复 projector。
 
 LoRA 合并导出保留 projector 文件及阶段元数据，SFT3 使用同一 projector 格式。完整恢复包含优化器、调度器、epoch/微批次游标、每 rank 随机数状态及收敛历史；query 收敛监控身份为 `validation_total_loss`。CPU 测试覆盖标签、梯度、空间对齐、收敛与导出接口，不作为真实 GPU 训练或 rollout 质量证据。
+
+优化器更新前只预取一个累积组的 CPU 输入并统计成功/全部回答数，跨 rank 求和后逐微批单次前向。两个损失分别按各自全局分母缩放；恢复身份包含此监督语义，旧的全部回答 LM 优化器状态不能续训为新目标。

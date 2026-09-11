@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+import torch
+
 from nimloth.backbone.dino_grid import CachedDINOGridTargets
 from nimloth.training.sft.stage3.batch import (
     SFT2Batch,
@@ -31,6 +33,13 @@ class DINOGridBatchAssembler:
     @property
     def processor(self) -> Any:
         return self.base.processor
+
+    @property
+    def device(self) -> torch.device:
+        return self.base.device
+
+    def supervision_counts(self, raw_batch: Any) -> tuple[int, int]:
+        return self.base.supervision_counts(raw_batch)
 
     def collate_transition_samples(self, batch: list[Any]) -> Any:
         return self.base.collate_transition_samples(batch)

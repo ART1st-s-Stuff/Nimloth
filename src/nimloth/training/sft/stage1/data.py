@@ -498,7 +498,8 @@ class NimlothVLSFTDataset(Dataset):
         image_paths = list(rec.get("image_paths", []))
         if self.max_images_per_record > 0:
             image_paths = image_paths[: self.max_images_per_record]
-        return {"id": rec["id"], "messages": messages, "num_images": len(image_paths)}
+        return {"id": rec["id"], "messages": messages, "num_images": len(image_paths),
+                **({"success": rec["success"]} if "success" in rec else {})}
 
     def get_messages(self, idx: int) -> list[dict[str, Any]]:
         return self.build_messages(self.records[idx])

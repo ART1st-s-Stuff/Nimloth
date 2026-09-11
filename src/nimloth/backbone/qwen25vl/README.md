@@ -28,3 +28,5 @@ loss-mask 位置的 vocabulary logits，reasoning 使用屏蔽 Nimloth 注入 to
 action 使用八 token 词表；注入或强制补全的 token 不进入 PPO。
 latent query的注入边界按tokenizer解码后的字面`</think>`匹配，而不是假设该文本只有
 一种token ID切分；达到reasoning上限时才强制补入canonical close token序列。
+
+调用者可在 BackboneBatch 中携带 `lm_row_weights`（每行 0/1）。模型在同一次前向中独立计算各行回答 CE，按有效行计数；全零权重保留零梯度图。该字段由 backbone 消费，不传入 HF；是否为成功轨迹由训练调用者决定，backbone 不推断任务成功。

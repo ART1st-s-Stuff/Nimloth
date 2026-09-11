@@ -46,6 +46,7 @@ class Qwen25VLBackbone(Backbone):
         include_lm_loss: bool = False,
     ) -> BackboneOutput:
         model_inputs = dict(batch.tensors)
+        lm_row_weights = model_inputs.pop("lm_row_weights", None)
         if not include_lm_loss:
             model_inputs.pop("labels", None)
         hidden, lm_loss = extract_qwen_latents(
@@ -54,6 +55,7 @@ class Qwen25VLBackbone(Backbone):
             self.token_id_map,
             self.device,
             latent_token_count=self.latent_token_count,
+            lm_row_weights=lm_row_weights if include_lm_loss else None,
         )
         return BackboneOutput(
             hidden=hidden,

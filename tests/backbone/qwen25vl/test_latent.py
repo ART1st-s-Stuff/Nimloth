@@ -140,3 +140,31 @@ def test_extract_qwen_latents_keeps_full_supervised_lm_loss() -> None:
 
     assert model.logits_to_keep_seen is None
     assert loss is not None
+
+
+@pytest.mark.parametrize("weights", [[1., 0.], [0., 0.], [1., 1.]])
+def test_window_lm_selection_preserves_state_and_excludes_failed_rows(weights):
+    class LM(_FakeQwen):
+        def __init__(self):
+            super().__init__()
+            self.scores = nn.Parameter(torch.randn(2, 4, 8))
+        def forward(self, input_ids, **kwargs):
+            out = super().forward(input_ids, **kwargs)
+            out.logits = self.scores
+            return out
+    model = LM()
+    tokens = LatentActionTokens()
+    mapping = {tokens.latent_state: 10}
+    ids = torch.tensor([[1, 10, 2, 3], [4, 10, 5, 6]])
+    labels = torch.tensor([[-100, -100, 2, 3], [-100, -100, -100, 6]])
+    hidden, loss = extract_qwen_latents(model, {"input_ids": ids, "labels": labels},
+                                      mapping, torch.device("cpu"),
+                                      lm_row_weights=torch.tensor(weights))
+    expected = [torch.nn.functional.cross_entropy(model.scores[0, 1:3], labels[0, 2:]),
+                torch.nn.functional.cross_entropy(model.scores[1, 2:3], labels[1, 3:])]
+    target = sum(v * w for v, w in zip(expected, weights)) / max(1., sum(weights))
+    torch.testing.assert_close(loss, target)
+    assert hidden.shape == (2, 4)
+    loss.backward()
+    for row, weight in enumerate(weights):
+        assert bool(model.scores.grad[row].abs().sum() > 0) == bool(weight)

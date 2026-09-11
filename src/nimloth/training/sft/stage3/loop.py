@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -17,7 +18,7 @@ from nimloth.training.sft.stage3.checkpoint import (
     resume_epoch_and_micro_step,
 )
 from nimloth.training.sft.stage3.algorithm import SFT2Algorithm
-from nimloth.training.sft.stage3.evaluate import evaluate
+from nimloth.training.sft.stage3.evaluate import evaluate, distributed_metric_averages
 from nimloth.training.sft.stage3.runtime import (
     SFT2ModelRuntime,
     SFT2OptimizationRuntime,
@@ -146,10 +147,24 @@ class SFT2TrainingLoop:
         accumulator = MetricAccumulator()
         train_iterator, micro_index = self._resume_train_iterator(epoch)
         micro_batch_count = len(self.train_loader)
+        def normalized_batches():
+            while group := list(itertools.islice(train_iterator, self.config.grad_accum)):
+                counts = [self.batch_builder.supervision_counts(item) for item in group]
+                totals = torch.tensor([sum(n for n, _ in counts), sum(n for _, n in counts)],
+                                      device=self.batch_builder.device)
+                world = 1
+                if dist.is_available() and dist.is_initialized():
+                    world = dist.get_world_size()
+                    dist.all_reduce(totals)
+                for item, (all_count, lm_count) in zip(group, counts, strict=True):
+                    yield item, (world * all_count / max(1, int(totals[0])),
+                                 world * lm_count / max(1, int(totals[1])), lm_count)
+
+        normalized_iterator = iter(normalized_batches())
         while True:
             timer_start = self.step_timer.start("dataloader")
             try:
-                batch_samples = next(train_iterator)
+                batch_samples, loss_scales = next(normalized_iterator)
             except StopIteration:
                 break
             self.step_timer.stop("dataloader", timer_start)
@@ -167,8 +182,12 @@ class SFT2TrainingLoop:
                     batch_samples,
                     epoch=epoch,
                     micro_step=micro_index,
+                    loss_scales=loss_scales[:2],
                 )
             if sample_count > 0:
+                lm_metric = metrics.pop("lm_ce", None)
+                if lm_metric is not None:
+                    accumulator.update({"lm_ce": lm_metric}, count=loss_scales[2])
                 accumulator.update(metrics, count=sample_count)
 
             if sync_gradients:
@@ -236,6 +255,7 @@ class SFT2TrainingLoop:
         *,
         epoch: int,
         micro_step: int,
+        loss_scales: tuple[float, float] | None = None,
     ) -> tuple[float, dict[str, float], int]:
         """先反传单次 CE/WM/value，再构建并反传单向 SIGReg 图。"""
 
@@ -256,10 +276,19 @@ class SFT2TrainingLoop:
         primary_metrics = primary.metrics
         sample_count = primary.sample_count
         timer_start = self.step_timer.start("backward_primary")
-        self.optimization_runtime.backward(
-            primary.loss,
-            grad_accum=self.config.grad_accum,
-        )
+        primary_loss = primary.loss
+        divisor = self.config.grad_accum
+        if loss_scales is not None:
+            lm = primary.losses["lm"]
+            lm_term = self.algorithm.ce_weight * lm if lm is not None else 0
+            primary_loss = ((primary_loss - lm_term) * loss_scales[0]
+                            + lm_term * loss_scales[1])
+            divisor = 1
+        self.optimization_runtime.backward(primary_loss, grad_accum=divisor)
+        del primary_loss
+        if loss_scales is not None:
+            del lm, lm_term
+
         self.step_timer.stop("backward_primary", timer_start)
         # 不让任何主阶段 Tensor 引用跨入下一次 Qwen forward。
         del primary
@@ -302,8 +331,15 @@ class SFT2TrainingLoop:
         )
         self.state.global_step += 1
 
-        averages = accumulator.averages()
+        averages = distributed_metric_averages(accumulator)
         accumulator.reset()
+        averages["total_loss"] = (
+            lambda_wm * averages.get("wm_mse", 0.)
+            + self.algorithm.value_weight * averages.get("value_total", 0.)
+            + self.algorithm.dino_grid_weight * averages.get("dino_grid_mse", 0.)
+            + self.algorithm.ce_weight * averages.get("lm_ce", 0.)
+            + self.algorithm.sigreg_weight * averages.get("sigreg_loss", 0.)
+        )
         self.reporter.log_train_step(
             epoch=epoch,
             global_step=self.state.global_step,

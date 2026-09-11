@@ -40,16 +40,15 @@ def test_component_means_share_total_reduction_and_format_api(monkeypatch):
                 lm_loss_sum=value,
                 dino_loss_sum=value * 2,
                 answer_count=torch.tensor(1),
+                lm_answer_count=torch.tensor(1),
             )
 
     model = Model()
     batches = [{"value": torch.tensor(x)} for x in (1.0, 3.0)]
     # Represent a second rank with three batches whose sum is 9.
+    remote_values = iter(([9.0, 18.0], [3.0, 3.0]))
     def reduce(tensor, op):
-        if tensor.numel() == 3:
-            tensor += torch.tensor([27.0, 9.0, 18.0])
-        else:
-            tensor += 3
+        tensor += torch.tensor(next(remote_values))
 
     from nimloth.training.sft.stage1 import trainer
 
@@ -100,3 +99,19 @@ def test_epoch_pause_observes_any_rank_after_checkpoint(local, remote, expected)
                  "epoch_pause", "exec"), namespace)
     assert namespace["pause"]() == expected
     assert bool(cleaned) == (expected == 75)
+
+
+def test_validation_uses_separate_success_and_all_answer_denominators():
+    class Model(torch.nn.Module):
+        def forward(self, **batch):
+            return SimpleNamespace(**batch)
+    batches = [
+        {"lm_loss_sum": torch.tensor(6.), "dino_loss_sum": torch.tensor(8.),
+         "lm_answer_count": torch.tensor(2), "answer_count": torch.tensor(2)},
+        {"lm_loss_sum": torch.tensor(0.), "dino_loss_sum": torch.tensor(12.),
+         "lm_answer_count": torch.tensor(0), "answer_count": torch.tensor(3)},
+    ]
+    result = evaluate(Model(), batches, torch.device("cpu"), return_components=True,
+                      weight_lm=2., weight_dino=3.)
+    assert result == {"validation_lm_loss": 3., "validation_dino_loss": 4.,
+                      "validation_total_loss": 18.}

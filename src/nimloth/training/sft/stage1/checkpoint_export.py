@@ -159,18 +159,20 @@ def copy_query_artifacts(source: Path, destination: Path, *, stage: str) -> None
 
 
 def merge_checkpoint(
-    base_model: Path, adapter_dir: Path, out_dir: Path, processor=None
+    base_model: Path, adapter_dir: Path, out_dir: Path, processor=None,
+    *, dtype: torch.dtype | None = None,
 ) -> int:
     if processor is None:
         processor = AutoProcessor.from_pretrained(adapter_dir, trust_remote_code=True)
-    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    if dtype is None:
+        dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
     base = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         base_model,
         torch_dtype=dtype,
         trust_remote_code=True,
     )
     sync_vocab_metadata(base, len(processor.tokenizer))
-    peft_model = PeftModel.from_pretrained(base, adapter_dir)
+    peft_model = PeftModel.from_pretrained(base, adapter_dir, autocast_adapter_dtype=False)
     verified_tensors = verify_adapter_loaded(peft_model, adapter_dir)
     merged = peft_model.merge_and_unload()
     restored_embeddings = restore_saved_untied_embeddings(merged, adapter_dir)
@@ -217,9 +219,11 @@ def main() -> int:
     ap.add_argument("--base-model", type=Path, required=True)
     ap.add_argument("--adapter-dir", type=Path, required=True)
     ap.add_argument("--out-dir", type=Path, required=True)
+    ap.add_argument("--dtype", choices=("bfloat16", "float32"), default=None)
     args = ap.parse_args()
 
-    return merge_checkpoint(args.base_model, args.adapter_dir, args.out_dir)
+    return merge_checkpoint(args.base_model, args.adapter_dir, args.out_dir,
+                            dtype=getattr(torch, args.dtype) if args.dtype else None)
 
 
 if __name__ == "__main__":

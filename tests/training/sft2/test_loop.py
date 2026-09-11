@@ -162,3 +162,33 @@ def test_train_microbatch_backwards_primary_before_sigreg_forward() -> None:
     assert wm_weight == 0.5
     assert metrics["total_loss"] == pytest.approx(2.3)
     assert sample_count == 2
+
+
+@pytest.mark.parametrize("scales", [(0.2, 0.5), (0.2, 0.0)])
+def test_primary_components_use_separate_global_window_denominators(scales):
+    wm = torch.tensor(2., requires_grad=True)
+    lm = torch.tensor(7., requires_grad=True)
+    class Algorithm:
+        has_sigreg_stage = False
+        ce_weight = 3.
+        def wm_weight(self, *args):
+            return 1.
+        def training_primary_step(self, *args, **kwargs):
+            return SimpleNamespace(current_state=wm[None], metrics={}, sample_count=1,
+                                   loss=wm + 3 * lm, losses={"lm": lm})
+        def merge_training_metrics(self, metrics, sigreg):
+            return metrics
+    class Optimization:
+        def backward(self, loss, *, grad_accum):
+            assert grad_accum == 1
+            loss.backward()
+    loop = SFT2TrainingLoop(
+        config=SimpleNamespace(step_timing=False, step_timing_interval=1, grad_accum=8, seed=42),
+        rank=0, train_loader=[], val_loader=[], train_batch_sampler=None,
+        algorithm=Algorithm(), model_runtime=None, optimization_runtime=Optimization(),
+        batch_builder=SimpleNamespace(prepare=lambda value: value), checkpoint_runtime=None,
+        reporter=None, state=SFT2LoopState(), total_steps=1,
+    )
+    loop._train_microbatch(None, epoch=1, micro_step=1, loss_scales=scales)
+    assert wm.grad.item() == pytest.approx(scales[0])
+    assert lm.grad.item() == pytest.approx(3 * scales[1])

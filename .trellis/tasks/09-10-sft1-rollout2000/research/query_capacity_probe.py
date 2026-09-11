@@ -94,14 +94,18 @@ def main():
             key=lambda i: collator([dataset[i]])["input_ids"].numel())
     dist.broadcast_object_list(selected, src=0)
     assert 0 <= selected[0] < len(dataset)
-    batch = collator([dataset[selected[0]]])
+    successes = [i for i, row in enumerate(dataset.records) if row["success"] is True]
+    failures = [i for i, row in enumerate(dataset.records) if row["success"] is False]
+    assert successes and failures
+    selected_samples = [successes[0], failures[0]] + [selected[0]] * (world - 2)
+    batch = collator([dataset[selected_samples[rank]]])
     assert batch["input_ids"].shape[1] < 20000
     identity = {"scope": "real_query_capacity_gate", "model": str(args.model),
         "data_sha256": hashlib.sha256(args.train_jsonl.read_bytes()).hexdigest(),
-        "cache_fingerprint": targets.cache_fingerprint, "sample_index": selected[0],
+        "cache_fingerprint": targets.cache_fingerprint, "sample_indices": selected_samples,
         "world_size": world, "grid_size": objective.grid_size,
         "grid_tokens": query_count, "grad_accum": 8,
-        "query_batching": "full_trajectory_all_answers_v1",
+        "query_batching": "full_trajectory_success_lm_all_dino_v2",
         "weight_lm": 1.0, "weight_dino": 1.0}
     checkpoint = args.output_dir / "resume_step_00000001"
     state = None
@@ -145,17 +149,22 @@ def main():
         del weights, restored_optimizer
         restore_rng_state(state["rank_rng_states"][rank])
     batch = {key: value.to(device) for key, value in batch.items()}
+    counts = torch.tensor([int(batch["lm_answer_mask"].sum()),
+                           batch["query_positions"].shape[0]], device=device)
+    dist.all_reduce(counts)
     model.train()
     optimizer.zero_grad(set_to_none=True)
     total = torch.zeros(3, device=device)
     for micro in range(8):
         output = model(**batch)
         assert torch.isfinite(output.loss)
-        output.loss.backward()
+        loss = (output.lm_loss_sum * world / counts[0].clamp_min(1)
+                + output.dino_loss_sum * world / counts[1])
+        loss.backward()
         total += torch.stack([output.loss.detach(), output.lm_loss, output.dino_loss]).float() / 8
         print(json.dumps({"rank": rank, "micro": micro + 1,
                           "loss": output.loss.item()}), flush=True)
-        del output
+        del output, loss
     gradients = torch.zeros(2, device=device)
     for name, parameter in model.named_parameters():
         if parameter.grad is not None:

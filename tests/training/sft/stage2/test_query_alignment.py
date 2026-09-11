@@ -83,6 +83,7 @@ def inputs():
         "answer_indices": torch.tensor(
             [[-1, -1, -1, -1, -1, -1, 0, 0, -1, -1, -1, -1, 1, 1]]
         ),
+        "lm_answer_mask": torch.tensor([True, True]),
         "query_batch_indices": torch.tensor([0, 0]),
         "query_positions": torch.tensor([[2, 3, 4, 5], [8, 9, 10, 11]]),
         "dino_target": torch.randn(2, 4, 3, requires_grad=True),
@@ -100,7 +101,10 @@ def test_combined_loss_reaches_backbone_queries_projector_and_lm_but_not_teacher
     assert not output.lm_loss.requires_grad
     assert not output.dino_loss.requires_grad
     torch.testing.assert_close(output.loss, output.lm_loss + output.dino_loss)
-    torch.testing.assert_close(output.loss_sum, output.loss * output.answer_count)
+    torch.testing.assert_close(
+        output.loss, output.lm_loss_sum / output.lm_answer_count
+        + output.dino_loss_sum / output.answer_count
+    )
     output.loss.backward()
     assert batch["dino_target"].grad is None
     assert model.projector.net[0].weight.grad.abs().sum() > 0
@@ -120,6 +124,7 @@ def test_full_trajectory_matches_answer_prefix_losses_in_eval_mode():
             "input_ids": full["input_ids"][:, :end],
             "labels": torch.full_like(full["labels"][:, :end], -100),
             "answer_indices": torch.full_like(full["answer_indices"][:, :end], -1),
+            "lm_answer_mask": torch.tensor([True]),
             "query_batch_indices": torch.tensor([0]),
             "query_positions": full["query_positions"][answer : answer + 1],
             "dino_target": full["dino_target"][answer : answer + 1],
@@ -260,6 +265,7 @@ def records(tmp_path):
     Image.new("RGB", (2, 2)).save(path)
     return [
         {
+            "success": True,
             "messages": [
                 {
                     "role": "user",
@@ -513,6 +519,7 @@ def test_real_tiny_qwen_multimodal_forward_and_backward():
             [[-1, -1, -1, -1, -1, -1, -1, -1, -1, 0, 0]]
         ),
         query_batch_indices=torch.tensor([0]),
+        lm_answer_mask=torch.tensor([True]),
         query_positions=torch.tensor([[5, 6, 7, 8]]),
         dino_target=torch.ones(1, 4, 3),
         pixel_values=torch.randn(4, 3 * 2 * 14 * 14),
@@ -555,3 +562,48 @@ def test_resume_query_vocabulary_preserves_trained_rows_even_if_base_tokenizer_a
     slot_zero = initial.embedding.weight[6].detach().clone()
     prepare_query_vocabulary(initial, 10, ids, added_tokens=3, latent_token_count=4)
     torch.testing.assert_close(initial.embedding.weight[7:10], slot_zero.expand(3, -1))
+
+
+@pytest.mark.parametrize("success", [True, False])
+def test_failure_answers_keep_dino_but_have_zero_lm_gradient(success):
+    model = make_model().eval()
+    batch = inputs()
+    batch["lm_answer_mask"].fill_(success)
+    output = model(**batch)
+    assert output.lm_answer_count.item() == (2 if success else 0)
+    assert output.answer_count.item() == 2
+    output.loss.backward()
+    assert torch.isfinite(output.loss)
+    assert model.projector.net[0].weight.grad.abs().sum() > 0
+    head_grad = model.language_model.lm_head.weight.grad
+    assert head_grad is not None
+    assert bool(head_grad.abs().sum() > 0) == success
+    if not success:
+        assert output.lm_loss.item() == 0
+        torch.testing.assert_close(output.loss, output.dino_loss)
+
+
+def test_mixed_trajectories_lm_mean_excludes_failed_answers():
+    model = make_model().eval()
+    successful = inputs()
+    reference = model(**successful)
+    mixed = dict(successful)
+    mixed["input_ids"] = successful["input_ids"].repeat(2, 1)
+    mixed["labels"] = successful["labels"].repeat(2, 1)
+    owners = successful["answer_indices"]
+    mixed["answer_indices"] = torch.cat([owners, torch.where(owners >= 0, owners + 2, owners)])
+    mixed["query_batch_indices"] = torch.tensor([0, 0, 1, 1])
+    mixed["query_positions"] = successful["query_positions"].repeat(2, 1)
+    mixed["dino_target"] = successful["dino_target"].repeat(2, 1, 1)
+    mixed["lm_answer_mask"] = torch.tensor([True, True, False, False])
+    output = model(**mixed)
+    torch.testing.assert_close(output.lm_loss, reference.lm_loss)
+    torch.testing.assert_close(output.dino_loss, reference.dino_loss)
+    assert output.lm_answer_count == 2 and output.answer_count == 4
+
+
+def test_inconsistent_success_within_one_trajectory_is_rejected():
+    batch = inputs()
+    batch["lm_answer_mask"] = torch.tensor([True, False])
+    with pytest.raises(ValueError, match="share its success mask"):
+        make_model()(**batch)

@@ -60,6 +60,8 @@ class QueryAlignmentCollator:
     mask_latent_query_labels: bool = True
 
     def __call__(self, batch):
+        if any(type(record.get("success")) is not bool for record in batch):
+            raise ValueError("query alignment requires explicit trajectory success boolean")
         paths = answer_observation_paths(batch)
         encoded = collate_fn(
             batch,
@@ -139,6 +141,9 @@ class QueryAlignmentCollator:
                 answer_index += 1
         if answer_index != len(paths):
             raise ValueError("answer/query/observation counts do not align")
+        encoded["lm_answer_mask"] = torch.tensor(
+            [batch[row]["success"] for row in query_batch_indices], dtype=torch.bool
+        )
         encoded["answer_indices"] = answer_indices
         encoded["query_batch_indices"] = torch.tensor(
             query_batch_indices, dtype=torch.long

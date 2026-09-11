@@ -246,40 +246,33 @@ def apply_lora(model: Qwen2_5_VLForConditionalGeneration, args: argparse.Namespa
 @torch.no_grad()
 def evaluate(
     model, loader, device: torch.device, max_batches: int = -1,
-    *, return_components: bool = False,
+    *, return_components: bool = False, weight_lm: float = 1.0, weight_dino: float = 1.0,
 ) -> float | dict[str, float]:
     model.eval()
-    total = torch.zeros(3 if return_components else 1, device=device)
-    count = torch.tensor(0, device=device)
+    total = torch.zeros(2 if return_components else 1, device=device)
+    count = torch.zeros_like(total)
     for i, batch in enumerate(loader):
         if max_batches > 0 and i >= max_batches:
             break
         batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
         output = model(**batch)
         if return_components:
-            losses = [
-                output.loss_sum.detach(),
-                output.lm_loss_sum.detach(),
-                output.dino_loss_sum.detach(),
-            ]
-            batch_count = output.answer_count.detach()
+            total += torch.stack([output.lm_loss_sum.detach(), output.dino_loss_sum.detach()])
+            count += torch.stack([output.lm_answer_count, output.answer_count])
         else:
-            losses = [output.loss.detach()]
-            batch_count = torch.ones((), device=device, dtype=torch.long)
-        total += torch.stack(losses)
-        count += batch_count
+            total += output.loss.detach()
+            count += 1
     if dist.is_available() and dist.is_initialized():
         dist.all_reduce(total, op=dist.ReduceOp.SUM)
         dist.all_reduce(count, op=dist.ReduceOp.SUM)
     model.train()
-    if count.item() == 0:
+    if count[-1].item() == 0:
         raise ValueError("validation loader produced no monitored loss")
-    means = total / count
+    means = total / count.clamp_min(1)
     if return_components:
-        return dict(zip(
-            ("validation_total_loss", "validation_lm_loss", "validation_dino_loss"),
-            means.tolist(), strict=True,
-        ))
+        lm, dino = means.tolist()
+        return {"validation_total_loss": weight_lm * lm + weight_dino * dino,
+                "validation_lm_loss": lm, "validation_dino_loss": dino}
     return means.item()
 
 
@@ -456,7 +449,7 @@ def _resume_identity(
                 "projector_hidden_dim": args.projector_hidden_dim,
                 "weight_lm": args.weight_lm,
                 "weight_dino": args.weight_dino,
-                "query_batching": "full_trajectory_all_answers_v1",
+                "query_batching": "full_trajectory_success_lm_all_dino_v2",
             }
         )
     return identity
@@ -967,7 +960,6 @@ def main(*, stage: str = "format") -> int:
         train_sampler.set_epoch(epoch)
         optimizer.zero_grad(set_to_none=True)
         accum_loss = 0.0
-        accum_answer_count = 0
         micro_accum = 0
         next_micro_batch = resume_next_micro_batch if epoch == start_epoch else 0
 
@@ -978,22 +970,18 @@ def main(*, stage: str = "format") -> int:
             epoch_number: int = epoch,
             best_at_epoch_start: float = best_val,
         ) -> None:
-            nonlocal global_step, accum_loss, accum_answer_count, stop_after_boundary
+            nonlocal global_step, accum_loss, stop_after_boundary
             stop_after_boundary = stop_requested
             if world > 1:
                 stop_request = torch.tensor(int(stop_after_boundary), device=device)
                 dist.all_reduce(stop_request, op=dist.ReduceOp.MAX)
                 stop_after_boundary = bool(stop_request.item())
             if stage == "query":
-                global_count = torch.tensor(accum_answer_count, device=device)
                 global_loss = torch.tensor(accum_loss, device=device)
                 if world > 1:
-                    dist.all_reduce(global_count, op=dist.ReduceOp.SUM)
                     dist.all_reduce(global_loss, op=dist.ReduceOp.SUM)
-                if global_count.item() <= 0:
-                    raise ValueError("query optimizer step has no supervised answers")
-                gradient_scale = world / global_count.item()
-                step_loss = (global_loss / global_count).item()
+                gradient_scale = 1.0
+                step_loss = global_loss.item() / world
             else:
                 gradient_scale = 1 / micro_count
                 step_loss = accum_loss / micro_count
@@ -1038,7 +1026,6 @@ def main(*, stage: str = "format") -> int:
                         step=global_step,
                     )
             accum_loss = 0.0
-            accum_answer_count = 0
 
             if global_step % args.resume_save_steps == 0 or stop_after_boundary:
                 save_resume_checkpoint(
@@ -1076,12 +1063,28 @@ def main(*, stage: str = "format") -> int:
         if epoch == start_epoch and resume_rank_rng is not None:
             restore_rng_state(resume_rank_rng)
             resume_rank_rng = None
-        for batch_index, batch in enumerate(train_iterator, start=next_micro_batch):
+        def normalized_batches(iterator=train_iterator):
+            if stage != "query":
+                for item in iterator:
+                    yield item, None
+                return
+            while group := list(itertools.islice(iterator, args.grad_accum)):
+                # 先统计整个更新组，再逐个前向；不保留多个 Qwen 计算图。
+                counts = torch.tensor([
+                    sum(int(item["lm_answer_mask"].sum()) for item in group),
+                    sum(item["query_positions"].shape[0] for item in group),
+                ], device=device)
+                if world > 1:
+                    dist.all_reduce(counts, op=dist.ReduceOp.SUM)
+                for item in group:
+                    yield item, counts
+
+        for batch_index, (batch, group_counts) in enumerate(normalized_batches(), start=next_micro_batch):
             batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
             if stage == "query":
                 output = model(**batch)
-                loss = output.loss_sum
-                batch_answer_count = int(output.answer_count.item())
+                loss = (args.weight_lm * output.lm_loss_sum * world / group_counts[0].clamp_min(1)
+                        + args.weight_dino * output.dino_loss_sum * world / group_counts[1])
             else:
                 loss = training_loss(
                     model,
@@ -1089,10 +1092,8 @@ def main(*, stage: str = "format") -> int:
                     action_token_ids=action_ids,
                     action_weight=args.action_token_loss_weight,
                 )
-                batch_answer_count = 0
             loss.backward()
             accum_loss += loss.detach().float().item()
-            accum_answer_count += batch_answer_count
             micro_accum += 1
             if micro_accum % args.grad_accum == 0:
                 optimizer_step(micro_count=micro_accum, next_batch=batch_index + 1)
@@ -1137,7 +1138,8 @@ def main(*, stage: str = "format") -> int:
             torch.cuda.empty_cache()
         if stage == "query":
             val_metrics = evaluate(
-                model, val_loader, device, args.max_val_batches, return_components=True
+                model, val_loader, device, args.max_val_batches, return_components=True,
+                weight_lm=args.weight_lm, weight_dino=args.weight_dino,
             )
             val_loss = val_metrics["validation_total_loss"]
         else:

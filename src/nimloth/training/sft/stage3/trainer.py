@@ -601,6 +601,8 @@ def train_sft2(args=None) -> int:
         "sigreg_batch_scope": "global_valid_states_v1",
         "sample_ownership_version": "current_step_once_v2_online_cache",
         "value_objective": SFT2_VALUE_OBJECTIVE,
+        "lm_supervision": "successful_trajectory_window_mean_v1",
+        "loss_normalization": "global_optimizer_group_counts_v1",
         "train_micro_batches": int(len(train_loader)),
         "rng_schedule_version": "epoch_micro_rank_v1",
     }

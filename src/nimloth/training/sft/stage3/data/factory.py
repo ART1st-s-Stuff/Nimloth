@@ -58,6 +58,8 @@ def _cache_processor_source(config: Any) -> Path:
 def _load_transition_samples(
     config: Any,
 ) -> tuple[list[TransitionSample], list[TransitionSample]]:
+    if config.success_only:
+        raise ValueError("Stage 3 requires all trajectories; only LM uses success masking")
     train_samples = TransitionJsonlDataset(
         config.train_jsonl,
         max_records=config.max_train_records,
