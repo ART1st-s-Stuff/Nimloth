@@ -33,7 +33,7 @@ class EarlyEnvironmentConfig:
 def source_environment_config(config: EarlyEnvironmentConfig, eval_set: str) -> dict:
     return {'env_name': 'navigation', 'env_config': {'eval_set': eval_set, 'render_mode': 'vision',
             'prompt_format': 'grounding_worldmodeling', 'max_actions_per_step': 1,
-            'action_sep': '|', 'example_count': 0, 'use_state_reward': False,
+            'use_state_reward': False,
             'success_threshold': config.success_threshold, 'step_length': config.step_length,
             'format_reward': 0.02, 'invalid_action_penalty': -0.2}}
 

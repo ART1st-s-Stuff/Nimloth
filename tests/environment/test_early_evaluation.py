@@ -1,12 +1,36 @@
 import pytest
 
-from nimloth.environment.navigation.early_evaluation import environment_success
+from nimloth.environment.navigation.early_evaluation import (
+    EarlyEnvironmentConfig,
+    environment_success,
+    source_environment_config,
+)
 
 
 def test_explicit_success_only():
     assert environment_success({'metrics': {'traj_metrics': {'success': True}}})
     with pytest.raises(ValueError, match='explicit'):
         environment_success({'reward': 10})
+
+
+def test_source_config_matches_vagen844_navigation_signature(tmp_path):
+    config = EarlyEnvironmentConfig(
+        'url', tmp_path, ('base',), 'test', 1, 1, 20, 5, 1.5, 0.5
+    )
+    assert source_environment_config(config, 'base') == {
+        'env_name': 'navigation',
+        'env_config': {
+            'eval_set': 'base',
+            'render_mode': 'vision',
+            'prompt_format': 'grounding_worldmodeling',
+            'max_actions_per_step': 1,
+            'use_state_reward': False,
+            'success_threshold': 1.5,
+            'step_length': 0.5,
+            'format_reward': 0.02,
+            'invalid_action_penalty': -0.2,
+        },
+    }
 
 
 def test_real_loop_contract_noop_terminal_and_resume(tmp_path, monkeypatch):
