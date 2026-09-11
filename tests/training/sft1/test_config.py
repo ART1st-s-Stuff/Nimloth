@@ -27,12 +27,12 @@ def test_fsdp_yaml_is_explicit(tmp_path):
     assert sft1_yaml_defaults(path)["distributed_strategy"] == "fsdp"
 
 
-def test_fsdp_cli_is_format_only():
+def test_fsdp_cli_supports_format_and_query():
     from nimloth.training.sft.stage1.cli import parse_args
 
     common = ["--model", "/tmp/model", "--train-jsonl", "/tmp/train.jsonl",
               "--val-jsonl", "/tmp/val.jsonl", "--output-dir", "/tmp/output"]
     assert parse_args(common)[0].distributed_strategy == "ddp"
     assert parse_args(common + ["--distributed-strategy", "fsdp"])[0].distributed_strategy == "fsdp"
-    with pytest.raises(ValueError, match="only for format"):
-        parse_args(common + ["--distributed-strategy", "fsdp", "--dino-cache-root", "/tmp/dino"], stage="query")
+    query_args, _ = parse_args(common + ["--distributed-strategy", "fsdp", "--dino-cache-root", "/tmp/dino"], stage="query")
+    assert query_args.distributed_strategy == "fsdp"
