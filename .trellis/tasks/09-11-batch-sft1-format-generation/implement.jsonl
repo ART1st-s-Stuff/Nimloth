@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/python/configuration-and-interfaces.md", "reason": "Add the batch-size setting through the formal YAML and CLI boundary."}
+{"file": ".trellis/spec/python/quality-and-testing.md", "reason": "Preserve batching semantics and add focused ML interface tests."}
+{"file": ".trellis/tasks/09-11-batch-sft1-format-generation/research/current-evidence.md", "reason": "Use the observed sequential generation and timing evidence."}

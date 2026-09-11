@@ -143,6 +143,7 @@ def evaluate_format(
     device: torch.device,
     max_samples: int = 32,
     *,
+    batch_size: int = 1,
     latent_token_count: int | None = None,
     latent_query_mode: str | None = None,
 ) -> tuple[float, dict[str, int], list[dict[str, Any]]]:
@@ -150,7 +151,6 @@ def evaluate_format(
         return 0.0, {}, []
     module = model.module if hasattr(model, "module") else model
     was_training = module.training
-    module.eval()
     correct = 0
     total = 0
     reasons: Counter[str] = Counter()
@@ -162,7 +162,10 @@ def evaluate_format(
         raise ValueError(
             f"Stage 1 format-eval dataset has {len(dataset)} records; need 32"
         )
+    if batch_size < 1:
+        raise ValueError("format evaluation batch_size must be >= 1")
     n = max_samples if strict_stage1 else min(max_samples, len(dataset))
+    prepared: list[dict[str, Any]] = []
     for idx in range(n):
         messages = dataset.get_messages(idx)
         prompt_msgs = prompt_messages_before_first_assistant(messages)
@@ -192,64 +195,123 @@ def evaluate_format(
             # the model to generate only the action block.
             text += think_match.group(0) + latent_state_block(latent_token_count)
         text = render_stage_text(text, latent_token_count)
-        inputs = processor(text=[text], images=images or None, return_tensors="pt")
-        inputs = {k: v.to(device) for k, v in inputs.items()}
-        with generation_model(model) as generation_module:
-            output_ids = generation_module.generate(
-                **inputs, max_new_tokens=128, do_sample=False,
-                **({"synced_gpus": True} if is_fsdp(model) else {}),
-            )
-        new_ids = output_ids[0, inputs["input_ids"].shape[1] :]
-        total += 1
-        if latent_query_mode == "inject":
-            decoded = processor.decode(new_ids, skip_special_tokens=False)
-            is_correct = action_block_format_correct(decoded)
-            correct += int(is_correct)
-            reason = "ok" if is_correct else "invalid_action_block"
-            reasons[reason] += 1
-        elif latent_query_mode is not None:
-            decoded = processor.decode(new_ids, skip_special_tokens=False)
-            is_correct = nimloth_format_correct(
-                decoded, latent_token_count=latent_token_count
-            )
-            correct += int(is_correct)
-            reason = "ok" if is_correct else "invalid_response_envelope"
-            reasons[reason] += 1
-        else:
-            result = validate_stage1_generated_response(
-                new_ids, processor.tokenizer
-            )
-            correct += int(result.format_correct)
-            reasons[result.reason] += 1
-            decoded = result.parsed_body
-            is_correct = result.format_correct
-            reason = result.reason
-        samples.append(
+        prepared.append(
             {
                 "dataset_index": idx,
                 "record_id": str(dataset.records[idx]["id"]),
-                "sampled_token_ids": [int(token_id) for token_id in new_ids],
-                "raw_response": (
-                    result.raw_response
-                    if latent_query_mode is None
-                    else decoded
-                ),
-                "parsed_body": (
-                    result.parsed_body
-                    if latent_query_mode is None
-                    else decoded
-                ),
-                "eos_generated": (
-                    isinstance(processor.tokenizer.eos_token_id, int)
-                    and processor.tokenizer.eos_token_id
-                    in [int(token_id) for token_id in new_ids]
-                ),
-                "format_correct": is_correct,
-                "reason": reason,
+                "text": text,
+                "images": images,
             }
         )
-    if was_training:
-        module.train()
+
+    tokenizer = processor.tokenizer
+    original_padding_side = tokenizer.padding_side
+    started_at = time.monotonic()
+    batch_count = math.ceil(len(prepared) / batch_size)
+    module.eval()
+    try:
+        tokenizer.padding_side = "left"
+        with generation_model(model) as generation_module:
+            for batch_index, start in enumerate(
+                range(0, len(prepared), batch_size), 1
+            ):
+                batch = prepared[start : start + batch_size]
+                batch_images = [item["images"] for item in batch]
+                inputs = processor(
+                    text=[item["text"] for item in batch],
+                    # Qwen flattens nested image lists in prompt order.  Keep the
+                    # per-prompt grouping whenever the batch contains images,
+                    # but retain the previous text-only ``images=None`` path.
+                    images=batch_images if any(batch_images) else None,
+                    padding=True,
+                    return_tensors="pt",
+                )
+                inputs = {key: value.to(device) for key, value in inputs.items()}
+                output_ids = generation_module.generate(
+                    **inputs,
+                    max_new_tokens=128,
+                    do_sample=False,
+                    **({"synced_gpus": True} if is_fsdp(model) else {}),
+                )
+                prompt_width = inputs["input_ids"].shape[1]
+                for row, item in enumerate(batch):
+                    new_ids = output_ids[row, prompt_width:]
+                    eos_token_id = tokenizer.eos_token_id
+                    if isinstance(eos_token_id, int):
+                        eos_positions = (new_ids == eos_token_id).nonzero(
+                            as_tuple=False
+                        )
+                        if eos_positions.numel():
+                            eos_end = int(eos_positions[0].item()) + 1
+                            suffix = new_ids[eos_end:]
+                            pad_token_id = tokenizer.pad_token_id
+                            if (
+                                suffix.numel()
+                                and isinstance(pad_token_id, int)
+                                and bool(torch.all(suffix == pad_token_id).item())
+                            ):
+                                new_ids = new_ids[:eos_end]
+                    total += 1
+                    if latent_query_mode == "inject":
+                        decoded = processor.decode(new_ids, skip_special_tokens=False)
+                        is_correct = action_block_format_correct(decoded)
+                        correct += int(is_correct)
+                        reason = "ok" if is_correct else "invalid_action_block"
+                        reasons[reason] += 1
+                        raw_response = parsed_body = decoded
+                    elif latent_query_mode is not None:
+                        decoded = processor.decode(new_ids, skip_special_tokens=False)
+                        is_correct = nimloth_format_correct(
+                            decoded, latent_token_count=latent_token_count
+                        )
+                        correct += int(is_correct)
+                        reason = "ok" if is_correct else "invalid_response_envelope"
+                        reasons[reason] += 1
+                        raw_response = parsed_body = decoded
+                    else:
+                        result = validate_stage1_generated_response(new_ids, tokenizer)
+                        correct += int(result.format_correct)
+                        reasons[result.reason] += 1
+                        is_correct = result.format_correct
+                        reason = result.reason
+                        raw_response = result.raw_response
+                        parsed_body = result.parsed_body
+                    sampled_token_ids = [int(token_id) for token_id in new_ids]
+                    samples.append(
+                        {
+                            "dataset_index": item["dataset_index"],
+                            "record_id": item["record_id"],
+                            "sampled_token_ids": sampled_token_ids,
+                            "raw_response": raw_response,
+                            "parsed_body": parsed_body,
+                            "eos_generated": (
+                                isinstance(eos_token_id, int)
+                                and eos_token_id in sampled_token_ids
+                            ),
+                            "format_correct": is_correct,
+                            "reason": reason,
+                        }
+                    )
+                if is_main():
+                    print(
+                        json.dumps(
+                            {
+                                "event": "format_eval_batch",
+                                "batch": batch_index,
+                                "batches": batch_count,
+                                "completed_samples": min(
+                                    start + len(batch), len(prepared)
+                                ),
+                                "total_samples": len(prepared),
+                                "elapsed_seconds": time.monotonic() - started_at,
+                            }
+                        ),
+                        flush=True,
+                    )
+    finally:
+        tokenizer.padding_side = original_padding_side
+        if was_training:
+            module.train()
     return correct / max(total, 1), dict(sorted(reasons.items())), samples
 
 
@@ -453,6 +515,8 @@ def maybe_init_wandb(args: argparse.Namespace) -> Any | None:
             "lr": args.lr,
             "embedding_lr": args.embedding_lr,
             "action_token_loss_weight": args.action_token_loss_weight,
+            "format_eval_samples": args.format_eval_samples,
+            "format_eval_batch_size": args.format_eval_batch_size,
             "max_length": args.max_length,
             "seed": args.seed,
             "lora": args.lora,
@@ -664,6 +728,8 @@ def main(*, stage: str = "format") -> int:
                     else args.lr,
                     "lora": args.lora,
                     "cache_pixel_dtype": args.cache_pixel_dtype,
+                    "format_eval_samples": args.format_eval_samples,
+                    "format_eval_batch_size": args.format_eval_batch_size,
                 }
             )
         )
@@ -1306,6 +1372,7 @@ def main(*, stage: str = "format") -> int:
         distributed_barrier()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        validation_started_at = time.monotonic()
         if stage == "query":
             val_metrics = evaluate(
                 model,
@@ -1325,15 +1392,31 @@ def main(*, stage: str = "format") -> int:
                 include_batches=val_include_batches,
             )
             val_metrics = {"validation_lm_loss": val_loss}
+        validation_seconds = time.monotonic() - validation_started_at
+        if is_main():
+            print(
+                json.dumps(
+                    {
+                        "event": "validation_complete",
+                        "epoch": epoch,
+                        "global_step": global_step,
+                        "validation_seconds": validation_seconds,
+                    }
+                ),
+                flush=True,
+            )
+        format_eval_started_at = time.monotonic()
         format_rate, format_reasons, format_samples = evaluate_format(
             model,
             processor,
             format_eval_ds,
             device,
             args.format_eval_samples,
+            batch_size=args.format_eval_batch_size,
             latent_token_count=args.latent_token_count,
             latent_query_mode=args.latent_query_mode,
         )
+        format_eval_seconds = time.monotonic() - format_eval_started_at
         if convergence_policy is not None:
             convergence.observe(epoch=epoch, loss=val_loss, policy=convergence_policy)
         local_epoch_rng = capture_rng_state()
@@ -1360,6 +1443,8 @@ def main(*, stage: str = "format") -> int:
                     "format_correct_rate": format_rate,
                     "format_failure_reasons": format_reasons,
                     "format_samples": str(format_sample_path),
+                    "validation_seconds": validation_seconds,
+                    "format_eval_seconds": format_eval_seconds,
                 }) + "\n")
             with log_path.open("a", newline="") as f:
                 csv.writer(f).writerow(
@@ -1432,6 +1517,8 @@ def main(*, stage: str = "format") -> int:
                         "format_correct_rate": format_rate,
                         "format_failure_reasons": format_reasons,
                         "format_eval_protocol": args.latent_query_mode,
+                        "validation_seconds": validation_seconds,
+                        "format_eval_seconds": format_eval_seconds,
                         "best_val": best_val,
                     }
                 )
@@ -1444,6 +1531,8 @@ def main(*, stage: str = "format") -> int:
                         "val/loss": val_loss,
                         **{f"val/{key}": value for key, value in val_metrics.items()},
                         "val/format_correct_rate": format_rate,
+                        "val/validation_seconds": validation_seconds,
+                        "val/format_eval_seconds": format_eval_seconds,
                         "val/best_loss": best_val,
                         "eval/val_loss": val_loss,
                         "eval/format_correct_rate": format_rate,

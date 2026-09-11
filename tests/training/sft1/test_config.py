@@ -14,6 +14,7 @@ def test_format_config_defaults():
     assert defaults["action_token_loss_weight"] == 8
     assert defaults["convergence_patience_epochs"] == 2
     assert defaults["prune_intermediate_checkpoints"] is True
+    assert defaults["format_eval_batch_size"] == 4
 
 
 def test_query_configuration_rejected_for_format(tmp_path):
@@ -53,6 +54,7 @@ def test_format_cli_can_override_convergence_and_checkpointing():
     assert args.epochs == 2
     assert args.until_converged is False
     assert args.gradient_checkpointing is False
+    assert args.format_eval_batch_size == 4
     assert args.convergence_min_epochs is None
     assert args.convergence_patience_epochs is None
     assert args.convergence_min_relative_improvement is None
@@ -61,3 +63,16 @@ def test_format_cli_can_override_convergence_and_checkpointing():
                              '--convergence-min-epochs', '2'])
     with pytest.raises(ValueError, match='exactly 32'):
         parse_args(common + ['--format-eval-samples', '31'])
+    with pytest.raises(ValueError, match='batch-size must be >= 1'):
+        parse_args(common + ['--format-eval-batch-size', '0'])
+    overridden, _ = parse_args(
+        common
+        + [
+            '--epochs',
+            '2',
+            '--no-until-converged',
+            '--format-eval-batch-size',
+            '2',
+        ]
+    )
+    assert overridden.format_eval_batch_size == 2

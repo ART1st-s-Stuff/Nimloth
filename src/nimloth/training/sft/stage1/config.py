@@ -40,6 +40,7 @@ _SFT1_YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("train", "preprocess_workers"): "preprocess_workers",
     ("train", "num_workers"): "num_workers",
     ("train", "format_eval_samples"): "format_eval_samples",
+    ("train", "format_eval_batch_size"): "format_eval_batch_size",
     ("train", "no_wandb"): "no_wandb",
 
     ("train", "batch_size"): "batch_size",

@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/python/quality-and-testing.md", "reason": "Verify focused, adjacent, compile, and diff checks with stated GPU limits."}
+{"file": ".trellis/spec/guides/investigation-and-uncertainty.md", "reason": "Keep CPU equivalence evidence separate from real FSDP performance."}
+{"file": ".trellis/tasks/09-11-batch-sft1-format-generation/research/current-evidence.md", "reason": "Check the implementation against the actual current bottleneck and baseline output."}

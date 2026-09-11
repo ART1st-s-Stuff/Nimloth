@@ -119,6 +119,12 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         default=32,
         help="Val samples for Nimloth format correctness each epoch.",
     )
+    ap.add_argument(
+        "--format-eval-batch-size",
+        type=int,
+        default=1,
+        help="Prompts per generate() call during epoch-end format evaluation.",
+    )
     ap.add_argument("--wandb-run-name", default=None, help="Optional wandb run name.")
     ap.add_argument(
         "--no-wandb",
@@ -267,5 +273,7 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         raise ValueError("--resume-save-steps must be >= 1")
     if stage == "format" and args.format_eval_samples != 32:
         raise ValueError("Stage 1 requires exactly 32 format-eval samples")
+    if args.format_eval_batch_size < 1:
+        raise ValueError("--format-eval-batch-size must be >= 1")
 
     return args, query_config

@@ -6,6 +6,22 @@
 
 标准配置 action 权重 8，完整验证 LM loss 连续两轮相对改善不足 1% 且至少完成两轮才收敛。每十步保存，完整 epoch 发布后清理其覆盖的中间 step checkpoint，保留 epoch/best/final。配置与 CLI 可以显式覆盖。
 
+每轮格式检查的标准 `train.format_eval_batch_size` 为 4，也可通过
+`--format-eval-batch-size` 显式覆盖为其他正整数。训练器保持前 32 条记录的原始
+顺序，将它们分批送入同一次 generation model 上下文；FSDP 下所有 rank 仍处理
+相同批次并使用同步停止。批量 decoder-only 生成期间 tokenizer 临时切换为左侧
+padding，结束或异常后恢复训练使用的右侧 padding。每条结果从批内统一 prompt
+宽度之后切出；若首个 EOS 后只有生成器补入的 pad token，则移除这些补齐并保留
+EOS。EOS 后存在非 padding 内容时不得裁掉，必须交给严格 validator 判为
+`content_after_eos`；缺少 EOS 和达到长度上限仍按原合同失败。
+
+epoch 末尾先输出 `validation_complete`，包含 `epoch`、`global_step` 和
+`validation_seconds`。每个生成批次完成后输出 `format_eval_batch`，包含 `batch`、
+`batches`、`completed_samples`、`total_samples` 和累计 `elapsed_seconds`。
+`validation_metrics.jsonl` 的最终记录分别保存 `validation_seconds` 与
+`format_eval_seconds`；启用 W&B 时同名耗时也记录在 `val/` 命名空间。这些字段只
+描述运行耗时和进度，不改变验证 loss、格式判断或收敛状态。
+
 底层 `python -m nimloth.training.sft.stage1` 是已准备数据/base 的训练器接口，供 workflow 和集成测试使用。
 
 ## 模块职责与数据流
