@@ -161,7 +161,9 @@ def main():
         loss = (output.lm_loss_sum * world / counts[0].clamp_min(1)
                 + output.dino_loss_sum * world / counts[1])
         loss.backward()
-        total += torch.stack([output.loss.detach(), output.lm_loss, output.dino_loss]).float() / 8
+        total += torch.stack([loss.detach(),
+                              output.lm_loss_sum.detach() * world / counts[0].clamp_min(1),
+                              output.dino_loss_sum.detach() * world / counts[1]]).float() / 8
         print(json.dumps({"rank": rank, "micro": micro + 1,
                           "loss": output.loss.item()}), flush=True)
         del output, loss
