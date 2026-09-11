@@ -153,6 +153,8 @@ def run_stage1_format_gate(
         },
         "selected": [lineage for _prompt, _images, lineage in prepared],
     }
+    if config.episode_concurrency != 1:
+        contract["generation"]["episode_concurrency"] = config.episode_concurrency
     from .cli import write_or_validate_contract
 
     write_or_validate_contract(gate_output, contract, resume=config.resume)
@@ -173,6 +175,7 @@ def run_stage1_format_gate(
         validation_tokenizer = AutoProcessor.from_pretrained(
             str(config.checkpoint)
         ).tokenizer
+    generated_pending = {}
     for index, ((prompt, images, lineage), row) in enumerate(
         zip(prepared, selected, strict=True)
     ):
@@ -253,7 +256,17 @@ def run_stage1_format_gate(
             continue
         if generator is None:
             raise RuntimeError("format-gate generator was not initialized")
-        generated = generator.generate(prompt, images)
+        if index not in generated_pending:
+            batch_indices = [candidate for candidate in range(index, FORMAT_GATE_SIZE)
+                             if not (records_dir / f"{candidate:03d}.json").is_file()
+                             ][:config.episode_concurrency]
+            inputs = [(prepared[candidate][0], prepared[candidate][1])
+                      for candidate in batch_indices]
+            generations = ([generator.generate(*inputs[0])]
+                           if config.episode_concurrency == 1
+                           else generator.generate_batch(inputs))
+            generated_pending.update(zip(batch_indices, generations, strict=True))
+        generated = generated_pending.pop(index)
         validation = validate_stage1_raw_generation(generated, generator.tokenizer)
         result = {
             "selection": selection,

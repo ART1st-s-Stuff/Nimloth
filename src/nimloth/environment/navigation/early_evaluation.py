@@ -1,6 +1,9 @@
 """Direct policy episodes on the original navigation BatchEnvironmentServer."""
 from __future__ import annotations
 
+import logging
+import sys
+from collections.abc import Generator
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -23,6 +26,11 @@ class EarlyEnvironmentConfig:
     history_turns: int
     success_threshold: float
     step_length: float
+    episode_concurrency: int = 1
+
+    def __post_init__(self) -> None:
+        if type(self.episode_concurrency) is not int or self.episode_concurrency < 1:
+            raise ValueError('episode_concurrency must be a positive integer')
 
     def identities(self) -> list[dict]:
         return [{'episode_id': f'{name}_{seed:06d}', 'eval_set': name, 'split': self.split, 'seed': seed}
@@ -69,88 +77,151 @@ def parse_early_generation(protocol: Any, generator: Any, generated: Any) -> tup
     return validation.parser_result, evidence
 
 
+def _episode(
+    config: EarlyEnvironmentConfig, protocol: Any, generator: Any, identity: dict,
+) -> Generator[tuple[str, Any], Any, None]:
+    """Episode-local state yields I/O to the bounded batch scheduler."""
+    output = config.output_dir / 'episodes' / identity['episode_id']
+    env_config = source_environment_config(config, identity['eval_set'])
+    yield 'create', env_config
+    observation, _reset_info = (yield 'reset', identity['seed'])
+    source_system = (yield 'system', None)
+    if not source_system.strip():
+        raise ValueError('environment system prompt is empty')
+    messages = [{'role': 'system', 'content': protocol.prompt(source_system)}]
+    images = []
+    turns = []
+    success = False
+    total_reward = 0.0
+    done = False
+    for step in range(config.max_steps):
+        source_text = observation_text(observation)
+        image = observation_image(observation)
+        output.mkdir(parents=True, exist_ok=True)
+        image.save(output / f'observation_{step:03d}.png')
+        images.append(image)
+        messages.append({'role': 'user', 'content': protocol.prompt(source_text)})
+        first_turn = max(0, step - config.history_turns)
+        context = [messages[0], *messages[1 + 2 * first_turn:]]
+        generated = (yield 'generate', (context, images[first_turn:]))
+        parsed, termination = parse_early_generation(
+            protocol, generator, generated
+        )
+        # Invalid raw strings can contain an accidentally valid legacy answer.
+        # Send an explicit empty no-op, and persist BOTH texts without repairing it.
+        service_text = parsed['service_response']
+        observation, reward, done, info = (yield 'step', service_text)
+        success = success or environment_success(info)
+        total_reward += reward
+        messages.append({'role': 'assistant', 'content': generated.text})
+        turn = {'step': step, 'source_observation': source_text, 'messages': context,
+                'generation': asdict(generated),
+                'termination_validation': termination,
+                'parse': parsed,
+                'service_response': service_text, 'environment_info': info,
+                'reward': reward, 'done': done, 'success': success}
+        turns.append(turn)
+        write_json(output / f'turn_{step:03d}.json', turn)
+        if done:
+            break
+    terminal_text = observation_text(observation)
+    terminal_image = observation_image(observation)
+    terminal_image.save(output / 'terminal_observation.png')
+    images.append(terminal_image)
+    messages.append({'role': 'user', 'content': protocol.prompt(terminal_text)})
+    first_turn = max(0, len(turns) - config.history_turns)
+    terminal_context = [messages[0], *messages[1 + 2 * first_turn:]]
+    terminal_generation = (yield 'generate', (terminal_context, images[first_turn:]))
+    terminal_parse, terminal_validation = parse_early_generation(
+        protocol, generator, terminal_generation
+    )
+    terminal = {'source_observation': terminal_text, 'messages': terminal_context,
+                'generation': asdict(terminal_generation),
+                'termination_validation': terminal_validation,
+                'parse': terminal_parse, 'executed': False}
+    write_json(output / 'terminal.json', terminal)
+    record = {'terminal': terminal, 'identity': identity, 'stage': protocol.stage, 'source_system_prompt': source_system,
+              'system_prompt': messages[0]['content'], 'environment_config': env_config,
+              'success': success, 'success_source': 'metrics.traj_metrics.success',
+              'reward': total_reward, 'steps': len(turns),
+              'termination': 'environment_done' if done else 'max_steps',
+              'turns': turns}
+    write_json(output / 'record.json', record)
+
+
+
 def run_direct_episodes(config: EarlyEnvironmentConfig, protocol: Any, generator: Any) -> int:
     identities = config.identities()
-    summarize(config.output_dir, identities)  # validate completed records before reuse
+    summarize(config.output_dir, identities)
+    pending = iter(identity for identity in identities
+                   if not (config.output_dir / 'episodes' / identity['episode_id'] / 'record.json').exists())
     client = LegacyVAGENBatchClient(config.env_url)
+    active: dict[str, Generator[tuple[str, Any], Any, None]] = {}
+    events: dict[str, tuple[str, Any]] = {}
+    owned: set[str] = set()
+    exhausted = False
     try:
         client.check_server_health()
-        for identity in identities:
-            output = config.output_dir / 'episodes' / identity['episode_id']
-            if (output / 'record.json').exists():
-                continue
-            # Remote session names are unique; saved episode identity remains stable.
-            session_id = 'navigation_' + uuid4().hex
-            try:
-                env_config = source_environment_config(config, identity['eval_set'])
-                client.create_environments_batch({session_id: env_config})
-                observation, _reset_info = client.reset_batch({session_id: identity['seed']})[session_id]
-                source_system = client.get_system_prompts_batch([session_id])[session_id]
-                if not source_system.strip():
-                    raise ValueError('environment system prompt is empty')
-                messages = [{'role': 'system', 'content': protocol.prompt(source_system)}]
-                images = []
-                turns = []
-                success = False
-                total_reward = 0.0
-                done = False
-                for step in range(config.max_steps):
-                    source_text = observation_text(observation)
-                    image = observation_image(observation)
-                    output.mkdir(parents=True, exist_ok=True)
-                    image.save(output / f'observation_{step:03d}.png')
-                    images.append(image)
-                    messages.append({'role': 'user', 'content': protocol.prompt(source_text)})
-                    first_turn = max(0, step - config.history_turns)
-                    context = [messages[0], *messages[1 + 2 * first_turn:]]
-                    generated = generator.generate(context, images[first_turn:])
-                    parsed, termination = parse_early_generation(
-                        protocol, generator, generated
-                    )
-                    # Invalid raw strings can contain an accidentally valid legacy answer.
-                    # Send an explicit empty no-op, and persist BOTH texts without repairing it.
-                    service_text = parsed['service_response']
-                    observation, reward, done, info = client.step_batch({session_id: service_text})[session_id]
-                    success = success or environment_success(info)
-                    total_reward += reward
-                    messages.append({'role': 'assistant', 'content': generated.text})
-                    turn = {'step': step, 'source_observation': source_text, 'messages': context,
-                            'generation': asdict(generated),
-                            'termination_validation': termination,
-                            'parse': parsed,
-                            'service_response': service_text, 'environment_info': info,
-                            'reward': reward, 'done': done, 'success': success}
-                    turns.append(turn)
-                    write_json(output / f'turn_{step:03d}.json', turn)
-                    if done:
-                        break
-                terminal_text = observation_text(observation)
-                terminal_image = observation_image(observation)
-                terminal_image.save(output / 'terminal_observation.png')
-                images.append(terminal_image)
-                messages.append({'role': 'user', 'content': protocol.prompt(terminal_text)})
-                first_turn = max(0, len(turns) - config.history_turns)
-                terminal_context = [messages[0], *messages[1 + 2 * first_turn:]]
-                terminal_generation = generator.generate(terminal_context, images[first_turn:])
-                terminal_parse, terminal_validation = parse_early_generation(
-                    protocol, generator, terminal_generation
-                )
-                terminal = {'source_observation': terminal_text, 'messages': terminal_context,
-                            'generation': asdict(terminal_generation),
-                            'termination_validation': terminal_validation,
-                            'parse': terminal_parse, 'executed': False}
-                write_json(output / 'terminal.json', terminal)
-                record = {'terminal': terminal, 'identity': identity, 'stage': protocol.stage, 'source_system_prompt': source_system,
-                          'system_prompt': messages[0]['content'], 'environment_config': env_config,
-                          'success': success, 'success_source': 'metrics.traj_metrics.success',
-                          'reward': total_reward, 'steps': len(turns),
-                          'termination': 'environment_done' if done else 'max_steps',
-                          'turns': turns}
-                write_json(output / 'record.json', record)
-                print(summarize(config.output_dir, identities), flush=True)
-            finally:
-                client.close_batch([session_id])
+        while active or not exhausted:
+            while len(active) < config.episode_concurrency and not exhausted:
+                identity = next(pending, None)
+                if identity is None:
+                    exhausted = True
+                    break
+                session_id = 'navigation_' + uuid4().hex
+                coroutine = _episode(config, protocol, generator, identity)
+                active[session_id] = coroutine
+                owned.add(session_id)
+                events[session_id] = next(coroutine)
+            # Group independent requests, preserving each episode's own state/order.
+            for operation in ('create', 'reset', 'system', 'generate', 'step'):
+                selected = {key: payload for key, (kind, payload) in events.items()
+                            if kind == operation}
+                if not selected:
+                    continue
+                if operation == 'create':
+                    client.create_environments_batch(selected)
+                    results = dict.fromkeys(selected)
+                elif operation == 'reset':
+                    results = client.reset_batch(selected)
+                elif operation == 'system':
+                    results = client.get_system_prompts_batch(list(selected))
+                elif operation == 'step':
+                    results = client.step_batch(selected)
+                else:
+                    requests = list(selected.values())
+                    if config.episode_concurrency == 1:
+                        generations = [generator.generate(*requests[0])]
+                    else:
+                        generations = generator.generate_batch(requests)
+                    results = dict(zip(selected, generations, strict=True))
+                if set(results) != set(selected):
+                    raise ValueError(f'{operation} batch response identities differ')
+                for session_id in selected:
+                    try:
+                        events[session_id] = active[session_id].send(results[session_id])
+                    except StopIteration:
+                        del events[session_id]
+                        del active[session_id]
+                        client.close_batch([session_id])
+                        owned.remove(session_id)
+                        print(summarize(config.output_dir, identities), flush=True)
     finally:
-        client.close_batch()
-        summarize(config.output_dir, identities)
+        primary_error = sys.exc_info()[1]
+        for coroutine in active.values():
+            coroutine.close()
+        cleanup_error = None
+        try:
+            client.close_batch(sorted(owned))
+        except Exception as error:
+            cleanup_error = error
+            logging.getLogger(__name__).exception('Failed to close owned evaluation sessions')
+        try:
+            summarize(config.output_dir, identities)
+        except Exception:
+            if primary_error is None and cleanup_error is None:
+                raise
+            logging.getLogger(__name__).exception('Failed to summarize interrupted evaluation')
+        if primary_error is None and cleanup_error is not None:
+            raise cleanup_error
     return 0

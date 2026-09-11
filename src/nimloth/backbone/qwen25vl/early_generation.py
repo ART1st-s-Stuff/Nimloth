@@ -209,42 +209,62 @@ class EarlyVLLMGenerator:
         self.llm = LLM(**kwargs)
 
     def generate(self, messages: list[dict], images: list[Any]) -> RawGeneration:
+        return self.generate_batch([(messages, images)])[0]
+
+    def generate_batch(self, inputs: list[tuple[list[dict], list[Any]]]) -> list[RawGeneration]:
+        """Batch independent prompts and then only eligible query continuations."""
         from vllm import SamplingParams
-        bound = bind_image_placeholders(messages, images)
-        prompt = self.processor.apply_chat_template(bound, tokenize=False, add_generation_prompt=True)
-        request = {'prompt': prompt, 'multi_modal_data': {'image': images}}
-        def sample(req, budget, stop=None):
-            params = SamplingParams(temperature=self.config.temperature, top_p=self.config.top_p,
-                                    max_tokens=budget, seed=self.config.generation_seed,
-                                    skip_special_tokens=False, stop=stop,
-                                    include_stop_str_in_output=True)
-            return self.llm.generate([req], params, use_tqdm=False)[0]
+
+        if not inputs:
+            return []
+        prompts = [self.processor.apply_chat_template(
+            bind_image_placeholders(messages, images), tokenize=False,
+            add_generation_prompt=True) for messages, images in inputs]
+        requests = [{'prompt': prompt, 'multi_modal_data': {'image': images}}
+                    for prompt, (_, images) in zip(prompts, inputs, strict=True)]
+
+        def sample(requests, budgets, stop=None):
+            params = [SamplingParams(
+                temperature=self.config.temperature, top_p=self.config.top_p,
+                max_tokens=budget, seed=self.config.generation_seed,
+                skip_special_tokens=False, stop=stop,
+                include_stop_str_in_output=True) for budget in budgets]
+            outputs = self.llm.generate(requests, params if len(params) > 1 else params[0], use_tqdm=False)
+            if len(outputs) != len(requests):
+                raise ValueError('vLLM batch response count differs from requests')
+            return outputs
+
         inject = self.protocol.query_mode == 'inject'
-        first = sample(request, self.config.max_response_tokens, ['</think>'] if inject else None)
-        output = first.outputs[0]
-        sampled = list(output.token_ids)
-        text = decode_response(self.tokenizer, sampled)
-        # 只有模型实际生成边界才注入query；到达长度/EOS时不补CoT或动作。
-        if (not inject or getattr(output, 'stop_reason', None) != '</think>'
-                or re.search(r'</think>\s*$', text) is None):
-            return RawGeneration(
-                text,
-                tuple(sampled),
-                (),
-                str(output.finish_reason),
-                getattr(output, "stop_reason", None),
-            )
-        budget = self.config.max_response_tokens - len(sampled) - len(self.query_ids)
-        if budget < 1:
-            return RawGeneration(text, tuple(sampled), (), 'length')
-        continuation = {'prompt_token_ids': self.tokenizer.encode(prompt, add_special_tokens=False) + sampled + self.query_ids,
-                        'multi_modal_data': {'image': images}}
-        second = sample(continuation, budget).outputs[0]
-        tail = list(second.token_ids)
-        return RawGeneration(
-            text + ''.join(self.protocol.query_tokens) + decode_response(self.tokenizer, tail),
-            tuple(sampled + tail),
-            tuple(self.query_ids),
-            str(second.finish_reason),
-            getattr(second, "stop_reason", None),
-        )
+        first = sample(requests, [self.config.max_response_tokens] * len(requests),
+                       ['</think>'] if inject else None)
+        results = []
+        continuations, budgets, indices = [], [], []
+        for index, response in enumerate(first):
+            output = response.outputs[0]
+            sampled = list(output.token_ids)
+            text = decode_response(self.tokenizer, sampled)
+            result = RawGeneration(text, tuple(sampled), (), str(output.finish_reason),
+                                   getattr(output, 'stop_reason', None))
+            if (inject and getattr(output, 'stop_reason', None) == '</think>'
+                    and re.search(r'</think>\s*$', text) is not None):
+                budget = self.config.max_response_tokens - len(sampled) - len(self.query_ids)
+                if budget < 1:
+                    result = RawGeneration(text, tuple(sampled), (), 'length')
+                else:
+                    indices.append(index)
+                    budgets.append(budget)
+                    continuations.append({
+                        'prompt_token_ids': self.tokenizer.encode(prompts[index], add_special_tokens=False)
+                        + sampled + self.query_ids,
+                        'multi_modal_data': {'image': inputs[index][1]}})
+            results.append(result)
+        if continuations:
+            for index, response in zip(indices, sample(continuations, budgets), strict=True):
+                output = response.outputs[0]
+                tail = list(output.token_ids)
+                first_result = results[index]
+                results[index] = RawGeneration(
+                    first_result.text + ''.join(self.protocol.query_tokens) + decode_response(self.tokenizer, tail),
+                    first_result.sampled_token_ids + tuple(tail), tuple(self.query_ids),
+                    str(output.finish_reason), getattr(output, 'stop_reason', None))
+        return results

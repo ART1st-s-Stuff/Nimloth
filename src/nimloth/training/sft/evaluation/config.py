@@ -25,6 +25,7 @@ class EvaluationConfig:
     format_gate_jsonl: Path | None = None
     summarize_only: bool = False
     stage: Literal["vagen", "stage1", "stage2"] | None = None
+    episode_concurrency: int = 1
     history_turns: int = 5
     generation_seed: int = 0
     success_threshold: float = 1.5
@@ -79,7 +80,7 @@ class EvaluationConfig:
         if len(set(self.eval_sets)) != len(self.eval_sets):
             raise ValueError("duplicate eval_sets are not allowed")
         for name in ("episodes_per_eval_set", "max_steps", "max_response_tokens",
-                     "tensor_parallel_size", "max_model_len"):
+                     "tensor_parallel_size", "max_model_len", "episode_concurrency"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
@@ -97,6 +98,8 @@ class EvaluationConfig:
             raise ValueError("env_url is required")
         if self.vllm_distributed_executor_backend not in {None, "mp", "ray"}:
             raise ValueError("unsupported vllm distributed executor backend")
+        if self.stage is None and self.episode_concurrency != 1:
+            raise ValueError("episode_concurrency requires an early evaluation stage")
         planning = (self.num_simulations, self.exploration_constant, self.planner_device)
         if self.mode == "direct":
             if any(value is not None for value in planning):

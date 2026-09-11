@@ -31,3 +31,10 @@ latent query的注入边界按tokenizer解码后的字面`</think>`匹配，而�
 
 `early_generation.py` 是格式/Query阶段的原始生成入口：保留特殊 token，区分真实采样和
 query 注入。与 planner turn backend 分离，不约束动作、不补 reasoning 或动作边界。
+
+早期评估通过 `--episode-concurrency INT` 控制并行 episode 数（默认 1）。
+同一轮的环境请求和模型请求均批量提交；独立保存每条轨迹的历史、seed 和原始输出。
+环境启动时设置 `ENV_MAX_WORKERS` 至少等于 episode concurrency，并按可用渲染内存选择并行数。
+例如现有统一评估命令追加 `--episode-concurrency 4`，环境入口使用 `ENV_MAX_WORKERS=4`。
+Stage 1 固定 32 条门禁也按相同大小分批；不改变样本或门禁阈值。
+并行数写入运行合同，恢复时不能改变；旧串行合同仅允许并行数 1 恢复。

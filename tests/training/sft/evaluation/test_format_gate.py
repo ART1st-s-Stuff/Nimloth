@@ -134,3 +134,21 @@ def test_gate_resume_reuses_generator_and_rejects_corrupt_record(tmp_path):
         run_stage1_format_gate(
             resumed, EarlyProtocol('stage1'), generator=generator
         )
+
+
+def test_gate_batches_final_partial_and_resume(tmp_path):
+    config = replace(make_config(tmp_path), episode_concurrency=7)
+    class BatchGenerator(Generator):
+        def __init__(self):
+            super().__init__(31)
+            self.batches = []
+        def generate_batch(self, requests):
+            self.batches.append(len(requests))
+            return [self.generate(*request) for request in requests]
+    generator = BatchGenerator()
+    assert run_stage1_format_gate(config, EarlyProtocol('stage1'), generator=generator)[0]
+    assert generator.batches == [7, 7, 7, 7, 4]
+    assert run_stage1_format_gate(replace(config, resume=True), EarlyProtocol('stage1'), generator=generator)[0]
+    assert generator.calls == 32
+    with pytest.raises(ValueError, match='contract'):
+        run_stage1_format_gate(replace(config, resume=True, episode_concurrency=1), EarlyProtocol('stage1'), generator=generator)

@@ -105,3 +105,49 @@ def test_inject_only_after_actual_generated_boundary(monkeypatch):
             return [SimpleNamespace(prompt_token_ids=[10], outputs=[SimpleNamespace(token_ids=[2], finish_reason='length')])]
     generator.llm = Incomplete()
     assert generator.generate([{'role': 'user', 'content': 'test'}], []).inserted_token_ids == ()
+
+
+def test_batch_injection_preserves_per_request_budget_and_order(monkeypatch):
+    import sys
+    from types import SimpleNamespace as NS
+    from nimloth.agent.evaluation_protocol import EarlyProtocol
+    from nimloth.backbone.qwen25vl.early_generation import EarlyVLLMGenerator
+    monkeypatch.setitem(sys.modules, 'vllm', NS(SamplingParams=lambda **kw: kw))
+    class Tokenizer:
+        eos_token_id = 0
+        pad_token_id = 1
+        def encode(self, text, **kw): return [10]
+        def decode(self, ids, **kw): return ''.join({2: 'reason', 3: '</think>', 4: 'action'}[i] for i in ids)
+    calls = []
+    def response(ids, stop=None):
+        return NS(outputs=[NS(token_ids=ids, finish_reason='stop', stop_reason=stop)])
+    class LLM:
+        def generate(self, requests, params, **kw):
+            calls.append((requests, params))
+            if len(calls) == 1:
+                return [response([2, 3], '</think>'), response([2]), response([2, 2, 3], '</think>')]
+            return [response([4]), response([4])]
+    generator = EarlyVLLMGenerator.__new__(EarlyVLLMGenerator)
+    generator.protocol = EarlyProtocol('stage2', 1, 'inject')
+    generator.query_ids = [8]
+    generator.tokenizer = Tokenizer()
+    generator.processor = NS(apply_chat_template=lambda *a, **kw: 'prompt')
+    generator.config = NS(temperature=0., top_p=1., generation_seed=7, max_response_tokens=10)
+    generator.llm = LLM()
+    output = generator.generate_batch([([{'role': 'user', 'content': 'test'}], [])] * 3)
+    assert [len(requests) for requests, _ in calls] == [3, 2]
+    assert [params['max_tokens'] for params in calls[1][1]] == [7, 6]
+    assert all(params['seed'] == 7 for params in calls[0][1])
+    assert [item.inserted_token_ids for item in output] == [(8,), (), (8,)]
+    assert [item.sampled_token_ids for item in output] == [(2, 3, 4), (2,), (2, 2, 3, 4)]
+    calls.clear()
+    generator.config.max_response_tokens = 3
+    exhausted = generator.generate_batch([([{'role': 'user', 'content': 'test'}], [])] * 3)
+    assert len(calls) == 1
+    assert [item.finish_reason for item in exhausted] == ['length', 'stop', 'length']
+    assert all(not item.inserted_token_ids for item in exhausted)
+    import pytest
+    for count in (0, 2):
+        generator.llm = NS(generate=lambda *args, **kw: [response([2])] * count)
+        with pytest.raises(ValueError, match='response count'):
+            generator.generate_batch([([{'role': 'user', 'content': 'test'}], [])])

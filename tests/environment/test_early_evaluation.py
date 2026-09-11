@@ -133,3 +133,73 @@ def test_stage1_environment_parses_only_eos_terminated_body():
         'service_response': '',
         'error': 'generation_text_mismatch',
     }
+
+
+def test_batched_episodes_match_serial_and_resume(tmp_path, monkeypatch):
+    import json
+    from dataclasses import replace
+    from PIL import Image
+    from nimloth.agent.evaluation_protocol import EarlyProtocol
+    from nimloth.backbone.qwen25vl.early_generation import RawGeneration
+    from nimloth.environment.navigation import early_evaluation as module
+
+    batch_sizes = []
+    active_counts = []
+    class Client:
+        def __init__(self, url): self.sessions = {}
+        def check_server_health(self): return {}
+        def create_environments_batch(self, configs):
+            self.sessions.update({key: [0, 0] for key in configs})
+            active_counts.append(len(self.sessions))
+        def observation(self, key):
+            seed, step = self.sessions[key]
+            image = Image.new('RGB', (2, 2))
+            image.putpixel((1, 1), (255, 0, 0))
+            return {'obs_str': f'<image> seed={seed} step={step}', 'image': image}
+        def reset_batch(self, seeds):
+            for key, seed in seeds.items(): self.sessions[key][0] = seed
+            return {key: (self.observation(key), {}) for key in seeds}
+        def get_system_prompts_batch(self, keys): return dict.fromkeys(keys, 'system')
+        def step_batch(self, actions):
+            batch_sizes.append(len(actions))
+            results = {}
+            for key in actions:
+                self.sessions[key][1] += 1
+                seed, step = self.sessions[key]
+                results[key] = (self.observation(key), 1., step >= seed % 3 + 1,
+                                {'metrics': {'traj_metrics': {'success': seed % 2 == 0}}})
+            return dict(reversed(list(results.items())))
+        def close_batch(self, keys):
+            for key in keys: self.sessions.pop(key, None)
+    class Generator:
+        def __init__(self): self.sizes = []
+        def generate(self, messages, images): return self.generate_batch([(messages, images)])[0]
+        def generate_batch(self, requests):
+            self.sizes.append(len(requests))
+            return [RawGeneration('<answer>moveahead</answer>', (2,), (), 'stop') for _ in requests]
+    monkeypatch.setattr(module, 'LegacyVAGENBatchClient', Client)
+    config = EarlyEnvironmentConfig('url', tmp_path / 'serial', ('base',), 'test', 5, 1, 4, 1, 1.5, .5)
+    serial, batch = Generator(), Generator()
+    module.run_direct_episodes(config, EarlyProtocol('vagen'), serial)
+    parallel = replace(config, output_dir=tmp_path / 'batch', episode_concurrency=3)
+    module.run_direct_episodes(parallel, EarlyProtocol('vagen'), batch)
+    assert max(batch.sizes) == 3 and len(batch.sizes) < len(serial.sizes)
+    assert max(batch_sizes) == 3 and max(active_counts) == 3
+    for identity in config.identities():
+        relative = f"episodes/{identity['episode_id']}/record.json"
+        assert json.loads((config.output_dir / relative).read_text()) == json.loads((parallel.output_dir / relative).read_text())
+    before = list(batch.sizes)
+    module.run_direct_episodes(parallel, EarlyProtocol('vagen'), batch)
+    assert batch.sizes == before
+    # Partial artifacts are not accepted as a committed episode.
+    missing = parallel.output_dir / 'episodes/base_000003/record.json'
+    missing.unlink()
+    module.run_direct_episodes(parallel, EarlyProtocol('vagen'), batch)
+    assert len(batch.sizes) > len(before)
+    assert json.loads(missing.read_text()) == json.loads((config.output_dir / 'episodes/base_000003/record.json').read_text())
+
+
+@pytest.mark.parametrize('concurrency', [0, -1, True, 1.5])
+def test_environment_rejects_invalid_concurrency(tmp_path, concurrency):
+    with pytest.raises(ValueError, match='positive integer'):
+        EarlyEnvironmentConfig('url', tmp_path, ('base',), 'test', 1, 1, 1, 5, 1.5, .5, concurrency)

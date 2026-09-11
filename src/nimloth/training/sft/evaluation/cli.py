@@ -34,6 +34,7 @@ def parse_args(argv: list[str] | None = None) -> EvaluationConfig:
     ap.add_argument("--mode", choices=("direct", "wm"), default=None)
     ap.add_argument("--summarize-only", action="store_true")
     ap.add_argument("--stage", choices=("vagen", "stage1", "stage2"))
+    ap.add_argument("--episode-concurrency", type=int, default=1)
     ap.add_argument("--history-turns", type=int, default=5)
     ap.add_argument("--generation-seed", type=int, default=0)
     ap.add_argument("--success-threshold", type=float, default=1.5)

@@ -25,6 +25,9 @@ def run_early_evaluation(config: EvaluationConfig) -> int:
     values = asdict(config)
     values.pop('resume')
     values.pop('summarize_only')
+    # Existing serial contracts predate this execution parameter.
+    if config.episode_concurrency == 1:
+        values.pop('episode_concurrency')
     values['checkpoint'] = str(config.checkpoint.resolve())
     values['output_dir'] = str(config.output_dir.resolve())
     if config.format_gate_jsonl is not None:
