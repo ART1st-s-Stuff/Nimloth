@@ -14,6 +14,12 @@ python -m nimloth.training.sft.stage2 \
 `--latent-token-count` 必须等于 `--grid-size` 的平方，默认对应 4×4 网格的 16 个位置。损失权重由 `--weight-lm` 和 `--weight-dino` 指定，二者均须为正；`--projector-hidden-dim` 指定投影维度。YAML 可通过 `query_alignment` 提供这些参数，其余训练设置复用 SFT1。
 
 默认全量训练 Qwen；选择 `--lora` 时沿用 adapter、embedding 和输出 head 的训练方式。共享 slot projector 始终加入优化器。
+新建 projector 使用语言模型输入 embedding 的 dtype/device（BF16 模型不会新建 FP32 projector 参数）。多卡可指定 `--distributed-strategy fsdp`；语言模型和 projector 均参与分片、完整保存与恢复。
+
+可使用 `--until-converged --convergence-min-epochs 2 --convergence-patience-epochs 2 --convergence-min-relative-improvement 0.01` 训练至收敛，不能同时指定固定 `--epochs`，也不能限制验证批次数。每轮以完整验证的加权总损失 `weight_lm * LM + weight_dino * DINO` 对比上一轮，连续两轮改善不足 1% 且达到最少轮数后停止；`best` 始终选择总损失最低的 checkpoint。预热后学习率保持不变，运行时限不代表收敛。
+有限 GPU 检查可指定 `--max-optimizer-steps N`，在绝对第 N 步保存完整恢复 checkpoint 并以 75 退出，不声明收敛；正式续训移除该预算参数。
+
+`validation_metrics.jsonl`、每轮日志与 W&B 分别记录未加权的 LM、DINO 分量和加权总损失。三者采用同一验证批次均值及跨 rank 求和/计数归约；分布式 sampler 的补齐项仍计入均值。旧 CSV 的 `val_loss` 在 query 阶段表示总损失。模型返回的分量已 detach，不改变反向传播目标。
 
 ## 模块职责与计算顺序
 
@@ -29,4 +35,4 @@ python -m nimloth.training.sft.stage2 \
 
 Checkpoint 保存 `training_stage=query`、语言模型或 adapter，以及 `slot_projector.pt` 和 `grid_state_config.json`。配置记录 teacher 身份、query token ID、projector 维度和目标权重；恢复或从 query checkpoint 初始化时先严格校验，再恢复 projector。
 
-LoRA 合并导出保留 projector 文件及阶段元数据，SFT3 使用同一 projector 格式。恢复包含优化器、调度器和 epoch 游标，不包含随机数状态。CPU 测试覆盖标签、梯度、空间对齐和导出接口，不作为真实 GPU 训练或 rollout 质量证据。
+LoRA 合并导出保留 projector 文件及阶段元数据，SFT3 使用同一 projector 格式。完整恢复包含优化器、调度器、epoch/微批次游标、每 rank 随机数状态及收敛历史；query 收敛监控身份为 `validation_total_loss`。CPU 测试覆盖标签、梯度、空间对齐、收敛与导出接口，不作为真实 GPU 训练或 rollout 质量证据。

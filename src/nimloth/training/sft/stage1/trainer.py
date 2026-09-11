@@ -244,16 +244,22 @@ def apply_lora(model: Qwen2_5_VLForConditionalGeneration, args: argparse.Namespa
 
 
 @torch.no_grad()
-def evaluate(model, loader, device: torch.device, max_batches: int = -1) -> float:
+def evaluate(
+    model, loader, device: torch.device, max_batches: int = -1,
+    *, return_components: bool = False,
+) -> float | dict[str, float]:
     model.eval()
-    total = torch.tensor(0.0, device=device)
+    total = torch.zeros(3 if return_components else 1, device=device)
     count = torch.tensor(0, device=device)
     for i, batch in enumerate(loader):
         if max_batches > 0 and i >= max_batches:
             break
         batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
-        loss = model(**batch).loss.detach()
-        total += loss
+        output = model(**batch)
+        losses = [output.loss.detach()]
+        if return_components:
+            losses.extend([output.lm_loss.detach(), output.dino_loss.detach()])
+        total += torch.stack(losses)
         count += 1
     if dist.is_available() and dist.is_initialized():
         dist.all_reduce(total, op=dist.ReduceOp.SUM)
@@ -261,7 +267,17 @@ def evaluate(model, loader, device: torch.device, max_batches: int = -1) -> floa
     model.train()
     if count.item() == 0:
         raise ValueError("validation loader produced no monitored loss")
-    return (total / count).item()
+    means = total / count
+    if return_components:
+        return dict(zip(
+            ("validation_total_loss", "validation_lm_loss", "validation_dino_loss"),
+            means.tolist(), strict=True,
+        ))
+    return means.item()
+
+
+def convergence_monitor(stage: str) -> str:
+    return "validation_total_loss" if stage == "query" else "validation_lm_loss"
 
 
 def build_optimizer(
@@ -418,7 +434,7 @@ def _resume_identity(
         identity["distributed_strategy"] = "fsdp_full_shard_orig_params_v1"
     if getattr(args, "until_converged", False):
         identity["convergence"] = {
-            "monitor": "validation_lm_loss",
+            "monitor": convergence_monitor(stage),
             "min_epochs": args.convergence_min_epochs,
             "patience_epochs": args.convergence_patience_epochs,
             "min_relative_improvement": args.convergence_min_relative_improvement,
@@ -1090,7 +1106,14 @@ def main(*, stage: str = "format") -> int:
         distributed_barrier()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        val_loss = evaluate(model, val_loader, device, args.max_val_batches)
+        if stage == "query":
+            val_metrics = evaluate(
+                model, val_loader, device, args.max_val_batches, return_components=True
+            )
+            val_loss = val_metrics["validation_total_loss"]
+        else:
+            val_loss = evaluate(model, val_loader, device, args.max_val_batches)
+            val_metrics = {"validation_lm_loss": val_loss}
         format_rate = evaluate_format(
             model,
             processor,
@@ -1110,6 +1133,11 @@ def main(*, stage: str = "format") -> int:
         previous_best_val = best_val
         best_val = min(best_val, val_loss)
         if is_main():
+            with (args.output_dir / "validation_metrics.jsonl").open("a") as f:
+                f.write(json.dumps({
+                    "epoch": epoch, "global_step": global_step,
+                    "monitor": convergence_monitor(stage), **val_metrics,
+                }) + "\n")
             with log_path.open("a", newline="") as f:
                 csv.writer(f).writerow(
                     [
@@ -1172,6 +1200,7 @@ def main(*, stage: str = "format") -> int:
                         "epoch": epoch,
                         "global_step": global_step,
                         "val_loss": val_loss,
+                        **val_metrics,
                         "convergence": convergence.state_dict() if convergence_policy else None,
                         "format_correct_rate": format_rate,
                         "format_eval_protocol": args.latent_query_mode,
@@ -1185,6 +1214,7 @@ def main(*, stage: str = "format") -> int:
                 wandb.log(
                     {
                         "val/loss": val_loss,
+                        **{f"val/{key}": value for key, value in val_metrics.items()},
                         "val/format_correct_rate": format_rate,
                         "val/best_loss": best_val,
                         "eval/val_loss": val_loss,
@@ -1196,6 +1226,13 @@ def main(*, stage: str = "format") -> int:
         distributed_barrier()
         if convergence.converged:
             break
+        # 验证期间收到的暂停请求在完整 epoch checkpoint 发布后统一退出。
+        epoch_stop = torch.tensor(int(stop_requested), device=device)
+        if world > 1:
+            dist.all_reduce(epoch_stop, op=dist.ReduceOp.MAX)
+        if epoch_stop.item():
+            cleanup_dist()
+            return 75
 
     save_checkpoint(
         model,
@@ -1221,7 +1258,7 @@ def main(*, stage: str = "format") -> int:
     if is_main():
         if convergence_policy is not None:
             (args.output_dir / "CONVERGED.json").write_text(
-                json.dumps({"monitor": "validation_lm_loss", "policy": convergence_policy.state_dict(),
+                json.dumps({"monitor": convergence_monitor(stage), "policy": convergence_policy.state_dict(),
                             "state": convergence.state_dict(), "global_step": global_step}) + "\n",
                 encoding="utf-8",
             )

@@ -1,7 +1,7 @@
 """SFT2: answer CE and current-observation query/DINO alignment in one forward."""
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import torch
@@ -17,6 +17,12 @@ from nimloth.latent import latent_state_tokens
 from nimloth.wm.grid import SharedSlotProjector
 
 from .config import QueryAlignmentConfig
+
+
+@dataclass
+class QueryAlignmentOutput(CausalLMOutputWithPast):
+    lm_loss: torch.Tensor | None = None
+    dino_loss: torch.Tensor | None = None
 
 
 class QueryAlignmentModel(nn.Module):
@@ -45,6 +51,8 @@ class QueryAlignmentModel(nn.Module):
             hidden_dim=objective.projector_hidden_dim,
             grid_tokens=objective.grid_tokens,
         )
+        embedding = language_model.get_input_embeddings().weight
+        projector.to(device=embedding.device, dtype=embedding.dtype)
         ids = [
             tokenizer.convert_tokens_to_ids(t)
             for t in latent_state_tokens(objective.grid_tokens)
@@ -97,7 +105,9 @@ class QueryAlignmentModel(nn.Module):
             self.objective.weight_lm * output.loss
             + self.objective.weight_dino * query_loss
         )
-        return CausalLMOutputWithPast(loss=loss)
+        return QueryAlignmentOutput(
+            loss=loss, lm_loss=output.loss.detach(), dino_loss=query_loss.detach()
+        )
 
     def grid_metadata(self):
         return {

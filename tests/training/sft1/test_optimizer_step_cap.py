@@ -16,14 +16,13 @@ BASE = ["--model", "/model", "--train-jsonl", "/train", "--val-jsonl", "/val",
         "--output-dir", "/output"]
 
 
-def test_cap_cli_is_optional_positive_and_format_only():
+def test_cap_cli_is_optional_positive_for_both_stages():
     assert parse_args(BASE)[0].max_optimizer_steps is None
     assert parse_args(BASE + ["--max-optimizer-steps", "20"])[0].max_optimizer_steps == 20
     for value in ("0", "-1"):
         with pytest.raises(ValueError, match="positive"):
             parse_args(BASE + ["--max-optimizer-steps", value])
-    with pytest.raises(ValueError, match="only for format"):
-        parse_args(BASE + ["--max-optimizer-steps", "20", "--dino-cache-root", "/dino"], stage="query")
+    assert parse_args(BASE + ["--max-optimizer-steps", "20", "--dino-cache-root", "/dino"], stage="query")[0].max_optimizer_steps == 20
 
 
 @pytest.mark.parametrize("batches,initial_step,expected_cursor", [(20, 0, 8), (6, 0, 6), (20, 1, 4)])

@@ -1,8 +1,10 @@
-"""Optional format-stage full sharding and portable full checkpoint state."""
+"""Early-stage full sharding and portable full checkpoint state."""
 import copy
+import json
 import random
 from contextlib import contextmanager
 from functools import partial
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -137,6 +139,11 @@ def save_full_pretrained(module, path, full_weights):
 
 
 def _save_full_pretrained(module, path, full_weights):
+    from nimloth.training.sft.stage2.model import QueryAlignmentModel
+
+    if isinstance(module, QueryAlignmentModel):
+        _save_query_full_pretrained(module, path, full_weights)
+        return
     from peft import get_peft_model
 
     config = copy.deepcopy(module.config)
@@ -159,3 +166,36 @@ def _save_full_pretrained(module, path, full_weights):
         if tensor.is_meta or tensor.shape != expected[key].shape:
             raise ValueError(f"FSDP full export tensor is incomplete: {key}")
     export.save_pretrained(path, safe_serialization=True, state_dict=full_weights)
+
+
+def _save_query_full_pretrained(module, path, full_weights):
+    """Split collectively gathered query state without touching live shards."""
+    from nimloth.wm.grid import SharedSlotProjector
+
+    language_weights = {}
+    projector_weights = {}
+    for key, value in full_weights.items():
+        if key.startswith("language_model."):
+            language_weights[key.removeprefix("language_model.")] = value
+        elif key.startswith("projector."):
+            projector_weights[key.removeprefix("projector.")] = value
+        else:
+            raise ValueError(f"unexpected query FSDP full-state key: {key}")
+    metadata = module.grid_metadata()
+    with torch.device("meta"):
+        projector = SharedSlotProjector(
+            input_dim=metadata["qwen_hidden_dim"],
+            output_dim=metadata["state_dim"],
+            hidden_dim=metadata["projector_hidden_dim"],
+            grid_tokens=metadata["grid_tokens"],
+        )
+    expected = projector.state_dict()
+    if expected.keys() != projector_weights.keys():
+        raise ValueError("query FSDP projector full-state topology mismatch")
+    for key, tensor in projector_weights.items():
+        if tensor.is_meta or tensor.shape != expected[key].shape:
+            raise ValueError(f"query FSDP projector tensor is incomplete: {key}")
+    _save_full_pretrained(module.language_model, path, language_weights)
+    path = Path(path)
+    torch.save(projector_weights, path / "slot_projector.pt")
+    (path / "grid_state_config.json").write_text(json.dumps(metadata, indent=2) + "\n")

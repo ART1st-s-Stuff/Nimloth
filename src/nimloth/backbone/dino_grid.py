@@ -9,15 +9,24 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Protocol, Sequence
+from typing import Any, Protocol
 
 import torch
 from PIL import Image
 
-
 DINO_GRID_CACHE_FORMAT = "dino_grid_sharded_v1"
+STANDALONE_DINO_GRID_CACHE_FORMAT = "dino_grid_images_v1"
+
+
+def file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _json_fingerprint(payload: Any) -> str:
@@ -59,16 +68,13 @@ class DINOGridTargets(Protocol):
         paths: Sequence[str | Path],
         *,
         device: torch.device,
-    ) -> torch.Tensor:
-        ...
+    ) -> torch.Tensor: ...
 
 
 def _processor_fingerprint(processor: Any) -> str:
     to_dict = getattr(processor, "to_dict", None)
     payload = (
-        to_dict()
-        if callable(to_dict)
-        else {"class": type(processor).__qualname__}
+        to_dict() if callable(to_dict) else {"class": type(processor).__qualname__}
     )
     return _json_fingerprint(payload)
 
@@ -101,7 +107,7 @@ class FrozenDINOGridTargets:
         dtype: torch.dtype,
         grid_size: int = 4,
         batch_size: int = 32,
-    ) -> "FrozenDINOGridTargets":
+    ) -> FrozenDINOGridTargets:
         """按固定 revision 加载 RL 使用的 frozen DINO teacher。"""
 
         from transformers import AutoImageProcessor, AutoModel
@@ -178,10 +184,14 @@ class FrozenDINOGridTargets:
     ) -> torch.Tensor:
         """Encode in-memory rollout observations without temporary files."""
 
-        return self._encode_images(images).detach().to(
-            device=device,
-            dtype=torch.float32,
-            non_blocking=True,
+        return (
+            self._encode_images(images)
+            .detach()
+            .to(
+                device=device,
+                dtype=torch.float32,
+                non_blocking=True,
+            )
         )
 
     @torch.no_grad()
@@ -193,9 +203,7 @@ class FrozenDINOGridTargets:
     ) -> torch.Tensor:
         resolved = [str(Path(path).resolve()) for path in paths]
         missing = tuple(
-            dict.fromkeys(
-                path for path in resolved if path not in self._cached_targets
-            )
+            dict.fromkeys(path for path in resolved if path not in self._cached_targets)
         )
         for start in range(0, len(missing), self.batch_size):
             current_paths = missing[start : start + self.batch_size]
@@ -203,9 +211,9 @@ class FrozenDINOGridTargets:
             self._cached_targets.update(
                 zip(current_paths, current_targets, strict=True)
             )
-        return torch.stack(
-            [self._cached_targets[path] for path in resolved]
-        ).to(device=device, dtype=torch.float32, non_blocking=True)
+        return torch.stack([self._cached_targets[path] for path in resolved]).to(
+            device=device, dtype=torch.float32, non_blocking=True
+        )
 
 
 def _image_index(cache_split_dir: Path) -> tuple[list[str], str]:
@@ -235,9 +243,7 @@ def _parent_cache_identity(cache_split_dir: Path) -> dict[str, str]:
         )
     return {
         "parent_fingerprint": str(manifest.get("fingerprint", "")),
-        "image_source_fingerprint": str(
-            manifest.get("image_source_fingerprint", "")
-        ),
+        "image_source_fingerprint": str(manifest.get("image_source_fingerprint", "")),
     }
 
 
@@ -279,8 +285,18 @@ class CachedDINOGridTargets:
         *,
         identity: DINOIdentity,
         grid_size: int = 4,
-    ) -> "CachedDINOGridTargets":
+        _allow_incomplete: bool = False,
+    ) -> CachedDINOGridTargets:
         cache_root = Path(cache_root)
+        if (cache_root / "manifest.json").is_file():
+            result = cls._from_standalone(cache_root, identity, grid_size)
+            if not _allow_incomplete and (
+                not (cache_root / "COMPLETED").is_file()
+                or (cache_root / "COMPLETED").read_text().strip()
+                != result.cache_fingerprint
+            ):
+                raise ValueError("standalone DINO cache is not complete")
+            return result
         path_to_feature: dict[str, tuple[torch.Tensor, int]] = {}
         fingerprints: list[str] = []
         grid_tokens = int(grid_size) ** 2
@@ -296,9 +312,7 @@ class CachedDINOGridTargets:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             claimed = manifest.get("fingerprint")
             fingerprint_payload = {
-                key: value
-                for key, value in manifest.items()
-                if key != "fingerprint"
+                key: value for key, value in manifest.items() if key != "fingerprint"
             }
             if claimed != _json_fingerprint(fingerprint_payload):
                 raise ValueError(
@@ -317,10 +331,8 @@ class CachedDINOGridTargets:
             paths, image_index_fingerprint = _image_index(split_dir)
             parent = _parent_cache_identity(split_dir)
             if (
-                manifest.get("image_index_fingerprint")
-                != image_index_fingerprint
-                or manifest.get("parent_fingerprint")
-                != parent["parent_fingerprint"]
+                manifest.get("image_index_fingerprint") != image_index_fingerprint
+                or manifest.get("parent_fingerprint") != parent["parent_fingerprint"]
                 or manifest.get("image_source_fingerprint")
                 != parent["image_source_fingerprint"]
             ):
@@ -337,9 +349,7 @@ class CachedDINOGridTargets:
                 or shard_size < 1
                 or shard_count != expected_shards
             ):
-                raise ValueError(
-                    f"invalid DINO grid cache shard metadata: {sidecar}"
-                )
+                raise ValueError(f"invalid DINO grid cache shard metadata: {sidecar}")
 
             shards: list[torch.Tensor] = []
             for index in range(shard_count):
@@ -372,6 +382,76 @@ class CachedDINOGridTargets:
             cache_fingerprint=_json_fingerprint(fingerprints),
         )
 
+    @classmethod
+    def _from_standalone(cls, root: Path, identity: DINOIdentity, grid_size: int):
+        manifest = json.loads((root / "manifest.json").read_text())
+        claimed = manifest.get("fingerprint")
+        if claimed != _json_fingerprint(
+            {k: v for k, v in manifest.items() if k != "fingerprint"}
+        ):
+            raise ValueError("standalone DINO manifest fingerprint mismatch")
+        if (
+            manifest.get("format") != STANDALONE_DINO_GRID_CACHE_FORMAT
+            or manifest.get("identity") != asdict(identity)
+            or manifest.get("grid_size") != grid_size
+            or manifest.get("feature_dtype") != "float32"
+        ):
+            raise ValueError("standalone DINO teacher/grid identity mismatch")
+        splits = manifest.get("splits", {})
+        if set(splits) != {"train", "val"}:
+            raise ValueError("standalone DINO requires train and val lineage")
+        for split in splits.values():
+            if file_sha256(split["jsonl"]) != split["sha256"]:
+                raise ValueError("standalone DINO source JSONL changed")
+        images = manifest["images"]
+        paths = [entry["path"] for entry in images]
+        if not paths or len(set(paths)) != len(paths):
+            raise ValueError("standalone DINO image index empty or duplicated")
+        for entry in images:
+            if (
+                str(Path(entry["path"]).resolve()) != entry["path"]
+                or file_sha256(entry["path"]) != entry["sha256"]
+            ):
+                raise ValueError("standalone DINO source image changed")
+        for split in splits.values():
+            indices = split["image_indices"]
+            if not indices or any(
+                type(i) is not int or i < 0 or i >= len(images) for i in indices
+            ):
+                raise ValueError("standalone DINO invalid split image references")
+        if {i for split in splits.values() for i in split["image_indices"]} != set(
+            range(len(images))
+        ):
+            raise ValueError("standalone DINO unreferenced image")
+        mapping = {}
+        offset = 0
+        for shard in manifest["shards"]:
+            path = root / shard["file"]
+            if path.parent != root or file_sha256(path) != shard["sha256"]:
+                raise ValueError("standalone DINO shard hash/path mismatch")
+            features = _load_grid_shard(path)
+            if (
+                features.shape != (shard["count"], grid_size**2, identity.hidden_size)
+                or features.dtype != torch.float32
+                or not torch.isfinite(features).all()
+            ):
+                raise ValueError(
+                    "standalone DINO shard shape/dtype/finiteness mismatch"
+                )
+            for row in range(len(features)):
+                if offset >= len(paths):
+                    raise ValueError("standalone DINO too many shard rows")
+                mapping[paths[offset]] = (features, row)
+                offset += 1
+        if offset != len(paths):
+            raise ValueError("standalone DINO missing shard rows")
+        return cls(
+            identity=identity,
+            grid_size=grid_size,
+            path_to_feature=mapping,
+            cache_fingerprint=claimed,
+        )
+
     @torch.no_grad()
     def load(
         self,
@@ -397,10 +477,10 @@ class CachedDINOGridTargets:
 
 
 __all__ = [
+    "DINOV2_LARGE_IDENTITY",
+    "DINO_GRID_CACHE_FORMAT",
     "CachedDINOGridTargets",
     "DINOGridTargets",
     "DINOIdentity",
-    "DINO_GRID_CACHE_FORMAT",
-    "DINOV2_LARGE_IDENTITY",
     "FrozenDINOGridTargets",
 ]

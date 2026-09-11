@@ -191,23 +191,16 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         if action.required and action.default is not None:
             action.required = False
     args = ap.parse_args(argv)
-    if args.max_optimizer_steps is not None:
-        if stage != "format":
-            raise ValueError("--max-optimizer-steps is supported only for format stage1")
-        if args.max_optimizer_steps < 1:
-            raise ValueError("--max-optimizer-steps must be positive")
+    if args.max_optimizer_steps is not None and args.max_optimizer_steps < 1:
+        raise ValueError("--max-optimizer-steps must be positive")
     args.action_token_loss_weight = validate_action_weight(args.action_token_loss_weight)
     if stage != "format" and args.action_token_loss_weight != 1:
         raise ValueError("action token loss weighting is supported only for format stage1")
-    if stage != "format" and args.distributed_strategy != "ddp":
-        raise ValueError("FSDP is supported only for format stage1")
     policy_values = (
         args.convergence_min_epochs, args.convergence_patience_epochs,
         args.convergence_min_relative_improvement,
     )
     if args.until_converged:
-        if stage != "format":
-            raise ValueError("--until-converged is supported only for format LM training")
         if args.epochs is not None:
             raise ValueError("--until-converged cannot be combined with epochs (CLI or YAML)")
         if any(value is None for value in policy_values):

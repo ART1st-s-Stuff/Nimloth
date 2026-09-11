@@ -27,8 +27,10 @@ Checkpoint 保存 `training_stage=format`、`format_objective=format_answer_ce_v
 
 此模式按首轮预计优化步数和warmup_ratio确定预热步数，之后保持设定学习率，不设置虚构的总epoch数供cosine调度。Checkpoint保存收敛计数和每rank随机状态，续训恢复原有判断历史。运行时限或外部暂停不代表收敛；只有实际满足条件且final保存后才产生CONVERGED.json。
 
-Stage1 optionally accepts `--distributed-strategy fsdp` for multi-rank CUDA
-FULL_SHARD training; the default remains DDP. Query stage2 rejects this option.
+Stage1 and query stage2 optionally accept `--distributed-strategy fsdp` for multi-rank CUDA
+FULL_SHARD training; the default remains DDP. Query checkpoints split the gathered
+language-model state and projector state into the same portable artifacts as DDP,
+without reading live sharded parameters from rank zero.
 FSDP preserves original parameters and separates linear/embedding leaves to keep
 PEFT FP32 trainable tensors distinct from BF16 frozen weights. Each microbatch
 reduces sharded gradients; accumulation does not retain full replicated gradients.

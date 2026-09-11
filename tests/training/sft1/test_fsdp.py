@@ -1,9 +1,62 @@
 """CPU ownership policy checks; actual sharding requires the explicit GPU probe."""
+import pytest
 import torch
 from peft import LoraConfig, get_peft_model
 from transformers import LlamaConfig, LlamaForCausalLM
 
 from nimloth.training.sft.stage1.fsdp import _auto_wrap_targets
+
+
+@pytest.mark.parametrize("damage", [None, "missing", "shape", "extra"])
+def test_query_full_export_preserves_adapter_and_projector(tmp_path, monkeypatch, damage):
+    import json
+
+    from safetensors.torch import load_file
+
+    from nimloth.training.sft.stage1.fsdp import save_full_pretrained
+    from nimloth.training.sft.stage2.config import QueryAlignmentConfig
+    from nimloth.training.sft.stage2.model import QueryAlignmentModel
+    from nimloth.wm.grid import SharedSlotProjector
+
+    base = LlamaForCausalLM(LlamaConfig(vocab_size=32, hidden_size=16,
+        intermediate_size=32, num_hidden_layers=1, num_attention_heads=2,
+        num_key_value_heads=2, tie_word_embeddings=True)).to(dtype=torch.bfloat16)
+    base.config.save_pretrained(tmp_path / "base")
+    base.config._name_or_path = str(tmp_path / "base")
+    base.name_or_path = str(tmp_path / "base")
+    language = get_peft_model(base, LoraConfig(task_type="CAUSAL_LM", r=2,
+        target_modules=["q_proj"], modules_to_save=["embed_tokens", "lm_head"]))
+    projector = SharedSlotProjector(16, 1024, hidden_dim=8, grid_tokens=16).bfloat16()
+    model = QueryAlignmentModel(language, projector, list(range(16)),
+                                QueryAlignmentConfig(projector_hidden_dim=8))
+    full = {key: value.clone() for key, value in model.state_dict().items()}
+    reference = tmp_path / "reference"
+    model.save_pretrained(reference, safe_serialization=True)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("export read live sharded state")
+
+    for module in model.modules():
+        monkeypatch.setattr(module, "state_dict", forbidden)
+    if damage == "missing":
+        full.pop("projector.net.0.weight")
+    elif damage == "shape":
+        full["projector.net.0.weight"] = torch.empty(1)
+    elif damage == "extra":
+        full["other.weight"] = torch.empty(1)
+    output = tmp_path / "actual"
+    if damage:
+        with pytest.raises(ValueError):
+            save_full_pretrained(model, output, full)
+        return
+    save_full_pretrained(model, output, full)
+    for name in ("adapter_model.safetensors", "slot_projector.pt"):
+        loader = load_file if name.endswith("safetensors") else lambda p: torch.load(p, weights_only=True)
+        expected, actual = loader(str(reference / name)), loader(str(output / name))
+        assert expected.keys() == actual.keys()
+        for key in expected:
+            torch.testing.assert_close(actual[key], expected[key], rtol=0, atol=0)
+    assert json.loads((output / "grid_state_config.json").read_text()) == model.grid_metadata()
 
 
 def test_frozen_tied_originals_keep_common_owner_and_trainable_copies_split():

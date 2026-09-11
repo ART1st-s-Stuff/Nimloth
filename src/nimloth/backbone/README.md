@@ -12,3 +12,9 @@
 到模型张量的转换；return、窗口采样、target 对齐和 terminal mask 属于 rollout 或
 具体训练阶段。processor、DataLoader cache 和 EMA 不属于 `Backbone.state_dict()`。
 DINO target 模块不定义 SFT2/RL loss，也不持有可训练 WM 参数。
+
+`CachedDINOGridTargets` additionally reads `dino_grid_images_v1` standalone caches.
+Their root manifest hashes source JSONLs, every observation image and feature shard,
+records answer-to-image split lineage and the fixed teacher identity, and requires
+a matching `COMPLETED` marker. They do not claim a compact Qwen cache parent.
+The Stage 2 `build_dino_cache` CLI builds these targets using the same frozen encoder.

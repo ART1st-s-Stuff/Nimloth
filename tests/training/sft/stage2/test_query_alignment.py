@@ -46,6 +46,17 @@ def make_model():
     )
 
 
+def test_projector_build_matches_bfloat16_embedding_dtype():
+    lm = TinyCausalLM().to(dtype=torch.bfloat16)
+    lm.config.hidden_size = 6
+    lm.get_input_embeddings = lambda: lm.embed_tokens
+    tokenizer = SimpleNamespace(convert_tokens_to_ids=lambda token: 6)
+    model = QueryAlignmentModel.build(
+        lm, tokenizer, QueryAlignmentConfig(grid_size=2, projector_hidden_dim=7)
+    )
+    assert {p.dtype for p in model.projector.parameters()} == {torch.bfloat16}
+
+
 def inputs():
     return {
         "input_ids": torch.tensor([[1, 2, 6, 7, 8, 9, 3, 4]]),
@@ -62,7 +73,11 @@ def test_combined_loss_reaches_backbone_queries_projector_and_lm_but_not_teacher
     trainable = {id(p) for group in optimizer.param_groups for p in group["params"]}
     assert trainable == {id(p) for p in model.parameters() if p.requires_grad}
     before = model.projector.net[0].weight.detach().clone()
-    model(**batch).loss.backward()
+    output = model(**batch)
+    assert not output.lm_loss.requires_grad
+    assert not output.dino_loss.requires_grad
+    torch.testing.assert_close(output.loss, output.lm_loss + output.dino_loss)
+    output.loss.backward()
     assert batch["dino_target"].grad is None
     assert model.projector.net[0].weight.grad.abs().sum() > 0
     assert model.language_model.embed_tokens.weight.grad[6:10].abs().sum() > 0
