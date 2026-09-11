@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from query_control import cleanup_epochs, validate_boundary
-from run_query_gate import validate_checkout
+from run_query_gate import attempt_paths, validate_checkout
 from safetensors.torch import save_file
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
@@ -34,6 +34,15 @@ def test_query_gate_rejects_uninitialized_lewm_before_gpu_launch(
     monkeypatch.setattr("run_query_gate.subprocess.check_output", fake_check_output)
     with pytest.raises(RuntimeError, match="initialize the pinned submodule"):
         validate_checkout(checkout, "source-commit")
+
+
+def test_query_gate_attempt_uses_distinct_preserved_outputs(tmp_path):
+    assert attempt_paths(tmp_path, "retry1") == (
+        tmp_path / "gate_control_retry1",
+        tmp_path / "gate_retry1",
+    )
+    with pytest.raises(ValueError, match="invalid gate attempt name"):
+        attempt_paths(tmp_path, "../retry")
 
 
 def saved_epoch(tmp_path):

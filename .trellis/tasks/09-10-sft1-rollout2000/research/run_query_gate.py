@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import re
 import signal
 import subprocess
 import time
@@ -38,17 +39,25 @@ def validate_checkout(checkout: Path, expected_commit: str) -> None:
         )
 
 
+def attempt_paths(root: Path, attempt: str) -> tuple[Path, Path]:
+    if attempt and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]*', attempt) is None:
+        raise ValueError(f'invalid gate attempt name: {attempt!r}')
+    suffix = f'_{attempt}' if attempt else ''
+    return root / f'gate_control{suffix}', root / f'gate{suffix}'
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=Path, required=True)
     parser.add_argument('--commit', required=True)
     parser.add_argument('--train-jsonl', type=Path, required=True)
+    parser.add_argument('--attempt', default='')
     args = parser.parse_args()
     checkout = Path(__file__).resolve().parents[4]
     validate_checkout(checkout, args.commit)
     audit = json.loads((args.root / 'input_audit.json').read_text())
     index = audit['train_max_sample_index']
-    output = args.root / 'gate_control'
+    output, gate_output = attempt_paths(args.root, args.attempt)
     output.mkdir(exist_ok=False)
     env = os.environ.copy()
     env.update(PYTHONPATH=str(checkout / 'src'), CUDA_VISIBLE_DEVICES='0,1,2,3,4,5,6',
@@ -58,7 +67,7 @@ def main():
     command = ['/mnt/nimloth/venv/bin/python3', '-m', 'torch.distributed.run', '--standalone',
                '--nnodes=1', '--nproc-per-node=7', str(Path(__file__).with_name('query_capacity_probe.py')),
                '--model', str(args.root / 'base'), '--train-jsonl', str(args.train_jsonl),
-               '--dino-cache-root', str(args.root / 'dino_cache'), '--output-dir', str(args.root / 'gate'),
+               '--dino-cache-root', str(args.root / 'dino_cache'), '--output-dir', str(gate_output),
                '--sample-index', str(index)]
     start = time.monotonic()
     with (output / 'events.jsonl').open('x') as events:
@@ -89,7 +98,7 @@ def main():
                     raise
             events.write(json.dumps({'time': utc_now(), 'phase': phase, 'event': 'complete'}) + '\n')
             events.flush()
-    result = json.loads((args.root / 'gate' / 'PASSED.json').read_text())
+    result = json.loads((gate_output / 'PASSED.json').read_text())
     assert result['world_size'] == 7
     (output / 'PASSED.json').write_text(json.dumps({'commit': args.commit, 'world_size': 7,
                                                  'elapsed_seconds': time.monotonic() - start,
