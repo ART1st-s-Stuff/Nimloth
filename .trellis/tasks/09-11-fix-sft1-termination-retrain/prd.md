@@ -25,7 +25,7 @@
 - R5：每 10 个 optimizer step 保存；完整 epoch checkpoint 核验后只清理被该 epoch 覆盖的本次中间 step checkpoint，保留 epoch、best、final 和失败证据。
 - R6：收敛后先以固定 32 条完整 heldout prompt 执行严格格式门禁；通过后使用统一入口在 Base 60 + Common Sense 60、seed 1..60、每 episode 最多 20 步的 test split 上执行 Stage 1 success-rate 评估。保存原始模型输出、严格格式结果、实际环境输入、奖励、终止原因和分组/总体汇总。
 - R7：训练、导出和正式评估都绑定已提交且远程一致的 commit。不得覆盖或删除原始 `hf_actor`、旧 B 训练、已停止评估、已暂停 Stage 2 及其 checkpoint/输出。
-- R8：正式启动前统计成功子集的 trajectory/assistant-turn 数量、八类动作覆盖和 train/heldout 隔离。训练 LM 只使用成功 train rollout，收敛 LM loss 使用成功 heldout rollout；严格格式生成仍覆盖完整 heldout prompt，最终质量只由真实环境 held-out 评估判定。若成功子集缺少任一动作或规模不足，停止并报告数据缺口，不混入失败 rollout 补齐。
+- R8：正式启动前统计成功子集的 trajectory/assistant-turn 数量、八类动作实际计数（允许零计数）和 train/heldout 隔离。训练 LM 只使用成功 train rollout，收敛 LM loss 使用成功 heldout rollout；严格格式生成仍覆盖完整 heldout prompt，最终质量只由真实环境 held-out 评估判定。不得为补齐成功子集未覆盖的动作而混入失败 rollout。
 
 ## Acceptance Criteria
 

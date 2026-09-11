@@ -20,7 +20,7 @@ Stage 1 继续对完整目标回答执行 teacher forcing。逐 token CE 先按�
 
 以已审核的 B prompt 派生数据为唯一文本输入来源，原始 rollout 和现有派生文件只读。转换器已经发布 `sft1_train_success.jsonl`；为本实验建立明确的成功 train 与成功 heldout 视图，按 trajectory-level `success == true` 筛选，不按单步奖励猜测成功。
 
-启动前输出并核验：trajectory 数、assistant turns、八类动作计数、源 record ID/hash、train/heldout 重叠为零、所有图片和目标 token 完整。任一动作缺失或成功子集规模不足以形成有效训练/完整验证时停止，不混入失败 rollout。训练/收敛 LM 只使用成功子集；完整 heldout prompt 只用于严格格式生成检查，不把其失败参考回答加入优化目标。
+启动前输出并核验：trajectory 数、assistant turns、八类动作实际计数（允许零计数）、源 record ID/hash、train/heldout 重叠为零、所有图片和目标 token 完整。成功子集缺少某类动作不是停止条件，也不得因此混入失败 rollout；只有输入为空、成功轨迹缺少合法动作标签或数据/划分证据不完整时停止。训练/收敛 LM 只使用成功子集；完整 heldout prompt 只用于严格格式生成检查，不把其失败参考回答加入优化目标。
 
 ## 初始化、训练与保存
 

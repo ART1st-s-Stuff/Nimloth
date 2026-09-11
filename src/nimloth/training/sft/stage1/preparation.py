@@ -63,7 +63,6 @@ def prepare_records(
     output: Path,
     *,
     success_only: bool = False,
-    require_all_actions: bool = False,
 ) -> dict:
     """Select verified successes and rewrite only their prompt text."""
     if output.exists():
@@ -133,9 +132,6 @@ def prepare_records(
         rows.append(row)
     if not rows:
         raise ValueError('Empty training input')
-    if require_all_actions and set(action_counts) != set(range(8)):
-        missing = sorted(set(range(8)) - set(action_counts))
-        raise ValueError(f"Successful subset lacks action indices: {missing}")
     if hashlib.sha256(source.read_bytes()).hexdigest() != digest:
         raise ValueError('Source changed during preparation')
     output.parent.mkdir(parents=True, exist_ok=True)

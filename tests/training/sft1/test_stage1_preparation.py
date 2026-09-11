@@ -61,9 +61,7 @@ def test_success_only_preparation_filters_and_audits_records(tmp_path):
     ]
     source, output = tmp_path / 'source.jsonl', tmp_path / 'selected.jsonl'
     source.write_text(''.join(json.dumps(row) + '\n' for row in rows))
-    manifest = prepare_records(
-        source, output, success_only=True, require_all_actions=True
-    )
+    manifest = prepare_records(source, output, success_only=True)
     assert [json.loads(line)['id'] for line in output.read_text().splitlines()] == [
         'kept'
     ]
@@ -76,22 +74,41 @@ def test_success_only_preparation_filters_and_audits_records(tmp_path):
     assert manifest['action_counts'] == {str(index): 1 for index in range(8)}
 
 
-def test_success_only_preparation_rejects_unknown_success_and_missing_actions(tmp_path):
+def test_success_only_preparation_rejects_unknown_success(tmp_path):
     for row, match in [
         ({'id': 'missing', 'source_identity': source_identity(3), 'messages': []}, 'boolean success'),
         ({'id': 'string', 'source_identity': source_identity(4), 'success': 'true', 'messages': []}, 'boolean success'),
-        (
-            {'id': 'partial', 'source_identity': source_identity(5), 'success': True, 'action_indices': [0], 'messages': []},
-            'lacks action indices',
-        ),
     ]:
         source = tmp_path / f"{row['id']}.jsonl"
         output = tmp_path / f"{row['id']}-out.jsonl"
         source.write_text(json.dumps(row) + '\n')
         with pytest.raises((TypeError, ValueError), match=match):
-            prepare_records(
-                source, output, success_only=True, require_all_actions=True
-            )
+            prepare_records(source, output, success_only=True)
+
+
+def test_success_only_preparation_records_missing_action_classes(tmp_path):
+    row = {
+        'id': 'partial',
+        'source_identity': source_identity(5),
+        'success': True,
+        'action_indices': [0],
+        'messages': [],
+    }
+    source = tmp_path / 'partial.jsonl'
+    output = tmp_path / 'partial-out.jsonl'
+    source.write_text(json.dumps(row) + '\n')
+    manifest = prepare_records(source, output, success_only=True)
+    assert manifest['records'] == 1
+    assert manifest['action_counts'] == {
+        '0': 1,
+        '1': 0,
+        '2': 0,
+        '3': 0,
+        '4': 0,
+        '5': 0,
+        '6': 0,
+        '7': 0,
+    }
 
 
 def test_prepared_split_relationship_requires_full_heldout_superset(tmp_path):

@@ -167,13 +167,11 @@ def main(argv: list[str] | None = None) -> int:
             args.train_jsonl,
             root / 'data/train.jsonl',
             success_only=True,
-            require_all_actions=True,
         )
         val = prepare_records(
             args.val_jsonl,
             root / 'data/val.jsonl',
             success_only=True,
-            require_all_actions=True,
         )
         format_eval = prepare_records(
             args.format_eval_jsonl,

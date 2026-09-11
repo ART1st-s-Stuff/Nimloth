@@ -7,7 +7,7 @@ python experiments/training/sft1/train.py --source-model /path/to/hf_actor --tra
 # 相同命令追加 --resume 即从完整边界恢复。
 ```
 
-调用者选择服务器、解释器和 GPU。标准流程要求显式 `--success-only`，分别从 train/val 源记录选择布尔 `success is True` 的轨迹并核验八类动作覆盖，然后准备 Stage 1 prompt 和语义 action token、构建缓存并训练到成功 heldout 的验证 LM loss 收敛。`--format-eval-jsonl` 独立保留完整 heldout prompt，固定用于每轮 32 条严格自由生成检查。额外训练 CLI 参数覆盖配置。
+调用者选择服务器、解释器和 GPU。标准流程要求显式 `--success-only`，分别从 train/val 源记录选择布尔 `success is True` 的轨迹，记录实际动作分布但不要求成功子集覆盖全部动作，然后准备 Stage 1 prompt 和语义 action token、构建缓存并训练到成功 heldout 的验证 LM loss 收敛。`--format-eval-jsonl` 独立保留完整 heldout prompt，固定用于每轮 32 条严格自由生成检查。额外训练 CLI 参数覆盖配置。
 
 ## 数据与诊断工具
 
