@@ -123,7 +123,9 @@ def test_batch_four_matches_single_generation_and_trims_eos_padding():
     assert len(single_model.calls) == 32
     assert len(batch_model.calls) == 8
     assert all(
-        call["max_new_tokens"] == 128 and call["do_sample"] is False
+        call["max_new_tokens"] == 512 and call["do_sample"] is True
+        and call["temperature"] == 0.7 and call["top_p"] == 0.95
+        and call["top_k"] == 0
         for call in batch_model.calls
     )
     assert processor.batch_sizes == [4] * 8
@@ -175,6 +177,7 @@ def test_tail_batch_and_fsdp_generation_order(monkeypatch):
     assert processor.batch_sizes == [4, 1]
     assert len(model.calls) == 2
     assert all(call["synced_gpus"] is True for call in model.calls)
+    assert all(call["do_sample"] is False and call["max_new_tokens"] == 128 for call in model.calls)
     assert rate == 1
     assert reasons == {"ok": 5}
     assert [sample["record_id"] for sample in samples] == [
@@ -233,3 +236,45 @@ def test_padding_side_and_training_mode_restore_after_failure():
 
     assert processor.tokenizer.padding_side == "right"
     assert model.training
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_sampling_restores_rng_even_on_failure(fail):
+    class RandomModel(FakeModel):
+        def generate(self, **kwargs):
+            torch.rand(17)
+            if fail:
+                raise RuntimeError("generation failure")
+            return super().generate(**kwargs)
+
+    torch.manual_seed(73)
+    before = torch.get_rng_state().clone()
+    model = RandomModel()
+    if fail:
+        with pytest.raises(RuntimeError, match="generation failure"):
+            trainer.evaluate_format(model, FakeProcessor(), FakeDataset(32), torch.device("cpu"))
+    else:
+        trainer.evaluate_format(model, FakeProcessor(), FakeDataset(32), torch.device("cpu"))
+    assert torch.equal(torch.get_rng_state(), before)
+    assert model.training
+
+
+def test_sampling_seed_is_repeatable_and_metadata_records_overrides():
+    draws = []
+    class RandomModel(FakeModel):
+        def generate(self, **kwargs):
+            draws.append(torch.rand(3))
+            return super().generate(**kwargs)
+    for training_seed in (17, 38):
+        torch.manual_seed(training_seed)
+        _, _, samples = trainer.evaluate_format(
+            RandomModel(), FakeProcessor(), FakeDataset(32), torch.device("cpu"),
+            batch_size=32, temperature=0.8, top_p=0.9, max_new_tokens=64,
+            generation_seed=12,
+        )
+    assert torch.equal(draws[0], draws[1])
+    assert samples[0]["generation"] == {
+        "do_sample": True, "max_new_tokens": 64, "eos_token_id": 90,
+        "pad_token_id": 91, "temperature": 0.8, "top_p": 0.9,
+        "top_k": 0, "generation_seed": 12, "backend": "transformers",
+    }

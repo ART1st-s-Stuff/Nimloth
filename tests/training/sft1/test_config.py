@@ -76,3 +76,22 @@ def test_format_cli_can_override_convergence_and_checkpointing():
         ]
     )
     assert overridden.format_eval_batch_size == 2
+
+
+def test_format_sampling_defaults_and_overrides():
+    from nimloth.training.sft.stage1.cli import parse_args
+    common = ["--model", "/tmp/model", "--train-jsonl", "/tmp/train",
+              "--val-jsonl", "/tmp/val", "--format-eval-jsonl", "/tmp/format",
+              "--output-dir", "/tmp/out"]
+    args, _ = parse_args(common)
+    assert (args.format_eval_temperature, args.format_eval_top_p,
+            args.format_eval_max_new_tokens, args.format_eval_generation_seed) == (0.7, 0.95, 512, 0)
+    defaults = sft1_yaml_defaults(ROOT / "configs/training/sft1/format.yaml")
+    assert defaults["format_eval_temperature"] == 0.7
+    args, _ = parse_args(common + ["--format-eval-temperature", "0.8", "--format-eval-generation-seed", "12"])
+    assert args.format_eval_temperature == 0.8
+    assert args.format_eval_generation_seed == 12
+    for flag, value in [("temperature", "nan"), ("temperature", "-1"), ("top-p", "0"),
+                        ("max-new-tokens", "0"), ("generation-seed", "-1")]:
+        with pytest.raises(ValueError, match="format-eval"):
+            parse_args(common + [f"--format-eval-{flag}", value])

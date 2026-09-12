@@ -88,3 +88,5 @@ WM/value/MCTS。完整参数、导出前置条件和恢复合同见上层 evalua
 原运行通过既有 workflow `--resume --action-token-loss-weight 16 --boundary-token-loss-weight 16` 调整目标，无新入口。workflow 保留原 `workflow.json`，追加 `workflow_resumes.jsonl` 保存每次请求；新 checkpoint 的 identity/config 保存实际权重及 `action_boundaries_and_eos_v1`。旧 checkpoint 缺少 boundary 字段按 1 解释。为核验旧配置内容，旧 manifest 只有配置 SHA 时仍要求原 YAML 不变，使用 CLI 覆盖权重。
 
 每轮同时记录 `validation_lm_loss` 与 `validation_weighted_lm_loss`，共享一次 forward，按真实验证样本平均并排除分布式补齐样本。后者使用本轮动作/边界权重，仅用于对照；收敛和 best checkpoint 仍由未加权 LM loss 决定。
+
+Stage 1 每轮格式验证默认采用 temperature=0.7、top_p=0.95、top_k=0（不截断）、最多512个新token和generation seed=0的无约束采样。通过现有 `--format-eval-temperature`、`--format-eval-top-p`、`--format-eval-max-new-tokens`、`--format-eval-generation-seed` 覆盖；原始样本及manifest记录实际生成合同。验证恢复训练RNG，不改变loss、best或收敛规则；旧checkpoint可继续使用，变更的验证合同不能当作同口径历史比较。Stage 2 默认仍为greedy/128。Transformers与vLLM的同参数采样不保证逐token一致。

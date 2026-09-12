@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 from pathlib import Path
@@ -126,6 +127,10 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         default=1,
         help="Prompts per generate() call during epoch-end format evaluation.",
     )
+    ap.add_argument("--format-eval-temperature", type=float, default=0.7 if stage == "format" else 0.0)
+    ap.add_argument("--format-eval-top-p", type=float, default=0.95 if stage == "format" else 1.0)
+    ap.add_argument("--format-eval-max-new-tokens", type=int, default=512 if stage == "format" else 128)
+    ap.add_argument("--format-eval-generation-seed", type=int, default=0)
     ap.add_argument("--wandb-run-name", default=None, help="Optional wandb run name.")
     ap.add_argument(
         "--no-wandb",
@@ -275,6 +280,14 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         raise ValueError("--resume-save-steps must be >= 1")
     if stage == "format" and args.format_eval_samples != 32:
         raise ValueError("Stage 1 requires exactly 32 format-eval samples")
+    if not math.isfinite(args.format_eval_temperature) or args.format_eval_temperature < 0:
+        raise ValueError("--format-eval-temperature must be finite and >= 0")
+    if not math.isfinite(args.format_eval_top_p) or not 0 < args.format_eval_top_p <= 1:
+        raise ValueError("--format-eval-top-p must be in (0, 1]")
+    if args.format_eval_max_new_tokens < 1:
+        raise ValueError("--format-eval-max-new-tokens must be >= 1")
+    if not 0 <= args.format_eval_generation_seed < 2**32:
+        raise ValueError("--format-eval-generation-seed must be in [0, 2**32)")
     if args.format_eval_batch_size < 1:
         raise ValueError("--format-eval-batch-size must be >= 1")
 

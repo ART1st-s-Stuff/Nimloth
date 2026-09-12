@@ -147,6 +147,10 @@ def evaluate_format(
     max_samples: int = 32,
     *,
     batch_size: int = 1,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    max_new_tokens: int | None = None,
+    generation_seed: int = 0,
     latent_token_count: int | None = None,
     latent_query_mode: str | None = None,
 ) -> tuple[float, dict[str, int], list[dict[str, Any]]]:
@@ -207,12 +211,29 @@ def evaluate_format(
             }
         )
 
+    temperature = (0.7 if strict_stage1 else 0.0) if temperature is None else temperature
+    top_p = (0.95 if strict_stage1 else 1.0) if top_p is None else top_p
+    max_new_tokens = (512 if strict_stage1 else 128) if max_new_tokens is None else max_new_tokens
     tokenizer = processor.tokenizer
+    generation = {
+        "do_sample": temperature > 0,
+        "max_new_tokens": max_new_tokens,
+        "eos_token_id": tokenizer.eos_token_id,
+        "pad_token_id": tokenizer.pad_token_id,
+    }
+    if temperature > 0:
+        generation.update(temperature=temperature, top_p=top_p, top_k=0)
+    generation_metadata = {**generation, "generation_seed": generation_seed, "backend": "transformers"}
+    rng_state = capture_rng_state()
     original_padding_side = tokenizer.padding_side
     started_at = time.monotonic()
     batch_count = math.ceil(len(prepared) / batch_size)
     module.eval()
     try:
+        # 隔离验证采样，避免改变后续训练的 dropout/RNG 恢复轨迹。
+        torch.random.default_generator.manual_seed(generation_seed)
+        if device.type == "cuda":
+            torch.cuda.manual_seed(generation_seed)
         tokenizer.padding_side = "left"
         with generation_model(model) as generation_module:
             for batch_index, start in enumerate(
@@ -232,8 +253,7 @@ def evaluate_format(
                 inputs = {key: value.to(device) for key, value in inputs.items()}
                 output_ids = generation_module.generate(
                     **inputs,
-                    max_new_tokens=128,
-                    do_sample=False,
+                    **generation,
                     **({"synced_gpus": True} if is_fsdp(model) else {}),
                 )
                 prompt_width = inputs["input_ids"].shape[1]
@@ -282,6 +302,7 @@ def evaluate_format(
                     sampled_token_ids = [int(token_id) for token_id in new_ids]
                     samples.append(
                         {
+                            "generation": generation_metadata,
                             "dataset_index": item["dataset_index"],
                             "record_id": item["record_id"],
                             "sampled_token_ids": sampled_token_ids,
@@ -312,6 +333,7 @@ def evaluate_format(
                         flush=True,
                     )
     finally:
+        restore_rng_state(rng_state)
         tokenizer.padding_side = original_padding_side
         if was_training:
             module.train()
@@ -533,6 +555,10 @@ def maybe_init_wandb(args: argparse.Namespace) -> Any | None:
             "boundary_token_loss_weight": args.boundary_token_loss_weight,
             "format_eval_samples": args.format_eval_samples,
             "format_eval_batch_size": args.format_eval_batch_size,
+            "format_eval_temperature": args.format_eval_temperature,
+            "format_eval_top_p": args.format_eval_top_p,
+            "format_eval_max_new_tokens": args.format_eval_max_new_tokens,
+            "format_eval_generation_seed": args.format_eval_generation_seed,
             "max_length": args.max_length,
             "seed": args.seed,
             "lora": args.lora,
@@ -618,6 +644,7 @@ def _publish_format_samples(
         "samples": len(samples),
         "denominator": len(samples),
         "sample_record_ids": [sample["record_id"] for sample in samples],
+        "generation": samples[0].get("generation") if samples else None,
         "jsonl": str(path),
         "jsonl_sha256": _file_sha256(path),
     }
@@ -749,6 +776,10 @@ def main(*, stage: str = "format") -> int:
                     "cache_pixel_dtype": args.cache_pixel_dtype,
                     "format_eval_samples": args.format_eval_samples,
                     "format_eval_batch_size": args.format_eval_batch_size,
+                    "format_eval_temperature": args.format_eval_temperature,
+                    "format_eval_top_p": args.format_eval_top_p,
+                    "format_eval_max_new_tokens": args.format_eval_max_new_tokens,
+                    "format_eval_generation_seed": args.format_eval_generation_seed,
                 }
             )
         )
@@ -1436,6 +1467,11 @@ def main(*, stage: str = "format") -> int:
             device,
             args.format_eval_samples,
             batch_size=args.format_eval_batch_size,
+            temperature=args.format_eval_temperature,
+            top_p=args.format_eval_top_p,
+            max_new_tokens=args.format_eval_max_new_tokens,
+            generation_seed=args.format_eval_generation_seed,
+
             latent_token_count=args.latent_token_count,
             latent_query_mode=args.latent_query_mode,
         )

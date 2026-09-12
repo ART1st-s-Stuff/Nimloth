@@ -163,16 +163,21 @@ def main(argv: list[str] | None = None) -> int:
                  'config')}
     # Absolute diagnostic step caps are stop controls, not objective identity.
     # Removing or raising one must allow continuation from the same saved state.
+    execution_flags = {
+        '--max-optimizer-steps', '--format-eval-batch-size',
+        '--format-eval-temperature', '--format-eval-top-p',
+        '--format-eval-max-new-tokens', '--format-eval-generation-seed',
+    }
     identity_overrides = []
     index = 0
     while index < len(overrides):
         flag = overrides[index]
-        if flag in {'--max-optimizer-steps', '--format-eval-batch-size'}:
+        if flag in execution_flags:
             if index + 1 >= len(overrides):
                 parser.error(f'{flag} requires a value')
             index += 2
             continue
-        if not flag.startswith(('--max-optimizer-steps=', '--format-eval-batch-size=')):
+        if flag.split("=", 1)[0] not in execution_flags:
             identity_overrides.append(flag)
         index += 1
     contract.update(

@@ -31,5 +31,9 @@ train:
   num_workers: 4
   format_eval_samples: 32
   format_eval_batch_size: 4
+  format_eval_temperature: 0.7
+  format_eval_top_p: 0.95
+  format_eval_max_new_tokens: 512
+  format_eval_generation_seed: 0
   seed: 42
   no_wandb: true
