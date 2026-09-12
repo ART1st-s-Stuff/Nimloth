@@ -119,3 +119,40 @@ Implemented and locally validated the strict DeepSight-style K16 SFT1-v2 code ca
 ### Status
 
 [OK] **Completed**
+
+
+## Session 5: SFT1 FP32 token训练与epoch2/3评估收尾
+<!-- trellis-session: v=2 fp=8d6ab799b8f601a6 -->
+
+**Date**: 2026-09-12
+**Task**: SFT1 FP32 token训练与epoch2/3评估收尾
+**Branch**: `codex/fix-sft1-termination-retrain`
+
+### Summary
+
+完成FP32 embedding/head主参数与BF16前向支持及PEFT标记识别修复。LoRA/token LR均5e-5，动作权重2、边界EOS权重8，从原始语义初始化训练5epoch。五轮格式32/32。epoch2标准120测试成功38/120，epoch3为31/120。训练和评估进程结束，GPU释放，监控暂停。固定5轮不代表证明收敛。
+
+### Main Changes
+
+- 产物根：/mnt/nimloth/outputs/experiments/sft1-rollout2000/20260912T130307Z_token_fp32_lr5e5_action2_boundary8_epoch5。a100-1保存训练及epoch3_success_test120；a100-2保存epoch2_success_test120；各控制目录保留launch/end日志。
+- 验证LM loss五轮：0.381900,0.371837,0.371460,0.370622,0.370495；加权：0.323109,0.299800,0.299270,0.298537,0.298436。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `1627d618` | feat(sft1): retain FP32 embedding masters with BF16 forward |
+| `96f5972e` | fix(sft1): identify FP32 master leaves without PEFT forwarding |
+
+### Testing
+
+- [OK] 16项独立CPU回归、Ruff及diff检查通过；真实8GPU验证首轮格式32/32、epoch1 COMMITTED并进入epoch2。
+- [OK] FP32 master及Adam状态和实际更新已核验；导出698张量核验、真实AI2THOR渲染通过；两次完整120episode评估。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 未授权新增训练或评估；代码尚未在本轮合并或push。保留epoch2为本次已评估checkpoint中成功率较高者，单次采样比较不证明统计显著性。
