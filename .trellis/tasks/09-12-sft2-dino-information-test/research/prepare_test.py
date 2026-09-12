@@ -54,6 +54,17 @@ def input_root(contract):
     return Path(value)
 
 
+def source_base_model(contract):
+    """Transferred adapters need explicit original base lineage."""
+    value = contract.get('source_base_model')
+    if value is None:
+        value = Path(contract['source_checkpoint']).parents[1] / 'base'
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError('source_base_model must be absolute')
+    return path
+
+
 def dino_dependencies(cache, files):
     """Check JSONL dependencies before CPU export or image processing."""
     manifest = json.loads((cache / 'manifest.json').read_text())
@@ -196,10 +207,17 @@ def main():
         '.trellis/tasks/09-12-sft2-dino-information-test/research/test_evaluate_dino.py',
         '.trellis/tasks/09-12-sft2-dino-information-test/research/test_run_test.py', '-q'])
     run('export', [python, '-m', 'nimloth.training.sft.stage1.checkpoint_export',
-        '--base-model', str(source.parents[1] / 'base'), '--adapter-dir', str(source),
+        '--base-model', str(source_base_model(contract)), '--adapter-dir', str(source),
         '--out-dir', str(root / 'base'), '--dtype', 'bfloat16'])
     options = dict(grid_size=8, query_count=64, max_length=20000, min_pixels=3136, max_pixels=100352)
     identity = audit_identity(checkout, root / 'base', root, files, options)
+    if contract.get('reuse_legacy_contract'):
+        from reuse_audit import reuse_legacy
+        reuse_legacy(contract, files, options)
+        event('input_audit_legacy_reused', source=contract['reuse_legacy_contract'])
+        env.update(contract['env'])
+        os.execve(python, [python, str(checkout / '.trellis/tasks/09-12-sft2-dino-information-test/research/run_test.py'),
+                          '--contract', str(args.contract.resolve())], env)
     previous = contract.get('reuse_input_audit')
     reused = False
     if previous:
