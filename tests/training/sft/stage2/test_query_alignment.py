@@ -683,3 +683,23 @@ def test_selective_ce_matches_dense_masked_loss_and_gradients(successes, monkeyp
         assert parameter.grad is not None, name
         assert torch.isfinite(parameter.grad).all(), name
         torch.testing.assert_close(parameter.grad, old_parameter.grad)
+
+
+def test_projector_learning_rate_is_independent_and_embedding_group_stable():
+    model = make_model()
+    optimizer = build_optimizer(model, 5e-5, 5e-5, 0, projector_lr=1e-6)
+    assert [group["lr"] for group in optimizer.param_groups] == [5e-5, 5e-5, 1e-6]
+    assert {id(p) for p in optimizer.param_groups[2]["params"]} == {id(p) for p in model.projector.parameters()}
+    assert {id(p) for p in optimizer.param_groups[1]["params"]} == {
+        id(p) for name, p in model.named_parameters() if "embed_tokens" in name or "lm_head" in name
+    }
+    all_params = [id(p) for group in optimizer.param_groups for p in group["params"]]
+    assert len(all_params) == len(set(all_params)) == sum(p.requires_grad for p in model.parameters())
+    before = model.projector.net[0].weight.detach().clone()
+    for p in model.parameters():
+        if p.requires_grad:
+            p.grad = torch.ones_like(p)
+    optimizer.step()
+    torch.testing.assert_close(model.projector.net[0].weight, before - 1e-6)
+    legacy = build_optimizer(model, 5e-5, 5e-5, 0)
+    assert len(legacy.param_groups) == 2

@@ -306,23 +306,30 @@ def build_optimizer(
     lr: float,
     embedding_lr: float | None,
     weight_decay: float,
+    projector_lr: float | None = None,
 ) -> torch.optim.AdamW:
     embed_lr = embedding_lr if embedding_lr is not None else lr
     embed_keys = ("embed_tokens", "lm_head")
     embed_params: list[torch.nn.Parameter] = []
     base_params: list[torch.nn.Parameter] = []
+    projector_params: list[torch.nn.Parameter] = []
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        if any(key in name for key in embed_keys):
+        if projector_lr is not None and "projector" in name.split("."):
+            projector_params.append(param)
+        elif any(key in name for key in embed_keys):
             embed_params.append(param)
         else:
             base_params.append(param)
+    groups = [{"params": base_params, "lr": lr},
+              {"params": embed_params, "lr": embed_lr}]
+    if projector_lr is not None:
+        if not projector_params:
+            raise ValueError("projector_lr requires trainable projector parameters")
+        groups.append({"params": projector_params, "lr": projector_lr})
     return torch.optim.AdamW(
-        [
-            {"params": base_params, "lr": lr},
-            {"params": embed_params, "lr": embed_lr},
-        ],
+        groups,
         weight_decay=weight_decay,
         foreach=False,
     )
@@ -451,6 +458,8 @@ def _resume_identity(
         "lora_dropout": args.lora_dropout,
         "lora_target_modules": args.lora_target_modules,
     }
+    if getattr(args, "projector_lr", None) is not None:
+        identity["projector_lr"] = args.projector_lr
     if getattr(args, "embedding_master_dtype", "bfloat16") != "bfloat16":
         identity["embedding_master_dtype"] = args.embedding_master_dtype
     if getattr(args, "distributed_strategy", "ddp") == "fsdp":
@@ -794,12 +803,12 @@ def main(*, stage: str = "format") -> int:
         load_lora_adapter_state(language_model, resume_dir)
     model.config.nimloth_training_stage = stage
     model.to(device)
-    optimizer = build_optimizer(model, args.lr, args.embedding_lr, args.weight_decay)
+    optimizer = build_optimizer(model, args.lr, args.embedding_lr, args.weight_decay, args.projector_lr)
     if getattr(args, "distributed_strategy", "ddp") == "fsdp":
         if world < 2 or device.type != "cuda":
             raise ValueError("FSDP requires multi-rank CUDA training")
         model = wrap_fsdp(model, device)
-        optimizer = build_optimizer(model, args.lr, args.embedding_lr, args.weight_decay)
+        optimizer = build_optimizer(model, args.lr, args.embedding_lr, args.weight_decay, args.projector_lr)
     elif world > 1:
         model = DDP(
             model,

@@ -56,6 +56,7 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         default=None,
         help="LR for embed_tokens and lm_head (default: same as --lr).",
     )
+    ap.add_argument("--projector-lr", type=float, default=None, help="Stage2 projector LR (default: --lr).")
     ap.add_argument("--embedding-master-dtype", choices=("bfloat16", "float32"), default="bfloat16")
     ap.add_argument("--weight-decay", type=float, default=0.01)
     ap.add_argument("--warmup-ratio", type=float, default=0.05)
@@ -196,6 +197,8 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         if action.required and action.default is not None:
             action.required = False
     args = ap.parse_args(argv)
+    if args.projector_lr is not None and (stage != "query" or not 0 < args.projector_lr < float("inf")):
+        raise ValueError("projector_lr requires Stage2 and a finite positive value")
     if args.embedding_master_dtype not in ("bfloat16", "float32"):
         raise ValueError("unsupported embedding master dtype")
     if args.embedding_master_dtype == "float32" and not (args.lora and args.distributed_strategy == "fsdp"):
