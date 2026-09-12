@@ -7,7 +7,49 @@ from prepare_test import digest, audit_identity, reusable_audit
 from run_test import validate_audit
 
 
+def effective_processor_identity(model, options):
+    """Compare loaded behavior, not equivalent alternate JSON serialization."""
+    from transformers import AutoProcessor
+    from nimloth.latent import add_special_tokens
+    processor = AutoProcessor.from_pretrained(model, local_files_only=True)
+    image = processor.image_processor
+    image.min_pixels = options['min_pixels']
+    image.max_pixels = options['max_pixels']
+    tokenizer = processor.tokenizer
+    add_special_tokens(tokenizer, latent_token_count=options['query_count'])
+    # The real audit and this run process one trajectory per batch. Padding side
+    # therefore cannot alter encoded tokens (no shorter neighbor to pad against).
+    tokenizer.padding_side = 'left'
+    image_config = image.to_dict()
+    for key in ('_name_or_path', 'name_or_path'):
+        image_config.pop(key, None)
+    if 'size' in image_config:
+        # Transformers4.49 Qwen2VL preprocess uses min_pixels/max_pixels directly;
+        # newer serialized configs may also carry a stale `size` resource field.
+        import inspect
+        source = inspect.getsource(type(image)._preprocess)
+        if 'self.min_pixels' not in source or 'self.max_pixels' not in source:
+            raise ValueError('image runtime pixel-bound behavior needs review')
+        image_config['size'] = {'shortest_edge': image.min_pixels,
+                                'longest_edge': image.max_pixels}
+    special = {key: [str(x) for x in value] if isinstance(value, list) else str(value)
+               for key, value in tokenizer.special_tokens_map.items()}
+    return {'backend': json.loads(tokenizer.backend_tokenizer.to_str()),
+            'special_tokens': special, 'special_token_ids': tokenizer.all_special_ids,
+            'chat_template': processor.chat_template,
+            'tokenizer_class': type(tokenizer).__name__,
+            'model_input_names': tokenizer.model_input_names,
+            'padding_side_for_single_record_batch': tokenizer.padding_side,
+            'pad_token_type_id': tokenizer.pad_token_type_id,
+            'truncation_side': tokenizer.truncation_side,
+            'model_max_length': tokenizer.model_max_length,
+            'image_processor_class': type(image).__name__, 'image_processor': image_config}
+
+
 def reuse_legacy(contract, files, options):
+    from run_test import argument
+    if int(argument(contract['train_argv'], '--batch-size')) != 1:
+        raise ValueError('legacy processor equivalence requires batch-size 1')
     checkout = Path(contract['checkout'])
     old_contract_path = Path(contract['reuse_legacy_contract'])
     old = json.loads(old_contract_path.read_text())
@@ -21,18 +63,12 @@ def reuse_legacy(contract, files, options):
     old_identity = audit_identity(checkout, old_root / 'base', old_root, files, options)
     if identity['inputs'] != old_identity['inputs']:
         raise ValueError('legacy input bytes/paths differ')
-    # Model configuration/weight precision is not consumed by AutoProcessor.
-    names = lambda p: {x.name for x in p.iterdir() if x.is_file() and
-        (x.name.startswith(('tokenizer', 'special_tokens', 'added_tokens', 'vocab',
-                            'merges', 'preprocessor', 'processor', 'chat_template')))}
     before, after = old_root / 'base', root / 'base'
-    if names(before) != names(after) or not {'tokenizer_config.json', 'preprocessor_config.json'} <= names(before):
-        raise ValueError('processor resources missing or changed')
-    resources = {}
-    for name in sorted(names(before)):
-        if digest(before / name) != digest(after / name):
-            raise ValueError('processor resource differs: ' + name)
-        resources[name] = digest(after / name)
+    resources = effective_processor_identity(before, options)
+    current_resources = effective_processor_identity(after, options)
+    if resources != current_resources:
+        differing = [key for key in resources if resources[key] != current_resources.get(key)]
+        raise ValueError('effective processor behavior differs: ' + ', '.join(differing))
     # Audit and tokenization/collation source must be byte-identical to the full scan.
     paths = [Path('src/nimloth/training/sft/stage1/data.py'),
              Path('src/nimloth/training/sft/stage2/data.py'),
@@ -67,7 +103,7 @@ def reuse_legacy(contract, files, options):
              'original_report_sha256': digest(old_root / 'input_audit.json'),
              'original_contract_sha256': digest(old_contract_path),
              'original_commit': old['commit'], 'current_commit': contract['commit'],
-             'input_identity_now': identity, 'exact_processor_resources': resources,
+             'input_identity_now': identity, 'effective_processor_resources': resources,
              'unchanged_input_processing_sources': sources,
              'reviewed_dino_source_sha256': hashlib.sha256(reviewed).hexdigest(),
              'dino_change': 'shard-reference serialization only; target tensors and lookup unchanged'}
