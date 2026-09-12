@@ -478,16 +478,25 @@ def test_real_tiny_qwen_multimodal_forward_and_backward():
         resize_token_embeddings_and_sync_vocab,
     )
 
+    import inspect
+
+    text = {
+        "vocab_size": 32,
+        "hidden_size": 16,
+        "intermediate_size": 32,
+        "num_hidden_layers": 1,
+        "num_attention_heads": 2,
+        "num_key_value_heads": 2,
+        "rope_scaling": {"type": "mrope", "mrope_section": [1, 1, 2]},
+    }
+    # HF 4.49 stores text settings on the root config; newer HF owns a typed
+    # text_config. Passing the latter through legacy **kwargs creates a dict
+    # instead of the decoder config and fails before the actual forward.
+    text_kwargs = ({"text_config": text}
+                   if "text_config" in inspect.signature(Qwen2_5_VLConfig).parameters
+                   else text)
     config = Qwen2_5_VLConfig(
-        text_config={
-            "vocab_size": 32,
-            "hidden_size": 16,
-            "intermediate_size": 32,
-            "num_hidden_layers": 1,
-            "num_attention_heads": 2,
-            "num_key_value_heads": 2,
-            "rope_scaling": {"type": "mrope", "mrope_section": [1, 1, 2]},
-        },
+        **text_kwargs,
         vision_config={
             "depth": 1,
             "hidden_size": 16,
@@ -530,7 +539,8 @@ def test_real_tiny_qwen_multimodal_forward_and_backward():
     assert model.projector.net[0].weight.grad.abs().sum() > 0
     assert any(
         parameter.grad is not None and parameter.grad.abs().sum() > 0
-        for parameter in language_model.model.visual.parameters()
+        for parameter in (getattr(language_model, "visual", None)
+                          or language_model.model.visual).parameters()
     )
 
 
