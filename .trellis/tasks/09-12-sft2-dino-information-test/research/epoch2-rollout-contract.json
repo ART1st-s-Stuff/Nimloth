@@ -12,7 +12,7 @@
     "HOME": "/mnt/nimloth/env_home",
     "PYTHONPATH": "/mnt/nimloth/.worktree/epoch7-eval/src:/mnt/nimloth/sources/vagen",
     "CUDA_VISIBLE_DEVICES": "0",
-    "CPATH": "/usr/include/python3.10"
+    "CPATH": "/mnt/nimloth/dependencies/python310-dev/root/usr/include/python3.10:/mnt/nimloth/dependencies/python310-dev/root/usr/include"
   },
   "server_argv": [
     "/mnt/nimloth/venv/bin/python3",
