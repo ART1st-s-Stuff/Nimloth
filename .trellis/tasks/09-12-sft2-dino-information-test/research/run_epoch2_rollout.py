@@ -79,6 +79,11 @@ def main():
             if complete and not compute:
                 break
             time.sleep(5)
+        run_phase(
+            ['vulkaninfo', '--summary'], phase='vulkaninfo', checkout=checkout,
+            env=env, logs=logs, deadline=min(deadline - 40, time.monotonic() + 100),
+            event=event,
+        )
         model = Path(argument(contract['rollout_argv'], '--checkpoint'))
         if not (model / 'config.json').is_file() or not (model / 'grid_state_config.json').is_file():
             raise ValueError('exported Stage2 model missing')
@@ -109,6 +114,12 @@ def main():
                     break
             except OSError:
                 time.sleep(1)
+        run_phase(
+            [contract['rollout_argv'][0], str(Path(__file__).with_name('gate_rollout_environment.py')),
+             '--contract', str(args.contract.resolve())],
+            phase='environment_gate', checkout=checkout, env=env, logs=logs,
+            deadline=min(deadline - 40, time.monotonic() + 640), event=event,
+        )
         # Keep an additional cleanup allowance for the environment after run_phase.
         run_phase(contract['rollout_argv'], phase='rollout', checkout=checkout,
                   env=env, logs=logs, deadline=deadline - 40, event=event)
