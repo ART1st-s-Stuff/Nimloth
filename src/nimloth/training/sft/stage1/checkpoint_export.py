@@ -186,6 +186,11 @@ def merge_checkpoint(
         merged.config.nimloth_format_objective = format_objective
         identity = training_state.get("identity")
         identity = identity if isinstance(identity, dict) else {}
+        from .loss import BOUNDARY_TOKEN_LOSS_SCOPE
+        from .checkpoint import objective_identities_match
+        objective_identities_match(identity, identity)
+        merged.config.nimloth_boundary_token_loss_weight = identity.get("boundary_token_loss_weight", 1.0)
+        merged.config.nimloth_boundary_token_loss_scope = identity.get("boundary_token_loss_scope", None if identity.get("stage") == "query" else BOUNDARY_TOKEN_LOSS_SCOPE)
         merged.config.nimloth_action_token_loss_weight = identity.get(
             "action_token_loss_weight", 1.0
         )

@@ -57,6 +57,7 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap.add_argument("--distributed-strategy", choices=("ddp", "fsdp"), default="ddp")
     ap.add_argument("--grad-accum", type=int, default=8)
     ap.add_argument("--action-token-loss-weight", type=float, default=1.0)
+    ap.add_argument("--boundary-token-loss-weight", type=float, default=1.0)
     ap.add_argument("--lr", type=float, default=1e-6)
     ap.add_argument(
         "--embedding-lr",
@@ -216,7 +217,8 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     if args.max_optimizer_steps is not None and args.max_optimizer_steps < 1:
         raise ValueError("--max-optimizer-steps must be positive")
     args.action_token_loss_weight = validate_action_weight(args.action_token_loss_weight)
-    if stage != "format" and args.action_token_loss_weight != 1:
+    args.boundary_token_loss_weight = validate_action_weight(args.boundary_token_loss_weight)
+    if stage != "format" and (args.action_token_loss_weight != 1 or args.boundary_token_loss_weight != 1):
         raise ValueError("action token loss weighting is supported only for format stage1")
     policy_values = (
         args.convergence_min_epochs, args.convergence_patience_epochs,

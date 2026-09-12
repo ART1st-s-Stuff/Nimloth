@@ -31,7 +31,6 @@ def test_format_no_k(tmp_path):
     [
         {"nimloth_format_objective": "old"},
         {"nimloth_action_token_loss_scope": "action_boundaries_and_numbers"},
-        {"nimloth_action_token_loss_weight": 1.0},
     ],
 )
 def test_format_rejects_old_loss_identity(tmp_path, override):
@@ -71,3 +70,14 @@ def test_query_requires_artifacts(tmp_path, mode):
     (path / 'grid_state_config.json').write_text(json.dumps(metadata))
     (path / 'tokenizer.json').write_text(json.dumps({'added_tokens': [{'content': '<|latent_state|>', 'id': 7}]}))
     assert load_early_checkpoint(path, 'stage2').query_mode == mode
+
+
+@pytest.mark.parametrize('weight', [1.0, 8.0, 16.0])
+def test_declared_protocol_weights_accepted(tmp_path, weight):
+    path = checkpoint(tmp_path, nimloth_training_stage='format',
+        nimloth_format_objective='format_answer_ce_v2',
+        nimloth_action_token_loss_scope='action_number_tokens_v1',
+        nimloth_action_token_loss_weight=weight,
+        nimloth_boundary_token_loss_scope='action_boundaries_and_eos_v1',
+        nimloth_boundary_token_loss_weight=weight)
+    assert load_early_checkpoint(path, 'stage1').stage == 'stage1'

@@ -29,7 +29,7 @@ epoch 末尾先输出 `validation_complete`，包含 `epoch`、`global_step` 和
 - `data.py`：读取记录中的对话和截图，构造仅监督回答的标签，屏蔽提示词和填充，stage1移除所有角色文本中的历史 latent 标记（原始 JSONL/截图不变），保留真实 CoT 和动作；使用右侧填充保留文本区间的位置关系，并负责样本编码缓存。
 - `config.py`：读取 YAML 默认配置。`cli.py`：定义命令行选项，在加载模型前校验训练阶段和参数。
 - `trainer.py`：加载 Qwen、设置可训练参数、构建优化器，驱动梯度累积、离线验证和 epoch checkpoint 保存。SFT1直接使用 teacher forcing 的回答 CE，不计算 DINO 或 WM 损失。SFT2显式选择 query 阶段后复用同一训练生命周期。
-- `loss.py`：`--action-token-loss-weight`（YAML `train.action_token_loss_weight`）仅为八个 `<|action_(i)|>` 动作编号 token 加权；动作起止、EOS 和其他有效回答 token 权重均为 1。loss 按每微批次有效权重和归一化，保持梯度累积方式。底层参数 1 保留未加权 loss 路径，标准 Stage 1 配置为 8；stage2 拒绝大于 1。验证与收敛仍使用未加权 LM loss，缓存不因权重改变而重建；checkpoint 身份同时包含权重和 `action_number_tokens_v1` 范围，旧的边界加权 checkpoint 不可恢复优化器或收敛历史。
+- `loss.py`：`--action-token-loss-weight` / YAML `train.action_token_loss_weight` 为八个动作编号加权；`--boundary-token-loss-weight` / YAML `train.boundary_token_loss_weight` 为动作起止和 tokenizer EOS 加权，其余回答 token 为 1。两个底层默认值均为 1，标准配置动作值仍为 8；stage2 拒绝任一非 1 权重。按微批次有效权重和归一化，不改变 BF16 参数或缓存。验证与收敛仍使用未加权 LM loss。
 - `convergence.py`：验证 loss 收敛状态和可恢复的停止策略。
 - `distributed.py`：建立和清理分布式进程组，提供主进程判断与同步；checkpoint 模块不依赖训练循环。
 - `checkpoint.py`：保存训练状态、查找恢复位置和校验阶段身份，独立于训练循环。
@@ -41,7 +41,7 @@ Stage1 不接受 K、query mode、query mask 的 CLI、环境变量或 YAML 配�
 
 Cache 使用 `nimloth_early_stage_cache_v7`，记录 `format_answer_ce_v2` 与 `remove_latent_markers_all_roles` 投影身份；旧缓存或无身份 tensor 不能静默复用。格式指标检查模型生成的 CoT 与动作块，不要求 latent 块。
 
-Checkpoint 保存 `training_stage=format`、`format_objective=format_answer_ce_v2`、`action_token_loss_scope=action_number_tokens_v1`，query 参数为空。旧 query 训练 checkpoint 以及缺少当前 loss 范围的旧 Stage 1 checkpoint 不可恢复为当前格式阶段。完整优化步 checkpoint 以 COMMITTED 标记发布，保存优化器、调度器、各 rank RNG 和数据位置；恢复校验完整身份。训练期自由生成必须实际生成 EOS，EOS 后只能有 padding；移除终止表示后的正文交给正式 Stage 1 rollout 的严格全文 parser。缺 EOS、长度截断、尾随内容或重复动作块均失败，失败原因写入每轮 validation metrics。离线 loss/格式验证不等于环境 rollout；format-only 产物通过统一评估入口的 `--stage stage1` 执行真实环境验收。
+Checkpoint 保存 `training_stage=format`、`format_objective=format_answer_ce_v2`、`action_token_loss_scope=action_number_tokens_v1`，query 参数为空。旧 query 训练 checkpoint 以及缺少当前 loss 范围的旧 Stage 1 checkpoint 不可恢复为当前格式阶段。完整优化步 checkpoint 以 COMMITTED 标记发布，保存优化器、调度器、各 rank RNG 和数据位置；恢复校验非权重身份；已知 loss 范围内的权重差异记录警告，并正常恢复 optimizer、scheduler、RNG、数据游标和未加权 LM 收敛历史。未知范围仍拒绝。训练期自由生成必须实际生成 EOS，EOS 后只能有 padding；移除终止表示后的正文交给正式 Stage 1 rollout 的严格全文 parser。缺 EOS、长度截断、尾随内容或重复动作块均失败，失败原因写入每轮 validation metrics。离线 loss/格式验证不等于环境 rollout；format-only 产物通过统一评估入口的 `--stage stage1` 执行真实环境验收。
 
 ## 训练至收敛
 
@@ -84,3 +84,7 @@ before restoring the optimizer; remove or raise the cap to continue training.
 31/32 才开始环境 episode；失败保存证据并返回 2。门禁和真实环境 runner 共享
 sampled-token EOS 校验。该过程与离线 loss validation 分开，不加载
 WM/value/MCTS。完整参数、导出前置条件和恢复合同见上层 evaluation/README.md。
+
+原运行通过既有 workflow `--resume --action-token-loss-weight 16 --boundary-token-loss-weight 16` 调整目标，无新入口。workflow 保留原 `workflow.json`，追加 `workflow_resumes.jsonl` 保存每次请求；新 checkpoint 的 identity/config 保存实际权重及 `action_boundaries_and_eos_v1`。旧 checkpoint 缺少 boundary 字段按 1 解释。为核验旧配置内容，旧 manifest 只有配置 SHA 时仍要求原 YAML 不变，使用 CLI 覆盖权重。
+
+每轮同时记录 `validation_lm_loss` 与 `validation_weighted_lm_loss`，共享一次 forward，按真实验证样本平均并排除分布式补齐样本。后者使用本轮动作/边界权重，仅用于对照；收敛和 best checkpoint 仍由未加权 LM loss 决定。

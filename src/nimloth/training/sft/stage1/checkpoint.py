@@ -7,6 +7,7 @@ import os
 import random
 import shutil
 import tempfile
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -16,7 +17,7 @@ import torch.distributed as dist
 
 from .distributed import is_main
 from .fsdp import checkpoint_state, save_full_pretrained
-from .loss import ACTION_TOKEN_LOSS_SCOPE
+from .loss import ACTION_TOKEN_LOSS_SCOPE, BOUNDARY_TOKEN_LOSS_SCOPE, validate_action_weight
 
 if TYPE_CHECKING:
     from transformers import AutoProcessor
@@ -77,14 +78,38 @@ def restore_rng_state(state: dict[str, Any]) -> None:
         torch.cuda.set_rng_state(state["torch_cuda"])
 
 
+def loss_identity(identity) -> dict:
+    query = identity.get("stage") == "query"
+    return {
+        "action_token_loss_weight": validate_action_weight(identity.get("action_token_loss_weight", 1.0)),
+        "boundary_token_loss_weight": validate_action_weight(identity.get("boundary_token_loss_weight", 1.0)),
+        "action_token_loss_scope": identity.get("action_token_loss_scope", None if query else ACTION_TOKEN_LOSS_SCOPE),
+        "boundary_token_loss_scope": identity.get("boundary_token_loss_scope", None if query else BOUNDARY_TOKEN_LOSS_SCOPE),
+    }
+
+
 def objective_identities_match(saved, expected) -> bool:
+    """Match non-weight identity; known weight changes are explicit resume warnings."""
     if not isinstance(saved, dict) or not isinstance(expected, dict):
         return False
-    def normalized(identity):
-        result = dict(identity)
-        result.setdefault("action_token_loss_weight", 1.0)
-        return result
-    return normalized(saved) == normalized(expected)
+    if ("action_token_loss_scope" in saved) != ("action_token_loss_scope" in expected):
+        return False
+    old, new = loss_identity(saved), loss_identity(expected)
+    for identity, value in ((saved, old), (expected, new)):
+        if value["boundary_token_loss_weight"] != 1 and "boundary_token_loss_scope" not in identity:
+            raise ValueError("weighted boundary checkpoint lacks declared loss scope")
+        if identity.get("stage") == "query":
+            if value["action_token_loss_weight"] != 1 or value["boundary_token_loss_weight"] != 1:
+                raise ValueError("Stage 2 cannot use weighted Stage 1 loss")
+            if value["action_token_loss_scope"] is not None or value["boundary_token_loss_scope"] is not None:
+                raise ValueError("unsupported query checkpoint loss scope")
+        elif value["action_token_loss_scope"] != ACTION_TOKEN_LOSS_SCOPE or value["boundary_token_loss_scope"] != BOUNDARY_TOKEN_LOSS_SCOPE:
+            raise ValueError("unsupported checkpoint loss scope")
+    if {k: v for k, v in saved.items() if k not in old} != {k: v for k, v in expected.items() if k not in new}:
+        return False
+    if old != new:
+        warnings.warn(f"Resuming with changed loss weights: saved={old}, requested={new}; optimizer, scheduler, RNG, data cursor and unweighted-LM convergence are restored", UserWarning)
+    return True
 
 
 def validate_resume_state(
@@ -163,6 +188,8 @@ def save_resume_checkpoint(
                 module.config.nimloth_format_objective = (
                     "format_answer_ce_v2" if latent_token_count is None else None
                 )
+                module.config.nimloth_boundary_token_loss_weight = identity.get("boundary_token_loss_weight", 1.0)
+                module.config.nimloth_boundary_token_loss_scope = BOUNDARY_TOKEN_LOSS_SCOPE if latent_token_count is None else None
                 module.config.nimloth_action_token_loss_weight = identity.get("action_token_loss_weight", 1.0)
                 module.config.nimloth_action_token_loss_scope = (
                     ACTION_TOKEN_LOSS_SCOPE
@@ -190,6 +217,7 @@ def save_resume_checkpoint(
                     "lora": lora,
                     "base_model_path": str(base_model_path),
                     "format_objective": "format_answer_ce_v2" if latent_token_count is None else None,
+                    "boundary_token_loss_scope": BOUNDARY_TOKEN_LOSS_SCOPE if latent_token_count is None else None,
                     "action_token_loss_scope": (
                         ACTION_TOKEN_LOSS_SCOPE
                         if latent_token_count is None
@@ -253,6 +281,8 @@ def save_checkpoint(
     module.config.nimloth_format_objective = (
         "format_answer_ce_v2" if latent_token_count is None else None
     )
+    module.config.nimloth_boundary_token_loss_weight = (identity or {}).get("boundary_token_loss_weight", 1.0)
+    module.config.nimloth_boundary_token_loss_scope = BOUNDARY_TOKEN_LOSS_SCOPE if latent_token_count is None else None
     module.config.nimloth_action_token_loss_weight = (identity or {}).get("action_token_loss_weight", 1.0)
     module.config.nimloth_action_token_loss_scope = (
         ACTION_TOKEN_LOSS_SCOPE if latent_token_count is None else None
@@ -272,6 +302,7 @@ def save_checkpoint(
         "best_val": best_val,
         "lora": lora,
         "format_objective": "format_answer_ce_v2" if latent_token_count is None else None,
+        "boundary_token_loss_scope": BOUNDARY_TOKEN_LOSS_SCOPE if latent_token_count is None else None,
         "action_token_loss_scope": (
             ACTION_TOKEN_LOSS_SCOPE if latent_token_count is None else None
         ),

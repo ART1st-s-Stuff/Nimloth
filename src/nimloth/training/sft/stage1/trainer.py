@@ -79,8 +79,11 @@ from .fsdp import (
 )
 from .loss import (
     ACTION_TOKEN_LOSS_SCOPE,
+    BOUNDARY_TOKEN_LOSS_SCOPE,
+    resolve_boundary_token_ids,
     resolve_action_number_token_ids,
     training_loss,
+    weighted_answer_loss,
 )
 
 
@@ -391,9 +394,16 @@ def evaluate(
     *,
     return_components: bool = False,
     include_batches: list[bool] | None = None,
+    action_token_ids: tuple[int, ...] = (),
+    boundary_token_ids: tuple[int, ...] = (),
+    action_weight: float = 1.0,
+    boundary_weight: float = 1.0,
 ) -> float | dict[str, float]:
     model.eval()
-    total = torch.zeros(3 if return_components else 1, device=device)
+    weighted = bool(action_token_ids)
+    if weighted and return_components:
+        raise ValueError("weighted validation is only supported for Stage 1")
+    total = torch.zeros(3 if return_components else (2 if weighted else 1), device=device)
     count = torch.tensor(0, device=device)
     for i, batch in enumerate(loader):
         if max_batches > 0 and i >= max_batches:
@@ -405,6 +415,9 @@ def evaluate(
         losses = [output.loss.detach()]
         if return_components:
             losses.extend([output.lm_loss.detach(), output.dino_loss.detach()])
+        if weighted:
+            losses.append(weighted_answer_loss(output.logits, batch["labels"], action_token_ids, action_weight,
+                boundary_token_ids=boundary_token_ids, boundary_weight=boundary_weight))
         total += torch.stack(losses)
         count += 1
     if dist.is_available() and dist.is_initialized():
@@ -419,6 +432,8 @@ def evaluate(
             ("validation_total_loss", "validation_lm_loss", "validation_dino_loss"),
             means.tolist(), strict=True,
         ))
+    if weighted:
+        return {"validation_lm_loss": means[0].item(), "validation_weighted_lm_loss": means[1].item()}
     return means.item()
 
 
@@ -515,6 +530,7 @@ def maybe_init_wandb(args: argparse.Namespace) -> Any | None:
             "lr": args.lr,
             "embedding_lr": args.embedding_lr,
             "action_token_loss_weight": args.action_token_loss_weight,
+            "boundary_token_loss_weight": args.boundary_token_loss_weight,
             "format_eval_samples": args.format_eval_samples,
             "format_eval_batch_size": args.format_eval_batch_size,
             "max_length": args.max_length,
@@ -624,6 +640,7 @@ def _resume_identity(
         "stage": stage,
         "format_objective": FORMAT_OBJECTIVE if stage == "format" else None,
         "action_token_loss_weight": getattr(args, "action_token_loss_weight", 1.0),
+        "boundary_token_loss_weight": getattr(args, "boundary_token_loss_weight", 1.0),
         "world_size": world,
         "model": str(Path(args.model).resolve()),
         "train_jsonl": str(args.train_jsonl.resolve()),
@@ -660,6 +677,7 @@ def _resume_identity(
         identity.update(
             {
                 "action_token_loss_scope": ACTION_TOKEN_LOSS_SCOPE,
+                "boundary_token_loss_scope": BOUNDARY_TOKEN_LOSS_SCOPE,
                 "format_eval_jsonl": str(args.format_eval_jsonl.resolve()),
                 "format_eval_jsonl_sha256": _file_sha256(
                     args.format_eval_jsonl
@@ -712,8 +730,9 @@ def main(*, stage: str = "format") -> int:
         if stage == "format"
         else ()
     )
+    boundary_ids = resolve_boundary_token_ids(processor.tokenizer) if stage == "format" else ()
     if is_main():
-        print(json.dumps({"action_token_loss_weight": args.action_token_loss_weight, "weighted_action_token_ids": action_ids}))
+        print(json.dumps({"boundary_token_loss_weight": args.boundary_token_loss_weight, "weighted_boundary_token_ids": boundary_ids, "action_token_loss_weight": args.action_token_loss_weight, "weighted_action_token_ids": action_ids}))
         print(
             json.dumps(
                 {
@@ -1120,7 +1139,7 @@ def main(*, stage: str = "format") -> int:
     resume_at_epoch_boundary = False
     if args.resume and resume_ckpt is not None and resume_ckpt.exists():
         state = torch.load(resume_ckpt, map_location="cpu", weights_only=False)
-        if args.action_token_loss_weight != 1 and not objective_identities_match(state.get("identity"), resume_identity):
+        if not objective_identities_match(state.get("identity"), resume_identity):
             raise ValueError("weighted loss resume checkpoint objective identity mismatch")
         if convergence_policy is not None:
             if state.get("convergence_state") is None:
@@ -1327,7 +1346,8 @@ def main(*, stage: str = "format") -> int:
         for batch_index, batch in enumerate(train_iterator, start=next_micro_batch):
             batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
             loss = training_loss(model, batch, action_token_ids=action_ids,
-                                 action_weight=args.action_token_loss_weight)
+                                 action_weight=args.action_token_loss_weight,
+                                 boundary_token_ids=boundary_ids, boundary_weight=args.boundary_token_loss_weight)
             loss.backward()
             accum_loss += loss.detach().float().item()
             micro_accum += 1
@@ -1384,14 +1404,17 @@ def main(*, stage: str = "format") -> int:
             )
             val_loss = val_metrics["validation_total_loss"]
         else:
-            val_loss = evaluate(
+            val_metrics = evaluate(
                 model,
                 val_loader,
                 device,
                 args.max_val_batches,
                 include_batches=val_include_batches,
+                action_token_ids=action_ids, boundary_token_ids=boundary_ids,
+                action_weight=args.action_token_loss_weight, boundary_weight=args.boundary_token_loss_weight,
             )
-            val_metrics = {"validation_lm_loss": val_loss}
+            val_loss = val_metrics["validation_lm_loss"]
+            val_metrics.update(action_token_loss_weight=args.action_token_loss_weight, boundary_token_loss_weight=args.boundary_token_loss_weight)
         validation_seconds = time.monotonic() - validation_started_at
         if is_main():
             print(

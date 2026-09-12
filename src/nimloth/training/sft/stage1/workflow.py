@@ -8,6 +8,7 @@ import os
 import signal
 import subprocess
 import sys
+import warnings
 from pathlib import Path
 
 
@@ -99,6 +100,37 @@ def validate_prepared_splits(train_path: Path, val_path: Path, format_path: Path
             'Validation and format-eval semantic source contents disagree'
         )
 
+def split_loss_overrides(overrides: list[str]) -> tuple[list[str], dict[str, float]]:
+    from .loss import validate_action_weight
+    rest, weights = [], {}
+    index = 0
+    flags = {"--action-token-loss-weight", "--boundary-token-loss-weight"}
+    while index < len(overrides):
+        arg = overrides[index]
+        flag, separator, value = arg.partition("=")
+        if flag in flags:
+            if not separator:
+                index += 1
+                if index >= len(overrides):
+                    raise ValueError(f"{flag} requires a value")
+                value = overrides[index]
+            weights[flag] = validate_action_weight(value)
+        else:
+            rest.append(arg)
+        index += 1
+    return rest, weights
+
+
+def validate_workflow_resume(saved: dict, requested: dict) -> None:
+    old, new = dict(saved), dict(requested)
+    old_overrides, old_weights = split_loss_overrides(old.pop("overrides"))
+    new_overrides, new_weights = split_loss_overrides(new.pop("overrides"))
+    if old != new or old_overrides != new_overrides:
+        raise ValueError('Resume workflow parameters differ from the prepared run')
+    if old_weights != new_weights:
+        warnings.warn(f"Resume workflow loss overrides changed: saved={old_weights}, requested={new_weights}; checkpoint validates resolved weights", UserWarning)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source-model', required=True, type=Path)
@@ -135,12 +167,12 @@ def main(argv: list[str] | None = None) -> int:
     index = 0
     while index < len(overrides):
         flag = overrides[index]
-        if flag == '--max-optimizer-steps':
+        if flag in {'--max-optimizer-steps', '--format-eval-batch-size'}:
             if index + 1 >= len(overrides):
-                parser.error('--max-optimizer-steps requires a value')
+                parser.error(f'{flag} requires a value')
             index += 2
             continue
-        if not flag.startswith('--max-optimizer-steps='):
+        if not flag.startswith(('--max-optimizer-steps=', '--format-eval-batch-size=')):
             identity_overrides.append(flag)
         index += 1
     contract.update(
@@ -157,8 +189,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.resume:
         contract["base_fingerprint"] = policy_artifact_fingerprint(root / "base")
         saved = json.loads(manifest_path.read_text())
-        if saved != contract:
-            raise ValueError('Resume workflow parameters differ from the prepared run')
+        validate_workflow_resume(saved, contract)
     else:
         from .initialization import initialize_model
         from .preparation import prepare_records
@@ -205,6 +236,8 @@ def main(argv: list[str] | None = None) -> int:
                '--require-prebuilt-cache']
     if args.resume:
         command.append('--resume')
+        with (root / 'workflow_resumes.jsonl').open('a') as history:
+            history.write(json.dumps({'previous': saved, 'requested': contract, 'command': command}) + '\n')
     # Inherit the caller's resource/environment selection; no server-specific defaults.
     return run_command(command)
 

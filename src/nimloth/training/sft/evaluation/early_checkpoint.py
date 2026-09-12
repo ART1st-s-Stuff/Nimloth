@@ -34,12 +34,11 @@ def load_early_checkpoint(path: Path, stage: str) -> EarlyProtocol:
         if count is not None or mode is not None:
             raise ValueError('format checkpoint must not enable query slots')
         from nimloth.training.sft.stage1.data import FORMAT_OBJECTIVE
-        from nimloth.training.sft.stage1.loss import ACTION_TOKEN_LOSS_SCOPE
+        from nimloth.training.sft.stage1.loss import ACTION_TOKEN_LOSS_SCOPE, BOUNDARY_TOKEN_LOSS_SCOPE, validate_action_weight
 
         expected = {
             'nimloth_format_objective': FORMAT_OBJECTIVE,
             'nimloth_action_token_loss_scope': ACTION_TOKEN_LOSS_SCOPE,
-            'nimloth_action_token_loss_weight': 8.0,
         }
         for name, value in expected.items():
             if config.get(name) != value:
@@ -47,6 +46,12 @@ def load_early_checkpoint(path: Path, stage: str) -> EarlyProtocol:
                     f'format checkpoint {name} mismatch: expected {value!r}, '
                     f'found {config.get(name)!r}'
                 )
+        if 'nimloth_action_token_loss_weight' not in config:
+            raise ValueError('format checkpoint lacks declared action loss weight')
+        validate_action_weight(config['nimloth_action_token_loss_weight'])
+        boundary_weight = validate_action_weight(config.get('nimloth_boundary_token_loss_weight', 1.0))
+        if config.get('nimloth_boundary_token_loss_scope', BOUNDARY_TOKEN_LOSS_SCOPE if boundary_weight == 1 else None) != BOUNDARY_TOKEN_LOSS_SCOPE:
+            raise ValueError('format checkpoint boundary loss scope mismatch')
         return EarlyProtocol(stage)
     if type(count) is not int or count < 1 or mode not in {'inject', 'generate'}:
         raise ValueError('query checkpoint requires positive K and explicit inject/generate mode')
