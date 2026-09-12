@@ -19,12 +19,13 @@ python -m nimloth.training.sft.evaluation \
 Stage 1 的 `--format-gate-jsonl` 必须是完整 heldout JSONL。统一入口先按文件
 顺序固定选择前 32 条，使用随后环境 rollout 相同的 `EarlyVLLMGenerator` 和实际
 Stage 1 prompt 做无约束生成。每条保存 prompt、图片路径及 hash、采样 token、
-finish/stop reason、未裁剪解码文本、EOS 前正文和严格 parser 结果。只有至少
-31/32 同时生成真实 EOS、未达到长度上限、EOS 后仅有 padding 且正文严格合法，
-才继续 Base 60 + Common Sense 60 环境评估；否则命令返回 2，保留证据且不启动
-episode。门禁不使用环境结果、WM、value head 或 MCTS。Stage 1 导出 checkpoint
-还必须声明 `format_answer_ce_v2`、动作编号专用权重范围和权重 8，旧导出会在
-分配 GPU 前拒绝。
+finish/stop reason、未裁剪解码文本、EOS 前正文和严格 parser 结果。至少
+31/32 正确仍表示格式达标；不足时输出警告，但继续环境 rollout，分别报告格式
+通过率与真实 success rate。`format_diagnostic.json` 明确记录 readiness 结果和
+不阻断环境评估的语义；原 `format_gate/` 原文、合同和 summary 保持完整。
+格式未达标不修正动作、不排除 episode，也不改变训练的 31/32 readiness 条件。
+缺失、不完整或身份不兼容的格式证据仍拒绝，包括已完成恢复和 summarize-only；
+后两者重新校验原文但不生成、不加载 GPU 模型。检查不使用环境结果、WM、value head 或 MCTS。
 
 `--stage vagen|stage1|stage2` 使用原 VAGEN `844378c` BatchEnvironmentServer API，
 **不能连接新版 async GymImageEnv 服务**。服务源与客户端协议必须匹配；不会自动

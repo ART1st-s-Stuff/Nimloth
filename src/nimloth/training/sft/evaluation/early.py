@@ -1,6 +1,8 @@
 """Compose accepted early checkpoints, raw generation and real environment episodes."""
 from __future__ import annotations
 
+import json
+import warnings
 from dataclasses import asdict
 
 from nimloth.training.sft.evaluation.config import EvaluationConfig
@@ -43,40 +45,16 @@ def run_early_evaluation(config: EvaluationConfig) -> int:
     env = EarlyEnvironmentConfig(**{name: getattr(config, name) for name in EarlyEnvironmentConfig.__dataclass_fields__})
     from nimloth.rollout.early_records import summarize
     summary = summarize(config.output_dir, env.identities())
-    if config.summarize_only:
-        gate_summary = None
-        if config.stage == "stage1":
-            import json
-
-            gate_summary_path = config.output_dir / "format_gate" / "summary.json"
-            gate_summary = (
-                {
-                    **json.loads(gate_summary_path.read_text(encoding="utf-8")),
-                    "read_only_revalidated": False,
-                }
-                if gate_summary_path.is_file()
-                else {
-                    "complete": False,
-                    "reason": "format_gate_summary_missing",
-                    "read_only_revalidated": False,
-                }
-            )
-        print({"format_gate": gate_summary, "rollout": summary}, flush=True)
-        return 0
-    generator = None
-    if summary['overall']['complete']:
+    if config.summarize_only or summary['overall']['complete']:
+        diagnostic = None
         if config.stage == "stage1":
             from .format_gate import run_stage1_format_gate
 
-            gate_passed, _ = run_stage1_format_gate(
-                config, protocol, allow_generate=False
-            )
-            if not gate_passed:
-                raise ValueError(
-                    "completed Stage 1 environment evaluation lacks a passed format gate"
-                )
-        print(summary, flush=True)
+            passed, _ = run_stage1_format_gate(config, protocol, allow_generate=False)
+            diagnostic = _format_diagnostic(config, passed)
+        print({"format_diagnostic": diagnostic, "rollout": summary}, flush=True)
         return 0
+    generator = None
     from nimloth.environment.navigation.source_client import LegacyVAGENBatchClient
     probe = LegacyVAGENBatchClient(config.env_url)
     health = probe.check_server_health()
@@ -88,12 +66,34 @@ def run_early_evaluation(config: EvaluationConfig) -> int:
         from .format_gate import run_stage1_format_gate
 
         gate_passed, generator = run_stage1_format_gate(config, protocol)
-        if not gate_passed:
-            print(
-                {"environment_evaluation": "blocked_by_stage1_format_gate"},
-                flush=True,
-            )
-            return 2
+        _format_diagnostic(config, gate_passed)
     if generator is None:
         generator = EarlyVLLMGenerator(config, protocol)
     return run_direct_episodes(env, protocol, generator)
+
+
+def _format_diagnostic(config: EvaluationConfig, passed: bool) -> dict:
+    """Keep format readiness separate from measured environment success."""
+    from nimloth.rollout.early_records import write_json
+
+    summary = json.loads(
+        (config.output_dir / "format_gate" / "summary.json").read_text(encoding="utf-8")
+    )
+    diagnostic = {
+        "schema": "stage1_format_diagnostic_v1",
+        "format_summary": summary,
+        "readiness_passed": passed,
+        "blocks_environment_rollout": False,
+        "evidence_revalidated": True,
+    }
+    if not config.summarize_only:
+        write_json(config.output_dir / "format_diagnostic.json", diagnostic)
+    if not passed:
+        warnings.warn(
+            "Stage 1 sampled format readiness is unmet; this does not block environment "
+            "success-rate evaluation with strict invalid-output no-op handling.",
+            UserWarning,
+            stacklevel=2,
+        )
+    print({"format_diagnostic": diagnostic}, flush=True)
+    return diagnostic
