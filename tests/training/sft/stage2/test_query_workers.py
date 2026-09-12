@@ -25,7 +25,10 @@ def test_validated_targets_pickle_reopens_shards_without_tensor_payload(tmp_path
     torch.testing.assert_close(reopened.load([image], device='cpu'), features)
     # A worker may itself be serialized: its shard IDs must refer to its own tensors.
     torch.testing.assert_close(pickle.loads(pickle.dumps(reopened)).load([image], device='cpu'), features)
-    (tmp_path / 'shard_00000.pt').touch()
+    import os
+    shard = tmp_path / 'shard_00000.pt'
+    stamp = shard.stat()
+    os.utime(shard, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 2_000_000_000))
     with pytest.raises(ValueError, match='changed before worker load'):
         pickle.loads(payload)
 
