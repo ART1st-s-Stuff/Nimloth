@@ -19,6 +19,12 @@ class SavedModule(nn.Module):
     def forward(self, value):
         return self.modules_to_save[self.active_adapter](value)
 
+    def __getattr__(self, name):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.modules_to_save[self.active_adapter], name)
+
 
 class TinySelectedModel(nn.Module):
     def __init__(self):

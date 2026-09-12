@@ -67,7 +67,10 @@ def install_selected_token_rows(language_model: nn.Module, query_ids: Sequence[i
 def selected_row_parameters(model: nn.Module) -> dict[str, list[nn.Parameter]]:
     result = {"query": [], "protocol": []}
     for module in model.modules():
-        if getattr(module, "_nimloth_selected_token_rows", False):
+        # PEFT ModulesToSaveWrapper proxies unknown attributes to its active
+        # leaf. Inspect the leaf's own namespace so each parameter is grouped
+        # exactly once instead of once through the wrapper and once directly.
+        if module.__dict__.get("_nimloth_selected_token_rows", False):
             result["query"].append(module.nimloth_query_rows)
             result["protocol"].append(module.nimloth_protocol_rows)
     if len(result["query"]) != 2 or len(result["protocol"]) != 2:
