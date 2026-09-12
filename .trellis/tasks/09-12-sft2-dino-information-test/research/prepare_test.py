@@ -120,7 +120,7 @@ def audit_identity(checkout, model, root, files, options):
     sources[str(audit.relative_to(checkout))] = digest(audit)
     import importlib.metadata
     versions = {name: importlib.metadata.version(name)
-                for name in ('transformers', 'tokenizers', 'torch', 'Pillow', 'qwen-vl-utils')}
+                for name in ('transformers', 'tokenizers', 'torch', 'Pillow')}
     return {'version': 1, 'inputs': inputs, 'resources': resources, 'sources': sources,
             'options': options, 'runtime': versions, 'dino_fingerprint': manifest['fingerprint']}
 
