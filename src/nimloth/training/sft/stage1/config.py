@@ -8,6 +8,7 @@ from typing import Any
 from nimloth.config import load_yaml_config
 
 _SFT1_YAML_TO_ARG: dict[tuple[str, str], str] = {
+    ("train", "success_eval_concurrency"): "success_eval_concurrency",
     ("train", "success_eval_env_url"): "success_eval_env_url",
     ("query_alignment", "grid_size"): "grid_size",
     ("query_alignment", "projector_hidden_dim"): "projector_hidden_dim",

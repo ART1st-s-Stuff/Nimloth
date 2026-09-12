@@ -12,16 +12,26 @@ def write_json(path: Path, value: dict) -> None:
     temporary.replace(path)
 
 
-def summarize(output: Path, identities: list[dict]) -> dict:
+def summarize(output: Path, identities: list[dict], *, record_roots: list[Path] | None = None, expected_stage: str | None = None) -> dict:
     records = []
     expected = {item['episode_id']: item for item in identities}
-    for path in sorted((output / 'episodes').glob('*/record.json')):
+    if len(expected) != len(identities):
+        raise ValueError('duplicate requested episode identity')
+    seen = set()
+    paths = sorted(path for root in (record_roots if record_roots is not None else [output])
+                   for path in (root / 'episodes').glob('*/record.json'))
+    for path in paths:
         record = json.loads(path.read_text())
         identity = record['identity']
+        if expected_stage is not None and record.get('stage') != expected_stage:
+            raise ValueError(f'incompatible completed record stage: {path}')
         if identity != expected.get(identity['episode_id']):
             raise ValueError(f'unknown or changed episode identity: {path}')
         if path.parent.name != identity['episode_id'] or type(record.get('success')) is not bool:
             raise ValueError(f'invalid completed record: {path}')
+        if identity['episode_id'] in seen:
+            raise ValueError(f'duplicate completed episode identity: {path}')
+        seen.add(identity['episode_id'])
         records.append(record)
     def metrics(rows, requested):
         successes = sum(row['success'] for row in rows)

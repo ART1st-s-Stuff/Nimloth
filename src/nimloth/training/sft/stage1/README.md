@@ -123,18 +123,29 @@ checkpoint；保持优化器、scheduler、RNG、数据位置，只重新计算�
 测试集，seed1..60、最多20步。采用现有 `EvaluationConfig`、原 BatchEnvironmentServer
 和 `run_direct_episodes`；外部服务使用已有 `serve_environment.sh` 启动。
 `success_eval.py` 负责 HF 原始生成适配与训练生命周期隔离，无新增可执行入口。
-采样参数、seed和并发数沿用格式验证配置（并发数等于格式 batch size），不更改
+采样参数和seed沿用格式验证配置；`--success-eval-concurrency` 独立控制每 rank 并发数（默认4），不更改
 严格动作解析、无效响应 no-op、环境 success 定义或训练 readiness。
 
-结果位于 `success_eval/epoch_NNN`，包含绑定 checkpoint 内容指纹和配置的合同、
+结果位于 `success_eval_distributed_v2/epoch_NNN`，包含绑定 checkpoint 内容指纹和配置的合同、
 完整轨迹和 `rollout_summary.json`。LoRA 身份同时绑定 adapter 与基座内容。
 `validation_metrics.jsonl` 追加 `success_evaluation` 事件，保存 success rate、
 各集合完整统计与评估耗时；完成记录复用时保留首次完成的耗时。该轮120条全部完成后才继续下一轮；恢复已提交
 的 epoch 时先补完其评估，包括已收敛 checkpoint，完整记录直接重用。失败时保留
 checkpoint 和部分轨迹，禁止把部分 success rate 报为完整结果。
 
-所有 rank 一起展开真实完整参数，只有 rank0执行环境生成。其他 rank 在独立 Gloo
-CPU 控制组等待完成/错误，退出前同步结果；不在长环境评估期间挂起 NCCL collective。
+所有 rank 一起展开真实完整参数，每个 rank 在本地 GPU 生成并评估不同 episode。
+canonical120 按索引模 world 分配，八卡各15条；每 rank 独立保存 `ranks/rank_NNN`。
+root 合同绑定 world/分配/每 rank 并发数，rank0 从原始记录汇总，不复制旧评估轨迹；
+旧 `success_eval/` 产物保留。监控可用 `early_records.summarize(record_roots=...)`
+读取全部 rank 已完成的原始记录，部分汇总仍报告完整120分母。
+独立 Gloo CPU 控制组汇聚每 rank 完成/错误，退出前同步结果；不挂起 NCCL collective。
+服务器资源必须容纳 world × concurrency 个独立环境；UUID session 保持隔离。
+`phase_timings.jsonl` 分别记录每批 create/reset/system/generate/step 耗时和批大小，
+真实 wall time 与各 rank 阶段耗时分开解释，不把八卡累计时间当作用户等待时间。
 控制组24小时 timeout 是通信故障上限，不是实验运行预算；环境请求沿用500秒超时。
 保存和恢复模型模式、padding和训练 RNG，优化器/学习率/梯度目标保持不变。
 CPU测试不能替代真实多rank环境验证。
+
+每 rank 以相同配置seed初始化独立采样流，分片合同记录此规则，不承诺与v1随机序列
+逐bit一致。普通异常在全部rank结束本轮分片后统一汇聚；这不是立即终止其他rank的
+fail-fast机制，故失败rank可能等待其他rank完成各自最多15条（八卡配置）。

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import timedelta
 
 import torch
@@ -77,13 +77,13 @@ class LoadedStage1Generator:
 def epoch_evaluation_config(args, epoch: int) -> EvaluationConfig:
     return EvaluationConfig(
         mode='direct', stage='stage1', checkpoint=args.output_dir / f'epoch_{epoch:03d}',
-        output_dir=args.output_dir / 'success_eval' / f'epoch_{epoch:03d}',
+        output_dir=args.output_dir / 'success_eval_distributed_v2' / f'epoch_{epoch:03d}',
         env_url=args.success_eval_env_url, eval_sets=('base', 'common_sense'),
         split='test', episodes_per_eval_set=60, seed_offset=1, max_steps=20,
         temperature=args.format_eval_temperature, top_p=args.format_eval_top_p,
         max_response_tokens=args.format_eval_max_new_tokens,
         generation_seed=args.format_eval_generation_seed, tensor_parallel_size=1,
-        format_gate_jsonl=args.format_eval_jsonl, episode_concurrency=args.format_eval_batch_size,
+        format_gate_jsonl=args.format_eval_jsonl, episode_concurrency=args.success_eval_concurrency,
         max_pixels=args.max_pixels, resume=True,
     )
 
@@ -129,14 +129,25 @@ def record_success_metrics(output_dir: Path, epoch: int, global_step: int, summa
     return metrics
 
 
+def partition_identities(identities: list[dict], world: int) -> list[list[dict]]:
+    if world < 1 or len({item['episode_id'] for item in identities}) != len(identities):
+        raise ValueError('invalid distributed episode assignment')
+    return [identities[rank::world] for rank in range(world)]
+
+
 def evaluate_epoch_success(model, processor, device, config: EvaluationConfig, control_group):
-    """All ranks enter; rank zero evaluates, then errors propagate before reshard."""
+    """Evaluate disjoint rank-local identities, synchronize errors before reshard."""
     started_at = time.monotonic()
     rank = dist.get_rank() if dist.is_initialized() else 0
+    world = dist.get_world_size() if dist.is_initialized() else 1
     rng = capture_rng_state()
     modes = [(module, module.training) for module in model.modules()]
     padding = processor.tokenizer.padding_side
     status = [None]
+    env = EarlyEnvironmentConfig(**{
+        name: getattr(config, name) for name in EarlyEnvironmentConfig.__dataclass_fields__})
+    assignments = partition_identities(env.identities(), world)
+    roots = [config.output_dir / 'ranks' / f'rank_{index:03d}' for index in range(world)]
     try:
         model.eval()
         processor.tokenizer.padding_side = 'left'
@@ -145,38 +156,65 @@ def evaluate_epoch_success(model, processor, device, config: EvaluationConfig, c
                 try:
                     if not (config.checkpoint / 'COMMITTED').is_file():
                         raise ValueError('inline success evaluation requires committed epoch checkpoint')
-                    values = asdict(config)
-                    values = json.loads(json.dumps(values, default=str))
+                    values = json.loads(json.dumps(asdict(config), default=str))
                     write_or_validate_contract(config.output_dir, {
-                        'evaluation': 'stage1_inline_success_v1', 'config': values,
+                        'evaluation': 'stage1_inline_success_distributed_v2', 'config': values,
                         'checkpoint_identity': _checkpoint_identity(config.checkpoint),
-                        'backend': 'transformers_loaded_policy',
+                        'backend': 'transformers_loaded_policy', 'world_size': world,
+                        'rank_assignments': assignments,
+                        'sampling_rng': 'same_configured_seed_independent_rank_streams',
                     }, resume=True)
-                    env = EarlyEnvironmentConfig(**{
-                        name: getattr(config, name) for name in EarlyEnvironmentConfig.__dataclass_fields__})
-                    summary = summarize(config.output_dir, env.identities())
-                    reused = summary['overall']['complete']
-                    if not summary['overall']['complete']:
-                        print(json.dumps({'event': 'success_eval_started',
-                                          'checkpoint': str(config.checkpoint),
-                                          'output_dir': str(config.output_dir),
-                                          'requested_episodes': len(env.identities())}), flush=True)
-                        torch.random.default_generator.manual_seed(config.generation_seed)
-                        if device.type == 'cuda':
-                            torch.cuda.manual_seed(config.generation_seed)
-                        generator = LoadedStage1Generator(unwrapped, processor, device, config)
-                        result = run_direct_episodes(env, EarlyProtocol('stage1'), generator)
-                        if result:
-                            raise RuntimeError(f'inline environment evaluation exited {result}')
-                        summary = summarize(config.output_dir, env.identities())
-                    if not summary['overall']['complete']:
-                        raise RuntimeError('inline environment evaluation is incomplete')
+                    status[0] = {'ready': True}
+                except Exception as error:
+                    status[0] = {'error': f'{type(error).__name__}: {error}'}
+            if control_group is not None:
+                dist.broadcast_object_list(status, src=0, group=control_group)
+            if status[0] is None or 'error' in status[0]:
+                raise RuntimeError(f'inline success preflight failed: {status[0]}')
+            local = None
+            try:
+                write_or_validate_contract(roots[rank], {
+                    'evaluation': 'stage1_inline_success_rank_v2', 'rank': rank,
+                    'root_contract': auxiliary_artifact_fingerprint(
+                        config.output_dir / 'evaluation_contract.json'),
+                    'identities': assignments[rank],
+                }, resume=True)
+                local_env = replace(env, output_dir=roots[rank])
+                summary = summarize(roots[rank], assignments[rank])
+                if not summary['overall']['complete']:
+                    print(json.dumps({'event': 'success_eval_started', 'rank': rank,
+                                      'checkpoint': str(config.checkpoint),
+                                      'output_dir': str(roots[rank]),
+                                      'requested_episodes': len(assignments[rank])}), flush=True)
+                    torch.random.default_generator.manual_seed(config.generation_seed)
+                    if device.type == 'cuda':
+                        torch.cuda.manual_seed(config.generation_seed)
+                    generator = LoadedStage1Generator(unwrapped, processor, device, config)
+                    result = run_direct_episodes(local_env, EarlyProtocol('stage1'), generator,
+                                                 identities=assignments[rank])
+                    if result:
+                        raise RuntimeError(f'inline environment evaluation exited {result}')
+                    summary = summarize(roots[rank], assignments[rank])
+                if not summary['overall']['complete']:
+                    raise RuntimeError('rank environment evaluation is incomplete')
+                local = {'rank': rank, 'summary': summary}
+            except Exception as error:
+                local = {'rank': rank, 'error': f'{type(error).__name__}: {error}'}
+            statuses = [local]
+            if control_group is not None:
+                statuses = [None] * world
+                dist.all_gather_object(statuses, local, group=control_group)
+            if rank == 0:
+                try:
+                    summary = summarize(config.output_dir, env.identities(), record_roots=roots, expected_stage='stage1')
+                    errors = [item for item in statuses if item is None or 'error' in item]
+                    if errors or not summary['overall']['complete']:
+                        raise RuntimeError(f'incomplete distributed success evaluation: {errors}')
                     metrics_path = config.output_dir / 'success_metrics.json'
-                    previous_metrics = json.loads(metrics_path.read_text()) if reused and metrics_path.is_file() else None
-                    summary['success_eval_seconds'] = (
-                        previous_metrics['success_eval_seconds'] if previous_metrics is not None
-                        else time.monotonic() - started_at)
-                    if previous_metrics is None:
+                    previous = json.loads(metrics_path.read_text()) if metrics_path.is_file() else None
+                    summary['success_eval_seconds'] = (previous['success_eval_seconds'] if previous
+                                                       else time.monotonic() - started_at)
+                    if previous is None:
                         write_json(metrics_path, summary)
                     status[0] = {'summary': summary}
                     print(json.dumps({'event': 'success_eval_complete',

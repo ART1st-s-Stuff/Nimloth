@@ -1,6 +1,8 @@
 """Direct policy episodes on the original navigation BatchEnvironmentServer."""
 from __future__ import annotations
 
+import json
+import time
 import logging
 import sys
 from collections.abc import Generator
@@ -150,8 +152,12 @@ def _episode(
 
 
 
-def run_direct_episodes(config: EarlyEnvironmentConfig, protocol: Any, generator: Any) -> int:
-    identities = config.identities()
+def run_direct_episodes(config: EarlyEnvironmentConfig, protocol: Any, generator: Any,
+                        *, identities: list[dict] | None = None) -> int:
+    canonical = config.identities()
+    identities = canonical if identities is None else identities
+    if any(identity not in canonical for identity in identities):
+        raise ValueError('episode subset is outside configured identities')
     summarize(config.output_dir, identities)
     pending = iter(identity for identity in identities
                    if not (config.output_dir / 'episodes' / identity['episode_id'] / 'record.json').exists())
@@ -179,6 +185,7 @@ def run_direct_episodes(config: EarlyEnvironmentConfig, protocol: Any, generator
                             if kind == operation}
                 if not selected:
                     continue
+                operation_started = time.monotonic()
                 if operation == 'create':
                     client.create_environments_batch(selected)
                     results = dict.fromkeys(selected)
@@ -195,6 +202,9 @@ def run_direct_episodes(config: EarlyEnvironmentConfig, protocol: Any, generator
                     else:
                         generations = generator.generate_batch(requests)
                     results = dict(zip(selected, generations, strict=True))
+                with (config.output_dir / 'phase_timings.jsonl').open('a') as stream:
+                    stream.write(json.dumps({'phase': operation, 'batch_size': len(selected),
+                                             'seconds': time.monotonic() - operation_started}) + '\n')
                 if set(results) != set(selected):
                     raise ValueError(f'{operation} batch response identities differ')
                 for session_id in selected:

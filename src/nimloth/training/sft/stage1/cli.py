@@ -38,6 +38,7 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap.add_argument("--train-jsonl", type=Path, required=True)
     ap.add_argument("--val-jsonl", type=Path, required=True)
     if stage == "format":
+        ap.add_argument("--success-eval-concurrency", type=int, default=4, help="Independent environment episodes per evaluation rank.")
         ap.add_argument("--success-eval-env-url", default=None, help="Run full held-out environment success evaluation after each committed epoch.")
         ap.add_argument(
             "--format-eval-jsonl",
@@ -295,6 +296,8 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         raise ValueError("--format-eval-top-p must be in (0, 1]")
     if args.format_eval_max_new_tokens < 1:
         raise ValueError("--format-eval-max-new-tokens must be >= 1")
+    if stage == "format" and args.success_eval_concurrency < 1:
+        ap.error("success-eval-concurrency must be positive")
     if not 0 <= args.format_eval_generation_seed < 2**32:
         raise ValueError("--format-eval-generation-seed must be in [0, 2**32)")
     if args.format_eval_batch_size < 1:

@@ -26,3 +26,7 @@ backbone。训练代码不直接调用 VAGEN client。
 例如现有统一评估命令追加 `--episode-concurrency 4`，环境入口使用 `ENV_MAX_WORKERS=4`。
 Stage 1 固定 32 条门禁也按相同大小分批；不改变样本或门禁阈值。
 并行数写入运行合同，恢复时不能改变；旧串行合同仅允许并行数 1 恢复。
+
+`run_direct_episodes(..., identities=...)` 可接收配置集合的严格子集，用于训练内多 rank
+互不重叠的评估；每个调用拥有独立输出和 UUID session。`phase_timings.jsonl`
+记录每批环境操作与生成耗时，默认完整集合调用保持原语义。

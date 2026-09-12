@@ -173,7 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     # Absolute diagnostic step caps are stop controls, not objective identity.
     # Removing or raising one must allow continuation from the same saved state.
     execution_flags = {
-        '--success-eval-env-url', '--max-optimizer-steps', '--format-eval-batch-size',
+        '--success-eval-env-url', '--success-eval-concurrency', '--max-optimizer-steps', '--format-eval-batch-size',
         '--format-eval-temperature', '--format-eval-top-p',
         '--format-eval-max-new-tokens', '--format-eval-generation-seed',
     }

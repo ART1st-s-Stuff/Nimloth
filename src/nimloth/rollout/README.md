@@ -71,3 +71,6 @@ advantage。fresh逐步reward用于完整episode return；真正terminal从0 boo
 
 `early_records.py` 保存早期阶段 success eval 的原子 episode 记录，校验恢复 identity，
 并明确区分 partial/complete 统计；这些记录不冒充含 WM/state 的训练轨迹 schema。
+
+`early_records.summarize(record_roots=..., expected_stage=...)` 可直接汇总多 rank 原始
+记录，不复制轨迹；拒绝重复identity、错误stage和不合法success，缺失记录仍标记partial。

@@ -33,7 +33,8 @@ def test_source_config_matches_vagen844_navigation_signature(tmp_path):
     }
 
 
-def test_real_loop_contract_noop_terminal_and_resume(tmp_path, monkeypatch):
+@pytest.mark.parametrize("subset", [False, True])
+def test_real_loop_contract_noop_terminal_and_resume(tmp_path, monkeypatch, subset):
     import json
 
     from PIL import Image
@@ -76,7 +77,12 @@ def test_real_loop_contract_noop_terminal_and_resume(tmp_path, monkeypatch):
     monkeypatch.setattr(module, 'LegacyVAGENBatchClient', Client)
     config = module.EarlyEnvironmentConfig('url', tmp_path, ('base',), 'test', 1, 1, 1, 5, 1.5, .5)
     generator = Generator()
-    assert module.run_direct_episodes(config, EarlyProtocol('stage1'), generator) == 0
+    from dataclasses import replace
+    if subset:
+        config = replace(config, episodes_per_eval_set=2)
+    assigned = config.identities()[:1]
+    kwargs = {'identities': assigned} if subset else {}
+    assert module.run_direct_episodes(config, EarlyProtocol('stage1'), generator, **kwargs) == 0
     assert steps == ['']
     assert generator.calls == 2  # terminal response is saved but not executed
     assert next(iter(configs[0].values()))['env_config']['eval_set'] == 'base'
@@ -89,8 +95,13 @@ def test_real_loop_contract_noop_terminal_and_resume(tmp_path, monkeypatch):
     )
     assert record['turns'][0]['parse']['service_response'] == ''
     assert record['success'] is False
-    module.run_direct_episodes(config, EarlyProtocol('stage1'), generator)
+    module.run_direct_episodes(config, EarlyProtocol('stage1'), generator, **kwargs)
     assert generator.calls == 2
+    summary = json.loads((tmp_path / 'rollout_summary.json').read_text())
+    assert summary['overall']['requested'] == 1 and summary['overall']['complete']
+    timings = [json.loads(line) for line in (tmp_path / 'phase_timings.jsonl').read_text().splitlines()]
+    assert {'generate', 'step', 'reset'} <= {row['phase'] for row in timings}
+    assert all(row['seconds'] >= 0 for row in timings)
 
 
 def test_stage1_environment_parses_only_eos_terminated_body():
