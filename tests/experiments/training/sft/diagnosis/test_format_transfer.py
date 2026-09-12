@@ -39,3 +39,11 @@ def test_probability_comparison_ignores_common_shift_in_kl():
     assert result['centered_max_abs'] < 1e-6
     assert max(abs(x) for x in result['kl_per_position']) < 1e-6
     assert result['argmax_flip_positions'] == []
+
+
+def test_token_difference_retains_exact_inputs():
+    from experiments.training.sft.diagnosis.format_transfer import token_input_difference
+    report = token_input_difference([1, 2, 3], [1, 2, 4, 5])
+    assert report['first_mismatch'] == 2
+    assert report['expected_ids'] == [1, 2, 3]
+    assert report['actual_ids'] == [1, 2, 4, 5]

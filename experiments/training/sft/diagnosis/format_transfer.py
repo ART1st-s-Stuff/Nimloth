@@ -18,6 +18,7 @@ def parse_args(argv):
         p.add_argument('--' + name, type=Path, required=True)
     p.add_argument('--followup-only', action='store_true')
     p.add_argument('--followup-phase', choices=('parity', 'lora', 'vllm'), default='parity')
+    p.add_argument('--forward-dtype', choices=('bfloat16', 'float32'), default='bfloat16')
     p.add_argument('--reference-dir', type=Path)
     p.add_argument('--preflight-only', action='store_true')
     p.add_argument('--examples', type=int, default=16)
@@ -32,6 +33,8 @@ def parse_args(argv):
         p.error('diagnostic bounds: examples<=16, fit steps<=100, end-to-end steps<=50')
     if a.learning_rate <= 0 or a.max_length <= 0:
         p.error('learning rate and max length must be positive')
+    if a.forward_dtype == 'float32' and not (a.followup_only and a.followup_phase == 'parity'):
+        p.error('float32 is restricted to forward-only followup parity; training precision is unchanged')
     return a
 
 
@@ -85,6 +88,14 @@ def probability_comparison(left, right):
             'centered_mean_abs': float(centered.abs().mean()),
             'kl_per_position': (log_p.exp() * centered).sum(-1).tolist(),
             'argmax_flip_positions': torch.where(left.argmax(-1) != right.argmax(-1))[0].tolist()}
+
+
+def token_input_difference(expected, actual):
+    mismatch = next((i for i, (left, right) in enumerate(zip(expected, actual)) if left != right), min(len(expected), len(actual)))
+    return {'expected_length': len(expected), 'actual_length': len(actual),
+            'first_mismatch': mismatch, 'expected_ids': expected, 'actual_ids': actual,
+            'expected_window': expected[max(0, mismatch-12):mismatch+12],
+            'actual_window': actual[max(0, mismatch-12):mismatch+12]}
 
 
 def run(argv):
@@ -170,7 +181,7 @@ def run(argv):
     if len(selected) != a.examples:
         raise ValueError(f'only {len(selected)} complete final-assistant prefixes within bound')
     emit('selection.json', [{'record_id': ds.records[i]['id'], 'action': action, 'length': len(enc['input_ids'])} for i, action, _, enc in selected])
-    if a.preflight_only:
+    if a.preflight_only and not (a.followup_only and a.followup_phase == 'vllm'):
         emit('preflight.json', {'status': 'passed', 'examples': len(selected), 'actions': sorted({row[1] for row in selected})})
         return 0
     from nimloth.training.sft.stage1.data import collect_images
@@ -196,9 +207,31 @@ def run(argv):
         hf_logits = torch.load(a.reference_dir / 'parity_logits.pt', weights_only=True)['reloaded']
         requests = []
         for _, _, messages, _ in selected:
+            from nimloth.training.sft.stage1.data import render_stage_text
             text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+            text = render_stage_text(text, None)
             requests.append({'prompt_token_ids': tok.encode(text, add_special_tokens=False),
                              'multi_modal_data': {'image': collect_images(messages)}})
+        if a.preflight_only:
+            from vllm.engine.arg_utils import EngineArgs
+            from vllm.multimodal import MULTIMODAL_REGISTRY
+            model_config = EngineArgs(model=str(a.exported), dtype='bfloat16',
+                                      max_model_len=a.max_length + 1,
+                                      mm_processor_kwargs={'max_pixels': a.max_pixels},
+                                      limit_mm_per_prompt={'image': max(len(r['multi_modal_data']['image']) for r in requests)}).create_model_config()
+            mm_processor = MULTIMODAL_REGISTRY.create_processor(model_config, tokenizer=tok, disable_cache=True)
+            checked = []
+            for i, request in enumerate(requests):
+                processed = mm_processor.apply(request['prompt_token_ids'], request['multi_modal_data'], {'max_pixels': a.max_pixels})
+                actual_ids = list(processed['prompt_token_ids'])
+                expected_ids = reference['examples'][i]['input_ids']
+                difference = token_input_difference(expected_ids, actual_ids)
+                checked.append({'sample': i, **difference})
+                if actual_ids != expected_ids:
+                    emit('vllm_cpu_input_mismatch.json', checked)
+                    raise ValueError('CPU vLLM preprocessing differs from exact HF inputs; see mismatch artifact')
+            emit('vllm_cpu_preflight.json', {'status': 'exact processed token IDs matched', 'examples': len(checked)})
+            return 0
         engine = LLM(model=str(a.exported), dtype='bfloat16', tensor_parallel_size=1,
                      max_model_len=a.max_length + 1, max_num_batched_tokens=a.max_length + 1, gpu_memory_utilization=.85,
                      limit_mm_per_prompt={'image': max(len(r['multi_modal_data']['image']) for r in requests)},
@@ -212,7 +245,8 @@ def run(argv):
         for i, output in enumerate(outputs):
             expected = reference['examples'][i]
             if list(output.prompt_token_ids) != expected['input_ids']:
-                raise ValueError('vLLM processed token IDs differ from exact HF inputs')
+                emit('vllm_input_mismatch.json', {'sample': i, **token_input_difference(expected['input_ids'], list(output.prompt_token_ids))})
+                raise ValueError('vLLM processed token IDs differ from exact HF inputs; see mismatch artifact')
             if output.prompt_logprobs is None:
                 raise RuntimeError('vLLM returned no prompt logprobs')
             for position, hf_logprob in zip(expected['positions'], expected['target_logprobs'], strict=True):
@@ -239,7 +273,8 @@ def run(argv):
         return 0
     batches = [{k: v.cuda() for k, v in collate_cached_fn([enc], tok.pad_token_id).items()} for _, _, _, enc in selected]
     def load(path):
-        return Qwen2_5_VLForConditionalGeneration.from_pretrained(path, torch_dtype=torch.bfloat16, attn_implementation='sdpa', local_files_only=True).cuda().eval()
+        forward_dtype = getattr(torch, a.forward_dtype)
+        return Qwen2_5_VLForConditionalGeneration.from_pretrained(path, torch_dtype=forward_dtype, attn_implementation='sdpa', local_files_only=True).cuda().eval()
     def capture(model):
         outputs, hiddens, targets, identities = [], [], [], []
         for n, batch in enumerate(batches):
