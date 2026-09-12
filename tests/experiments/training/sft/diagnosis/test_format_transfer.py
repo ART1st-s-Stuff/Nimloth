@@ -1,0 +1,25 @@
+import torch
+from experiments.training.sft.diagnosis.format_transfer import full_vocab_row_loss, fit_precision
+
+
+def test_full_vocabulary_competitor_changes_loss():
+    hidden = torch.tensor([[1., 0.]])
+    rows = torch.tensor([[0., 0.]], requires_grad=True)
+    ids = torch.tensor([1])
+    targets = torch.tensor([1])
+    ordinary = full_vocab_row_loss(hidden, rows, ids, targets, torch.zeros(1, 3))
+    rival = full_vocab_row_loss(hidden, rows, ids, targets, torch.tensor([[10., 0., 0.]]))
+    assert rival > ordinary + 8
+    rival.backward()
+    assert rows.grad[0, 0] < 0
+
+
+def test_precision_fit_does_not_change_original_weights():
+    hidden = torch.tensor([[1., 2.], [-1., 1.]])
+    weights = torch.full((4, 2), .02, dtype=torch.bfloat16)
+    before = weights.clone()
+    result = fit_precision(hidden, weights, torch.tensor([2, 3]), torch.tensor([2, 3]), steps=2, lr=5e-6)
+    assert torch.equal(weights, before)
+    assert len(result['torch.bfloat16']['history']) == 2
+    assert result['torch.bfloat16']['history'][0]['actual_abs_mean'] == 0
+    assert result['torch.float32']['history'][0]['actual_abs_mean'] > 0

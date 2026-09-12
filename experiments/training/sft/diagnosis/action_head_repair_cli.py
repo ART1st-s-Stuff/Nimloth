@@ -16,10 +16,6 @@ import torch
 import torch.distributed as dist
 from torch.nn import functional as F
 
-from nimloth.backbone.qwen25vl.input import Qwen25VLInputBuilder
-from nimloth.backbone.qwen25vl.latent import extract_qwen_action_boundary_hidden
-from nimloth.latent import LatentActionTokens, special_token_ids
-from nimloth.rollout.transitions import TransitionJsonlDataset
 from experiments.training.sft.diagnosis.action_head_repair import (
     apply_action_row_delta_,
     balanced_action_sample_indices,
@@ -27,6 +23,10 @@ from experiments.training.sft.diagnosis.action_head_repair import (
     population_action_spread,
     restricted_action_cross_entropy,
 )
+from nimloth.backbone.qwen25vl.input import Qwen25VLInputBuilder
+from nimloth.backbone.qwen25vl.latent import extract_qwen_action_boundary_hidden
+from nimloth.latent import LatentActionTokens, special_token_ids
+from nimloth.rollout.transitions import TransitionJsonlDataset
 from nimloth.util.cache import CachedTransitionDataset, CompactCachedTransitionCollator
 
 _SCHEMA = "nimloth_id74_action_head_repair_v1"
@@ -715,7 +715,14 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    return run(_parse_args(argv))
+    import sys
+
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] == "--diagnostic-mode":
+        from experiments.training.sft.diagnosis.format_transfer import run as diagnose
+
+        return diagnose(arguments[1:])
+    return run(_parse_args(arguments))
 
 
 if __name__ == "__main__":
