@@ -165,3 +165,31 @@ def test_checkpoint_roundtrip_preserves_policy_history_and_optimizer(tmp_path) -
     epoch_state = torch.load(tmp_path / "epoch_002" / "training_state.pt", weights_only=False)
     assert epoch_state["convergence_state"] == state.state_dict()
     assert len(epoch_state["rank_rng_states"]) == 1
+
+
+def test_weighted_baseline_epoch12_resumes_and_plateau_reports_format_unmet():
+    from nimloth.training.sft.stage1.convergence import stopping_reason
+    state = ConvergenceState(best_loss=0.452, previous_loss=0.452, last_epoch=12)
+    state = ConvergenceState.from_state_dict(state.state_dict())
+    assert not state.observe(epoch=13, loss=0.450, policy=POLICY)
+    state = ConvergenceState.from_state_dict(state.state_dict())
+    assert state.observe(epoch=14, loss=0.449, policy=POLICY)
+    assert stopping_reason(state, 30 / 32, 31 / 32) == 'format_unmet'
+    assert stopping_reason(state, 31 / 32, 31 / 32) == 'converged'
+
+
+def test_metric_transition_preserves_nonmetric_identity_guards():
+    from nimloth.training.sft.stage1.checkpoint import objective_identities_match
+    from nimloth.training.sft.stage1.convergence import metric_transition
+    old = {'stage': 'format', 'action_token_loss_scope': 'action_number_tokens_v1',
+           'dataset': 'a', 'convergence': {'monitor': 'validation_lm_loss', 'patience_epochs': 2}}
+    new = {**old, 'convergence': {'monitor': 'validation_weighted_lm_loss', 'patience_epochs': 2, 'format_min_rate': 31 / 32}}
+    with pytest.warns(UserWarning, match='Convergence metric changed'):
+        assert objective_identities_match(old, new)
+    assert not metric_transition(new, new)
+    assert objective_identities_match(new, new)
+    with pytest.warns(UserWarning):
+        assert not objective_identities_match(old, {**new, 'dataset': 'b'})
+    with pytest.warns(UserWarning):
+        assert not objective_identities_match(old, {**new, 'convergence': {**new['convergence'], 'patience_epochs': 3}})
+    assert not objective_identities_match(new, old)

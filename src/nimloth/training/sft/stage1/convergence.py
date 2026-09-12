@@ -94,3 +94,17 @@ class ConvergenceState:
         elif state.best_loss > state.previous_loss:
             raise ValueError("best loss exceeds reference loss")
         return state
+
+
+def metric_transition(saved: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
+    """Only the approved Stage 1 unweighted-to-weighted migration is supported."""
+    old, new = saved.get("convergence", {}), expected.get("convergence", {})
+    return (saved.get("stage") == expected.get("stage") == "format"
+            and old.get("monitor") == "validation_lm_loss"
+            and new.get("monitor") == "validation_weighted_lm_loss")
+
+
+def stopping_reason(state: ConvergenceState, format_rate: float, minimum: float) -> str:
+    if not state.converged:
+        return "running"
+    return "converged" if format_rate >= minimum else "format_unmet"

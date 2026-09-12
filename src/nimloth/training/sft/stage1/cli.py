@@ -51,6 +51,8 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         "--max-optimizer-steps", type=int, default=None,
         help="Pause with a resume checkpoint and exit 75 at this absolute optimizer step.",
     )
+    ap.add_argument("--convergence-metric", choices=["validation_lm_loss", "validation_weighted_lm_loss"], default="validation_lm_loss")
+    ap.add_argument("--convergence-format-min-rate", type=float, default=0.0)
     ap.add_argument("--convergence-min-epochs", type=int)
     ap.add_argument("--convergence-patience-epochs", type=int)
     ap.add_argument("--convergence-min-relative-improvement", type=float)
@@ -225,6 +227,12 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     args.boundary_token_loss_weight = validate_action_weight(args.boundary_token_loss_weight)
     if stage != "format" and (args.action_token_loss_weight != 1 or args.boundary_token_loss_weight != 1):
         raise ValueError("action token loss weighting is supported only for format stage1")
+    if not 0 <= args.convergence_format_min_rate <= 1:
+        raise ValueError("convergence format minimum rate must be in [0, 1]")
+    if stage != "format" and (args.convergence_metric != "validation_lm_loss" or args.convergence_format_min_rate):
+        raise ValueError("format convergence options require Stage 1")
+    if not args.until_converged and (args.convergence_metric != "validation_lm_loss" or args.convergence_format_min_rate):
+        raise ValueError("convergence options require --until-converged")
     policy_values = (
         args.convergence_min_epochs, args.convergence_patience_epochs,
         args.convergence_min_relative_improvement,

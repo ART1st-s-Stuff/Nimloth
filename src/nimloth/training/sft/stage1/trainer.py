@@ -57,7 +57,7 @@ from .checkpoint import (
     validate_resume_state,
 )
 from .cli import parse_args
-from .convergence import ConvergencePolicy, ConvergenceState
+from .convergence import ConvergencePolicy, ConvergenceState, metric_transition, stopping_reason
 from .data import (
     CACHE_SCHEMA,
     FORMAT_OBJECTIVE,
@@ -490,8 +490,8 @@ def validation_sampling_contract(
     raise ValueError(f"unknown training stage: {stage}")
 
 
-def convergence_monitor(stage: str) -> str:
-    return "validation_total_loss" if stage == "query" else "validation_lm_loss"
+def convergence_monitor(stage: str, args=None) -> str:
+    return "validation_total_loss" if stage == "query" else getattr(args, "convergence_metric", "validation_lm_loss")
 
 
 def build_optimizer(
@@ -715,7 +715,8 @@ def _resume_identity(
         identity["distributed_strategy"] = "fsdp_full_shard_orig_params_v1"
     if getattr(args, "until_converged", False):
         identity["convergence"] = {
-            "monitor": convergence_monitor(stage),
+            "monitor": convergence_monitor(stage, args),
+            "format_min_rate": getattr(args, "convergence_format_min_rate", 0.0),
             "min_epochs": args.convergence_min_epochs,
             "patience_epochs": args.convergence_patience_epochs,
             "min_relative_improvement": args.convergence_min_relative_improvement,
@@ -1168,6 +1169,7 @@ def main(*, stage: str = "format") -> int:
     resume_next_micro_batch = 0
     resume_rank_rng: dict[str, Any] | None = None
     resume_at_epoch_boundary = False
+    reset_metric = False
     if args.resume and resume_ckpt is not None and resume_ckpt.exists():
         state = torch.load(resume_ckpt, map_location="cpu", weights_only=False)
         if not objective_identities_match(state.get("identity"), resume_identity):
@@ -1176,6 +1178,7 @@ def main(*, stage: str = "format") -> int:
             if state.get("convergence_state") is None:
                 raise ValueError("resume checkpoint lacks convergence state")
             convergence = ConvergenceState.from_state_dict(state["convergence_state"])
+        reset_metric = metric_transition(state.get("identity", {}), resume_identity)
         global_step = int(state.get("step", 0))
         if args.max_optimizer_steps is not None and global_step >= args.max_optimizer_steps:
             raise ValueError(
@@ -1223,7 +1226,7 @@ def main(*, stage: str = "format") -> int:
             )
         if convergence_policy is not None and convergence.last_epoch != start_epoch - 1:
             raise ValueError("convergence history does not match resume data cursor")
-        if best_val == float("inf") and log_path.exists():
+        if not reset_metric and convergence_monitor(stage, args) == "validation_lm_loss" and best_val == float("inf") and log_path.exists():
             rows = list(csv.reader(log_path.open()))
             for row in reversed(rows):
                 if len(row) >= 5 and row[4]:
@@ -1251,6 +1254,46 @@ def main(*, stage: str = "format") -> int:
                 )
             )
 
+    if reset_metric:
+        if not resume_at_epoch_boundary:
+            raise ValueError("convergence metric change requires a completed epoch checkpoint")
+        # 新指标在恢复模型上重新计算基线，不读取旧 CSV 的未加权最优值。
+        baseline_rng = capture_rng_state()
+        baseline = evaluate(
+            model, val_loader, device, args.max_val_batches,
+            include_batches=val_include_batches,
+            action_token_ids=action_ids, boundary_token_ids=boundary_ids,
+            action_weight=args.action_token_loss_weight,
+            boundary_weight=args.boundary_token_loss_weight,
+        )
+        restore_rng_state(baseline_rng)
+        best_val = baseline[convergence_monitor(stage, args)]
+        convergence = ConvergenceState(best_loss=best_val, previous_loss=best_val, last_epoch=start_epoch - 1)
+        if is_main():
+            event = {"event": "convergence_metric_reset", "epoch": start_epoch - 1,
+                     "global_step": global_step, "monitor": convergence_monitor(stage, args),
+                     "baseline_checkpoint": str(resume_dir), "best_checkpoint": str(resume_dir),
+                     "historical_best_directory_metric": state["identity"]["convergence"]["monitor"],
+                     **baseline}
+            print(json.dumps(event), flush=True)
+            with (args.output_dir / "convergence_transitions.jsonl").open("a") as stream:
+                stream.write(json.dumps(event) + "\n")
+            marker = args.output_dir / "CONVERGED.json"
+            if marker.exists():
+                archived = args.output_dir / f"CONVERGED.before_step_{global_step}.{time.time_ns()}.json"
+                marker.rename(archived)
+
+    if convergence.converged:
+        # 同指标恢复已结束运行时保留原终态，不用未执行的格式验证覆盖结果。
+        if is_main():
+            print(json.dumps({"event": "already_stopped", "epoch": convergence.last_epoch,
+                              "global_step": global_step}), flush=True)
+            if wandb_run is not None:
+                import wandb
+                wandb.finish()
+        cleanup_dist()
+        return 0
+
     stop_after_boundary = False
     stop_requested = False
 
@@ -1269,6 +1312,7 @@ def main(*, stage: str = "format") -> int:
 
     model.train()
     epoch_rng_states = state.get("rank_rng_states") if args.resume and resume_ckpt is not None else None
+    format_rate = 0.0
     epoch = start_epoch - 1
     epoch_numbers = (itertools.count(start_epoch) if args.until_converged
                      else range(start_epoch, args.epochs + 1))
@@ -1444,7 +1488,7 @@ def main(*, stage: str = "format") -> int:
                 action_token_ids=action_ids, boundary_token_ids=boundary_ids,
                 action_weight=args.action_token_loss_weight, boundary_weight=args.boundary_token_loss_weight,
             )
-            val_loss = val_metrics["validation_lm_loss"]
+            val_loss = val_metrics[convergence_monitor(stage, args)]
             val_metrics.update(action_token_loss_weight=args.action_token_loss_weight, boundary_token_loss_weight=args.boundary_token_loss_weight)
         validation_seconds = time.monotonic() - validation_started_at
         if is_main():
@@ -1498,7 +1542,8 @@ def main(*, stage: str = "format") -> int:
             with (args.output_dir / "validation_metrics.jsonl").open("a") as f:
                 f.write(json.dumps({
                     "epoch": epoch, "global_step": global_step,
-                    "monitor": convergence_monitor(stage), **val_metrics,
+                    "monitor": convergence_monitor(stage, args), **val_metrics,
+                    "stop_reason": stopping_reason(convergence, format_rate, getattr(args, "convergence_format_min_rate", 0.0)),
                     "format_correct_rate": format_rate,
                     "format_failure_reasons": format_reasons,
                     "format_samples": str(format_sample_path),
@@ -1633,9 +1678,11 @@ def main(*, stage: str = "format") -> int:
     )
     if is_main():
         if convergence_policy is not None:
-            (args.output_dir / "CONVERGED.json").write_text(
-                json.dumps({"monitor": convergence_monitor(stage), "policy": convergence_policy.state_dict(),
-                            "state": convergence.state_dict(), "global_step": global_step}) + "\n",
+            (args.output_dir / ("CONVERGED.json" if stopping_reason(convergence, format_rate, getattr(args, "convergence_format_min_rate", 0.0)) == "converged" else "FORMAT_UNMET.json")).write_text(
+                json.dumps({"monitor": convergence_monitor(stage, args), "policy": convergence_policy.state_dict(),
+                            "state": convergence.state_dict(), "global_step": global_step,
+                            "stop_reason": stopping_reason(convergence, format_rate, getattr(args, "convergence_format_min_rate", 0.0)),
+                            "format_correct_rate": format_rate, "format_min_rate": getattr(args, "convergence_format_min_rate", 0.0)}) + "\n",
                 encoding="utf-8",
             )
         if wandb_run is not None:

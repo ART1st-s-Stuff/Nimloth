@@ -105,10 +105,21 @@ def objective_identities_match(saved, expected) -> bool:
                 raise ValueError("unsupported query checkpoint loss scope")
         elif value["action_token_loss_scope"] != ACTION_TOKEN_LOSS_SCOPE or value["boundary_token_loss_scope"] != BOUNDARY_TOKEN_LOSS_SCOPE:
             raise ValueError("unsupported checkpoint loss scope")
-    if {k: v for k, v in saved.items() if k not in old} != {k: v for k, v in expected.items() if k not in new}:
+    from .convergence import metric_transition
+    saved_rest = {k: v for k, v in saved.items() if k not in old}
+    expected_rest = {k: v for k, v in expected.items() if k not in new}
+    for identity in (saved_rest, expected_rest):
+        if "convergence" in identity:
+            identity["convergence"] = dict(identity["convergence"])
+            identity["convergence"].setdefault("format_min_rate", 0.0)
+    if metric_transition(saved, expected):
+        saved_rest["convergence"]["monitor"] = expected_rest["convergence"]["monitor"]
+        saved_rest["convergence"]["format_min_rate"] = expected_rest["convergence"]["format_min_rate"]
+        warnings.warn("Convergence metric changed: reset only metric history and best selection; preserve optimizer, scheduler, RNG and cursor", UserWarning)
+    if saved_rest != expected_rest:
         return False
     if old != new:
-        warnings.warn(f"Resuming with changed loss weights: saved={old}, requested={new}; optimizer, scheduler, RNG, data cursor and unweighted-LM convergence are restored", UserWarning)
+        warnings.warn(f"Resuming with changed loss weights: saved={old}, requested={new}; optimizer, scheduler, RNG and data cursor are restored; convergence follows the declared monitor", UserWarning)
     return True
 
 

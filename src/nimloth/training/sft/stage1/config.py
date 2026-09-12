@@ -25,6 +25,8 @@ _SFT1_YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("train", "distributed_strategy"): "distributed_strategy",
     ("train", "epochs"): "epochs",
     ("train", "until_converged"): "until_converged",
+    ("train", "convergence_metric"): "convergence_metric",
+    ("train", "convergence_format_min_rate"): "convergence_format_min_rate",
     ("train", "convergence_min_epochs"): "convergence_min_epochs",
     ("train", "convergence_patience_epochs"): "convergence_patience_epochs",
     ("train", "convergence_min_relative_improvement"): "convergence_min_relative_improvement",

@@ -100,11 +100,11 @@ def validate_prepared_splits(train_path: Path, val_path: Path, format_path: Path
             'Validation and format-eval semantic source contents disagree'
         )
 
-def split_loss_overrides(overrides: list[str]) -> tuple[list[str], dict[str, float]]:
+def split_loss_overrides(overrides: list[str]) -> tuple[list[str], dict[str, float | str]]:
     from .loss import validate_action_weight
     rest, weights = [], {}
     index = 0
-    flags = {"--action-token-loss-weight", "--boundary-token-loss-weight"}
+    flags = {"--action-token-loss-weight", "--boundary-token-loss-weight", "--convergence-metric", "--convergence-format-min-rate"}
     while index < len(overrides):
         arg = overrides[index]
         flag, separator, value = arg.partition("=")
@@ -114,7 +114,16 @@ def split_loss_overrides(overrides: list[str]) -> tuple[list[str], dict[str, flo
                 if index >= len(overrides):
                     raise ValueError(f"{flag} requires a value")
                 value = overrides[index]
-            weights[flag] = validate_action_weight(value)
+            if flag == "--convergence-metric":
+                if value not in {"validation_lm_loss", "validation_weighted_lm_loss"}:
+                    raise ValueError("unknown convergence metric")
+                weights[flag] = value
+            elif flag == "--convergence-format-min-rate":
+                weights[flag] = float(value)
+                if not 0 <= weights[flag] <= 1:
+                    raise ValueError("invalid convergence format minimum")
+            else:
+                weights[flag] = validate_action_weight(value)
         else:
             rest.append(arg)
         index += 1

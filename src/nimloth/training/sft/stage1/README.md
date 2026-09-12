@@ -90,3 +90,21 @@ WM/value/MCTS。完整参数、导出前置条件和恢复合同见上层 evalua
 每轮同时记录 `validation_lm_loss` 与 `validation_weighted_lm_loss`，共享一次 forward，按真实验证样本平均并排除分布式补齐样本。后者使用本轮动作/边界权重，仅用于对照；收敛和 best checkpoint 仍由未加权 LM loss 决定。
 
 Stage 1 每轮格式验证默认采用 temperature=0.7、top_p=0.95、top_k=0（不截断）、最多512个新token和generation seed=0的无约束采样。通过现有 `--format-eval-temperature`、`--format-eval-top-p`、`--format-eval-max-new-tokens`、`--format-eval-generation-seed` 覆盖；原始样本及manifest记录实际生成合同。验证恢复训练RNG，不改变loss、best或收敛规则；旧checkpoint可继续使用，变更的验证合同不能当作同口径历史比较。Stage 2 默认仍为greedy/128。Transformers与vLLM的同参数采样不保证逐token一致。
+
+
+### 选择加权验证收敛指标
+
+现有入口支持 `--convergence-metric validation_weighted_lm_loss`（默认仍为
+`validation_lm_loss`），所选指标同时决定 plateau 和 best checkpoint。
+`--convergence-format-min-rate 0.96875` 要求当前采样格式至少 31/32；默认 0
+保持原行为。loss 达到 plateau 时总会停止：格式达标写 `CONVERGED.json`，
+未达标写 `FORMAT_UNMET.json` 并记录 `stop_reason=format_unmet`，不宣称格式收敛。
+每轮 validation_metrics 同时保留两种 loss 和停止原因。
+
+`--resume` 允许 Stage1 从未加权指标显式迁移到加权指标，必须是完整 epoch
+checkpoint；保持优化器、scheduler、RNG、数据位置，只重新计算恢复模型的完整
+验证基线，重置指标历史和 best 值。相同指标恢复保留其历史，其他身份不匹配仍拒绝。
+迁移记录写入 `convergence_transitions.jsonl`，原 CONVERGED 标记改名保存。
+
+迁移基线的 best 来源是 transition 中记录的原 epoch checkpoint；旧 `best/`
+目录仍代表原指标，直到新指标首次改善并正常发布 best，不能把旧目录当成加权最优。

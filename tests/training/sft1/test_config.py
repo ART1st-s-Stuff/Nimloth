@@ -95,3 +95,21 @@ def test_format_sampling_defaults_and_overrides():
                         ("max-new-tokens", "0"), ("generation-seed", "-1")]:
         with pytest.raises(ValueError, match="format-eval"):
             parse_args(common + [f"--format-eval-{flag}", value])
+
+
+def test_weighted_convergence_cli_and_yaml(tmp_path):
+    from nimloth.training.sft.stage1.cli import parse_args
+    common = ['--config', str(ROOT / 'configs/training/sft1/format.yaml'),
+              '--model', '/tmp/model', '--train-jsonl', '/tmp/train',
+              '--val-jsonl', '/tmp/val', '--format-eval-jsonl', '/tmp/format-eval',
+              '--output-dir', '/tmp/run']
+    args, _ = parse_args(common + ['--convergence-metric', 'validation_weighted_lm_loss',
+                                 '--convergence-format-min-rate', '0.96875'])
+    assert args.convergence_metric == 'validation_weighted_lm_loss'
+    assert args.convergence_format_min_rate == 31 / 32
+    for value in ['nan', '-1', '1.01']:
+        with pytest.raises(ValueError, match='minimum rate'):
+            parse_args(common + ['--convergence-format-min-rate', value])
+    path = tmp_path / 'metric.yaml'
+    path.write_text('train:\n  convergence_metric: validation_weighted_lm_loss\n  convergence_format_min_rate: 0.96875\n')
+    assert sft1_yaml_defaults(path)['convergence_metric'] == 'validation_weighted_lm_loss'
