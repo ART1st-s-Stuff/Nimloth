@@ -148,12 +148,15 @@ class QueryAlignmentModel(nn.Module):
             raise ValueError("DINO targets must be finite")
         lm_sums = output.logits.new_zeros(answer_count, dtype=torch.float32)
         lm_counts = output.logits.new_zeros(answer_count, dtype=torch.float32)
-        positions = supervised.nonzero(as_tuple=False)
+        # Failed trajectories still supervise DINO, but never need token CE.
+        lm_supervised = supervised & lm_answer_mask[target_owners.clamp_min(0)]
+        positions = lm_supervised.nonzero(as_tuple=False)
 
         def token_ce(scores, targets):
             return F.cross_entropy(scores.float(), targets, reduction="none")
 
-        for position_chunk in positions.split(128):
+        for start in range(0, positions.shape[0], 128):
+            position_chunk = positions[start : start + 128]
             targets = inputs["labels"][
                 position_chunk[:, 0], position_chunk[:, 1] + 1
             ]
@@ -168,9 +171,11 @@ class QueryAlignmentModel(nn.Module):
             lm_counts = lm_counts.scatter_add(
                 0, owners, torch.ones_like(losses)
             )
-        lm_by_answer = lm_sums / lm_counts
+        lm_by_answer = lm_sums / lm_counts.clamp_min(1)
         dino_by_answer = (state.float() - target).square().flatten(1).mean(1)
-        lm_loss_sum = (lm_by_answer * lm_answer_mask).sum()
+        # Keep the head in the backward graph even for an all-failure batch.
+        # An empty sum avoids touching any logits or introducing 0 * NaN.
+        lm_loss_sum = lm_by_answer.sum() + output.logits[:0].float().sum()
         lm_count = lm_answer_mask.sum()
         dino_loss_sum = dino_by_answer.sum()
         count = torch.tensor(answer_count, device=lm_loss_sum.device, dtype=torch.long)

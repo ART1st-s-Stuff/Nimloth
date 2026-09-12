@@ -75,6 +75,25 @@ from .fsdp import (
 from .loss import resolve_action_token_ids, training_loss
 
 
+def data_loader_kwargs(args, collator, *, use_cache: bool, query: bool) -> dict[str, Any]:
+    """Parallelize CPU query preprocessing without forking initialized CUDA."""
+    workers = args.num_workers if use_cache or query else 0
+    kwargs: dict[str, Any] = {
+        "num_workers": workers, "pin_memory": True, "collate_fn": collator,
+    }
+    if workers > 0:
+        kwargs.update(persistent_workers=True, prefetch_factor=args.prefetch_factor)
+        if query:
+            kwargs.update(multiprocessing_context="spawn", worker_init_fn=_init_query_worker)
+    return kwargs
+
+
+def _init_query_worker(_worker_id: int) -> None:
+    # DataLoader sets the worker Torch/Python/NumPy seeds and Torch threads=1.
+    # Tokenizer threads would otherwise multiply across ranks and workers.
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+
 def _nimloth_format_re(latent_token_count: int | None = None) -> re.Pattern[str]:
     latent_block = r"\s*".join(
         re.escape(token) for token in (latent_state_tokens(latent_token_count) if latent_token_count is not None else ())
@@ -649,15 +668,9 @@ def main(*, stage: str = "format") -> int:
             targets,
             mask_latent_query_labels=args.mask_latent_query_labels,
         )
-    loader_workers = args.num_workers if use_cache else 0
-    loader_kwargs: dict[str, Any] = {
-        "num_workers": loader_workers,
-        "pin_memory": True,
-        "collate_fn": train_collate,
-    }
-    if loader_workers > 0:
-        loader_kwargs["persistent_workers"] = True
-        loader_kwargs["prefetch_factor"] = args.prefetch_factor
+    loader_kwargs = data_loader_kwargs(
+        args, train_collate, use_cache=use_cache, query=query_config is not None
+    )
 
     train_sampler = DistributedSampler(
         train_ds, num_replicas=world, rank=rank, shuffle=True, seed=args.seed

@@ -268,11 +268,57 @@ class CachedDINOGridTargets:
         grid_size: int,
         path_to_feature: dict[str, tuple[torch.Tensor, int]],
         cache_fingerprint: str,
+        shard_references: dict[int, tuple] | None = None,
     ) -> None:
         self.identity = identity
         self.grid_size = int(grid_size)
         self.path_to_feature = path_to_feature
         self.cache_fingerprint = str(cache_fingerprint)
+        self._shard_references = shard_references
+
+    @staticmethod
+    def _file_identity(path: Path) -> tuple[int, ...]:
+        stat = path.stat()
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+    @classmethod
+    def _shard_reference(cls, path: Path, tensor: torch.Tensor) -> tuple:
+        path = path.resolve()
+        return (str(path), cls._file_identity(path), tuple(tensor.shape), tensor.dtype)
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        if self._shard_references is not None:
+            # Do not send mmap tensors through Torch's multiprocessing reducer:
+            # it copies whole shards into /dev/shm. Workers reopen the exact files
+            # already validated by the parent, without repeating the full audit.
+            state["path_to_feature"] = {
+                path: (id(shard), row)
+                for path, (shard, row) in self.path_to_feature.items()
+            }
+        return state
+
+    def __setstate__(self, state):
+        references = state.get("_shard_references")
+        if references is not None:
+            shards = {}
+            for key, (filename, signature, shape, dtype) in references.items():
+                path = Path(filename)
+                if self._file_identity(path) != signature:
+                    raise ValueError(f"validated DINO shard changed before worker load: {path}")
+                tensor = _load_grid_shard(path)
+                if (tuple(tensor.shape) != shape or tensor.dtype != dtype
+                        or self._file_identity(path) != signature):
+                    raise ValueError(f"validated DINO shard changed during worker load: {path}")
+                shards[key] = tensor
+            state["path_to_feature"] = {
+                path: (shards[key], row)
+                for path, (key, row) in state["path_to_feature"].items()
+            }
+            state["_shard_references"] = {
+                id(shards[key]): reference for key, reference in references.items()
+            }
+        self.__dict__.update(state)
 
     @property
     def grid_tokens(self) -> int:
@@ -298,6 +344,7 @@ class CachedDINOGridTargets:
                 raise ValueError("standalone DINO cache is not complete")
             return result
         path_to_feature: dict[str, tuple[torch.Tensor, int]] = {}
+        shard_references = {}
         fingerprints: list[str] = []
         grid_tokens = int(grid_size) ** 2
 
@@ -366,6 +413,9 @@ class CachedDINOGridTargets:
                         f"{sidecar}; got={tuple(tensor.shape)}/{tensor.dtype}, "
                         f"expected={expected_shape}/float32"
                     )
+                shard_references[id(tensor)] = cls._shard_reference(
+                    sidecar / f"shard_{index:05d}.pt", tensor
+                )
                 shards.append(tensor)
 
             for index, path in enumerate(paths):
@@ -380,6 +430,7 @@ class CachedDINOGridTargets:
             grid_size=grid_size,
             path_to_feature=path_to_feature,
             cache_fingerprint=_json_fingerprint(fingerprints),
+            shard_references=shard_references,
         )
 
     @classmethod
@@ -424,6 +475,7 @@ class CachedDINOGridTargets:
         ):
             raise ValueError("standalone DINO unreferenced image")
         mapping = {}
+        shard_references = {}
         offset = 0
         for shard in manifest["shards"]:
             path = root / shard["file"]
@@ -438,6 +490,7 @@ class CachedDINOGridTargets:
                 raise ValueError(
                     "standalone DINO shard shape/dtype/finiteness mismatch"
                 )
+            shard_references[id(features)] = cls._shard_reference(path, features)
             for row in range(len(features)):
                 if offset >= len(paths):
                     raise ValueError("standalone DINO too many shard rows")
@@ -450,6 +503,7 @@ class CachedDINOGridTargets:
             grid_size=grid_size,
             path_to_feature=mapping,
             cache_fingerprint=claimed,
+            shard_references=shard_references,
         )
 
     @torch.no_grad()

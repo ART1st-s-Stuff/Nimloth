@@ -617,3 +617,69 @@ def test_inconsistent_success_within_one_trajectory_is_rejected():
     batch["lm_answer_mask"] = torch.tensor([True, False])
     with pytest.raises(ValueError, match="share its success mask"):
         make_model()(**batch)
+
+
+@pytest.mark.parametrize("successes", [(True, False), (False, False)])
+def test_selective_ce_matches_dense_masked_loss_and_gradients(successes, monkeypatch):
+    """Skipping failed CE preserves the dense objective, including zero head grads."""
+    import copy
+
+    model = make_model().eval()
+    reference = copy.deepcopy(model)
+    batch = inputs()
+    batch["input_ids"] = batch["input_ids"].repeat(2, 1)
+    batch["input_ids"][1, 0] = 12
+    batch["labels"] = batch["labels"].repeat(2, 1)
+    # Unequal answer lengths distinguish answer means from token means.
+    batch["labels"][:, -1] = -100
+    owners = batch["answer_indices"].clone()
+    owners[:, -1] = -1
+    batch["answer_indices"] = torch.cat(
+        [owners, torch.where(owners >= 0, owners + 2, owners)]
+    )
+    batch["query_batch_indices"] = torch.tensor([0, 0, 1, 1])
+    batch["query_positions"] = batch["query_positions"].repeat(2, 1)
+    batch["dino_target"] = torch.randn(4, 4, 3)
+    batch["lm_answer_mask"] = torch.tensor(successes).repeat_interleave(2)
+
+    lm = reference.language_model
+    hidden = lm.model.norm(lm.embed_tokens(batch["input_ids"]).cumsum(1))
+    logits = lm.lm_head(hidden)
+    dense_ce = nn.functional.cross_entropy(
+        logits[:, :-1].reshape(-1, 16), batch["labels"][:, 1:].reshape(-1),
+        reduction="none", ignore_index=-100,
+    ).reshape(2, -1)
+    means = torch.stack([
+        dense_ce[batch["answer_indices"][:, 1:] == answer].mean()
+        for answer in range(4)
+    ])
+    expected_lm = (means * batch["lm_answer_mask"]).sum()
+    state = reference.projector(hidden[
+        batch["query_batch_indices"][:, None], batch["query_positions"]
+    ])
+    expected_dino = (state - batch["dino_target"]).square().flatten(1).mean(1).sum()
+    expected = expected_lm / batch["lm_answer_mask"].sum().clamp_min(1) + expected_dino / 4
+
+    original_ce = nn.functional.cross_entropy
+    ce_tokens = []
+
+    def counted_ce(scores, targets, **kwargs):
+        ce_tokens.append(targets.numel())
+        return original_ce(scores, targets, **kwargs)
+
+    monkeypatch.setattr(nn.functional, "cross_entropy", counted_ce)
+    output = model(**batch)
+    assert sum(ce_tokens) == 3 * sum(successes)
+    if not any(successes):
+        assert ce_tokens == []
+    torch.testing.assert_close(output.lm_loss_sum, expected_lm)
+    torch.testing.assert_close(output.dino_loss_sum, expected_dino)
+    torch.testing.assert_close(output.loss, expected)
+    output.loss.backward()
+    expected.backward()
+    for (name, parameter), (_, old_parameter) in zip(
+        model.named_parameters(), reference.named_parameters(), strict=True
+    ):
+        assert parameter.grad is not None, name
+        assert torch.isfinite(parameter.grad).all(), name
+        torch.testing.assert_close(parameter.grad, old_parameter.grad)

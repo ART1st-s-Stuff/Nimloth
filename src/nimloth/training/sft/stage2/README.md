@@ -38,3 +38,7 @@ Checkpoint 保存 `training_stage=query`、语言模型或 adapter，以及 `slo
 LoRA 合并导出保留 projector 文件及阶段元数据，SFT3 使用同一 projector 格式。完整恢复包含优化器、调度器、epoch/微批次游标、每 rank 随机数状态及收敛历史；query 收敛监控身份为 `validation_total_loss`。CPU 测试覆盖标签、梯度、空间对齐、收敛与导出接口，不作为真实 GPU 训练或 rollout 质量证据。
 
 优化器更新前只预取一个累积组的 CPU 输入并统计成功/全部回答数，跨 rank 求和后逐微批单次前向。两个损失分别按各自全局分母缩放；恢复身份包含此监督语义，旧的全部回答 LM 优化器状态不能续训为新目标。
+
+## 数据加载与计算开销
+
+Stage2在线图像处理使用配置的 `num_workers`/预取参数；多进程采用spawn，避免从已初始化CUDA的父进程fork。DINO缓存先由父进程完整验证，再以文件引用传给worker并重新mmap，不复制整份特征张量到共享内存；文件身份变化拒绝加载。失败回答在CE计算前排除，仍保留完整因果前向、DINO监督和LM head的零梯度连接。当前仍生成完整词表logits，不能将此优化描述为消除了全部失败轨迹LM投影开销。
