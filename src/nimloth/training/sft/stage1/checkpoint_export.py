@@ -158,12 +158,29 @@ def copy_query_artifacts(source: Path, destination: Path, *, stage: str) -> None
         copy2(source / name, destination / name)
 
 
+def has_fp32_embedding_masters(adapter_dir: Path) -> bool:
+    """Inspect saved master precision without loading or rounding large tensors."""
+    from safetensors import safe_open
+
+    path = adapter_dir / "adapter_model.safetensors"
+    with safe_open(path, framework="pt", device="cpu") as handle:
+        keys = [key for key in list(handle.keys()) if key.endswith((
+            "embed_tokens.weight", "embed_tokens.modules_to_save.weight",
+            "lm_head.weight", "lm_head.modules_to_save.weight",
+        ))]
+        dtypes = {handle.get_slice(key).get_dtype() for key in keys}
+    if "F32" in dtypes and dtypes != {"F32"}:
+        raise ValueError("mixed saved embedding/head master precision")
+    return "F32" in dtypes
+
+
 def merge_checkpoint(
     base_model: Path, adapter_dir: Path, out_dir: Path, processor=None
 ) -> int:
     if processor is None:
         processor = AutoProcessor.from_pretrained(adapter_dir, trust_remote_code=True)
-    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    fp32_masters = has_fp32_embedding_masters(adapter_dir)
+    dtype = torch.float32 if fp32_masters else (torch.bfloat16 if torch.cuda.is_available() else torch.float32)
     base = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         base_model,
         torch_dtype=dtype,
@@ -186,8 +203,8 @@ def merge_checkpoint(
         merged.config.nimloth_format_objective = format_objective
         identity = training_state.get("identity")
         identity = identity if isinstance(identity, dict) else {}
-        from .loss import BOUNDARY_TOKEN_LOSS_SCOPE
         from .checkpoint import objective_identities_match
+        from .loss import BOUNDARY_TOKEN_LOSS_SCOPE
         objective_identities_match(identity, identity)
         merged.config.nimloth_boundary_token_loss_weight = identity.get("boundary_token_loss_weight", 1.0)
         merged.config.nimloth_boundary_token_loss_scope = identity.get("boundary_token_loss_scope", None if identity.get("stage") == "query" else BOUNDARY_TOKEN_LOSS_SCOPE)
@@ -214,6 +231,11 @@ def merge_checkpoint(
             "training_stage", "format"
         )
     stage = getattr(merged.config, "nimloth_training_stage", "format")
+    if fp32_masters:
+        # Merge and verification happen before this intentional inference cast.
+        # Original adapter/checkpoint masters are never modified.
+        merged.config.nimloth_embedding_master_dtype = "float32"
+        merged.to(dtype=torch.bfloat16)
     copy_query_artifacts(adapter_dir, out_dir, stage=stage)
     out_dir.mkdir(parents=True, exist_ok=True)
     merged.save_pretrained(out_dir, safe_serialization=True)

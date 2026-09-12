@@ -11,13 +11,14 @@ import torch
 from torch.distributed.fsdp import (
     FullOptimStateDictConfig,
     FullStateDictConfig,
+    MixedPrecision,
     ShardingStrategy,
     StateDictType,
 )
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
 )
-from torch.distributed.fsdp.wrap import lambda_auto_wrap_policy
+from torch.distributed.fsdp.wrap import CustomPolicy, lambda_auto_wrap_policy
 
 
 def is_fsdp(model):
@@ -49,13 +50,82 @@ def _auto_wrap_targets(model):
     return targets
 
 
+def prepare_embedding_masters(model, dtype="bfloat16"):
+    """Keep the full existing trainable embedding/head scope, with FP32 masters."""
+    if dtype not in {"bfloat16", "float32"}:
+        raise ValueError("Unsupported embedding master dtype")
+    if dtype == "bfloat16":
+        return
+    leaves = []
+    for module in (model.get_input_embeddings(), model.get_output_embeddings()):
+        copies = getattr(module, "modules_to_save", None)
+        if copies is not None:
+            active = getattr(module, "active_adapter", "default")
+            if not isinstance(active, str) or active not in copies:
+                raise ValueError("Expected one active saved embedding adapter")
+            module = copies[active]
+        if not isinstance(module, (torch.nn.Embedding, torch.nn.Linear)) or not module.weight.requires_grad:
+            raise ValueError("FP32 masters require trainable embedding and LM head")
+        leaves.append(module)
+    if leaves[0].weight is leaves[1].weight:
+        raise ValueError("FP32 embedding masters require independently trained PEFT copies")
+    for module in leaves:
+        module.to(dtype=torch.float32)
+        module._nimloth_fp32_embedding_master = True
+
+
+@contextmanager
+def _bf16_master_forward(model):
+    """Unwrapped generation uses BF16 projections without modifying FP32 masters."""
+    from torch.nn import functional
+    replacements = []
+    masters = [module for module in model.modules() if getattr(module, "_nimloth_fp32_embedding_master", False)]
+    for module in masters:
+        if not isinstance(module, (torch.nn.Embedding, torch.nn.Linear)):
+            raise TypeError("Unexpected embedding master module")
+        if isinstance(module, torch.nn.Embedding) and module.max_norm is not None:
+            raise ValueError("Generation master casting does not support max_norm")
+    try:
+        for module in masters:
+            original = module.__dict__.get("forward")
+            weight = module.weight.detach().to(torch.bfloat16)
+            bias = module.bias.detach().to(torch.bfloat16) if isinstance(module, torch.nn.Linear) and module.bias is not None else None
+            if isinstance(module, torch.nn.Embedding):
+                if module.max_norm is not None:
+                    raise ValueError("Generation master casting does not support max_norm")
+                def forward(inputs, module=module, weight=weight):
+                    return functional.embedding(inputs, weight, module.padding_idx,
+                                                None, module.norm_type, module.scale_grad_by_freq, module.sparse)
+            elif isinstance(module, torch.nn.Linear):
+                def forward(inputs, weight=weight, bias=bias):
+                    return functional.linear(inputs.to(torch.bfloat16), weight, bias)
+            else:
+                raise TypeError("Unexpected embedding master module")
+            replacements.append((module, original))
+            module.forward = forward
+        yield
+    finally:
+        for module, original in reversed(replacements):
+            if original is None:
+                del module.forward
+            else:
+                module.forward = original
+
+
 def wrap_fsdp(model, device):
     # FP32 trainable PEFT leaves and BF16 frozen tensors have separate handles.
     # Tied frozen originals remain at the common root; modules_to_save copies
     # remain independent and are separately sharded, without changing tying.
     targets = _auto_wrap_targets(model)
-    return FSDP(model, auto_wrap_policy=partial(lambda_auto_wrap_policy,
-                                              lambda_fn=lambda module: module in targets),
+    masters = {module for module in targets if getattr(module, "_nimloth_fp32_embedding_master", False)}
+    if masters:
+        mixed = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.float32,
+                               buffer_dtype=None, keep_low_precision_grads=False,
+                               cast_forward_inputs=True)
+        policy = CustomPolicy(lambda module: {"mixed_precision": mixed} if module in masters else module in targets)
+    else:
+        policy = partial(lambda_auto_wrap_policy, lambda_fn=lambda module: module in targets)
+    return FSDP(model, auto_wrap_policy=policy,
                 sharding_strategy=ShardingStrategy.FULL_SHARD,
                 use_orig_params=True, device_id=device, sync_module_states=True,
                 limit_all_gathers=True)
@@ -121,7 +191,7 @@ def generation_model(model, *, full_parameters=False):
             if full_parameters:
                 # 一次聚合参数后绕过所有 FSDP forward；退出前恢复拓扑，再恢复分片。
                 # 不在 SUMMON_FULL_PARAMS 状态调用 FSDP forward 或修改参数。
-                with _without_fsdp_wrappers(model.module) as module:
+                with _without_fsdp_wrappers(model.module) as module, _bf16_master_forward(module):
                     yield module
             else:
                 yield model.module

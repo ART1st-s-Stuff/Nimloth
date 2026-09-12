@@ -64,6 +64,7 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap.add_argument("--action-token-loss-weight", type=float, default=1.0)
     ap.add_argument("--boundary-token-loss-weight", type=float, default=1.0)
     ap.add_argument("--lr", type=float, default=1e-6)
+    ap.add_argument("--embedding-master-dtype", choices=("bfloat16", "float32"), default="bfloat16")
     ap.add_argument(
         "--embedding-lr",
         type=float,
@@ -216,6 +217,10 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         if action.required and action.default is not None:
             action.required = False
     args = ap.parse_args(argv)
+    if args.embedding_master_dtype not in ("bfloat16", "float32"):
+        raise ValueError("unsupported embedding master dtype")
+    if args.embedding_master_dtype == "float32" and not (stage == "format" and args.lora and args.distributed_strategy == "fsdp"):
+        raise ValueError("FP32 embedding masters require format Stage 1 with LoRA and FSDP")
     explicit_flags = {value.split("=", 1)[0] for value in (sys.argv[1:] if argv is None else argv)}
     if not args.until_converged and "--no-until-converged" in explicit_flags:
         # 显式固定轮数覆盖同时关闭 YAML 继承的收敛参数，CLI 矛盾参数仍报错。

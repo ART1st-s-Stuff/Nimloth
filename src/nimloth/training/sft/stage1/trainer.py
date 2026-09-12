@@ -75,6 +75,7 @@ from .fsdp import (
     generation_model,
     is_fsdp,
     load_optimizer_state,
+    prepare_embedding_masters,
     wrap_fsdp,
 )
 from .loss import (
@@ -702,6 +703,9 @@ def _resume_identity(
         "lora_dropout": args.lora_dropout,
         "lora_target_modules": args.lora_target_modules,
     }
+    # Omitted historically: keep default BF16 identities compatible with old runs.
+    if getattr(args, "embedding_master_dtype", "bfloat16") != "bfloat16":
+        identity["embedding_master_dtype"] = args.embedding_master_dtype
     if stage == "format":
         identity.update(
             {
@@ -1072,11 +1076,13 @@ def main(*, stage: str = "format") -> int:
         if not args.lora:
             raise ValueError("--resume with LoRA adapter requires --lora")
         model = apply_lora(model, args)
+        prepare_embedding_masters(model, getattr(args, "embedding_master_dtype", "bfloat16"))
         load_lora_adapter_state(model, resume_dir)
         if args.gradient_checkpointing:
             model.enable_input_require_grads()
     elif args.lora:
         model = apply_lora(model, args)
+        prepare_embedding_masters(model, getattr(args, "embedding_master_dtype", "bfloat16"))
     elif is_main():
         print(
             json.dumps(

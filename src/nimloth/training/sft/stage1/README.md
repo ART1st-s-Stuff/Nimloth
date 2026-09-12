@@ -6,12 +6,21 @@
 
 标准配置 action 权重 8，完整验证 LM loss 连续两轮相对改善不足 1% 且至少完成两轮才收敛。每十步保存，完整 epoch 发布后清理其覆盖的中间 step checkpoint，保留 epoch/best/final。配置与 CLI 可以显式覆盖。
 
+Stage 1 的 LoRA＋FSDP 训练可设置 `--embedding-master-dtype float32`：现有整张
+embedding/head 的可训练副本及 Adam 状态使用 FP32，前向投影仍为 BF16；
+不改变可训练行的范围。`--embedding-lr` 控制这两张矩阵，`--lr` 控制 LoRA。
+默认 `bfloat16` 保留旧行为。恢复前先建立 FP32 主参数，再加载完整 checkpoint，
+禁止通过 BF16 参数中转；精度是恢复身份的一部分。生成时只缓存一次 BF16 权重副本，
+不修改主参数。导出先以 FP32 加载并合并，再转换为 BF16 推理模型；原 checkpoint
+保留 FP32 参数和优化器状态，推理导出不能代替恢复 checkpoint。
+
 每轮格式检查的标准 `train.format_eval_batch_size` 为 4，也可通过
 `--format-eval-batch-size` 显式覆盖为其他正整数。训练器保持前 32 条记录的原始
 顺序，将它们分批送入同一次 generation model 上下文；FSDP 下所有 rank 仍处理
 相同批次。Stage 1 在整个生成阶段一次聚合完整参数，临时绕过嵌套 FSDP
 wrapper，启用 KV cache，避免逐 token 参数通信；退出（含异常）前恢复 wrapper
-再恢复分片。每卡需容纳完整模型及 KV cache，不复制或改变参数、优化器及 dtype。
+再恢复分片。每卡需容纳完整模型及 KV cache；FP32 主参数模式还需容纳上述
+embedding/head 的 BF16 生成副本，主参数及优化器精度保持不变。
 此路径没有 token 级 collective，使用独立 EOS 停止；所有 rank 仍共同进入和退出
 参数聚合上下文。Query 阶段保持原有分片生成和同步停止。批量 decoder-only 生成期间 tokenizer 临时切换为左侧
 padding，结束或异常后恢复训练使用的右侧 padding。每条结果从批内统一 prompt
