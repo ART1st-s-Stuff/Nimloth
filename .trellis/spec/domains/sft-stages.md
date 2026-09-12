@@ -52,3 +52,9 @@ Stage 1 现有训练入口可用 `--success-eval-env-url` 启用保存 epoch 后
 rank 独占记录目录；全局统计校验身份、重复记录、stage 和 success 类型，完整分母仍是请求的全部 episode。缺失记录只能产生部分结果；任何 rank 失败必须传播，不能将其排除后报告完成。长环境阶段通过独立 CPU 控制组同步，不挂起 NCCL collective；返回训练前恢复参数包装、模型模式与 RNG。成功率不隐式改变训练的收敛目标。
 
 必须验证互斥且完整的任务分配、部分/完整汇总、已完成记录恢复、合同不匹配拒绝、跨 rank 错误传播和训练恢复。逐阶段耗时区分模型生成与环境操作；真实多卡吞吐和显存须远程核验。错误做法是重复评估相同样本再平均各 rank 成功率；正确做法是按唯一 episode 的成功数及完成数汇总，并明确是否全部完成。
+
+早期评估已有 CLI 可通过 `--episode-manifest-parquet` 使用原 VAGEN test.parquet
+的有序 extra_info 任务，而非连续 seed。必须校验集合/每组数量、唯一 identity、
+测试 split 和支持的环境配置；原始文件 SHA256、有序 identity 与实际环境参数绑定
+恢复合同，变更即拒绝。显式 manifest 不受连续 seed 的 60 条上限限制，不伪称
+standard_heldout120，也不以 test 文件名推断训练独立性。省略参数保持原行为。

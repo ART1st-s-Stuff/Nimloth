@@ -35,14 +35,20 @@ def run_early_evaluation(config: EvaluationConfig) -> int:
     if config.format_gate_jsonl is not None:
         values['format_gate_jsonl'] = str(config.format_gate_jsonl.resolve())
     values['eval_sets'] = list(config.eval_sets)
+    if config.episode_manifest_parquet is None:
+        values.pop('episode_manifest_parquet')
+    else:
+        values['episode_manifest_parquet'] = str(config.episode_manifest_parquet.resolve())
+    env = EarlyEnvironmentConfig(**{name: getattr(config, name) for name in EarlyEnvironmentConfig.__dataclass_fields__})
     metadata = {'evaluation': 'early_success_v1', 'config': values,
                 'prompt_version': VERSION if config.stage != 'vagen' else 'vagen844_grounding_worldmodeling',
                 'environment_api': 'vagen844_batch', 'protocol': asdict(protocol),
                 'policy_fingerprint': policy_artifact_fingerprint(config.checkpoint),
                 'projector_fingerprint': auxiliary_artifact_fingerprint(config.checkpoint / 'slot_projector.pt')
                 if config.stage == 'stage2' else None}
+    if env.manifest is not None:
+        metadata["episode_manifest"] = env.manifest
     write_or_validate_contract(config.output_dir, metadata, resume=config.resume)
-    env = EarlyEnvironmentConfig(**{name: getattr(config, name) for name in EarlyEnvironmentConfig.__dataclass_fields__})
     from nimloth.rollout.early_records import summarize
     summary = summarize(config.output_dir, env.identities())
     if config.summarize_only or summary['overall']['complete']:

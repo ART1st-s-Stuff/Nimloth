@@ -214,3 +214,61 @@ def test_batched_episodes_match_serial_and_resume(tmp_path, monkeypatch):
 def test_environment_rejects_invalid_concurrency(tmp_path, concurrency):
     with pytest.raises(ValueError, match='positive integer'):
         EarlyEnvironmentConfig('url', tmp_path, ('base',), 'test', 1, 1, 1, 5, 1.5, .5, concurrency)
+
+
+def test_original_parquet_identity_order_environment_and_validation(tmp_path):
+    import dataclasses
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    config = EarlyEnvironmentConfig('url', tmp_path, ('base', 'common_sense'), 'test',
+                                    2, 0, 20, 5, 1.5, 0.5,
+                                    episode_manifest_parquet=tmp_path / 'test.parquet')
+    rows = []
+    for name, seed in [('common_sense', 900), ('base', 71), ('base', 12), ('common_sense', 3)]:
+        environment = source_environment_config(config, name)['env_config']
+        environment.pop('step_length')
+        rows.append({'extra_info': {'env_name': 'navigation', 'split': 'test',
+                                   'seed': seed, 'env_config': environment}})
+    def save():
+        pq.write_table(pa.Table.from_pylist(rows), config.episode_manifest_parquet)
+        return dataclasses.replace(config)
+    first = save()
+    identities = first.identities()
+    assert [i['seed'] for i in identities] == [900, 71, 12, 3]
+    assert identities[0]['environment_config']['env_config']['step_length'] == .5
+    first_hash = first.manifest['sha256']
+    rows.reverse()
+    assert save().manifest['sha256'] != first_hash
+    rows[0]['extra_info']['seed'] = 900
+    with pytest.raises(ValueError, match='duplicate'):
+        save().identities()
+    rows[0]['extra_info']['seed'] = 3
+    rows[0]['extra_info']['env_config']['max_actions_per_step'] = 2
+    with pytest.raises(ValueError, match='conflicts'):
+        save().identities()
+    rows[0]['extra_info']['env_config']['max_actions_per_step'] = 1
+    rows.pop()
+    with pytest.raises(ValueError, match='counts'):
+        save().identities()
+
+
+def test_manifest_resume_contract_rejects_reordered_rows(tmp_path):
+    import dataclasses
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from nimloth.training.sft.evaluation.cli import write_or_validate_contract
+
+    config = EarlyEnvironmentConfig('url', tmp_path / 'out', ('base',), 'test',
+                                    2, 0, 20, 5, 1.5, .5,
+                                    episode_manifest_parquet=tmp_path / 'test.parquet')
+    rows = [{'extra_info': dict(source_environment_config(config, 'base'), split='test', seed=seed)}
+            for seed in [12623, 987]]
+    pq.write_table(pa.Table.from_pylist(rows), config.episode_manifest_parquet)
+    contract = {'episode_manifest': config.manifest}
+    write_or_validate_contract(config.output_dir, contract, resume=False)
+    write_or_validate_contract(config.output_dir, contract, resume=True)
+    pq.write_table(pa.Table.from_pylist(rows[::-1]), config.episode_manifest_parquet)
+    with pytest.raises(ValueError):
+        write_or_validate_contract(config.output_dir,
+                                  {'episode_manifest': dataclasses.replace(config).manifest}, resume=True)

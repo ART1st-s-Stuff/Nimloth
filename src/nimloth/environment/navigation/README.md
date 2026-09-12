@@ -30,3 +30,7 @@ Stage 1 固定 32 条门禁也按相同大小分批；不改变样本或门禁�
 `run_direct_episodes(..., identities=...)` 可接收配置集合的严格子集，用于训练内多 rank
 互不重叠的评估；每个调用拥有独立输出和 UUID session。`phase_timings.jsonl`
 记录每批环境操作与生成耗时，默认完整集合调用保持原语义。
+
+`EarlyEnvironmentConfig.episode_manifest_parquet` 可指定原 VAGEN 测试 parquet。
+环境模块验证 extra_info 的 split、任务数量、唯一 seed 和环境配置，保存有序 identity；
+实际 create/reset 使用这些配置和 seed，评估组合层将文件 hash 与 identities 绑定恢复合同。

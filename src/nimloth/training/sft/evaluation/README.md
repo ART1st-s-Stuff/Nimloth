@@ -72,3 +72,10 @@ Stage 1 固定 32 条门禁也按相同大小分批；不改变样本或门禁�
 并行数写入运行合同，恢复时不能改变；旧串行合同仅允许并行数 1 恢复。
 
 Stage 1 checkpoint 接受声明的有限且不小于 1 的动作权重及边界/EOS 权重；不固定为 8。动作范围和边界范围必须是已知协议，旧产物缺少边界字段按权重 1 解释。
+
+已有入口可追加 `--episode-manifest-parquet /path/to/test.parquet`，按原 VAGEN
+`extra_info` 的行顺序读取测试任务和任意整数 seed。仍显式填写 eval sets 和每组
+数量用于校验；此模式不使用 seed-offset。原文件 SHA256、有序 identity 和实际
+环境配置写入恢复合同；重复任务、数量不符、split 或环境语义冲突均拒绝。
+缺省 step_length 使用显式 CLI 值，其余环境字段必须匹配。原始 128 条不会被标成
+standard_heldout120；测试文件名本身不证明与训练独立。省略参数时保留原连续 seed 行为。

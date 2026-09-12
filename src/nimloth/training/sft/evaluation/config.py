@@ -25,6 +25,7 @@ class EvaluationConfig:
     format_gate_jsonl: Path | None = None
     summarize_only: bool = False
     stage: Literal["vagen", "stage1", "stage2"] | None = None
+    episode_manifest_parquet: Path | None = None
     episode_concurrency: int = 1
     history_turns: int = 5
     generation_seed: int = 0
@@ -57,7 +58,11 @@ class EvaluationConfig:
             raise ValueError("format-gate-jsonl is Stage 1 only")
         if self.stage is not None and (self.split != "test" or not set(self.eval_sets) <= {"base", "common_sense"}):
             raise ValueError("early VAGEN source supports only base/common_sense held-out test assets")
-        if self.stage is not None and self.episodes_per_eval_set > 60:
+        if self.episode_manifest_parquet is not None:
+            object.__setattr__(self, "episode_manifest_parquet", Path(self.episode_manifest_parquet))
+            if self.stage is None:
+                raise ValueError("episode manifest requires an early evaluation stage")
+        if self.stage is not None and self.episode_manifest_parquet is None and self.episodes_per_eval_set > 60:
             raise ValueError("early held-out assets contain 60 unique episodes per set")
         if self.stage is not None and self.mode != "direct":
             raise ValueError("early stages require direct evaluation")

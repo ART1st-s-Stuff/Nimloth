@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import time
 import logging
 import sys
 from collections.abc import Generator
 from dataclasses import asdict, dataclass
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -29,12 +31,53 @@ class EarlyEnvironmentConfig:
     success_threshold: float
     step_length: float
     episode_concurrency: int = 1
+    episode_manifest_parquet: Path | None = None
 
     def __post_init__(self) -> None:
         if type(self.episode_concurrency) is not int or self.episode_concurrency < 1:
             raise ValueError('episode_concurrency must be a positive integer')
 
+    @cached_property
+    def manifest(self) -> dict | None:
+        if self.episode_manifest_parquet is None:
+            return None
+        import pyarrow.parquet as parquet
+
+        path = Path(self.episode_manifest_parquet)
+        content = path.read_bytes()
+        import pyarrow as pa
+        rows = parquet.read_table(pa.BufferReader(content), columns=['extra_info']).to_pylist()
+        identities = []
+        seen = set()
+        for row in rows:
+            info = row['extra_info']
+            if not isinstance(info, dict) or info.get('env_name') != 'navigation' or info.get('split') != self.split:
+                raise ValueError('episode manifest requires matching navigation test rows')
+            environment = info.get('env_config')
+            if not isinstance(environment, dict):
+                raise ValueError('episode manifest lacks env_config')
+            name, seed = environment.get('eval_set'), info.get('seed')
+            if name not in self.eval_sets or type(seed) is not int or seed < 0:
+                raise ValueError('episode manifest has invalid eval_set or seed')
+            if (name, seed) in seen:
+                raise ValueError('duplicate episode manifest identity')
+            seen.add((name, seed))
+            expected = source_environment_config(self, name)['env_config']
+            # 缺省步长由显式 CLI 合同提供，其余环境语义必须与当前实现完全一致。
+            resolved = dict(environment)
+            resolved.setdefault('step_length', self.step_length)
+            if resolved != expected:
+                raise ValueError('episode manifest environment config conflicts with evaluation contract')
+            identities.append({'episode_id': f'{name}_{seed:06d}', 'eval_set': name,
+                               'split': self.split, 'seed': seed,
+                               'environment_config': {'env_name': 'navigation', 'env_config': resolved}})
+        if any(sum(i['eval_set'] == name for i in identities) != self.episodes_per_eval_set for name in self.eval_sets):
+            raise ValueError('episode manifest counts do not match episodes_per_eval_set')
+        return {'sha256': hashlib.sha256(content).hexdigest(), 'identities': identities}
+
     def identities(self) -> list[dict]:
+        if self.manifest is not None:
+            return self.manifest['identities']
         return [{'episode_id': f'{name}_{seed:06d}', 'eval_set': name, 'split': self.split, 'seed': seed}
                 for name in self.eval_sets
                 for seed in range(self.seed_offset, self.seed_offset + self.episodes_per_eval_set)]
@@ -84,7 +127,7 @@ def _episode(
 ) -> Generator[tuple[str, Any], Any, None]:
     """Episode-local state yields I/O to the bounded batch scheduler."""
     output = config.output_dir / 'episodes' / identity['episode_id']
-    env_config = source_environment_config(config, identity['eval_set'])
+    env_config = identity.get('environment_config') or source_environment_config(config, identity['eval_set'])
     yield 'create', env_config
     observation, _reset_info = (yield 'reset', identity['seed'])
     source_system = (yield 'system', None)
