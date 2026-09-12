@@ -56,3 +56,20 @@ def test_replay_validation(tmp_path):
     state, rows = replay_convergence(path, 2, ConvergencePolicy(2, 2, .01), 'validation_total_loss')
     assert state.last_epoch == 2 and state.previous_loss == 1.60
     assert len(rows) == 2 and not state.converged
+
+
+def test_convergence_schedule_rewarms_then_stays_constant():
+    parameter = torch.nn.Parameter(torch.ones(1))
+    optimizer = torch.optim.AdamW([parameter], lr=5e-5)
+    optimizer.param_groups[0]['lr'] = 0.
+    scheduler = restart_schedule(
+        optimizer, [5e-5], steps_per_epoch=27, remaining_epochs=0,
+        warmup_ratio=.05, until_converged=True,
+    )
+    learning_rates = [optimizer.param_groups[0]['lr']]
+    for _ in range(60):
+        optimizer.step()
+        scheduler.step()
+        learning_rates.append(optimizer.param_groups[0]['lr'])
+    assert learning_rates[:3] == pytest.approx([0., 2.5e-5, 5e-5])
+    assert learning_rates[2:] == pytest.approx([5e-5] * 59)
