@@ -28,6 +28,7 @@ _SFT1_YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("train", "action_token_loss_weight"): "action_token_loss_weight",
     ("train", "lr"): "lr",
     ("train", "embedding_lr"): "embedding_lr",
+    ("train", "embedding_master_dtype"): "embedding_master_dtype",
     ("train", "max_length"): "max_length",
     ("train", "max_pixels"): "max_pixels",
 }

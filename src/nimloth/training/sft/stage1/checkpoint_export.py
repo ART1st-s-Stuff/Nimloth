@@ -158,6 +158,22 @@ def copy_query_artifacts(source: Path, destination: Path, *, stage: str) -> None
         copy2(source / name, destination / name)
 
 
+def has_fp32_embedding_masters(adapter_dir: Path) -> bool:
+    """Inspect saved master precision without loading or rounding large tensors."""
+    from safetensors import safe_open
+
+    path = adapter_dir / "adapter_model.safetensors"
+    with safe_open(path, framework="pt", device="cpu") as handle:
+        keys = [key for key in list(handle.keys()) if key.endswith((
+            "embed_tokens.weight", "embed_tokens.modules_to_save.weight",
+            "lm_head.weight", "lm_head.modules_to_save.weight",
+        ))]
+        dtypes = {handle.get_slice(key).get_dtype() for key in keys}
+    if "F32" in dtypes and dtypes != {"F32"}:
+        raise ValueError("mixed saved embedding/head master precision")
+    return "F32" in dtypes
+
+
 def merge_checkpoint(
     base_model: Path, adapter_dir: Path, out_dir: Path, processor=None,
     *, dtype: torch.dtype | None = None,
@@ -166,9 +182,10 @@ def merge_checkpoint(
         processor = AutoProcessor.from_pretrained(adapter_dir, trust_remote_code=True)
     if dtype is None:
         dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    fp32_masters = has_fp32_embedding_masters(adapter_dir)
     base = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         base_model,
-        torch_dtype=dtype,
+        torch_dtype=torch.float32 if fp32_masters else dtype,
         trust_remote_code=True,
     )
     sync_vocab_metadata(base, len(processor.tokenizer))
@@ -180,6 +197,14 @@ def merge_checkpoint(
     # Resizing here calls tie_weights() and can overwrite the independently
     # trained lm_head with the input embeddings. The base was already resized.
     finalize_merged_vocab(merged, len(processor.tokenizer))
+    if fp32_masters:
+        # Cast the backbone for training, preserving exact independent masters.
+        masters = [(module, module.weight.detach().clone()) for module in
+                   (merged.get_input_embeddings(), merged.get_output_embeddings())]
+        merged.to(dtype=dtype)
+        for module, weight in masters:
+            module.weight.data = weight
+        merged.config.nimloth_embedding_master_dtype = "float32"
     training_state_path = adapter_dir / "training_state.pt"
     if training_state_path.is_file():
         training_state = torch.load(

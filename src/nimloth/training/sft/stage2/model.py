@@ -58,7 +58,10 @@ class QueryAlignmentModel(nn.Module):
             grid_tokens=objective.grid_tokens,
         )
         embedding = language_model.get_input_embeddings().weight
-        projector.to(device=embedding.device, dtype=embedding.dtype)
+        # Exported FP32 embedding masters must not promote the DINO projector.
+        projector_dtype = (torch.bfloat16 if getattr(config, "nimloth_embedding_master_dtype", None) == "float32"
+                           else embedding.dtype)
+        projector.to(device=embedding.device, dtype=projector_dtype)
         ids = [
             tokenizer.convert_tokens_to_ids(t)
             for t in latent_state_tokens(objective.grid_tokens)

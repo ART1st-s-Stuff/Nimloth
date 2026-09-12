@@ -71,6 +71,8 @@ from .fsdp import (
     is_fsdp,
     load_optimizer_state,
     wrap_fsdp,
+    prepare_embedding_masters,
+    restore_exported_embedding_masters,
 )
 from .loss import resolve_action_token_ids, training_loss
 
@@ -449,6 +451,8 @@ def _resume_identity(
         "lora_dropout": args.lora_dropout,
         "lora_target_modules": args.lora_target_modules,
     }
+    if getattr(args, "embedding_master_dtype", "bfloat16") != "bfloat16":
+        identity["embedding_master_dtype"] = args.embedding_master_dtype
     if getattr(args, "distributed_strategy", "ddp") == "fsdp":
         identity["distributed_strategy"] = "fsdp_full_shard_orig_params_v1"
     if getattr(args, "until_converged", False):
@@ -746,6 +750,8 @@ def main(*, stage: str = "format") -> int:
         attn_implementation=args.attn_implementation,
         trust_remote_code=True,
     )
+    if getattr(args, "embedding_master_dtype", "bfloat16") == "float32":
+        restore_exported_embedding_masters(model, load_path)
     if args.gradient_checkpointing:
         enable_gradient_checkpointing(model)
     prepare_query_vocabulary(
@@ -760,7 +766,6 @@ def main(*, stage: str = "format") -> int:
         if not args.lora:
             raise ValueError("--resume with LoRA adapter requires --lora")
         model = apply_lora(model, args)
-        load_lora_adapter_state(model, resume_dir)
         if args.gradient_checkpointing:
             model.enable_input_require_grads()
     elif args.lora:
@@ -782,6 +787,11 @@ def main(*, stage: str = "format") -> int:
             model.restore_projector(resume_dir)
         elif (args.model / "grid_state_config.json").is_file():
             model.restore_projector(args.model)
+    # Build the projector in the original BF16 dtype before promoting PEFT copies.
+    language_model = model.language_model if query_config is not None else model
+    prepare_embedding_masters(language_model, getattr(args, "embedding_master_dtype", "bfloat16"))
+    if args.resume and resume_ckpt is not None and resume_ckpt.exists() and resume_lora:
+        load_lora_adapter_state(language_model, resume_dir)
     model.config.nimloth_training_stage = stage
     model.to(device)
     optimizer = build_optimizer(model, args.lr, args.embedding_lr, args.weight_decay)

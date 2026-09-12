@@ -11,13 +11,14 @@ import torch
 from torch.distributed.fsdp import (
     FullOptimStateDictConfig,
     FullStateDictConfig,
+    MixedPrecision,
     ShardingStrategy,
     StateDictType,
 )
 from torch.distributed.fsdp import (
     FullyShardedDataParallel as FSDP,
 )
-from torch.distributed.fsdp.wrap import lambda_auto_wrap_policy
+from torch.distributed.fsdp.wrap import CustomPolicy, lambda_auto_wrap_policy
 
 
 def is_fsdp(model):
@@ -49,13 +50,64 @@ def _auto_wrap_targets(model):
     return targets
 
 
+def restore_exported_embedding_masters(model, path):
+    """Restore exact FP32 matrices after HF's uniform BF16 checkpoint load."""
+    if getattr(model.config, "nimloth_embedding_master_dtype", None) != "float32":
+        return
+    from safetensors import safe_open
+
+    path = Path(path)
+    index_path = path / "model.safetensors.index.json"
+    weight_map = json.loads(index_path.read_text())["weight_map"] if index_path.is_file() else None
+    names = {id(module): name for name, module in model.named_modules()}
+    for module in (model.get_input_embeddings(), model.get_output_embeddings()):
+        key = names[id(module)] + ".weight"
+        filename = weight_map[key] if weight_map is not None else "model.safetensors"
+        with safe_open(path / filename, framework="pt", device="cpu") as handle:
+            weight = handle.get_tensor(key)
+        if weight.dtype != torch.float32 or weight.shape != module.weight.shape:
+            raise ValueError(f"Invalid exported FP32 embedding master: {key}")
+        module.weight.data = weight.to(device=module.weight.device).clone()
+
+
+def prepare_embedding_masters(model, dtype="bfloat16"):
+    """Keep the full existing trainable embedding/head scope, with FP32 masters."""
+    if dtype not in {"bfloat16", "float32"}:
+        raise ValueError("Unsupported embedding master dtype")
+    if dtype == "bfloat16":
+        return
+    leaves = []
+    for module in (model.get_input_embeddings(), model.get_output_embeddings()):
+        copies = getattr(module, "modules_to_save", None)
+        if copies is not None:
+            active = getattr(module, "active_adapter", "default")
+            if not isinstance(active, str) or active not in copies:
+                raise ValueError("Expected one active saved embedding adapter")
+            module = copies[active]
+        if not isinstance(module, (torch.nn.Embedding, torch.nn.Linear)) or not module.weight.requires_grad:
+            raise ValueError("FP32 masters require trainable embedding and LM head")
+        leaves.append(module)
+    if leaves[0].weight is leaves[1].weight:
+        raise ValueError("FP32 embedding masters require independently trained PEFT copies")
+    for module in leaves:
+        module.to(dtype=torch.float32)
+        module._nimloth_fp32_embedding_master = True
+
+
 def wrap_fsdp(model, device):
     # FP32 trainable PEFT leaves and BF16 frozen tensors have separate handles.
     # Tied frozen originals remain at the common root; modules_to_save copies
     # remain independent and are separately sharded, without changing tying.
     targets = _auto_wrap_targets(model)
-    return FSDP(model, auto_wrap_policy=partial(lambda_auto_wrap_policy,
-                                              lambda_fn=lambda module: module in targets),
+    masters = {module for module in targets if module.__dict__.get("_nimloth_fp32_embedding_master", False)}
+    if masters:
+        mixed = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.float32,
+                               buffer_dtype=None, keep_low_precision_grads=False,
+                               cast_forward_inputs=True)
+        policy = CustomPolicy(lambda module: {"mixed_precision": mixed} if module in masters else module in targets)
+    else:
+        policy = partial(lambda_auto_wrap_policy, lambda_fn=lambda module: module in targets)
+    return FSDP(model, auto_wrap_policy=policy,
                 sharding_strategy=ShardingStrategy.FULL_SHARD,
                 use_orig_params=True, device_id=device, sync_module_states=True,
                 limit_all_gathers=True)

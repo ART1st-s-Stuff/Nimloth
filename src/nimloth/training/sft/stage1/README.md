@@ -55,3 +55,5 @@ step N, using the existing complete resume checkpoint path and exit code 75.
 It does not complete an epoch or declare convergence, and does not change the
 learning-rate schedule or objective identity. Resuming at or above N rejects
 before restoring the optimizer; remove or raise the cap to continue training.
+
+Stage 1/2 LoRA+FSDP 支持 `--embedding-master-dtype float32`：输入 embedding 和独立 lm_head 使用 FP32 master/优化器状态，前向使用 BF16。导出保留 FP32 两矩阵，重新训练精确恢复；Stage 2 projector 维持 BF16。该 dtype 计入恢复身份。

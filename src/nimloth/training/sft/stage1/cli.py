@@ -56,6 +56,7 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         default=None,
         help="LR for embed_tokens and lm_head (default: same as --lr).",
     )
+    ap.add_argument("--embedding-master-dtype", choices=("bfloat16", "float32"), default="bfloat16")
     ap.add_argument("--weight-decay", type=float, default=0.01)
     ap.add_argument("--warmup-ratio", type=float, default=0.05)
     ap.add_argument("--max-length", type=int, default=20000)
@@ -195,6 +196,10 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         if action.required and action.default is not None:
             action.required = False
     args = ap.parse_args(argv)
+    if args.embedding_master_dtype not in ("bfloat16", "float32"):
+        raise ValueError("unsupported embedding master dtype")
+    if args.embedding_master_dtype == "float32" and not (args.lora and args.distributed_strategy == "fsdp"):
+        raise ValueError("FP32 embedding masters require LoRA and FSDP")
     if args.max_optimizer_steps is not None and args.max_optimizer_steps < 1:
         raise ValueError("--max-optimizer-steps must be positive")
     args.action_token_loss_weight = validate_action_weight(args.action_token_loss_weight)
