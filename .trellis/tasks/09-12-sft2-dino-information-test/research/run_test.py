@@ -25,6 +25,14 @@ def argument(argv, name):
     return values[0]
 
 
+def file_sha256(path, *, chunk_size=8 * 1024 * 1024):
+    digest = hashlib.sha256()
+    with Path(path).open('rb') as stream:
+        for chunk in iter(lambda: stream.read(chunk_size), b''):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def gate_training_options(argv):
     options = []
     for name in ("--lr", "--embedding-master-dtype", "--projector-lr",
@@ -104,7 +112,7 @@ def validate_audit(contract):
             source = input_root / 'data' / f'{split}.jsonl'
             entry = identity.get(split, {})
             if (entry.get('records') != contract['expected_records'][split]
-                    or hashlib.sha256(source.read_bytes()).hexdigest() != entry.get('sha256')):
+                    or file_sha256(source) != entry.get('sha256')):
                 raise ValueError(f'changed or invalid {split} identity')
         if not 0 <= int(identity.get('train_max_sample_index', -1)) < identity['train']['records']:
             raise ValueError('input identity lacks a valid gate sample index')
@@ -116,8 +124,7 @@ def validate_audit(contract):
             raise ValueError('input identity lacks critical base model files')
         for relative, expected_sha in base_files.items():
             path = input_root / 'base' / relative
-            if (not path.is_file()
-                    or hashlib.sha256(path.read_bytes()).hexdigest() != expected_sha):
+            if not path.is_file() or file_sha256(path) != expected_sha:
                 raise ValueError(f'changed or invalid base file: {relative}')
         dino_manifest = input_root / 'dino_cache' / 'manifest.json'
         manifest_bytes = dino_manifest.read_bytes()
@@ -138,7 +145,7 @@ def validate_audit(contract):
         if not (entry['checked'] == entry['records'] == contract['expected_records'][split] > 0):
             raise ValueError(f'incomplete {split} audit')
         if (Path(entry['jsonl']).resolve() != source.resolve()
-                or hashlib.sha256(source.read_bytes()).hexdigest() != entry['sha256']
+                or file_sha256(source) != entry['sha256']
                 or entry['max_length'] >= audit['max_length']
                 or entry['successful_lm_answers'] <= 0):
             raise ValueError(f'changed or invalid {split} audit')
