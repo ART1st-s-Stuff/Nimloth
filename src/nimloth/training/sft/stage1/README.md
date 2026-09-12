@@ -59,3 +59,14 @@ before restoring the optimizer; remove or raise the cap to continue training.
 Stage 1/2 LoRA+FSDP 支持 `--embedding-master-dtype float32`：输入 embedding 和独立 lm_head 使用 FP32 master/优化器状态，前向使用 BF16。导出保留 FP32 两矩阵，重新训练精确恢复；Stage 2 projector 维持 BF16。该 dtype 计入恢复身份。
 
 Stage 2 可用 `--projector-lr` 独立设置 projector 学习率；默认跟随 `--lr`，显式值计入恢复身份。embedding/head 仍为第 2 优化器组。
+
+Stage2 `--continue-from-epoch PATH` explicitly starts a new output directory from
+an exact COMMITTED epoch boundary. It is mutually exclusive with `--resume`.
+Model, optimizer, per-rank RNG, global step and next epoch are retained; only
+fixed epoch limit / convergence policy and warmup schedule may change. Learning
+rates are reset to the explicitly configured optimizer group rates before a new
+schedule is created. Fixed `--epochs` is the total epoch limit, so continuation
+from epoch 2 with `--epochs 4` schedules two additional epochs. Convergence mode
+replays the parent's complete validation history. `continuation.json` records
+parent training-state SHA256 and new schedule identity; ordinary resume remains
+strict and restores the existing scheduler.

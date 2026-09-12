@@ -87,7 +87,9 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap.add_argument("--attn-implementation", default="sdpa")
     ap.add_argument("--gradient-checkpointing", action="store_true", default=True)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--resume", action="store_true")
+    recovery = ap.add_mutually_exclusive_group()
+    recovery.add_argument("--resume", action="store_true")
+    recovery.add_argument("--continue-from-epoch", type=Path, default=None)
     ap.add_argument(
         "--save-initial-checkpoint", action="store_true",
         help="Save exact epoch_000 model before the first update for paired evaluation.",

@@ -53,6 +53,7 @@ from .checkpoint import (
 )
 from .cli import parse_args
 from .convergence import ConvergencePolicy, ConvergenceState
+from .continuation import (validate_epoch_continuation, restart_schedule, replay_convergence, continuation_provenance)
 from .data import (
     CACHE_SCHEMA,
     FORMAT_OBJECTIVE,
@@ -494,6 +495,14 @@ def main(*, stage: str = "format") -> int:
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     rank, world, local_rank, device = setup_dist()
+    continuing = getattr(args, "continue_from_epoch", None) is not None
+    output_exists = [args.output_dir.exists() if rank == 0 else None]
+    if continuing and world > 1:
+        dist.broadcast_object_list(output_exists, src=0)
+    if continuing and output_exists[0]:
+        raise FileExistsError("epoch continuation requires a new output directory")
+    if continuing and stage != "query":
+        raise ValueError("epoch continuation is supported only for Stage2")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
@@ -710,14 +719,20 @@ def main(*, stage: str = "format") -> int:
 
     base_model_path = args.model
     resume_dir: Path | None = (
-        find_latest_resume_dir(args.output_dir) if args.resume else None
+        args.continue_from_epoch if continuing else (find_latest_resume_dir(args.output_dir) if args.resume else None)
     )
     resume_ckpt = resume_dir / "training_state.pt" if resume_dir is not None else None
+    if continuing and not resume_ckpt.is_file():
+        raise FileNotFoundError("continuation checkpoint training_state.pt is missing")
     load_path = args.model
     resume_lora = False
-    if args.resume and resume_ckpt is not None and resume_ckpt.exists():
+    if (args.resume or continuing) and resume_ckpt is not None and resume_ckpt.exists():
         state_peek = torch.load(resume_ckpt, map_location="cpu", weights_only=False)
         validate_resume_stage(state_peek, resume_dir, stage)
+        if continuing:
+            validate_epoch_continuation(resume_dir, state_peek, _resume_identity(args, stage=stage, world=world, train_size=len(train_ds)), world=world)
+            if not args.until_converged and args.epochs <= int(state_peek["epoch"]):
+                raise ValueError("--epochs must exceed the completed source epoch")
         saved_mode = state_peek.get("latent_query_mode")
         if stage == "query" and saved_mode is None and "mask_latent_query_labels" in state_peek:
             saved_mode = (
@@ -771,7 +786,7 @@ def main(*, stage: str = "format") -> int:
         latent_token_count=args.latent_token_count,
     )
 
-    if args.resume and resume_ckpt is not None and resume_ckpt.exists() and resume_lora:
+    if (args.resume or continuing) and resume_ckpt is not None and resume_ckpt.exists() and resume_lora:
         if not args.lora:
             raise ValueError("--resume with LoRA adapter requires --lora")
         model = apply_lora(model, args)
@@ -799,7 +814,7 @@ def main(*, stage: str = "format") -> int:
     # Build the projector in the original BF16 dtype before promoting PEFT copies.
     language_model = model.language_model if query_config is not None else model
     prepare_embedding_masters(language_model, getattr(args, "embedding_master_dtype", "bfloat16"))
-    if args.resume and resume_ckpt is not None and resume_ckpt.exists() and resume_lora:
+    if (args.resume or continuing) and resume_ckpt is not None and resume_ckpt.exists() and resume_lora:
         load_lora_adapter_state(language_model, resume_dir)
     model.config.nimloth_training_stage = stage
     model.to(device)
@@ -827,6 +842,7 @@ def main(*, stage: str = "format") -> int:
                           args.convergence_min_relative_improvement)
         if args.until_converged else None
     )
+    configured_learning_rates = [group["lr"] for group in optimizer.param_groups]
     convergence = ConvergenceState()
     if convergence_policy is not None:
         scheduler = get_constant_schedule_with_warmup(
@@ -881,11 +897,25 @@ def main(*, stage: str = "format") -> int:
     resume_next_micro_batch = 0
     resume_rank_rng: dict[str, Any] | None = None
     resume_at_epoch_boundary = False
-    if args.resume and resume_ckpt is not None and resume_ckpt.exists():
+    if (args.resume or continuing) and resume_ckpt is not None and resume_ckpt.exists():
         state = torch.load(resume_ckpt, map_location="cpu", weights_only=False)
         if args.action_token_loss_weight != 1 and not objective_identities_match(state.get("identity"), resume_identity):
             raise ValueError("weighted loss resume checkpoint objective identity mismatch")
-        if convergence_policy is not None:
+        if continuing:
+            validate_epoch_continuation(resume_dir, state, resume_identity, world=world)
+        if convergence_policy is not None and continuing:
+            convergence, history = replay_convergence(resume_dir.parent / "validation_metrics.jsonl", int(state["epoch"]), convergence_policy, convergence_monitor(stage))
+            if is_main():
+                (args.output_dir / "validation_metrics.jsonl").write_text("".join(json.dumps(row) + "\n" for row in history))
+        elif continuing:
+            source_history = resume_dir.parent / "validation_metrics.jsonl"
+            history = [json.loads(line) for line in source_history.read_text().splitlines() if line.strip()]
+            history = [row for row in history if row["epoch"] <= int(state["epoch"])]
+            if [row["epoch"] for row in history] != list(range(1, int(state["epoch"]) + 1)):
+                raise ValueError("continuation validation history is incomplete or duplicated")
+            if is_main():
+                (args.output_dir / "validation_metrics.jsonl").write_text("".join(json.dumps(row) + "\n" for row in history))
+        elif convergence_policy is not None:
             if state.get("convergence_state") is None:
                 raise ValueError("resume checkpoint lacks convergence state")
             convergence = ConvergenceState.from_state_dict(state["convergence_state"])
@@ -908,7 +938,7 @@ def main(*, stage: str = "format") -> int:
             resume_rank_rng = state["rank_rng_states"][rank]
         elif "epoch" in state:
             if (
-                state.get("identity") is not None
+                not continuing and state.get("identity") is not None
                 and not objective_identities_match(state.get("identity"), resume_identity)
             ):
                 raise ValueError(
@@ -923,7 +953,7 @@ def main(*, stage: str = "format") -> int:
                     f"{state.get('world_size')} != {world}"
                 )
             start_epoch = int(state["epoch"]) + 1
-            if convergence_policy is not None:
+            if convergence_policy is not None or continuing:
                 rng_states = state.get("rank_rng_states")
                 if not isinstance(rng_states, list) or len(rng_states) != world:
                     raise ValueError("epoch checkpoint lacks per-rank RNG for faithful resume")
@@ -947,7 +977,11 @@ def main(*, stage: str = "format") -> int:
                     break
         if state.get("optimizer") is not None:
             load_optimizer_state(model, optimizer, state["optimizer"])
-        if state.get("scheduler") is not None:
+        if continuing:
+            scheduler = restart_schedule(optimizer, configured_learning_rates, steps_per_epoch=steps_per_epoch, remaining_epochs=(args.epochs - int(state["epoch"])) if args.epochs is not None else 0, warmup_ratio=args.warmup_ratio, until_converged=args.until_converged)
+            if is_main():
+                (args.output_dir / "continuation.json").write_text(json.dumps(continuation_provenance(resume_dir, resume_identity), indent=2) + "\n")
+        elif state.get("scheduler") is not None:
             scheduler.load_state_dict(state["scheduler"])
         if is_main():
             print(
@@ -1003,7 +1037,7 @@ def main(*, stage: str = "format") -> int:
         signal.signal(signal.SIGUSR1, request_boundary_stop)
 
     model.train()
-    epoch_rng_states = state.get("rank_rng_states") if args.resume and resume_ckpt is not None else None
+    epoch_rng_states = state.get("rank_rng_states") if (args.resume or continuing) and resume_ckpt is not None else None
     epoch = start_epoch - 1
     epoch_numbers = (itertools.count(start_epoch) if args.until_converged
                      else range(start_epoch, args.epochs + 1))
