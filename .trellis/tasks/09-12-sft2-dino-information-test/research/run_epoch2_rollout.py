@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 
-from run_test import run_phase, process_snapshot, remember_owned, terminate_group, utc_now
+from run_test import argument, run_phase, process_snapshot, remember_owned, terminate_group, utc_now
 
 
 def main():
@@ -29,7 +29,10 @@ def main():
         print(json.dumps(contract, indent=2))
         return
     deadline = time.monotonic() + budget
-    logs = root / 'rollout_epoch002_controller'
+    controller_name = contract.get('controller_name', 'rollout_epoch002_controller')
+    if Path(controller_name).name != controller_name or controller_name in ('.', '..'):
+        raise ValueError('controller_name must be a directory name')
+    logs = root / controller_name
     logs.mkdir(exist_ok=False)
     (logs / 'contract.json').write_text(json.dumps(contract, indent=2))
 
@@ -53,6 +56,18 @@ def main():
         if actual != contract['commit'] or subprocess.check_output(
                 ['git', 'status', '--porcelain', '--untracked-files=no'], cwd=checkout, text=True).strip():
             raise ValueError('evaluation checkout differs from verified clean commit')
+        output = Path(argument(contract['rollout_argv'], '--output-dir'))
+        if output.exists():
+            raise FileExistsError(f'rollout output already exists: {output}')
+        # Loader-only CPU check; this does not establish actual rendering health.
+        run_phase(
+            [contract['rollout_argv'][0], '-c',
+             "import ctypes; from ai2thor.platform import CloudRendering; "
+             "ctypes.CDLL('libvulkan.so.1'); errors = CloudRendering.validate(None); "
+             "assert errors == [], errors; print('Vulkan loader and AI2-THOR discovery passed')"],
+            phase='vulkan_loader', checkout=checkout, env=env, logs=logs,
+            deadline=min(deadline - 40, time.monotonic() + 100), event=event,
+        )
         event('waiting_for_dino')
         while True:
             if time.monotonic() >= deadline - 80:
@@ -64,7 +79,7 @@ def main():
             if complete and not compute:
                 break
             time.sleep(5)
-        model = root / 'rollout_epoch002_model'
+        model = Path(argument(contract['rollout_argv'], '--checkpoint'))
         if not (model / 'config.json').is_file() or not (model / 'grid_state_config.json').is_file():
             raise ValueError('exported Stage2 model missing')
         # Claim an unused dedicated port; never reuse or stop another server.
