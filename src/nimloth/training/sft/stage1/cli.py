@@ -87,6 +87,10 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--resume", action="store_true")
     ap.add_argument(
+        "--save-initial-checkpoint", action="store_true",
+        help="Save exact epoch_000 model before the first update for paired evaluation.",
+    )
+    ap.add_argument(
         "--resume-save-steps",
         type=int,
         default=10,

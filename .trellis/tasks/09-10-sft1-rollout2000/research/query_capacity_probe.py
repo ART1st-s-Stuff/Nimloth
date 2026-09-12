@@ -69,7 +69,7 @@ def main():
     args = parser.parse_args()
     faulthandler.dump_traceback_later(180, repeat=True)
     rank, world, _, device = setup_dist()
-    assert world == 7 and device.type == "cuda"
+    assert 2 <= world <= 8 and device.type == "cuda"
     if rank == 0 and not args.resume:
         args.output_dir.mkdir(parents=True, exist_ok=False)
     dist.barrier()

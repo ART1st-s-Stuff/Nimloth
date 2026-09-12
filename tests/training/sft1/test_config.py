@@ -36,3 +36,12 @@ def test_fsdp_cli_supports_format_and_query():
     assert parse_args(common + ["--distributed-strategy", "fsdp"])[0].distributed_strategy == "fsdp"
     query_args, _ = parse_args(common + ["--distributed-strategy", "fsdp", "--dino-cache-root", "/tmp/dino"], stage="query")
     assert query_args.distributed_strategy == "fsdp"
+
+
+def test_initial_checkpoint_is_explicit_opt_in():
+    from nimloth.training.sft.stage1.cli import parse_args
+
+    common = ["--model", "/tmp/model", "--train-jsonl", "/tmp/train.jsonl",
+              "--val-jsonl", "/tmp/val.jsonl", "--output-dir", "/tmp/output"]
+    assert not parse_args(common)[0].save_initial_checkpoint
+    assert parse_args(common + ["--save-initial-checkpoint"])[0].save_initial_checkpoint

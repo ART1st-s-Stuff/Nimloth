@@ -78,18 +78,31 @@ def _capture_last_hidden(
     if full_logits:
         if "labels" in model_inputs:
             raise ValueError("full-logit capture computes its external loss without labels")
-        model_inputs = {**model_inputs, "logits_to_keep": 0}
-    elif "labels" not in model_inputs:
-        model_inputs = {**model_inputs, "logits_to_keep": 1}
+
+    # 在词表投影入口裁剪，而非依赖新版 HF 的 logits_to_keep 参数。
+    # final norm hook 仍捕获完整序列；有监督路径不裁剪、不改变 loss。
+    projection_handle = None
+    if not full_logits and "labels" not in model_inputs:
+        root = _unwrap_model(model)
+        head = root.get_output_embeddings()
+        if not isinstance(head, torch.nn.Module):
+            raise RuntimeError("Qwen output embedding module is required for bounded logits")
+        projection_handle = head.register_forward_pre_hook(
+            lambda _module, args: (args[0][:, -1:, :], *args[1:])
+        )
 
     def hook(_module, _inputs, output):
         captured["hidden"] = output[0] if isinstance(output, tuple) else output
 
-    handle = _final_norm_module(model).register_forward_hook(hook)
+    handle = None
     try:
+        handle = _final_norm_module(model).register_forward_hook(hook)
         output = model(**model_inputs, output_hidden_states=False, return_dict=True)
     finally:
-        handle.remove()
+        if handle is not None:
+            handle.remove()
+        if projection_handle is not None:
+            projection_handle.remove()
     hidden = captured.get("hidden")
     if hidden is None:
         raise RuntimeError("Qwen final norm hook did not capture last hidden states.")

@@ -30,3 +30,7 @@ latent query的注入边界按tokenizer解码后的字面`</think>`匹配，而�
 一种token ID切分；达到reasoning上限时才强制补入canonical close token序列。
 
 调用者可在 BackboneBatch 中携带 `lm_row_weights`（每行 0/1）。模型在同一次前向中独立计算各行回答 CE，按有效行计数；全零权重保留零梯度图。该字段由 backbone 消费，不传入 HF；是否为成功轨迹由训练调用者决定，backbone 不推断任务成功。
+
+隐藏状态提取不依赖 HF 的 `logits_to_keep` 参数：只需要 state 时，通过临时输出
+embedding pre-hook 将词表投影输入裁至最后一个位置，final norm 保留完整序列；
+有监督或外部 LM loss 使用完整 logits，前向完成或异常后均移除 hook。

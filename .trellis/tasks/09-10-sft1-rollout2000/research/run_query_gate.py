@@ -48,7 +48,7 @@ def attempt_paths(root: Path, attempt: str) -> tuple[Path, Path]:
     return root / f'gate_control{suffix}', root / f'gate{suffix}'
 
 
-def wait_selected_gpus_idle(timeout_seconds: float) -> None:
+def wait_selected_gpus_idle(timeout_seconds: float, world_size: int = 7) -> None:
     deadline = time.monotonic() + timeout_seconds
     while True:
         rows = subprocess.check_output(
@@ -62,7 +62,7 @@ def wait_selected_gpus_idle(timeout_seconds: float) -> None:
         busy = []
         for row in rows:
             gpu, memory, utilization = map(int, row.split(','))
-            if gpu < 7 and (memory >= 100 or utilization != 0):
+            if gpu < world_size and (memory >= 100 or utilization != 0):
                 busy.append(row)
         if not busy:
             return
@@ -77,8 +77,11 @@ def main():
     parser.add_argument('--commit', required=True)
     parser.add_argument('--train-jsonl', type=Path, required=True)
     parser.add_argument('--attempt', default='')
+    parser.add_argument('--world-size', type=int, default=7)
     parser.add_argument('--grid-size', type=int, default=4)
     args = parser.parse_args()
+    if not 2 <= args.world_size <= 8:
+        raise ValueError("world-size must be between 2 and 8")
     objective = QueryAlignmentConfig(grid_size=args.grid_size)
     checkout = Path(__file__).resolve().parents[4]
     validate_checkout(checkout, args.commit)
@@ -87,13 +90,13 @@ def main():
     output, gate_output = attempt_paths(args.root, args.attempt)
     output.mkdir(exist_ok=False)
     env = os.environ.copy()
-    env.update(PYTHONPATH=str(checkout / 'src'), CUDA_VISIBLE_DEVICES='0,1,2,3,4,5,6',
+    env.update(PYTHONPATH=str(checkout / 'src'), CUDA_VISIBLE_DEVICES=','.join(map(str, range(args.world_size))),
                OMP_NUM_THREADS='4', MKL_NUM_THREADS='4', TOKENIZERS_PARALLELISM='false',
                PYTHONUNBUFFERED='1', PYTHONDONTWRITEBYTECODE='1',
                PYTORCH_CUDA_ALLOC_CONF='expandable_segments:True',
                CPATH='/mnt/nimloth/dependencies/python310-dev/root/usr/include/python3.10:/mnt/nimloth/dependencies/python310-dev/root/usr/include')
     command = ['/mnt/nimloth/venv/bin/python3', '-m', 'torch.distributed.run', '--standalone',
-               '--nnodes=1', '--nproc-per-node=7', str(Path(__file__).with_name('query_capacity_probe.py')),
+               '--nnodes=1', f'--nproc-per-node={args.world_size}', str(Path(__file__).with_name('query_capacity_probe.py')),
                '--model', str(args.root / 'base'), '--train-jsonl', str(args.train_jsonl),
                '--dino-cache-root', str(args.root / 'dino_cache'), '--output-dir', str(gate_output),
                '--sample-index', str(index), '--grid-size', str(objective.grid_size)]
@@ -102,7 +105,7 @@ def main():
         for phase in ('initial', 'resume'):
             # CUDA utilization can remain nonzero for one sample after the
             # initial process exits even though its memory is already released.
-            wait_selected_gpus_idle(0 if phase == 'initial' else 30)
+            wait_selected_gpus_idle(0 if phase == 'initial' else 30, args.world_size)
             argv = command + (['--resume'] if phase == 'resume' else [])
             owned = {}
             with (output / f'{phase}.log').open('x') as log:
@@ -125,8 +128,8 @@ def main():
             events.write(json.dumps({'time': utc_now(), 'phase': phase, 'event': 'complete'}) + '\n')
             events.flush()
     result = json.loads((gate_output / 'PASSED.json').read_text())
-    assert result['world_size'] == 7
-    (output / 'PASSED.json').write_text(json.dumps({'commit': args.commit, 'world_size': 7,
+    assert result['world_size'] == args.world_size
+    (output / 'PASSED.json').write_text(json.dumps({'commit': args.commit, 'world_size': args.world_size,
                                                  'elapsed_seconds': time.monotonic() - start,
                                                  'result': result}, indent=2))
 

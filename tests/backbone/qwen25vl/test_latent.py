@@ -19,6 +19,12 @@ class _FakeQwen(nn.Module):
         self.model = SimpleNamespace(language_model=SimpleNamespace(norm=nn.LayerNorm(4)))
         self.output_hidden_states_seen: bool | None = None
         self.logits_to_keep_seen = None
+        self.lm_head = nn.Linear(4, 8, bias=False)
+        nn.init.ones_(self.lm_head.weight)
+        self.logit_shape = None
+
+    def get_output_embeddings(self):
+        return self.lm_head
 
     def forward(self, input_ids, output_hidden_states: bool, return_dict: bool, **kwargs):
         assert return_dict is True
@@ -27,7 +33,8 @@ class _FakeQwen(nn.Module):
         batch, seq_len = input_ids.shape
         hidden = torch.arange(batch * seq_len * 4, dtype=torch.float32).reshape(batch, seq_len, 4)
         final_hidden = self.model.language_model.norm(hidden)
-        logits = final_hidden @ torch.ones(4, 8)
+        logits = self.lm_head(final_hidden)
+        self.logit_shape = logits.shape
         loss = logits.sum() * 0.0
         return SimpleNamespace(logits=logits, loss=loss, hidden_states=None)
 
@@ -46,7 +53,8 @@ def test_extract_qwen_latents_uses_final_norm_hook_without_all_hidden_states() -
     )
 
     assert model.output_hidden_states_seen is False
-    assert model.logits_to_keep_seen == 1
+    assert model.logits_to_keep_seen is None
+    assert model.logit_shape[1] == 1
     assert loss is not None
     expected = model.model.language_model.norm(
         torch.arange(1 * 3 * 4, dtype=torch.float32).reshape(1, 3, 4)
@@ -106,7 +114,8 @@ def test_extract_qwen_action_boundary_hidden_uses_last_boundary_per_row() -> Non
     expected_hidden = model.model.language_model.norm(
         torch.arange(2 * 4 * 4, dtype=torch.float32).reshape(2, 4, 4)
     )
-    assert model.logits_to_keep_seen == 1
+    assert model.logits_to_keep_seen is None
+    assert model.logit_shape[1] == 1
     torch.testing.assert_close(boundary[0], expected_hidden[0, 2])
     torch.testing.assert_close(boundary[1], expected_hidden[1, 1])
 
@@ -168,3 +177,36 @@ def test_window_lm_selection_preserves_state_and_excludes_failed_rows(weights):
     loss.backward()
     for row, weight in enumerate(weights):
         assert bool(model.scores.grad[row].abs().sum() > 0) == bool(weight)
+
+
+@pytest.mark.parametrize("full_logits", [False, True])
+def test_legacy_forward_without_logits_keyword_preserves_hidden_and_gradients(full_logits):
+    from nimloth.backbone.qwen25vl.latent import _capture_last_hidden
+
+    class LegacyQwen(_FakeQwen):
+        def forward(self, input_ids, output_hidden_states, return_dict):
+            return super().forward(input_ids, output_hidden_states, return_dict)
+
+    model = LegacyQwen()
+    ids = torch.tensor([[1, 2, 3, 4]])
+    hidden, out = _capture_last_hidden(model, {"input_ids": ids}, full_logits=full_logits)
+    assert hidden.shape == (1, 4, 4)
+    assert out.logits.shape == (1, 4 if full_logits else 1, 8)
+    hidden.square().sum().backward()
+    assert model.model.language_model.norm.weight.grad is not None
+    assert not model.lm_head._forward_pre_hooks
+    assert not model.model.language_model.norm._forward_hooks
+
+
+def test_projection_hook_removed_after_failed_forward():
+    from nimloth.backbone.qwen25vl.latent import _capture_last_hidden
+
+    class BrokenQwen(_FakeQwen):
+        def forward(self, **kwargs):
+            raise RuntimeError("forward failed")
+
+    model = BrokenQwen()
+    with pytest.raises(RuntimeError, match="forward failed"):
+        _capture_last_hidden(model, {"input_ids": torch.tensor([[1, 2]])})
+    assert not model.lm_head._forward_pre_hooks
+    assert not model.model.language_model.norm._forward_hooks

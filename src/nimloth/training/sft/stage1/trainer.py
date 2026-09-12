@@ -932,6 +932,28 @@ def main(*, stage: str = "format") -> int:
                 )
             )
 
+    if getattr(args, "save_initial_checkpoint", False) and resume_dir is None:
+        if (args.output_dir / "epoch_000").exists():
+            raise FileExistsError("refusing to overwrite initial checkpoint")
+        initial_rng = [capture_rng_state()]
+        if world > 1:
+            local_rng = initial_rng[0]
+            initial_rng = [None] * world
+            dist.all_gather_object(initial_rng, local_rng)
+        save_checkpoint(
+            model, processor, args.output_dir, "epoch_000", optimizer, scheduler,
+            step=0, epoch=0, best_val=best_val, lora=args.lora,
+            base_model_path=base_model_path, merge_for_eval=False,
+            latent_token_count=args.latent_token_count,
+            mask_latent_query_labels=args.mask_latent_query_labels,
+            latent_query_mode=args.latent_query_mode, world_size=world,
+            identity=resume_identity,
+            convergence_state=convergence.state_dict() if convergence_policy else None,
+            rank_rng_states=initial_rng,
+        )
+        if world > 1:
+            dist.barrier()
+
     stop_after_boundary = False
     stop_requested = False
 
