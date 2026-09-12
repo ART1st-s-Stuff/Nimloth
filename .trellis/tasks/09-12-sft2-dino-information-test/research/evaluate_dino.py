@@ -80,13 +80,32 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def load_evaluation_adapter(language, checkpoint):
+    """Verify exact saved masters, then use the training forward precision.
+
+    Training FSDP casts the two FP32 master matrices to BF16 for each forward.
+    This unsharded, inference-only model uses those same BF16 matrices directly;
+    checkpoint files and all LoRA tensors keep their original precision.
+    """
+    from nimloth.training.sft.stage1.checkpoint import load_lora_adapter_state
+    from nimloth.training.sft.stage1.checkpoint_export import has_fp32_embedding_masters
+    from nimloth.training.sft.stage1.fsdp import prepare_embedding_masters
+
+    fp32_masters = has_fp32_embedding_masters(checkpoint)
+    if fp32_masters:
+        prepare_embedding_masters(language, "float32")
+    load_lora_adapter_state(language, checkpoint)
+    if fp32_masters:
+        for module in (language.get_input_embeddings(), language.get_output_embeddings()):
+            module.modules_to_save[module.active_adapter].to(dtype=torch.bfloat16)
+
+
 def main():
     import torch.distributed as dist
     from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
     from nimloth.backbone.dino_grid import DINOV2_LARGE_IDENTITY, CachedDINOGridTargets
     from nimloth.backbone.qwen25vl.latent import _capture_last_hidden, reset_model_rope_state
     from nimloth.latent import add_special_tokens, special_token_ids
-    from nimloth.training.sft.stage1.checkpoint import load_lora_adapter_state
     from nimloth.training.sft.stage1.data import NimlothVLSFTDataset
     from nimloth.training.sft.stage1.distributed import setup_dist, cleanup_dist
     from nimloth.training.sft.stage1.trainer import apply_lora, prepare_query_vocabulary
@@ -144,7 +163,7 @@ def main():
         lora_r=adapter_config["r"], lora_alpha=adapter_config["lora_alpha"],
         lora_dropout=adapter_config["lora_dropout"], gradient_checkpointing=False,
         lora_target_modules=",".join(sorted(adapter_config["target_modules"]))))
-    load_lora_adapter_state(language, args.checkpoint)
+    load_evaluation_adapter(language, args.checkpoint)
     model = QueryAlignmentModel.build(language, processor.tokenizer, objective)
     model.restore_projector(args.checkpoint)
     model.to(device).eval()
