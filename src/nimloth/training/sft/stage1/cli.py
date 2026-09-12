@@ -32,6 +32,8 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         ap.add_argument("--projector-hidden-dim", type=int, default=2048)
         ap.add_argument("--weight-lm", type=float, default=1.0)
         ap.add_argument("--weight-dino", type=float, default=1.0)
+        ap.add_argument("--query-token-lr", type=float, default=5e-5)
+        ap.add_argument("--protocol-token-lr", type=float, default=1e-5)
     ap.add_argument("--model", type=Path, required=True)
     ap.add_argument("--train-jsonl", type=Path, required=True)
     ap.add_argument("--val-jsonl", type=Path, required=True)
@@ -46,18 +48,22 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap.add_argument("--convergence-patience-epochs", type=int)
     ap.add_argument("--convergence-min-relative-improvement", type=float)
     ap.add_argument("--batch-size", type=int, default=1)
-    ap.add_argument("--distributed-strategy", choices=("ddp", "fsdp"), default="ddp")
+    ap.add_argument("--distributed-strategy", choices=("ddp", "fsdp"),
+                    default="fsdp" if stage == "query" else "ddp")
     ap.add_argument("--grad-accum", type=int, default=8)
     ap.add_argument("--action-token-loss-weight", type=float, default=1.0)
-    ap.add_argument("--lr", type=float, default=1e-6)
+    ap.add_argument("--lr", type=float, default=5e-5 if stage == "query" else 1e-6)
     ap.add_argument(
         "--embedding-lr",
         type=float,
         default=None,
         help="LR for embed_tokens and lm_head (default: same as --lr).",
     )
-    ap.add_argument("--projector-lr", type=float, default=None, help="Stage2 projector LR (default: --lr).")
-    ap.add_argument("--embedding-master-dtype", choices=("bfloat16", "float32"), default="bfloat16")
+    ap.add_argument("--projector-lr", type=float,
+                    default=5e-5 if stage == "query" else None,
+                    help="Stage2 projector LR (default: 5e-5).")
+    ap.add_argument("--embedding-master-dtype", choices=("bfloat16", "float32"),
+                    default="float32" if stage == "query" else "bfloat16")
     ap.add_argument("--weight-decay", type=float, default=0.01)
     ap.add_argument("--warmup-ratio", type=float, default=0.05)
     ap.add_argument("--max-length", type=int, default=20000)
@@ -126,7 +132,7 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     )
     ap.add_argument(
         "--lora",
-        action="store_true",
+        action="store_true", default=stage == "query",
         help="Train LoRA adapters (+ embed/lm_head), freeze base weights.",
     )
     ap.add_argument("--lora-r", type=int, default=64)
@@ -199,6 +205,15 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         if action.required and action.default is not None:
             action.required = False
     args = ap.parse_args(argv)
+    if stage == "query":
+        for name in ("query_token_lr", "protocol_token_lr"):
+            value = getattr(args, name)
+            if not 0 < value < float("inf"):
+                raise ValueError(f"{name} must be finite and positive")
+        if not args.lora or args.embedding_master_dtype != "float32":
+            raise ValueError("Stage2 selected token rows require LoRA and FP32 masters")
+        if args.embedding_lr is not None and args.embedding_lr != args.query_token_lr:
+            raise ValueError("legacy --embedding-lr must equal --query-token-lr in Stage2")
     if args.projector_lr is not None and (stage != "query" or not 0 < args.projector_lr < float("inf")):
         raise ValueError("projector_lr requires Stage2 and a finite positive value")
     if args.embedding_master_dtype not in ("bfloat16", "float32"):

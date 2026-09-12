@@ -197,6 +197,10 @@ def _save_full_pretrained(module, path, full_weights):
         _save_query_full_pretrained(module, path, full_weights)
         return
     from peft import get_peft_model
+    from nimloth.training.sft.stage2.selected_token_rows import materialize_selected_state_dict
+
+    if getattr(module.config, "nimloth_token_row_schema", None):
+        full_weights = materialize_selected_state_dict(full_weights)
 
     config = copy.deepcopy(module.config)
     is_peft = hasattr(module, "peft_config")

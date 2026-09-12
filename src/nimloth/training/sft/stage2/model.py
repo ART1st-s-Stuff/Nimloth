@@ -209,7 +209,14 @@ class QueryAlignmentModel(nn.Module):
         }
 
     def save_pretrained(self, directory, **kwargs):
-        self.language_model.save_pretrained(directory, **kwargs)
+        from .selected_token_rows import materialize_selected_state_dict
+
+        state = kwargs.pop("state_dict", None)
+        if getattr(self.language_model.config, "nimloth_token_row_schema", None):
+            state = materialize_selected_state_dict(
+                self.language_model.state_dict() if state is None else state
+            )
+        self.language_model.save_pretrained(directory, state_dict=state, **kwargs)
         directory = Path(directory)
         torch.save(self.projector.state_dict(), directory / "slot_projector.pt")
         (directory / "grid_state_config.json").write_text(

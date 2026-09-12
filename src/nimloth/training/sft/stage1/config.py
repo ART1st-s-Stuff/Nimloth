@@ -29,6 +29,8 @@ _SFT1_YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("train", "lr"): "lr",
     ("train", "embedding_lr"): "embedding_lr",
     ("train", "projector_lr"): "projector_lr",
+    ("train", "query_token_lr"): "query_token_lr",
+    ("train", "protocol_token_lr"): "protocol_token_lr",
     ("train", "embedding_master_dtype"): "embedding_master_dtype",
     ("train", "max_length"): "max_length",
     ("train", "max_pixels"): "max_pixels",

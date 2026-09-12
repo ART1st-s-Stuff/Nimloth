@@ -308,7 +308,19 @@ def build_optimizer(
     embedding_lr: float | None,
     weight_decay: float,
     projector_lr: float | None = None,
+    query_token_lr: float | None = None,
+    protocol_token_lr: float | None = None,
 ) -> torch.optim.AdamW:
+    if (query_token_lr is None) != (protocol_token_lr is None):
+        raise ValueError("query and protocol token row learning rates must be configured together")
+    selected = None
+    if query_token_lr is not None:
+        from nimloth.training.sft.stage2.selected_token_rows import selected_row_parameters
+
+        selected = selected_row_parameters(model)
+        selected_ids = {id(p) for values in selected.values() for p in values}
+    else:
+        selected_ids = set()
     embed_lr = embedding_lr if embedding_lr is not None else lr
     embed_keys = ("embed_tokens", "lm_head")
     embed_params: list[torch.nn.Parameter] = []
@@ -317,18 +329,34 @@ def build_optimizer(
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
+        if id(param) in selected_ids:
+            continue
         if projector_lr is not None and "projector" in name.split("."):
             projector_params.append(param)
         elif any(key in name for key in embed_keys):
             embed_params.append(param)
         else:
             base_params.append(param)
-    groups = [{"params": base_params, "lr": lr},
-              {"params": embed_params, "lr": embed_lr}]
+    groups = [{"params": base_params, "lr": lr}]
+    if selected is not None and embed_params:
+        raise ValueError("unselected embedding/head parameters remain trainable")
+    if embed_params:
+        groups.append({"params": embed_params, "lr": embed_lr})
     if projector_lr is not None:
         if not projector_params:
             raise ValueError("projector_lr requires trainable projector parameters")
         groups.append({"params": projector_params, "lr": projector_lr})
+    if selected is not None:
+        if projector_lr is None or not base_params or not projector_params:
+            raise ValueError("Stage2 selected rows require trainable LoRA and projector groups")
+        # Keep five explicit Stage2 groups: LoRA, projector, query rows, and
+        # separate input/output protocol rows. This makes saved group identity
+        # unambiguous while both protocol groups share the normative LR.
+        groups.extend([
+            {"params": selected["query"], "lr": query_token_lr},
+            {"params": [selected["protocol"][0]], "lr": protocol_token_lr},
+            {"params": [selected["protocol"][1]], "lr": protocol_token_lr},
+        ])
     return torch.optim.AdamW(
         groups,
         weight_decay=weight_decay,
@@ -366,6 +394,9 @@ def maybe_init_wandb(args: argparse.Namespace) -> Any | None:
             "grad_accum": args.grad_accum,
             "lr": args.lr,
             "embedding_lr": args.embedding_lr,
+            "query_token_lr": getattr(args, "query_token_lr", None),
+            "protocol_token_lr": getattr(args, "protocol_token_lr", None),
+            "projector_lr": args.projector_lr,
             "action_token_loss_weight": args.action_token_loss_weight,
             "max_length": args.max_length,
             "seed": args.seed,
@@ -483,6 +514,17 @@ def _resume_identity(
                 "weight_lm": args.weight_lm,
                 "weight_dino": args.weight_dino,
                 "query_batching": "full_trajectory_success_lm_all_dino_v2",
+                "token_row_training": {
+                    "schema": "selected_rows_v1",
+                    "query_token_ids": list(args.query_token_ids),
+                    "protocol_token_ids": list(args.protocol_token_ids),
+                    "query_token_lr": args.query_token_lr,
+                    "protocol_token_lr": args.protocol_token_lr,
+                    "tables": ["input_embeddings", "independent_lm_head"],
+                    "unselected_rows": "bitwise_frozen",
+                    "master_dtype": "float32",
+                    "forward_dtype": "bfloat16",
+                },
             }
         )
     return identity
@@ -516,6 +558,23 @@ def main(*, stage: str = "format") -> int:
         processor.tokenizer, latent_token_count=args.latent_token_count
     )
     action_ids = resolve_action_token_ids(processor.tokenizer) if stage == "format" else ()
+    if stage == "query":
+        from nimloth.latent import LatentActionTokens
+
+        protocol = LatentActionTokens()
+        query_row_ids = tuple(token_id_map[token] for token in latent_state_tokens(args.latent_token_count))
+        action_row_ids = tuple(token_id_map[token] for token in protocol.action_tokens)
+        if processor.tokenizer.eos_token_id is None:
+            raise ValueError("Stage2 format rows require a tokenizer EOS token")
+        format_row_ids = (
+            token_id_map[protocol.action_start], token_id_map[protocol.action_end],
+            int(processor.tokenizer.eos_token_id),
+        )
+        protocol_row_ids = action_row_ids + format_row_ids
+        if len(set(protocol_row_ids)) != 11:
+            raise ValueError("action, format and EOS token IDs must be eleven distinct rows")
+        args.query_token_ids = query_row_ids
+        args.protocol_token_ids = protocol_row_ids
     if is_main():
         print(json.dumps({"action_token_loss_weight": args.action_token_loss_weight, "weighted_action_token_ids": action_ids}))
         print(
@@ -530,6 +589,9 @@ def main(*, stage: str = "format") -> int:
                     "embedding_lr": args.embedding_lr
                     if args.embedding_lr is not None
                     else args.lr,
+                    "query_token_lr": args.query_token_lr if stage == "query" else None,
+                    "protocol_token_lr": args.protocol_token_lr if stage == "query" else None,
+                    "projector_lr": args.projector_lr,
                     "lora": args.lora,
                     "cache_pixel_dtype": args.cache_pixel_dtype,
                 }
@@ -816,14 +878,20 @@ def main(*, stage: str = "format") -> int:
     prepare_embedding_masters(language_model, getattr(args, "embedding_master_dtype", "bfloat16"))
     if (args.resume or continuing) and resume_ckpt is not None and resume_ckpt.exists() and resume_lora:
         load_lora_adapter_state(language_model, resume_dir)
+    if query_config is not None:
+        from nimloth.training.sft.stage2.selected_token_rows import install_selected_token_rows
+
+        install_selected_token_rows(language_model, args.query_token_ids, args.protocol_token_ids)
     model.config.nimloth_training_stage = stage
     model.to(device)
-    optimizer = build_optimizer(model, args.lr, args.embedding_lr, args.weight_decay, args.projector_lr)
+    optimizer = build_optimizer(model, args.lr, args.embedding_lr, args.weight_decay, args.projector_lr,
+                                getattr(args, "query_token_lr", None), getattr(args, "protocol_token_lr", None))
     if getattr(args, "distributed_strategy", "ddp") == "fsdp":
         if world < 2 or device.type != "cuda":
             raise ValueError("FSDP requires multi-rank CUDA training")
         model = wrap_fsdp(model, device)
-        optimizer = build_optimizer(model, args.lr, args.embedding_lr, args.weight_decay, args.projector_lr)
+        optimizer = build_optimizer(model, args.lr, args.embedding_lr, args.weight_decay, args.projector_lr,
+                                    getattr(args, "query_token_lr", None), getattr(args, "protocol_token_lr", None))
     elif world > 1:
         model = DDP(
             model,
@@ -1106,9 +1174,19 @@ def main(*, stage: str = "format") -> int:
                         {
                             "train/loss": step_loss,
                             "train/lr": scheduler.get_last_lr()[0],
-                            "train/embedding_lr": scheduler.get_last_lr()[1]
-                            if len(scheduler.get_last_lr()) > 1
-                            else scheduler.get_last_lr()[0],
+                            **(
+                                {
+                                    "train/projector_lr": scheduler.get_last_lr()[1],
+                                    "train/query_token_lr": scheduler.get_last_lr()[2],
+                                    "train/protocol_token_lr": scheduler.get_last_lr()[3],
+                                }
+                                if stage == "query"
+                                else {
+                                    "train/embedding_lr": scheduler.get_last_lr()[1]
+                                    if len(scheduler.get_last_lr()) > 1
+                                    else scheduler.get_last_lr()[0]
+                                }
+                            ),
                             "global_step": global_step,
                         },
                         step=global_step,

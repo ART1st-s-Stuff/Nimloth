@@ -425,6 +425,10 @@ def test_cli_selects_real_stage_and_validates_grid_before_model_load(tmp_path):
     )
     assert args.no_cache and objective.grid_tokens == args.latent_token_count == 16
     assert objective.weight_dino == 2
+    assert (args.lr, args.projector_lr, args.query_token_lr, args.protocol_token_lr) == (
+        5e-5, 5e-5, 5e-5, 1e-5,
+    )
+    assert args.lora and args.distributed_strategy == "fsdp"
     with pytest.raises(ValueError, match="token count"):
         parse_args(
             base + ["--dino-cache-root", "cache", "--latent-token-count", "1"],

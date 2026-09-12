@@ -18,6 +18,36 @@ $$
 
 以下为算法伪代码。训练中的LM输出采用teacher forcing，并仅在目标回答token上计算loss；每个训练函数计算并反传loss，参数更新由外层训练循环完成。
 
+Stage2 默认参数更新范围和学习率如下。`query_token_ids` 包含当前 K 个
+Query token；`action_token_ids` 包含 8 个动作编号 token；`format_token_ids`
+包含动作起始 token、动作结束 token 和 EOS。输入 embedding 与独立 LM head
+使用同一行选择规则，其他词表行不得因梯度、Adam 动量或 weight decay
+发生改变。token 行保持 FP32 master，前向使用 BF16。
+
+```python
+SFT2_DEFAULT_LR = {
+    "lora": 5e-5,
+    "projector": 5e-5,
+    "query_token_rows": 5e-5,
+    "action_and_format_token_rows": 1e-5,
+}
+
+def configure_sft2_trainable_parameters(
+        model, proj, query_token_ids, action_token_ids, format_token_ids):
+    freeze(model.base_parameters)
+    train(model.lora_parameters, lr=SFT2_DEFAULT_LR["lora"])
+    train(proj.parameters, lr=SFT2_DEFAULT_LR["projector"])
+
+    protocol_token_ids = disjoint_union(action_token_ids, format_token_ids)
+    assert disjoint(query_token_ids, protocol_token_ids)
+    for table in [model.input_embeddings, model.lm_head]:
+        freeze(table.rows_except(query_token_ids + protocol_token_ids))
+        train(table.rows(query_token_ids),
+              lr=SFT2_DEFAULT_LR["query_token_rows"], dtype=FP32)
+        train(table.rows(protocol_token_ids),
+              lr=SFT2_DEFAULT_LR["action_and_format_token_rows"], dtype=FP32)
+```
+
 ```python
 def get_state_and_output(model, input, queries):
     # 把queries放在input后，取query位置的hidden states作为state

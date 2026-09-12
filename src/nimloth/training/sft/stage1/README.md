@@ -56,9 +56,14 @@ It does not complete an epoch or declare convergence, and does not change the
 learning-rate schedule or objective identity. Resuming at or above N rejects
 before restoring the optimizer; remove or raise the cap to continue training.
 
-Stage 1/2 LoRA+FSDP 支持 `--embedding-master-dtype float32`：输入 embedding 和独立 lm_head 使用 FP32 master/优化器状态，前向使用 BF16。导出保留 FP32 两矩阵，重新训练精确恢复；Stage 2 projector 维持 BF16。该 dtype 计入恢复身份。
-
-Stage 2 可用 `--projector-lr` 独立设置 projector 学习率；默认跟随 `--lr`，显式值计入恢复身份。embedding/head 仍为第 2 优化器组。
+Stage 1 LoRA+FSDP 支持 `--embedding-master-dtype float32`，保持完整输入
+embedding 和独立 lm_head 的 FP32 master。Stage 2 固定使用更窄的
+`selected_rows_v1` 范围：当前 K 个 query token 行以 `--query-token-lr`
+（默认 `5e-5`）训练，八个 action token、action start/end 和 EOS 行以
+`--protocol-token-lr`（默认 `1e-5`）训练，其余词表行不进入优化器。
+两张表的选中行是 FP32 master，前向为 BF16；LoRA 和 projector 默认均为
+`5e-5`。Checkpoint identity 保存 schema、精确 token IDs、两档学习率和
+冻结范围；普通 HF/PEFT 导出会把选中行写回标准 dense 权重，不包含私有行参数键。
 
 Stage2 `--continue-from-epoch PATH` explicitly starts a new output directory from
 an exact COMMITTED epoch boundary. It is mutually exclusive with `--resume`.
