@@ -86,3 +86,52 @@ def test_restore_saved_embedding_layers_reconstructs_untied_head(tmp_path) -> No
     assert torch.equal(model.input_embeddings.weight, saved_input)
     assert torch.equal(model.output_embeddings.weight, saved_output)
     assert model.input_embeddings.weight.data_ptr() != model.output_embeddings.weight.data_ptr()
+
+
+def _embedding_aliases():
+    tensors = {}
+    for module, offset in (("model.embed_tokens", 0), ("lm_head", 100)):
+        weight = torch.arange(28, dtype=torch.float32).reshape(7, 4) + offset
+        tensors[f"base_model.model.{module}.weight"] = weight
+        tensors[f"base_model.model.{module}.modules_to_save.weight"] = weight.clone()
+    return tensors
+
+
+def test_restore_identical_peft_aliases_prefers_active_and_preserves_fp32(tmp_path):
+    tensors = _embedding_aliases()
+    save_file(tensors, tmp_path / "adapter_model.safetensors")
+    model = FakeMergedModel(7, tied=True)
+    selected = restore_saved_untied_embeddings(model, tmp_path)
+    assert selected == (
+        "base_model.model.model.embed_tokens.modules_to_save.weight",
+        "base_model.model.lm_head.modules_to_save.weight",
+    )
+    for module, key in zip((model.input_embeddings, model.output_embeddings), selected):
+        assert module.weight.dtype == torch.float32
+        assert torch.equal(module.weight, tensors[key])
+    finalize_merged_vocab(model, 7)
+
+
+@pytest.mark.parametrize("module", ["model.embed_tokens", "lm_head"])
+@pytest.mark.parametrize("difference", ["value", "dtype", "shape"])
+def test_restore_rejects_conflicting_aliases(tmp_path, module, difference):
+    tensors = _embedding_aliases()
+    key = f"base_model.model.{module}.weight"
+    if difference == "value":
+        tensors[key][0, 0] += 1
+    elif difference == "dtype":
+        tensors[key] = tensors[key].to(torch.bfloat16)
+    else:
+        tensors[key] = tensors[key][:-1].clone()
+    save_file(tensors, tmp_path / "adapter_model.safetensors")
+    with pytest.raises(RuntimeError, match="conflicting saved"):
+        restore_saved_untied_embeddings(FakeMergedModel(7), tmp_path)
+
+
+def test_restore_rejects_unrelated_module_even_if_equal(tmp_path):
+    tensors = _embedding_aliases()
+    key = "base_model.model.model.embed_tokens.weight"
+    tensors["other.embed_tokens.weight"] = tensors.pop(key)
+    save_file(tensors, tmp_path / "adapter_model.safetensors")
+    with pytest.raises(RuntimeError, match="ambiguous saved"):
+        restore_saved_untied_embeddings(FakeMergedModel(7), tmp_path)

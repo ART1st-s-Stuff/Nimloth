@@ -73,10 +73,26 @@ def restore_saved_untied_embeddings(model, adapter_dir: Path) -> tuple[str, str]
         for name, endings in suffixes.items():
             matches = [key for key in keys if key.endswith(endings)]
             if len(matches) > 1:
-                raise RuntimeError(
-                    f"adapter contains ambiguous saved {name} weights: {matches}"
-                )
-            if matches:
+                # PEFT can save both the active modules_to_save tensor and its
+                # plain embedding alias. Only this exact, equal pair is safe.
+                active = [key for key in matches if key.endswith(endings[1])]
+                plain = active[0].replace(".modules_to_save.weight", ".weight") if len(active) == 1 else None
+                if len(matches) != 2 or plain not in matches:
+                    raise RuntimeError(
+                        f"adapter contains ambiguous saved {name} weights: {matches}"
+                    )
+                active_tensor = handle.get_tensor(active[0])
+                alias_tensor = handle.get_tensor(plain)
+                if (
+                    active_tensor.dtype != alias_tensor.dtype
+                    or active_tensor.shape != alias_tensor.shape
+                    or not torch.equal(active_tensor, alias_tensor)
+                ):
+                    raise RuntimeError(
+                        f"adapter contains conflicting saved {name} aliases: {matches}"
+                    )
+                selected[name] = active[0]
+            elif matches:
                 selected[name] = matches[0]
         if not selected:
             return None
