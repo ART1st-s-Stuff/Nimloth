@@ -47,3 +47,9 @@ def test_token_difference_retains_exact_inputs():
     assert report['first_mismatch'] == 2
     assert report['expected_ids'] == [1, 2, 3]
     assert report['actual_ids'] == [1, 2, 4, 5]
+
+
+def test_legacy_history_projection_keeps_real_text():
+    from nimloth.training.sft.stage1.data import render_stage_text
+    history = 'observation </think><|latent_state|><|latent_state_1|><|action_start|><|action_(0)|><|action_end|>'
+    assert render_stage_text(history, None) == 'observation </think><|action_start|><|action_(0)|><|action_end|>'

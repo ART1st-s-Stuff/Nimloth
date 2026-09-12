@@ -1,11 +1,13 @@
 """CPU mechanism tests; these do not establish model quality."""
 
+import pytest
 import torch
 from torch.nn import functional as F
 
 from experiments.training.sft.diagnosis.format_transfer import (
     fit_precision,
     full_vocab_row_loss,
+    parse_args,
 )
 
 
@@ -32,3 +34,20 @@ def test_precision_fit_measures_actual_writes_and_preserves_source():
     assert bf16['actual_abs_mean'] == 0
     assert fp32['actual_abs_mean'] > 0
     assert torch.equal(weights, before)
+
+
+@pytest.mark.parametrize('phase', [None, 'lora', 'vllm'])
+def test_fp32_forward_is_forbidden_outside_parity(phase):
+    arguments = [item for name in ('base', 'adapter', 'exported', 'train-jsonl', 'output-dir') for item in ('--' + name, '/tmp/diagnostic-fixture')]
+    arguments += ['--forward-dtype', 'float32']
+    if phase is not None:
+        arguments += ['--followup-only', '--followup-phase', phase]
+    with pytest.raises(SystemExit):
+        parse_args(arguments)
+
+
+def test_fp32_forward_parity_is_explicit_and_default_stays_bf16():
+    arguments = [item for name in ('base', 'adapter', 'exported', 'train-jsonl', 'output-dir') for item in ('--' + name, '/tmp/diagnostic-fixture')]
+    assert parse_args(arguments).forward_dtype == 'bfloat16'
+    args = parse_args(arguments + ['--followup-only', '--followup-phase', 'parity', '--forward-dtype', 'float32'])
+    assert args.forward_dtype == 'float32'

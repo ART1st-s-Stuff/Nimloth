@@ -17,7 +17,7 @@ def parse_args(argv):
     for name in ('base', 'adapter', 'exported', 'train-jsonl', 'output-dir'):
         p.add_argument('--' + name, type=Path, required=True)
     p.add_argument('--followup-only', action='store_true')
-    p.add_argument('--followup-phase', choices=('parity', 'lora', 'vllm'), default='parity')
+    p.add_argument('--followup-phase', choices=('parity', 'rows', 'lora', 'vllm'), default='parity')
     p.add_argument('--forward-dtype', choices=('bfloat16', 'float32'), default='bfloat16')
     p.add_argument('--reference-dir', type=Path)
     p.add_argument('--preflight-only', action='store_true')
@@ -372,7 +372,7 @@ def run(argv):
             return weight.index_copy(0, self.indices, self.rows.to(weight.dtype))
     model = load(a.base)
     model.requires_grad_(False)
-    if a.followup_only:
+    if a.followup_only and a.followup_phase == 'lora':
         from peft import LoraConfig, get_peft_model
         config = json.loads((a.adapter / 'adapter_config.json').read_text())
         torch.manual_seed(a.seed)
@@ -421,14 +421,15 @@ def run(argv):
     torch.manual_seed(a.seed)
     generated = []
     for _, _, messages, _ in selected:
-        from nimloth.training.sft.stage1.data import collect_images
+        from nimloth.training.sft.stage1.data import collect_images, render_stage_text
         prompt = messages[:-1]
-        encoded = processor(text=[processor.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)], images=collect_images(prompt) or None, return_tensors='pt').to('cuda')
+        rendered_prompt = render_stage_text(processor.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True), None)
+        encoded = processor(text=[rendered_prompt], images=collect_images(prompt) or None, return_tensors='pt').to('cuda')
         with torch.no_grad():
             result = model.generate(**encoded, do_sample=True, temperature=.7, top_p=.95, top_k=0, max_new_tokens=512, use_cache=True)
         output = result[0, encoded['input_ids'].shape[1]:].tolist()
         validation = validate_stage1_generated_response(output, tok, max_new_tokens=512)
-        generated.append({'tokens': output, 'text': tok.decode(output, skip_special_tokens=False), 'validation': vars(validation)})
-    emit('group4_lora.json' if a.followup_only else 'group4.json', {'losses': losses, 'samples': generated, 'lora_parameter_count': lora_count, 'trainable_count': sum(p.numel() for p in trainable), 'frozen_versions_unchanged': True, 'scope': 'new FP32 rows plus LoRA' if a.followup_only else 'new FP32 rows only'})
-    emit('complete.json', {'status': 'FOLLOWUP_LORA_COMPLETED' if a.followup_only else 'PARTIAL: groups 2/3 and row-only group4 executed; group1 service parity and group4 LoRA followup pending', 'gaps': ['vLLM phase evaluated separately'] if a.followup_only else ['vLLM logits parity', 'optional LoRA small-sample followup']})
+        generated.append({'prompt_input_ids': encoded['input_ids'][0].cpu().tolist(), 'projected_prompt': rendered_prompt, 'tokens': output, 'text': tok.decode(output, skip_special_tokens=False), 'validation': vars(validation)})
+    emit('group4_lora.json' if a.followup_only and a.followup_phase == 'lora' else 'group4.json', {'losses': losses, 'samples': generated, 'lora_parameter_count': lora_count, 'trainable_count': sum(p.numel() for p in trainable), 'frozen_versions_unchanged': True, 'scope': 'new FP32 rows plus LoRA' if a.followup_only and a.followup_phase == 'lora' else 'new FP32 rows only'})
+    emit('complete.json', {'status': 'FOLLOWUP_' + a.followup_phase.upper() + '_COMPLETED' if a.followup_only else 'PARTIAL: groups 2/3 and row-only group4 executed; group1 service parity and group4 LoRA followup pending', 'gaps': ['vLLM phase evaluated separately'] if a.followup_only else ['vLLM logits parity', 'optional LoRA small-sample followup']})
     return 0
