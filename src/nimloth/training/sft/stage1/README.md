@@ -114,3 +114,27 @@ checkpoint；保持优化器、scheduler、RNG、数据位置，只重新计算�
 
 迁移基线的 best 来源是 transition 中记录的原 epoch checkpoint；旧 `best/`
 目录仍代表原指标，直到新指标首次改善并正常发布 best，不能把旧目录当成加权最优。
+
+
+## 每轮真实环境 success rate
+
+已有训练入口设置 `--success-eval-env-url URL`（YAML `train.success_eval_env_url`）后，
+每轮保存完整 epoch/best checkpoint，再使用当前已加载模型执行 Base60 + CommonSense60
+测试集，seed1..60、最多20步。采用现有 `EvaluationConfig`、原 BatchEnvironmentServer
+和 `run_direct_episodes`；外部服务使用已有 `serve_environment.sh` 启动。
+`success_eval.py` 负责 HF 原始生成适配与训练生命周期隔离，无新增可执行入口。
+采样参数、seed和并发数沿用格式验证配置（并发数等于格式 batch size），不更改
+严格动作解析、无效响应 no-op、环境 success 定义或训练 readiness。
+
+结果位于 `success_eval/epoch_NNN`，包含绑定 checkpoint 内容指纹和配置的合同、
+完整轨迹和 `rollout_summary.json`。LoRA 身份同时绑定 adapter 与基座内容。
+`validation_metrics.jsonl` 追加 `success_evaluation` 事件，保存 success rate、
+各集合完整统计与评估耗时；完成记录复用时保留首次完成的耗时。该轮120条全部完成后才继续下一轮；恢复已提交
+的 epoch 时先补完其评估，包括已收敛 checkpoint，完整记录直接重用。失败时保留
+checkpoint 和部分轨迹，禁止把部分 success rate 报为完整结果。
+
+所有 rank 一起展开真实完整参数，只有 rank0执行环境生成。其他 rank 在独立 Gloo
+CPU 控制组等待完成/错误，退出前同步结果；不在长环境评估期间挂起 NCCL collective。
+控制组24小时 timeout 是通信故障上限，不是实验运行预算；环境请求沿用500秒超时。
+保存和恢复模型模式、padding和训练 RNG，优化器/学习率/梯度目标保持不变。
+CPU测试不能替代真实多rank环境验证。

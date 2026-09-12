@@ -38,6 +38,7 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap.add_argument("--train-jsonl", type=Path, required=True)
     ap.add_argument("--val-jsonl", type=Path, required=True)
     if stage == "format":
+        ap.add_argument("--success-eval-env-url", default=None, help="Run full held-out environment success evaluation after each committed epoch.")
         ap.add_argument(
             "--format-eval-jsonl",
             type=Path,

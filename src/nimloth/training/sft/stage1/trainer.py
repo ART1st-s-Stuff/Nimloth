@@ -744,6 +744,9 @@ def main(*, stage: str = "format") -> int:
     torch.manual_seed(args.seed)
     rank, world, local_rank, device = setup_dist()
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    from .success_eval import create_control_group, epoch_evaluation_config, evaluate_epoch_success, record_success_metrics
+    inline_success = stage == "format" and bool(getattr(args, "success_eval_env_url", None))
+    success_control_group = create_control_group(inline_success)
 
     processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
     processor.tokenizer.padding_side = "right"
@@ -1215,6 +1218,7 @@ def main(*, stage: str = "format") -> int:
                     f"{state.get('world_size')} != {world}"
                 )
             start_epoch = int(state["epoch"]) + 1
+            resume_at_epoch_boundary = True
             if convergence_policy is not None:
                 rng_states = state.get("rank_rng_states")
                 if not isinstance(rng_states, list) or len(rng_states) != world:
@@ -1284,6 +1288,13 @@ def main(*, stage: str = "format") -> int:
             if marker.exists():
                 archived = args.output_dir / f"CONVERGED.before_step_{global_step}.{time.time_ns()}.json"
                 marker.rename(archived)
+
+    # 已提交 epoch 可能在环境评估期间中断；先补齐，不能跳过或重训该 epoch。
+    if inline_success and args.resume and resume_ckpt is not None and resume_at_epoch_boundary:
+        resumed_success = evaluate_epoch_success(model, processor, device,
+                               epoch_evaluation_config(args, start_epoch - 1), success_control_group)
+        if is_main():
+            record_success_metrics(args.output_dir, start_epoch - 1, global_step, resumed_success)
 
     if convergence.converged:
         # 同指标恢复已结束运行时保留原终态，不用未执行的格式验证覆盖结果。
@@ -1611,6 +1622,12 @@ def main(*, stage: str = "format") -> int:
                 convergence_state=convergence.state_dict() if convergence_policy else None,
                 rank_rng_states=epoch_rng_states,
             )
+        success_metrics = {}
+        if inline_success:
+            success_summary = evaluate_epoch_success(model, processor, device,
+                                   epoch_evaluation_config(args, epoch), success_control_group)
+            if is_main():
+                success_metrics = record_success_metrics(args.output_dir, epoch, global_step, success_summary)
         if is_main():
             print(
                 json.dumps(
@@ -1626,6 +1643,7 @@ def main(*, stage: str = "format") -> int:
                         "validation_seconds": validation_seconds,
                         "format_eval_seconds": format_eval_seconds,
                         "best_val": best_val,
+                        **success_metrics,
                     }
                 )
             )
@@ -1635,6 +1653,8 @@ def main(*, stage: str = "format") -> int:
                 wandb.log(
                     {
                         "val/loss": val_loss,
+                        **{f"val/{key}": value for key, value in success_metrics.items()
+                           if key != "success_eval"},
                         **{f"val/{key}": value for key, value in val_metrics.items()},
                         "val/format_correct_rate": format_rate,
                         "val/validation_seconds": validation_seconds,
