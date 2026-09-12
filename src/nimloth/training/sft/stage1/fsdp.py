@@ -79,7 +79,8 @@ def _bf16_master_forward(model):
     """Unwrapped generation uses BF16 projections without modifying FP32 masters."""
     from torch.nn import functional
     replacements = []
-    masters = [module for module in model.modules() if getattr(module, "_nimloth_fp32_embedding_master", False)]
+    # PEFT wrappers forward getattr to saved leaves; only the leaf owns this marker.
+    masters = [module for module in model.modules() if module.__dict__.get("_nimloth_fp32_embedding_master", False)]
     for module in masters:
         if not isinstance(module, (torch.nn.Embedding, torch.nn.Linear)):
             raise TypeError("Unexpected embedding master module")
@@ -117,7 +118,7 @@ def wrap_fsdp(model, device):
     # Tied frozen originals remain at the common root; modules_to_save copies
     # remain independent and are separately sharded, without changing tying.
     targets = _auto_wrap_targets(model)
-    masters = {module for module in targets if getattr(module, "_nimloth_fp32_embedding_master", False)}
+    masters = {module for module in targets if module.__dict__.get("_nimloth_fp32_embedding_master", False)}
     if masters:
         mixed = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.float32,
                                buffer_dtype=None, keep_low_precision_grads=False,

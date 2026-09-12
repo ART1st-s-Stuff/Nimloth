@@ -115,3 +115,31 @@ def test_generation_setup_failure_restores_already_patched_module(monkeypatch):
         pytest.fail('setup should not finish')
     assert 'forward' not in model.embed.__dict__
     assert 'forward' not in model.head.__dict__
+
+
+def test_real_peft_forwarding_does_not_make_wrapper_a_master():
+    from peft import LoraConfig, get_peft_model
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    config = LlamaConfig(vocab_size=32, hidden_size=16, intermediate_size=32,
+                         num_hidden_layers=1, num_attention_heads=2,
+                         num_key_value_heads=2, tie_word_embeddings=True)
+    model = get_peft_model(LlamaForCausalLM(config).bfloat16(),
+                          LoraConfig(task_type='CAUSAL_LM', r=2, target_modules=['q_proj'],
+                                     modules_to_save=['embed_tokens', 'lm_head'])).eval()
+    prepare_embedding_masters(model, 'float32')
+    wrappers = (model.get_input_embeddings(), model.get_output_embeddings())
+    masters = tuple(wrapper.modules_to_save.default for wrapper in wrappers)
+    for wrapper in wrappers:
+        assert getattr(wrapper, '_nimloth_fp32_embedding_master', False)
+        assert '_nimloth_fp32_embedding_master' not in wrapper.__dict__
+    before = [module.weight.detach().clone() for module in masters]
+    with torch.no_grad(), _bf16_master_forward(model):
+        assert all('forward' not in wrapper.__dict__ for wrapper in wrappers)
+        assert all('forward' in master.__dict__ for master in masters)
+        output = model(input_ids=torch.tensor([[1, 2, 3]]), use_cache=False)
+        assert torch.isfinite(output.logits).all()
+    for master, weight in zip(masters, before, strict=True):
+        assert 'forward' not in master.__dict__
+        assert master.weight.dtype == torch.float32
+        assert torch.equal(master.weight, weight)
