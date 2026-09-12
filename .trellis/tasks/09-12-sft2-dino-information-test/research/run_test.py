@@ -25,6 +25,14 @@ def argument(argv, name):
     return values[0]
 
 
+def gate_training_options(argv):
+    options = []
+    for name in ("--lr", "--embedding-lr", "--embedding-master-dtype", "--projector-lr"):
+        if any(token == name or token.startswith(name + "=") for token in argv):
+            options.extend([name, argument(argv, name)])
+    return options
+
+
 def validate_contract(contract):
     root = Path(contract['root'])
     argv = contract['train_argv']
@@ -215,7 +223,7 @@ def main():
         wait_selected_gpus_idle(0, 8)
         gate = [contract.get('python', sys.executable), str(OLD_RESEARCH / 'run_query_gate.py'),
                 '--root', str(root), '--commit', contract['commit'], '--world-size', '8',
-                '--grid-size', '8', '--train-jsonl', str(root / 'data/train.jsonl')]
+                '--grid-size', '8', '--train-jsonl', str(root / 'data/train.jsonl')] + gate_training_options(contract['train_argv'])
         run_phase(gate, phase='gate', checkout=checkout, env=env, logs=logs,
                   deadline=min(deadline, started + 900), event=event)
         passed = json.loads((root / 'gate_control/PASSED.json').read_text())

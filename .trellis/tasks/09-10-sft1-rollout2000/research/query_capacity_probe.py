@@ -30,6 +30,8 @@ from nimloth.training.sft.stage1.fsdp import (
     clip_grad_norm,
     load_optimizer_state,
     wrap_fsdp,
+    prepare_embedding_masters,
+    restore_exported_embedding_masters,
 )
 from nimloth.training.sft.stage1.trainer import (
     apply_lora,
@@ -66,6 +68,10 @@ def main():
     parser.add_argument("--sample-index", type=int)
     parser.add_argument("--grid-size", type=int, default=4)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument('--embedding-master-dtype', choices=('bfloat16', 'float32'), default='bfloat16')
+    parser.add_argument('--lr', type=float, default=1e-6)
+    parser.add_argument('--embedding-lr', type=float, default=5e-6)
+    parser.add_argument('--projector-lr', type=float)
     args = parser.parse_args()
     faulthandler.dump_traceback_later(180, repeat=True)
     rank, world, _, device = setup_dist()
@@ -106,7 +112,9 @@ def main():
         "world_size": world, "grid_size": objective.grid_size,
         "grid_tokens": query_count, "grad_accum": 8,
         "query_batching": "full_trajectory_success_lm_all_dino_v2",
-        "weight_lm": 1.0, "weight_dino": 1.0}
+        "weight_lm": 1.0, "weight_dino": 1.0,
+        "embedding_master_dtype": args.embedding_master_dtype, "lr": args.lr,
+        "embedding_lr": args.embedding_lr, "projector_lr": args.projector_lr}
     checkpoint = args.output_dir / "resume_step_00000001"
     state = None
     if args.resume:
@@ -116,6 +124,8 @@ def main():
         validate_resume_state(state, expected_identity=identity, rank=rank, world=world)
     language = Qwen2_5_VLForConditionalGeneration.from_pretrained(args.model,
         torch_dtype=torch.bfloat16, attn_implementation="flash_attention_2")
+    if args.embedding_master_dtype == 'float32':
+        restore_exported_embedding_masters(language, args.model)
     enable_gradient_checkpointing(language)
     prepare_query_vocabulary(language, len(processor.tokenizer),
         special_token_ids(processor.tokenizer, latent_token_count=query_count),
@@ -123,14 +133,18 @@ def main():
     language = apply_lora(language, argparse.Namespace(lora_r=64, lora_alpha=128,
         lora_dropout=0.05, gradient_checkpointing=True,
         lora_target_modules="q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj"))
-    if args.resume:
-        load_lora_adapter_state(language, checkpoint)
-        assert verify_adapter_loaded(language, checkpoint) > 0
     model = QueryAlignmentModel.build(
         language,
         processor.tokenizer,
         objective,
     )
+    prepare_embedding_masters(language, args.embedding_master_dtype)
+    expected_dtype = getattr(torch, args.embedding_master_dtype)
+    assert language.get_input_embeddings().weight.dtype == expected_dtype
+    assert language.get_output_embeddings().weight.dtype == expected_dtype
+    if args.resume:
+        load_lora_adapter_state(language, checkpoint)
+        assert verify_adapter_loaded(language, checkpoint) > 0
     assert all(p.dtype == torch.bfloat16 for p in model.projector.parameters())
     if args.resume:
         model.restore_projector(checkpoint)
@@ -138,7 +152,7 @@ def main():
                     map_location="cpu", weights_only=True))
     model.config.nimloth_training_stage = "query"
     model = wrap_fsdp(model, device)
-    optimizer = build_optimizer(model, 1e-6, 5e-6, 0.01)
+    optimizer = build_optimizer(model, args.lr, args.embedding_lr, 0.01, args.projector_lr)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda _: 1.0)
     if state is not None:
         load_optimizer_state(model, optimizer, state["optimizer"])
@@ -177,6 +191,11 @@ def main():
     assert torch.isfinite(gradients).all() and torch.all(gradients > 0)
     assert torch.isfinite(clip_grad_norm(model, 1.0))
     optimizer.step()
+    if args.embedding_master_dtype == 'float32':
+        for parameter in optimizer.param_groups[1]['params']:
+            if parameter in optimizer.state and 'exp_avg' in optimizer.state[parameter]:
+                assert optimizer.state[parameter]['exp_avg'].dtype == torch.float32
+                assert optimizer.state[parameter]['exp_avg_sq'].dtype == torch.float32
     scheduler.step()
     optimizer.zero_grad(set_to_none=True)
     step = 2 if args.resume else 1

@@ -79,6 +79,10 @@ def main():
     parser.add_argument('--attempt', default='')
     parser.add_argument('--world-size', type=int, default=7)
     parser.add_argument('--grid-size', type=int, default=4)
+    parser.add_argument('--embedding-master-dtype', choices=('bfloat16', 'float32'), default='bfloat16')
+    parser.add_argument('--lr', type=float, default=1e-6)
+    parser.add_argument('--embedding-lr', type=float, default=5e-6)
+    parser.add_argument('--projector-lr', type=float)
     args = parser.parse_args()
     if not 2 <= args.world_size <= 8:
         raise ValueError("world-size must be between 2 and 8")
@@ -99,7 +103,11 @@ def main():
                '--nnodes=1', f'--nproc-per-node={args.world_size}', str(Path(__file__).with_name('query_capacity_probe.py')),
                '--model', str(args.root / 'base'), '--train-jsonl', str(args.train_jsonl),
                '--dino-cache-root', str(args.root / 'dino_cache'), '--output-dir', str(gate_output),
-               '--sample-index', str(index), '--grid-size', str(objective.grid_size)]
+                '--sample-index', str(index), '--grid-size', str(objective.grid_size),
+               '--embedding-master-dtype', args.embedding_master_dtype,
+               '--lr', str(args.lr), '--embedding-lr', str(args.embedding_lr)]
+    if args.projector_lr is not None:
+        command += ['--projector-lr', str(args.projector_lr)]
     start = time.monotonic()
     with (output / 'events.jsonl').open('x') as events:
         for phase in ('initial', 'resume'):
@@ -129,6 +137,9 @@ def main():
             events.flush()
     result = json.loads((gate_output / 'PASSED.json').read_text())
     assert result['world_size'] == args.world_size
+    assert result['embedding_master_dtype'] == args.embedding_master_dtype
+    assert result['lr'] == args.lr and result['embedding_lr'] == args.embedding_lr
+    assert result['projector_lr'] == args.projector_lr
     (output / 'PASSED.json').write_text(json.dumps({'commit': args.commit, 'world_size': args.world_size,
                                                  'elapsed_seconds': time.monotonic() - start,
                                                  'result': result}, indent=2))
