@@ -107,6 +107,11 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         help="Publish an atomic resume checkpoint every N completed optimizer steps.",
     )
     ap.add_argument(
+        "--keep-step-checkpoints",
+        action="store_true",
+        help="Keep resume_step checkpoints after a covering epoch checkpoint commits.",
+    )
+    ap.add_argument(
         "--max-pixels",
         type=int,
         default=602112,

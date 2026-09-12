@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import random
 from pathlib import Path
 from types import SimpleNamespace
@@ -202,3 +203,69 @@ def test_latest_resume_keeps_legacy_epoch_compatibility(tmp_path):
         legacy / "training_state.pt",
     )
     assert find_latest_resume_dir(tmp_path) == legacy
+
+
+def test_epoch_pruning_removes_only_committed_covered_steps(tmp_path):
+    from nimloth.training.sft.stage1.checkpoint import (
+        prune_resume_checkpoints_covered_by_epoch,
+    )
+
+    epoch = tmp_path / "epoch_003"
+    epoch.mkdir()
+    torch.save({}, epoch / "training_state.pt")
+    (epoch / COMMITTED_MARKER).write_text('{"epoch": 3, "step": 30}\n')
+    for step in (10, 20, 40):
+        path = tmp_path / f"resume_step_{step:08d}"
+        path.mkdir()
+        torch.save({"step": step, "epoch": min(3, step // 10)},
+                   path / "training_state.pt")
+        (path / COMMITTED_MARKER).write_text(
+            json.dumps({"step": step}) + "\n"
+        )
+    incomplete = tmp_path / "resume_step_00000025"
+    incomplete.mkdir()
+    torch.save({}, incomplete / "training_state.pt")
+
+    removed = prune_resume_checkpoints_covered_by_epoch(
+        tmp_path, epoch, covered_step=30
+    )
+
+    assert [path.name for path in removed] == [
+        "resume_step_00000010", "resume_step_00000020"
+    ]
+    assert incomplete.exists()
+    assert (tmp_path / "resume_step_00000040").exists()
+
+
+def test_epoch_pruning_requires_matching_committed_epoch(tmp_path):
+    from nimloth.training.sft.stage1.checkpoint import (
+        prune_resume_checkpoints_covered_by_epoch,
+    )
+
+    epoch = tmp_path / "epoch_001"
+    epoch.mkdir()
+    torch.save({}, epoch / "training_state.pt")
+    with pytest.raises(ValueError, match="committed"):
+        prune_resume_checkpoints_covered_by_epoch(tmp_path, epoch, covered_step=10)
+
+
+def test_epoch_pruning_validates_every_candidate_before_deleting(tmp_path):
+    from nimloth.training.sft.stage1.checkpoint import (
+        prune_resume_checkpoints_covered_by_epoch,
+    )
+
+    epoch = tmp_path / "epoch_002"
+    epoch.mkdir()
+    torch.save({}, epoch / "training_state.pt")
+    (epoch / COMMITTED_MARKER).write_text('{"epoch": 2, "step": 20}\n')
+    for directory_step, state_step in ((10, 10), (20, 19)):
+        path = tmp_path / f"resume_step_{directory_step:08d}"
+        path.mkdir()
+        torch.save({"step": state_step, "epoch": 2}, path / "training_state.pt")
+        (path / COMMITTED_MARKER).write_text(
+            json.dumps({"step": directory_step}) + "\n"
+        )
+    with pytest.raises(ValueError, match="identity mismatch"):
+        prune_resume_checkpoints_covered_by_epoch(tmp_path, epoch, covered_step=20)
+    assert (tmp_path / "resume_step_00000010").exists()
+    assert (tmp_path / "resume_step_00000020").exists()

@@ -45,6 +45,7 @@ from .checkpoint import (
     find_latest_resume_dir,
     load_lora_adapter_state,
     objective_identities_match,
+    prune_resume_checkpoints_covered_by_epoch,
     restore_rng_state,
     save_checkpoint,
     save_resume_checkpoint,
@@ -1390,6 +1391,13 @@ def main(*, stage: str = "format") -> int:
                 convergence_state=convergence.state_dict() if convergence_policy else None,
                 rank_rng_states=epoch_rng_states,
             )
+        distributed_barrier()
+        if is_main() and not args.keep_step_checkpoints:
+            prune_resume_checkpoints_covered_by_epoch(
+                args.output_dir, args.output_dir / f"epoch_{epoch:03d}",
+                covered_step=global_step,
+            )
+        distributed_barrier()
         if is_main():
             print(
                 json.dumps(

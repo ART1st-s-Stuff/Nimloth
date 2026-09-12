@@ -45,3 +45,5 @@ def test_initial_checkpoint_is_explicit_opt_in():
               "--val-jsonl", "/tmp/val.jsonl", "--output-dir", "/tmp/output"]
     assert not parse_args(common)[0].save_initial_checkpoint
     assert parse_args(common + ["--save-initial-checkpoint"])[0].save_initial_checkpoint
+    assert not parse_args(common)[0].keep_step_checkpoints
+    assert parse_args(common + ["--keep-step-checkpoints"])[0].keep_step_checkpoints

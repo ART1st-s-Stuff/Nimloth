@@ -27,7 +27,8 @@ def argument(argv, name):
 
 def gate_training_options(argv):
     options = []
-    for name in ("--lr", "--embedding-lr", "--embedding-master-dtype", "--projector-lr"):
+    for name in ("--lr", "--embedding-master-dtype", "--projector-lr",
+                 "--query-token-lr", "--protocol-token-lr"):
         if any(token == name or token.startswith(name + "=") for token in argv):
             options.extend([name, argument(argv, name)])
     return options
@@ -35,11 +36,33 @@ def gate_training_options(argv):
 
 def validate_contract(contract):
     root = Path(contract['root'])
+    input_root = Path(contract.get('input_root', contract['root']))
+    if input_root.resolve() == root.resolve():
+        raise ValueError('fresh output root must differ from immutable input_root')
     argv = contract['train_argv']
-    if int(argument(argv, '--epochs')) != 2 or '--until-converged' in argv:
-        raise ValueError('test must train at most two epochs without convergence mode')
-    if '--save-initial-checkpoint' not in argv or '--resume' in argv:
-        raise ValueError('fresh test requires exact initialization snapshot')
+    if '--epochs' in argv or '--until-converged' not in argv:
+        raise ValueError('fresh training must use convergence mode without an epoch cap')
+    convergence = {
+        '--convergence-min-epochs': 2,
+        '--convergence-patience-epochs': 2,
+        '--convergence-min-relative-improvement': .01,
+    }
+    for flag, expected in convergence.items():
+        if float(argument(argv, flag)) != expected:
+            raise ValueError(f'invalid convergence setting: {flag}')
+    if ('--save-initial-checkpoint' not in argv or '--resume' in argv
+            or '--continue-from-epoch' in argv):
+        raise ValueError('fresh test requires epoch000 and forbids resume/continuation')
+    expected_training = {
+        '--lr': '5e-5', '--projector-lr': '5e-5',
+        '--query-token-lr': '5e-5', '--protocol-token-lr': '1e-5',
+        '--embedding-master-dtype': 'float32',
+    }
+    for flag, expected in expected_training.items():
+        if argument(argv, flag) != expected:
+            raise ValueError(f'invalid selected-row training setting: {flag}')
+    if int(argument(argv, '--resume-save-steps')) != 10 or '--keep-step-checkpoints' in argv:
+        raise ValueError('fresh training must prune ten-step checkpoints at epoch boundaries')
     if Path(argument(argv, '--output-dir')).resolve() != (root / 'train').resolve():
         raise ValueError('training output must be root/train')
     if int(argument(argv, '--grid-size')) != 8:
@@ -59,7 +82,7 @@ def validate_contract(contract):
     for command in (argv, template):
         for flag, relative in (('--model', 'base'), ('--train-jsonl', 'data/train.jsonl'),
                                ('--val-jsonl', 'data/val.jsonl'), ('--dino-cache-root', 'dino_cache')):
-            if Path(argument(command, flag)).resolve() != (root / relative).resolve():
+            if Path(argument(command, flag)).resolve() != (input_root / relative).resolve():
                 raise ValueError(f'{flag} differs from audited input')
         if int(argument(command, '--grid-size')) != 8:
             raise ValueError('evaluation/training grid differs from audit')
@@ -71,15 +94,47 @@ def validate_contract(contract):
 
 
 def validate_audit(contract):
-    root = Path(contract['root'])
-    audit = json.loads((root / 'input_audit.json').read_text())
+    input_root = Path(contract.get('input_root', contract['root']))
+    audit_path = input_root / 'input_audit.json'
+    if not audit_path.is_file():
+        identity = contract.get('input_identity')
+        if not isinstance(identity, dict):
+            raise ValueError('input_root lacks audit and contract lacks input_identity')
+        for split in ('train', 'val'):
+            source = input_root / 'data' / f'{split}.jsonl'
+            entry = identity.get(split, {})
+            if (entry.get('records') != contract['expected_records'][split]
+                    or hashlib.sha256(source.read_bytes()).hexdigest() != entry.get('sha256')):
+                raise ValueError(f'changed or invalid {split} identity')
+        if not 0 <= int(identity.get('train_max_sample_index', -1)) < identity['train']['records']:
+            raise ValueError('input identity lacks a valid gate sample index')
+        base_files = identity.get('base_files')
+        if not isinstance(base_files, dict) or not base_files:
+            raise ValueError('input identity lacks base file SHA256 values')
+        if 'config.json' not in base_files or not any(
+                name.endswith('.safetensors') for name in base_files):
+            raise ValueError('input identity lacks critical base model files')
+        for relative, expected_sha in base_files.items():
+            path = input_root / 'base' / relative
+            if (not path.is_file()
+                    or hashlib.sha256(path.read_bytes()).hexdigest() != expected_sha):
+                raise ValueError(f'changed or invalid base file: {relative}')
+        dino_manifest = input_root / 'dino_cache' / 'manifest.json'
+        manifest_bytes = dino_manifest.read_bytes()
+        manifest = json.loads(manifest_bytes)
+        if (hashlib.sha256(manifest_bytes).hexdigest()
+                != identity.get('dino_cache_manifest_sha256')
+                or manifest.get('fingerprint') != identity.get('dino_cache_fingerprint')):
+            raise ValueError('changed or invalid DINO cache manifest identity')
+        return identity
+    audit = json.loads(audit_path.read_text())
     if audit['status'] != 'passed' or audit['grid_size'] != 8 or audit['query_count'] != 64:
         raise ValueError('full K64 input audit has not passed')
-    if Path(audit['model']).resolve() != (root / 'base').resolve():
+    if Path(audit['model']).resolve() != (input_root / 'base').resolve():
         raise ValueError('audited model differs from test base')
     for split in ('train', 'val'):
         entry = audit['splits'][split]
-        source = root / 'data' / f'{split}.jsonl'
+        source = input_root / 'data' / f'{split}.jsonl'
         if not (entry['checked'] == entry['records'] == contract['expected_records'][split] > 0):
             raise ValueError(f'incomplete {split} audit')
         if (Path(entry['jsonl']).resolve() != source.resolve()
@@ -113,27 +168,20 @@ def training_ranks(launcher, run):
 
 
 def checkpoints_to_evaluate(run):
-    entries = []
-    for path in sorted(run.glob('epoch_*')):
-        if (path / 'COMMITTED').is_file():
-            marker = json.loads((path / 'COMMITTED').read_text())
-            if marker['epoch'] != int(path.name.split('_')[1]) or marker['epoch'] > 2:
-                raise ValueError('invalid epoch checkpoint marker')
-            entries.append((path, marker['step']))
-    if not entries or entries[0][0].name != 'epoch_000' or entries[0][1] != 0:
+    initial = run / 'epoch_000'
+    if not (initial / 'COMMITTED').is_file():
         raise ValueError('exact pre-update checkpoint missing')
-    steps = []
-    for path in run.glob('resume_step_*'):
-        if (path / 'COMMITTED').is_file():
-            marker = json.loads((path / 'COMMITTED').read_text())
-            if marker['step'] != int(path.name.split('_')[-1]):
-                raise ValueError('invalid step checkpoint marker')
-            steps.append((path, marker['step']))
-    if steps:
-        latest = max(steps, key=lambda entry: entry[1])
-        if latest[1] > max(entry[1] for entry in entries):
-            entries.append(latest)
-    return [entry[0] for entry in entries]
+    marker = json.loads((initial / 'COMMITTED').read_text())
+    if marker != {'epoch': 0, 'step': 0}:
+        raise ValueError('invalid epoch000 marker')
+    converged = run / 'CONVERGED.json'
+    final = run / 'final'
+    if not converged.is_file() or not (final / 'training_state.pt').is_file():
+        raise ValueError('final checkpoint is not proven converged')
+    evidence = json.loads(converged.read_text())
+    if not evidence.get('state', {}).get('converged'):
+        raise ValueError('final checkpoint is not proven converged')
+    return [initial, final]
 
 
 def run_phase(argv, *, phase, checkout, env, logs, deadline, event,
@@ -193,8 +241,9 @@ def main():
     contract = json.loads(args.contract.read_text())
     total, reserve = validate_contract(contract)
     checkout, root = Path(contract['checkout']), Path(contract['root'])
+    input_root = Path(contract.get('input_root', contract['root']))
     validate_checkout(checkout, contract['commit'])
-    validate_audit(contract)
+    audit = validate_audit(contract)
     if (root / 'train').exists() or (root / 'test_controller').exists():
         raise FileExistsError('test output already used; preserve it and choose a new run')
     if args.check_only:
@@ -221,21 +270,41 @@ def main():
     signal.signal(signal.SIGINT, interrupted)
     try:
         wait_selected_gpus_idle(0, 8)
-        gate = [contract.get('python', sys.executable), str(OLD_RESEARCH / 'run_query_gate.py'),
-                '--root', str(root), '--commit', contract['commit'], '--world-size', '8',
-                '--grid-size', '8', '--train-jsonl', str(root / 'data/train.jsonl')] + gate_training_options(contract['train_argv'])
-        run_phase(gate, phase='gate', checkout=checkout, env=env, logs=logs,
-                  deadline=min(deadline, started + 900), event=event)
-        passed = json.loads((root / 'gate_control/PASSED.json').read_text())
-        if passed['commit'] != contract['commit'] or passed['world_size'] != 8:
+        gate_base = [contract.get('python', sys.executable), '-m', 'torch.distributed.run',
+                     '--standalone', '--nnodes=1', '--nproc-per-node=8',
+                     str(Path(__file__).with_name('selected_rows_capacity_probe.py')),
+                     '--model', str(input_root / 'base'),
+                     '--train-jsonl', str(input_root / 'data/train.jsonl'),
+                     '--dino-cache-root', str(input_root / 'dino_cache'),
+                     '--output-dir', str(root / 'selected_rows_gate'), '--grid-size', '8',
+                     '--sample-index', str(audit['train_max_sample_index'])]
+        gate_base += gate_training_options(contract['train_argv'])
+        gate_deadline = min(deadline, started + 900)
+        run_phase(gate_base, phase='gate_initial', checkout=checkout, env=env, logs=logs,
+                  deadline=gate_deadline, event=event)
+        run_phase(gate_base + ['--resume'], phase='gate_resume', checkout=checkout,
+                  env=env, logs=logs, deadline=gate_deadline, event=event)
+        passed = json.loads((root / 'selected_rows_gate/PASSED.json').read_text())
+        if passed['world_size'] != 8 or passed['schema'] != 'selected_rows_v1':
             raise ValueError('gate provenance mismatch')
+        expected_cache = audit.get('dino_cache_fingerprint')
+        if expected_cache is not None and passed['cache_fingerprint'] != expected_cache:
+            raise ValueError('gate DINO cache fingerprint differs from input identity')
         validate_checkout(checkout, contract['commit'])
-        validate_audit(contract)
+        refreshed_audit = validate_audit(contract)
+        if refreshed_audit['train_max_sample_index'] != audit['train_max_sample_index']:
+            raise ValueError('gate sample identity changed after gate')
         wait_selected_gpus_idle(30, 8)
         train_end = deadline - reserve
         status = run_phase(contract['train_argv'], phase='train', checkout=checkout,
             env=env, logs=logs, deadline=train_end, event=event,
             training_run=root / 'train', soft_deadline=train_end - 300)
+        if status != 'complete':
+            result = {'status': 'paused', 'training_status': status,
+                      'elapsed_seconds': time.monotonic() - started, 'evaluations': []}
+            (logs / 'PAUSED.json').write_text(json.dumps(result, indent=2) + '\n')
+            event('test_paused', **result)
+            return 75
         checkpoints = checkpoints_to_evaluate(root / 'train')
         if len(checkpoints) < 2:
             raise RuntimeError('test has no committed post-update checkpoint to evaluate')
@@ -263,4 +332,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

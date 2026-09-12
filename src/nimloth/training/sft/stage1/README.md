@@ -65,6 +65,10 @@ embedding 和独立 lm_head 的 FP32 master。Stage 2 固定使用更窄的
 `5e-5`。Checkpoint identity 保存 schema、精确 token IDs、两档学习率和
 冻结范围；普通 HF/PEFT 导出会把选中行写回标准 dense 权重，不包含私有行参数键。
 
+训练默认每 10 个 optimizer step 保存原子 `resume_step_*`。完整 epoch checkpoint
+提交并经所有 rank 同步后，删除已被该 epoch 覆盖的 step checkpoint；epoch checkpoint
+全部保留。诊断运行可显式传入 `--keep-step-checkpoints` 保留中间 step checkpoint。
+
 Stage2 `--continue-from-epoch PATH` explicitly starts a new output directory from
 an exact COMMITTED epoch boundary. It is mutually exclusive with `--resume`.
 Model, optimizer, per-rank RNG, global step and next epoch are retained; only

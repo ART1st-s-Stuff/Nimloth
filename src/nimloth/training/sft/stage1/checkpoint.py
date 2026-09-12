@@ -364,6 +364,44 @@ def find_latest_resume_dir(output_dir: Path) -> Path | None:
     return None
 
 
+def prune_resume_checkpoints_covered_by_epoch(
+    output_dir: Path, epoch_dir: Path, *, covered_step: int
+) -> list[Path]:
+    """Remove committed step checkpoints made redundant by a committed epoch."""
+    marker_path = epoch_dir / COMMITTED_MARKER
+    state_path = epoch_dir / "training_state.pt"
+    if not marker_path.is_file() or not state_path.is_file():
+        raise ValueError("cannot prune before a complete epoch checkpoint is committed")
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    if int(marker.get("step", -1)) != covered_step:
+        raise ValueError("epoch marker does not cover the requested optimizer step")
+    covered_epoch = int(marker.get("epoch", -1))
+    if covered_epoch < 0:
+        raise ValueError("epoch marker lacks a valid epoch")
+    candidates = []
+    for path in sorted(output_dir.glob("resume_step_*")):
+        committed = path / COMMITTED_MARKER
+        training_state = path / "training_state.pt"
+        if not committed.is_file() or not training_state.is_file():
+            continue
+        try:
+            step = int(path.name.rsplit("_", 1)[-1])
+        except ValueError:
+            continue
+        if step <= covered_step:
+            step_marker = json.loads(committed.read_text(encoding="utf-8"))
+            state = torch.load(training_state, map_location="cpu", weights_only=False)
+            if (int(step_marker.get("step", -1)) != step
+                    or int(state.get("step", -1)) != step
+                    or int(state.get("epoch", covered_epoch + 1)) > covered_epoch):
+                raise ValueError(f"resume checkpoint identity mismatch: {path}")
+            candidates.append(path)
+    for path in candidates:
+        shutil.rmtree(path)
+    _fsync_directory(output_dir)
+    return candidates
+
+
 def merge_peft_checkpoint(
     base_model_path: Path,
     adapter_path: Path,
