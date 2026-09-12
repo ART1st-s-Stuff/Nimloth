@@ -83,13 +83,48 @@ def load_optimizer_state(model, optimizer, state):
 
 
 @contextmanager
-def generation_model(model):
-    # generate() is an unwrapped root method. Root-owned tensors must remain
-    # materialized while child FSDP blocks continue their normal forward hooks.
-    # All ranks generate identical prompts and use synced_gpus for early EOS.
+def _without_fsdp_wrappers(module):
+    """Temporarily expose original modules, including aliased child edges."""
+    replacements = []
+    visited = set()
+
+    def unwrap(parent):
+        if id(parent) in visited:
+            return
+        visited.add(id(parent))
+        # named_children() removes aliases: every registered edge must be restored.
+        for name, child in list(parent._modules.items()):
+            if child is None:
+                continue
+            original = child
+            while is_fsdp(child):
+                child = child.module
+            if child is not original:
+                replacements.append((parent, name, original))
+                setattr(parent, name, child)
+            unwrap(child)
+
+    try:
+        unwrap(module)
+        yield module
+    finally:
+        for parent, name, original in reversed(replacements):
+            setattr(parent, name, original)
+
+
+@contextmanager
+def generation_model(model, *, full_parameters=False):
     if is_fsdp(model):
-        with FSDP.summon_full_params(model, recurse=False, writeback=False):
-            yield model.module
+        with FSDP.summon_full_params(
+            model, recurse=full_parameters, writeback=False
+        ):
+            if full_parameters:
+                # 一次聚合参数后绕过所有 FSDP forward；退出前恢复拓扑，再恢复分片。
+                # 不在 SUMMON_FULL_PARAMS 状态调用 FSDP forward 或修改参数。
+                with _without_fsdp_wrappers(model.module) as module:
+                    yield module
+            else:
+                yield model.module
     else:
         yield model.module if hasattr(model, "module") else model
 

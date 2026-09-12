@@ -160,7 +160,7 @@ def test_tail_batch_and_fsdp_generation_order(monkeypatch):
     monkeypatch.setattr(
         trainer,
         "generation_model",
-        lambda candidate: nullcontext(candidate),
+        lambda candidate, **kwargs: nullcontext(candidate),
     )
 
     rate, reasons, samples = trainer.evaluate_format(
@@ -276,5 +276,27 @@ def test_sampling_seed_is_repeatable_and_metadata_records_overrides():
     assert samples[0]["generation"] == {
         "do_sample": True, "max_new_tokens": 64, "eos_token_id": 90,
         "pad_token_id": 91, "temperature": 0.8, "top_p": 0.9,
-        "top_k": 0, "generation_seed": 12, "backend": "transformers",
+        "top_k": 0, "use_cache": True, "generation_seed": 12, "backend": "transformers",
     }
+
+
+def test_stage1_full_parameters_cache_and_root_modes_restore(monkeypatch):
+    class Outer(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.module = FakeModel()
+    model = Outer()
+    model.module.eval()
+    monkeypatch.setattr(trainer, "is_fsdp", lambda candidate: True)
+    from contextlib import contextmanager
+
+    @contextmanager
+    def generation(candidate, *, full_parameters):
+        assert full_parameters
+        assert not candidate.training and not candidate.module.training
+        yield candidate.module
+
+    monkeypatch.setattr(trainer, "generation_model", generation)
+    trainer.evaluate_format(model, FakeProcessor(), FakeDataset(32), torch.device("cpu"), batch_size=4)
+    assert model.training and not model.module.training
+    assert all(call["use_cache"] and not call["synced_gpus"] for call in model.module.calls)

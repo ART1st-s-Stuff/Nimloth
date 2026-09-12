@@ -9,7 +9,11 @@
 每轮格式检查的标准 `train.format_eval_batch_size` 为 4，也可通过
 `--format-eval-batch-size` 显式覆盖为其他正整数。训练器保持前 32 条记录的原始
 顺序，将它们分批送入同一次 generation model 上下文；FSDP 下所有 rank 仍处理
-相同批次并使用同步停止。批量 decoder-only 生成期间 tokenizer 临时切换为左侧
+相同批次。Stage 1 在整个生成阶段一次聚合完整参数，临时绕过嵌套 FSDP
+wrapper，启用 KV cache，避免逐 token 参数通信；退出（含异常）前恢复 wrapper
+再恢复分片。每卡需容纳完整模型及 KV cache，不复制或改变参数、优化器及 dtype。
+此路径没有 token 级 collective，使用独立 EOS 停止；所有 rank 仍共同进入和退出
+参数聚合上下文。Query 阶段保持原有分片生成和同步停止。批量 decoder-only 生成期间 tokenizer 临时切换为左侧
 padding，结束或异常后恢复训练使用的右侧 padding。每条结果从批内统一 prompt
 宽度之后切出；若首个 EOS 后只有生成器补入的 pad token，则移除这些补齐并保留
 EOS。EOS 后存在非 padding 内容时不得裁掉，必须交给严格 validator 判为
@@ -63,7 +67,9 @@ rank zero publishes ordinary PEFT artifacts plus complete training state. Resume
 loads adapters before wrapping and converts the full named optimizer state into
 local shards after wrapping. FSDP is part of the resume identity. Epoch, best,
 final and optimizer-boundary saves use the same collective path. Format generation
-runs the same prompts on all ranks with synchronized stopping; validation LM loss
+runs the same prompts on all ranks; Stage 1 temporarily exposes full original
+parameters without FSDP forward hooks and restores the module graph before resharding.
+Query generation retains synchronized stopping; validation LM loss
 and the convergence rule are unchanged.
 
 The explicit GPU integration probe is

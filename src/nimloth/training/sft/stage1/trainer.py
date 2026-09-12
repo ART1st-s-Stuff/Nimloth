@@ -157,7 +157,7 @@ def evaluate_format(
     if dist.is_available() and dist.is_initialized() and not is_main() and not is_fsdp(model):
         return 0.0, {}, []
     module = model.module if hasattr(model, "module") else model
-    was_training = module.training
+    training_modes = [(child, child.training) for child in model.modules()]
     correct = 0
     total = 0
     reasons: Counter[str] = Counter()
@@ -223,19 +223,21 @@ def evaluate_format(
     }
     if temperature > 0:
         generation.update(temperature=temperature, top_p=top_p, top_k=0)
+    if strict_stage1:
+        generation["use_cache"] = True
     generation_metadata = {**generation, "generation_seed": generation_seed, "backend": "transformers"}
     rng_state = capture_rng_state()
     original_padding_side = tokenizer.padding_side
     started_at = time.monotonic()
     batch_count = math.ceil(len(prepared) / batch_size)
-    module.eval()
+    model.eval()
     try:
         # 隔离验证采样，避免改变后续训练的 dropout/RNG 恢复轨迹。
         torch.random.default_generator.manual_seed(generation_seed)
         if device.type == "cuda":
             torch.cuda.manual_seed(generation_seed)
         tokenizer.padding_side = "left"
-        with generation_model(model) as generation_module:
+        with generation_model(model, full_parameters=strict_stage1) as generation_module:
             for batch_index, start in enumerate(
                 range(0, len(prepared), batch_size), 1
             ):
@@ -254,7 +256,7 @@ def evaluate_format(
                 output_ids = generation_module.generate(
                     **inputs,
                     **generation,
-                    **({"synced_gpus": True} if is_fsdp(model) else {}),
+                    **({"synced_gpus": not strict_stage1} if is_fsdp(model) else {}),
                 )
                 prompt_width = inputs["input_ids"].shape[1]
                 for row, item in enumerate(batch):
@@ -335,8 +337,8 @@ def evaluate_format(
     finally:
         restore_rng_state(rng_state)
         tokenizer.padding_side = original_padding_side
-        if was_training:
-            module.train()
+        for child, training in training_modes:
+            child.training = training
     return correct / max(total, 1), dict(sorted(reasons.items())), samples
 
 
