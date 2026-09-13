@@ -191,6 +191,8 @@ def test_checkpoint_restores_projector_and_preserves_stage_for_legacy_wm_loader(
     restored.restore_projector(checkpoint, allow_dino_weight_change=True)
     for key, value in model.projector.state_dict().items():
         assert torch.equal(restored.projector.state_dict()[key], value)
+    import json
+
     config_path = checkpoint / "grid_state_config.json"
     config = json.loads(config_path.read_text())
     config["query_token_ids"] = [99, 98, 97, 96]
