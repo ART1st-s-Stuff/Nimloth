@@ -12,6 +12,7 @@ from nimloth.training.sft.stage1.trainer import build_optimizer
 from nimloth.training.sft.stage2.config import QueryAlignmentConfig
 from nimloth.training.sft.stage2.full_tuning import prepare_full_language
 from nimloth.training.sft.stage2.model import QueryAlignmentModel
+from nimloth.training.sft.stage2.selected_token_rows import selected_row_parameters
 from nimloth.wm.grid import SharedSlotProjector
 
 
@@ -32,13 +33,20 @@ def main():
     language = Qwen2_5_VLForConditionalGeneration(config)
     model = QueryAlignmentModel(language, SharedSlotProjector(16, 3, 8, grid_tokens=4),
                                 [6, 7, 8, 9], QueryAlignmentConfig(grid_size=2, projector_hidden_dim=8))
-    prepare_full_language(model)
+    prepare_full_language(model, query_ids=[6, 7, 8, 9], protocol_ids=list(range(10, 20)))
+    selected = selected_row_parameters(model)
+    assert not language.get_input_embeddings().weight.requires_grad
+    assert not language.get_output_embeddings().weight.requires_grad
     assert all(b.dtype == torch.float32 for n, b in language.visual.named_buffers() if "inv_freq" in n)
     def check_rotary(_module, _inputs, output):
         assert output.dtype == torch.float32, output.dtype
     language.visual.rotary_pos_emb.register_forward_hook(check_rotary)
     model = wrap_fsdp(model.to(device), device)
-    optimizer = build_optimizer(model, 2e-5, 2e-5, 0.01, 2e-5)
+    optimizer = build_optimizer(
+        model, 2e-5, 2e-5, 0.01, 2e-5,
+        query_token_lr=1e-4, protocol_token_lr=2e-5,
+    )
+    assert [group["lr"] for group in optimizer.param_groups] == [2e-5, 2e-5, 1e-4, 2e-5, 2e-5]
     ids = torch.tensor([[1, 30, 28, 31, 2, 6, 7, 8, 9, 3, 4]], device=device)
     labels = torch.full_like(ids, -100)
     labels[0, -2:] = ids[0, -2:]
@@ -53,6 +61,10 @@ def main():
     assert torch.isfinite(loss)
     loss.backward()
     assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
+    assert any(
+        parameter.grad is not None and parameter.grad.abs().sum() > 0
+        for parameter in selected["query"]
+    )
     optimizer.step()
     dist.barrier()
     if dist.get_rank() == 0:
