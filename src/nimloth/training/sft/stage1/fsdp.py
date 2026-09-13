@@ -107,7 +107,7 @@ def wrap_fsdp(model, device):
         visual_modules = set(model.language_model.visual.modules())
         targets.add(model.language_model.visual)
         mixed = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.float32,
-                               buffer_dtype=torch.bfloat16, keep_low_precision_grads=False,
+                               buffer_dtype=None, keep_low_precision_grads=False,
                                cast_forward_inputs=True)
         # Visual weights are already BF16. Preserve internally computed FP32
         # rotary cos/sin inputs: Qwen vision explicitly rotates q.float().

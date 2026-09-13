@@ -16,7 +16,9 @@ def prepare_full_language(model):
     # FSDP casts complete handles during forward, preserving FP32 optimizer updates.
     model.requires_grad_(True)
     visual.requires_grad_(False)
-    visual.to(dtype=torch.bfloat16)
+    # Rotary frequency buffers must retain FP32; only frozen weights use BF16.
+    for parameter in visual.parameters():
+        parameter.data = parameter.data.to(dtype=torch.bfloat16)
     for parameter in model.parameters():
         if parameter.requires_grad:
             parameter.data = parameter.data.float()

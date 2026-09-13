@@ -29,6 +29,7 @@ def test_full_visual_residuals_have_separate_fsdp_owner(monkeypatch):
         return module
     monkeypatch.setattr(fsdp, "FSDP", fake_fsdp)
     fsdp.wrap_fsdp(model, torch.device("cpu"))
+    assert captured["mixed_precision"].buffer_dtype is None
     predicate = captured["auto_wrap_policy"]
     assert predicate(language.visual)
     for module in language.visual.modules():

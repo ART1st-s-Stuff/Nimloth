@@ -94,3 +94,30 @@ def test_dense_query_export_preserves_fp32_weights(tmp_path):
     query.restore_projector(tmp_path)
     for name, value in query.projector.state_dict().items():
         assert torch.equal(value, full["projector." + name])
+
+
+def test_full_scope_preserves_real_qwen_rotary_buffers():
+    import inspect
+    from transformers import Qwen2_5_VLConfig, Qwen2_5_VLForConditionalGeneration
+
+    text = dict(vocab_size=32, hidden_size=16, intermediate_size=32,
+                num_hidden_layers=1, num_attention_heads=2, num_key_value_heads=2,
+                tie_word_embeddings=False,
+                rope_scaling={"type": "mrope", "mrope_section": [1, 1, 2]})
+    text_kwargs = ({"text_config": text}
+                   if "text_config" in inspect.signature(Qwen2_5_VLConfig).parameters
+                   else text)
+    config = Qwen2_5_VLConfig(**text_kwargs, vision_config=dict(
+        depth=1, hidden_size=16, intermediate_size=32, num_heads=2, out_hidden_size=16))
+    model = nn.Module()
+    model.language_model = Qwen2_5_VLForConditionalGeneration(config)
+    model.projector = nn.Linear(16, 3)
+    visual = model.language_model.visual
+    buffers = {name: tensor.clone() for name, tensor in visual.named_buffers()}
+    assert buffers and any("inv_freq" in name for name in buffers)
+    prepare_full_language(model)
+    for name, tensor in visual.named_buffers():
+        assert tensor.dtype == buffers[name].dtype
+        assert torch.equal(tensor, buffers[name])
+    assert all(p.dtype == torch.bfloat16 and not p.requires_grad for p in visual.parameters())
+    assert visual.rotary_pos_emb(4).dtype == torch.float32
