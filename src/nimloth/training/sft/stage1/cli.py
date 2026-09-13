@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 from nimloth.latent import (
@@ -27,6 +28,7 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", type=Path, default=probed.config)
     if stage == "query":
+        ap.add_argument("--tuning-mode", choices=("selected_lora", "full_language"), default="selected_lora")
         ap.add_argument("--dino-cache-root", type=Path, required=True)
         ap.add_argument("--grid-size", type=int, default=4)
         ap.add_argument("--projector-hidden-dim", type=int, default=2048)
@@ -210,7 +212,15 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         if action.required and action.default is not None:
             action.required = False
     args = ap.parse_args(argv)
-    if stage == "query":
+    full_language = stage == "query" and args.tuning_mode == "full_language"
+    if full_language:
+        if "--lora" in (argv if argv is not None else sys.argv[1:]):
+            raise ValueError("full_language is incompatible with --lora")
+        if args.distributed_strategy != "fsdp" or args.embedding_master_dtype != "float32":
+            raise ValueError("full_language requires FSDP and FP32 masters")
+        args.lora = False
+        args.query_token_lr = args.protocol_token_lr = None
+    if stage == "query" and not full_language:
         for name in ("query_token_lr", "protocol_token_lr"):
             value = getattr(args, name)
             if not 0 < value < float("inf"):
@@ -223,7 +233,7 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         raise ValueError("projector_lr requires Stage2 and a finite positive value")
     if args.embedding_master_dtype not in ("bfloat16", "float32"):
         raise ValueError("unsupported embedding master dtype")
-    if args.embedding_master_dtype == "float32" and not (args.lora and args.distributed_strategy == "fsdp"):
+    if args.embedding_master_dtype == "float32" and not ((args.lora or full_language) and args.distributed_strategy == "fsdp"):
         raise ValueError("FP32 embedding masters require LoRA and FSDP")
     if args.max_optimizer_steps is not None and args.max_optimizer_steps < 1:
         raise ValueError("--max-optimizer-steps must be positive")

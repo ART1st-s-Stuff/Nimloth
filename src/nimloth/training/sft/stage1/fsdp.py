@@ -100,6 +100,16 @@ def wrap_fsdp(model, device):
     # remain independent and are separately sharded, without changing tying.
     targets = _auto_wrap_targets(model)
     masters = {module for module in targets if module.__dict__.get("_nimloth_fp32_embedding_master", False)}
+    full_language = getattr(model.config, "nimloth_tuning_mode", None) == "full_language"
+    if full_language:
+        mixed = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.float32,
+                               buffer_dtype=torch.bfloat16, keep_low_precision_grads=False,
+                               cast_forward_inputs=True)
+        policy = CustomPolicy(lambda module: {"mixed_precision": mixed} if module in targets else False)
+        return FSDP(model, auto_wrap_policy=policy, mixed_precision=mixed,
+                    sharding_strategy=ShardingStrategy.FULL_SHARD,
+                    use_orig_params=True, device_id=device, sync_module_states=True,
+                    limit_all_gathers=True)
     if masters:
         mixed = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.float32,
                                buffer_dtype=None, keep_low_precision_grads=False,

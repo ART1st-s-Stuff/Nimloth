@@ -49,6 +49,17 @@ def configure_sft2_trainable_parameters(
 ```
 
 ```python
+# 可选 full_language 模式：采用 DeepSight 的模块更新范围；默认仍为上面的 LoRA。
+# 全词表参与更新，取消默认的 token 行冻结；所有可训练参数使用 FP32 master、BF16 前向。
+def configure_sft2_full_language(model, proj, dino_model, lr=2e-5):
+    freeze(model.visual_encoder)
+    freeze(model.visual_merger)
+    freeze(dino_model)
+    train(model.language_layers, lr=lr, dtype=FP32)
+    train(model.input_embeddings, lr=lr, dtype=FP32)
+    train(model.lm_head, lr=lr, dtype=FP32)
+    train(proj.parameters, lr=lr, dtype=FP32)
+
 def get_state_and_output(model, input, queries):
     # 把queries放在input后，取query位置的hidden states作为state
     state = model.get_embeddings(input, queries)

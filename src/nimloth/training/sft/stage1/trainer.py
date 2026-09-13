@@ -528,6 +528,13 @@ def _resume_identity(
                 },
             }
         )
+    if stage == "query" and getattr(args, "tuning_mode", "selected_lora") == "full_language":
+        identity["tuning_mode"] = "full_language"
+        identity["token_row_training"] = {
+            "schema": "full_language_v1", "master_dtype": "float32",
+            "forward_dtype": "bfloat16", "visual": "frozen_including_merger",
+            "tables": ["input_embeddings", "independent_lm_head"],
+        }
     return identity
 
 
@@ -833,7 +840,8 @@ def main(*, stage: str = "format") -> int:
 
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         load_path,
-        torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+        torch_dtype=(torch.float32 if getattr(args, "tuning_mode", None) == "full_language"
+                     else (torch.bfloat16 if torch.cuda.is_available() else torch.float32)),
         attn_implementation=args.attn_implementation,
         trust_remote_code=True,
     )
@@ -857,7 +865,7 @@ def main(*, stage: str = "format") -> int:
             model.enable_input_require_grads()
     elif args.lora:
         model = apply_lora(model, args)
-    elif is_main():
+    elif is_main() and getattr(args, "tuning_mode", None) != "full_language":
         print(
             json.dumps(
                 {
@@ -879,7 +887,13 @@ def main(*, stage: str = "format") -> int:
     prepare_embedding_masters(language_model, getattr(args, "embedding_master_dtype", "bfloat16"))
     if (args.resume or continuing) and resume_ckpt is not None and resume_ckpt.exists() and resume_lora:
         load_lora_adapter_state(language_model, resume_dir)
-    if query_config is not None:
+    if query_config is not None and getattr(args, "tuning_mode", None) == "full_language":
+        from nimloth.training.sft.stage2.full_tuning import prepare_full_language
+
+        tuning_scope = prepare_full_language(model)
+        if is_main():
+            print(json.dumps(tuning_scope))
+    elif query_config is not None:
         from nimloth.training.sft.stage2.selected_token_rows import install_selected_token_rows
 
         install_selected_token_rows(language_model, args.query_token_ids, args.protocol_token_ids)
@@ -1181,7 +1195,7 @@ def main(*, stage: str = "format") -> int:
                                     "train/query_token_lr": scheduler.get_last_lr()[2],
                                     "train/protocol_token_lr": scheduler.get_last_lr()[3],
                                 }
-                                if stage == "query"
+                                if stage == "query" and getattr(args, "tuning_mode", "selected_lora") != "full_language"
                                 else {
                                     "train/embedding_lr": scheduler.get_last_lr()[1]
                                     if len(scheduler.get_last_lr()) > 1

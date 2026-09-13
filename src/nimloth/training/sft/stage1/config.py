@@ -18,6 +18,7 @@ _SFT1_YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("latent", "token_count"): "latent_token_count",
     ("latent", "query_mode"): "latent_query_mode",
     ("latent", "mask_query_labels"): "mask_latent_query_labels",
+    ("tuning", "mode"): "tuning_mode",
     ("tuning", "lora"): "lora",
     ("tuning", "lora_r"): "lora_r",
     ("tuning", "lora_alpha"): "lora_alpha",

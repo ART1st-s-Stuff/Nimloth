@@ -13,7 +13,7 @@ python -m nimloth.training.sft.stage2 \
 
 `--grid-size` 接受任意正整数，查询位置数 K 统一由 `grid_size²` 推导，因此 `--latent-token-count` 必须与它相等；默认 4×4 网格对应 K=16。独立 DINO 缓存构建、输入审计、容量门禁和训练必须传入相同的 grid size，不同 grid size 的缓存不能混用。损失权重由 `--weight-lm` 和 `--weight-dino` 指定，二者均须为正；`--projector-hidden-dim` 指定投影维度。YAML 可通过 `query_alignment` 提供这些参数，其余训练设置复用 SFT1。
 
-默认全量训练 Qwen；选择 `--lora` 时沿用 adapter、embedding 和输出 head 的训练方式。共享 slot projector 始终加入优化器。
+默认 `--tuning-mode selected_lora` 保留 LoRA 和选定 token 行训练。显式 `--tuning-mode full_language` 训练语言 transformer、完整 embedding/LM head 和共享 slot projector；整个 Qwen visual（包含原生 merger）冻结，DINO 目标保持固定。该模式要求 FSDP、独立 embedding/head，所有可训练参数保留 FP32 master、前向 BF16。`full_tuning.py` 定义冻结范围并打印参数数量。全量模式通过 `--lr`、`--embedding-lr`、`--projector-lr` 配置三组学习率（本次实验均为 2e-5）；不使用 query/protocol 行优化器。恢复身份区分全量和选行模式，完整 checkpoint 以 dense 权重保存，FP32 加载避免恢复时舍入。
 新建 projector 使用语言模型输入 embedding 的 dtype/device（BF16 模型不会新建 FP32 projector 参数）。多卡可指定 `--distributed-strategy fsdp`；语言模型和 projector 均参与分片、完整保存与恢复。
 
 可使用 `--until-converged --convergence-min-epochs 2 --convergence-patience-epochs 2 --convergence-min-relative-improvement 0.01` 训练至收敛，不能同时指定固定 `--epochs`，也不能限制验证批次数。每轮以完整验证的加权总损失 `weight_lm * LM + weight_dino * DINO` 对比上一轮，连续两轮改善不足 1% 且达到最少轮数后停止；`best` 始终选择总损失最低的 checkpoint。预热后学习率保持不变，运行时限不代表收敛。
