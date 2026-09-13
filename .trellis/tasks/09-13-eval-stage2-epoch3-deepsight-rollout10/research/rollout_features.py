@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 import numpy as np
 
@@ -42,6 +43,11 @@ def fit_pc1(target):
     return center, basis, float(lo), float(hi), float(values[-1]/values.sum())
 
 
+def compact_action(response):
+    match=re.search(r'<answer>(.*?)</answer>',response,re.DOTALL)
+    return ' '.join(match.group(1).split())[:60] if match else '[unparsed action]'
+
+
 def plot(rows, output):
     import matplotlib
     matplotlib.use('Agg')
@@ -60,7 +66,7 @@ def plot(rows, output):
             fig, axes=plt.subplots(4,len(chunk),figsize=(3.5*len(chunk),11),squeeze=False)
             for col,row in enumerate(chunk):
                 axes[0,col].imshow(Image.open(row['image']))
-                axes[0,col].set_title(f"turn {row['step']} | {row['action']}\ncos={row['cosine']:.3f} MSE={row['mse']:.3f}\ndone={row['done']}",fontsize=9)
+                axes[0,col].set_title(f"turn {row['step']} | {compact_action(row['action'])}\ncos={row['cosine']:.3f} MSE={row['mse']:.3f}\ndone={row['done']}",fontsize=9)
                 for ax,key in ((axes[1,col],'prediction'),(axes[2,col],'target')):
                     heat=ax.imshow((row[key]-center)@basis,cmap='plasma',vmin=lo,vmax=hi,interpolation='nearest')
                 err=axes[3,col].imshow(row['error'],cmap='magma',vmin=0,vmax=2,interpolation='nearest')

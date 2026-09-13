@@ -13,6 +13,10 @@ class Tokenizer:
         return ''.join({1:'<think>',2:'reason',3:'</think>',4:'<|action_start|>'}[i] for i in ids)
 
 class Tests(unittest.TestCase):
+    def test_action_title_excludes_reasoning(self):
+        self.assertEqual(module.compact_action('<think>'+('x'*1000)+'</think><answer>Move forward</answer>'),'Move forward')
+        self.assertEqual(module.compact_action('invalid response'),'[unparsed action]')
+
     def test_parameter_cast_preserves_rotary_buffers(self):
         import torch
         model=torch.nn.Module()
