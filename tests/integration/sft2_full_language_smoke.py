@@ -34,6 +34,13 @@ def main():
     model = QueryAlignmentModel(language, SharedSlotProjector(16, 3, 8, grid_tokens=4),
                                 [6, 7, 8, 9], QueryAlignmentConfig(grid_size=2, projector_hidden_dim=8))
     prepare_full_language(model, query_ids=[6, 7, 8, 9], protocol_ids=list(range(10, 20)))
+    assert not language.get_input_embeddings().weight.requires_grad
+    assert not language.get_output_embeddings().weight.requires_grad
+    assert all(b.dtype == torch.float32 for n, b in language.visual.named_buffers() if "inv_freq" in n)
+    def check_rotary(_module, _inputs, output):
+        assert output.dtype == torch.float32, output.dtype
+    language.visual.rotary_pos_emb.register_forward_hook(check_rotary)
+    model = wrap_fsdp(model.to(device), device)
     selected = selected_row_parameters(model)
     query_grad_seen = [False] * len(selected["query"])
     for index, parameter in enumerate(selected["query"]):
@@ -44,13 +51,6 @@ def main():
             return gradient
 
         parameter.register_hook(record_query_grad)
-    assert not language.get_input_embeddings().weight.requires_grad
-    assert not language.get_output_embeddings().weight.requires_grad
-    assert all(b.dtype == torch.float32 for n, b in language.visual.named_buffers() if "inv_freq" in n)
-    def check_rotary(_module, _inputs, output):
-        assert output.dtype == torch.float32, output.dtype
-    language.visual.rotary_pos_emb.register_forward_hook(check_rotary)
-    model = wrap_fsdp(model.to(device), device)
     optimizer = build_optimizer(
         model, 2e-5, 2e-5, 0.01, 2e-5,
         query_token_lr=1e-4, protocol_token_lr=2e-5,
