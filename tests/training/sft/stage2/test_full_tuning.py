@@ -12,8 +12,8 @@ from nimloth.training.sft.stage2.full_tuning import prepare_full_language
 class DenseLanguage(nn.Module):
     def __init__(self):
         super().__init__()
-        self.embed_tokens = nn.Embedding(12, 4)
-        self.lm_head = nn.Linear(4, 12, bias=False)
+        self.embed_tokens = nn.Embedding(16, 4)
+        self.lm_head = nn.Linear(4, 16, bias=False)
         self.layers = nn.Sequential(nn.Linear(4, 4))
         self.visual = nn.Sequential(nn.Linear(4, 4), nn.Linear(4, 4))
         self.config = SimpleNamespace()
@@ -57,14 +57,15 @@ def test_full_mode_cli_and_default():
     full, _ = parse_args(base + ["--tuning-mode", "full_language"], stage="query")
     assert not full.lora and full.query_token_lr is None and full.protocol_token_lr is None
     full_query, _ = parse_args(
-        base + ["--tuning-mode", "full_language", "--query-token-lr", "1e-4"],
+        base + ["--tuning-mode", "full_language", "--query-token-lr", "1e-4",
+                "--protocol-token-lr", "2e-5"],
         stage="query",
     )
     assert full_query.query_token_lr == 1e-4
-    assert full_query.protocol_token_lr is None
-    with pytest.raises(ValueError, match="protocol"):
+    assert full_query.protocol_token_lr == 2e-5
+    with pytest.raises(ValueError, match="both query and protocol"):
         parse_args(
-            base + ["--tuning-mode", "full_language", "--protocol-token-lr", "2e-5"],
+            base + ["--tuning-mode", "full_language", "--query-token-lr", "1e-4"],
             stage="query",
         )
     with pytest.raises(ValueError, match="incompatible"):
@@ -73,7 +74,7 @@ def test_full_mode_cli_and_default():
         parse_args(base + ["--tuning-mode", "full_language", "--distributed-strategy", "ddp"], stage="query")
 
 
-def test_dense_query_rows_have_independent_lr_and_export_cleanly():
+def test_full_language_updates_only_query_action_and_boundary_rows():
     from nimloth.training.sft.stage2.selected_token_rows import (
         materialize_selected_state_dict,
     )
@@ -81,25 +82,39 @@ def test_dense_query_rows_have_independent_lr_and_export_cleanly():
     model = nn.Module()
     model.language_model = DenseLanguage().float()
     model.projector = nn.Linear(4, 3).float()
-    prepare_full_language(model, query_ids=(8, 9, 10, 11))
+    prepare_full_language(
+        model,
+        query_ids=(12, 13),
+        protocol_ids=tuple(range(8)) + (10, 11),
+    )
     embedding = model.language_model.embed_tokens
     head = model.language_model.lm_head
     dense_before = embedding.weight.detach().clone()
     query_before = embedding.nimloth_query_rows.detach().clone()
     optimizer = build_optimizer(
-        model, 2e-5, 2e-5, 0.0, 2e-5, query_token_lr=1e-4
+        model, 2e-5, 2e-5, 0.0, 2e-5,
+        query_token_lr=1e-4, protocol_token_lr=2e-5,
     )
-    assert [group["lr"] for group in optimizer.param_groups] == [2e-5] * 3 + [1e-4]
-    hidden = embedding(torch.tensor([[1, 8, 9]]))
+    assert [group["lr"] for group in optimizer.param_groups] == [2e-5] * 2 + [1e-4] + [2e-5] * 2
+    hidden = embedding(torch.tensor([[1, 12, 13]]))
     (head(hidden).sum() + model.projector(hidden).sum()).backward()
     optimizer.step()
-    assert torch.equal(embedding.weight[8:], dense_before[8:])
+    assert torch.equal(embedding.weight, dense_before)
     assert not torch.equal(embedding.nimloth_query_rows, query_before)
     exported = materialize_selected_state_dict(model.state_dict())
     assert not any("nimloth_" in key for key in exported)
     torch.testing.assert_close(
-        exported["language_model.embed_tokens.weight"][8:],
+        exported["language_model.embed_tokens.weight"][[12, 13]],
         embedding.nimloth_query_rows,
+    )
+    torch.testing.assert_close(
+        exported["language_model.embed_tokens.weight"][list(range(8)) + [10, 11]],
+        embedding.nimloth_protocol_rows,
+    )
+    frozen_ids = [8, 9, 14, 15]
+    assert torch.equal(
+        exported["language_model.embed_tokens.weight"][frozen_ids],
+        dense_before[frozen_ids],
     )
 
 

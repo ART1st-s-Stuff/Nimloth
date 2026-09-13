@@ -312,24 +312,14 @@ def build_optimizer(
     query_token_lr: float | None = None,
     protocol_token_lr: float | None = None,
 ) -> torch.optim.AdamW:
-    full_language = getattr(model.config, "nimloth_tuning_mode", None) == "full_language"
-    if full_language and protocol_token_lr is not None:
-        raise ValueError("full_language uses the embedding LR for protocol rows")
-    if not full_language and (query_token_lr is None) != (protocol_token_lr is None):
+    if (query_token_lr is None) != (protocol_token_lr is None):
         raise ValueError("query and protocol token row learning rates must be configured together")
     selected = None
-    dense_query = None
     if query_token_lr is not None:
-        if full_language:
-            from nimloth.training.sft.stage2.selected_token_rows import dense_query_row_parameters
+        from nimloth.training.sft.stage2.selected_token_rows import selected_row_parameters
 
-            dense_query = dense_query_row_parameters(model)
-            selected_ids = {id(param) for param in dense_query}
-        else:
-            from nimloth.training.sft.stage2.selected_token_rows import selected_row_parameters
-
-            selected = selected_row_parameters(model)
-            selected_ids = {id(p) for values in selected.values() for p in values}
+        selected = selected_row_parameters(model)
+        selected_ids = {id(p) for values in selected.values() for p in values}
     else:
         selected_ids = set()
     embed_lr = embedding_lr if embedding_lr is not None else lr
@@ -357,8 +347,6 @@ def build_optimizer(
         if not projector_params:
             raise ValueError("projector_lr requires trainable projector parameters")
         groups.append({"params": projector_params, "lr": projector_lr})
-    if dense_query is not None:
-        groups.append({"params": dense_query, "lr": query_token_lr})
     if selected is not None:
         if projector_lr is None or not base_params or not projector_params:
             raise ValueError("Stage2 selected rows require trainable LoRA and projector groups")
@@ -543,10 +531,12 @@ def _resume_identity(
     if stage == "query" and getattr(args, "tuning_mode", "selected_lora") == "full_language":
         identity["tuning_mode"] = "full_language"
         identity["token_row_training"] = {
-            "schema": "full_language_query_rows_v1" if args.query_token_lr is not None else "full_language_v1",
+            "schema": "full_language_selected_rows_v1" if args.query_token_lr is not None else "full_language_v1",
             "query_token_ids": list(args.query_token_ids),
             "query_token_lr": args.query_token_lr,
-            "unselected_embedding_lr": args.embedding_lr if args.embedding_lr is not None else args.lr,
+            "protocol_token_ids": list(args.protocol_token_ids[:-1]),
+            "protocol_token_lr": args.protocol_token_lr,
+            "unselected_rows": "bitwise_frozen" if args.query_token_lr is not None else "dense_trainable",
             "master_dtype": "float32",
             "forward_dtype": "bfloat16", "visual": "frozen_including_merger",
             "tables": ["input_embeddings", "independent_lm_head"],
@@ -908,7 +898,9 @@ def main(*, stage: str = "format") -> int:
         from nimloth.training.sft.stage2.full_tuning import prepare_full_language
 
         tuning_scope = prepare_full_language(
-            model, args.query_token_ids if args.query_token_lr is not None else ()
+            model,
+            args.query_token_ids if args.query_token_lr is not None else (),
+            args.protocol_token_ids[:-1] if args.query_token_lr is not None else (),
         )
         if is_main():
             print(json.dumps(tuning_scope))

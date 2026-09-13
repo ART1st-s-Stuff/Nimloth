@@ -3,7 +3,7 @@
 import torch
 
 
-def prepare_full_language(model, query_ids=()):
+def prepare_full_language(model, query_ids=(), protocol_ids=()):
     """Train dense language/projector FP32 masters; freeze the complete visual stack."""
     language = model.language_model
     if hasattr(language, "peft_config"):
@@ -25,9 +25,9 @@ def prepare_full_language(model, query_ids=()):
     language.config.nimloth_tuning_mode = "full_language"
     language.config.nimloth_embedding_master_dtype = "float32"
     if query_ids:
-        from .selected_token_rows import install_dense_query_rows
+        from .selected_token_rows import install_full_language_selected_rows
 
-        install_dense_query_rows(language, query_ids)
+        install_full_language_selected_rows(language, query_ids, protocol_ids)
     elif hasattr(language.config, "nimloth_token_row_schema"):
         delattr(language.config, "nimloth_token_row_schema")
     return {
@@ -35,6 +35,14 @@ def prepare_full_language(model, query_ids=()):
         "trainable_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad),
         "frozen_visual_parameters": sum(p.numel() for p in visual.parameters()),
         "trainable_projector_parameters": sum(p.numel() for p in model.projector.parameters()),
-        "trainable_embedding_parameters": language.get_input_embeddings().weight.numel(),
-        "trainable_lm_head_parameters": language.get_output_embeddings().weight.numel(),
+        "trainable_embedding_parameters": sum(
+            parameter.numel()
+            for parameter in language.get_input_embeddings().parameters()
+            if parameter.requires_grad
+        ),
+        "trainable_lm_head_parameters": sum(
+            parameter.numel()
+            for parameter in language.get_output_embeddings().parameters()
+            if parameter.requires_grad
+        ),
     }

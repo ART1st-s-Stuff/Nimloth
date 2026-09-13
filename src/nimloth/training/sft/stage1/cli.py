@@ -219,10 +219,14 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         if args.distributed_strategy != "fsdp" or args.embedding_master_dtype != "float32":
             raise ValueError("full_language requires FSDP and FP32 masters")
         args.lora = False
-        if args.protocol_token_lr is not None:
-            raise ValueError("full_language uses --embedding-lr for protocol rows")
-        if args.query_token_lr is not None and not 0 < args.query_token_lr < float("inf"):
-            raise ValueError("query_token_lr must be finite and positive")
+        if (args.query_token_lr is None) != (args.protocol_token_lr is None):
+            raise ValueError(
+                "full_language selected token rows require both query and protocol learning rates"
+            )
+        for name in ("query_token_lr", "protocol_token_lr"):
+            value = getattr(args, name)
+            if value is not None and not 0 < value < float("inf"):
+                raise ValueError(f"{name} must be finite and positive")
     if stage == "query" and not full_language:
         if args.query_token_lr is None:
             args.query_token_lr = 5e-5
