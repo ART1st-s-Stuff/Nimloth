@@ -807,7 +807,7 @@ def main(*, stage: str = "format") -> int:
         state = torch.load(resume_ckpt, map_location="cpu", weights_only=False)
         validate_resume_stage(state, resume_dir, stage)
         if continuing:
-            validate_epoch_continuation(resume_dir, state, _resume_identity(args, stage=stage, world=world, train_size=len(train_ds)), world=world)
+            validate_epoch_continuation(resume_dir, state, _resume_identity(args, stage=stage, world=world, train_size=len(train_ds)), world=world, allow_dino_weight_change=args.continue_with_dino_weight_change)
             if not args.until_converged and args.epochs <= int(state["epoch"]):
                 raise ValueError("--epochs must exceed the completed source epoch")
         saved_mode = state.get("latent_query_mode")
@@ -995,9 +995,15 @@ def main(*, stage: str = "format") -> int:
         if args.action_token_loss_weight != 1 and not objective_identities_match(state.get("identity"), resume_identity):
             raise ValueError("weighted loss resume checkpoint objective identity mismatch")
         if continuing:
-            validate_epoch_continuation(resume_dir, state, resume_identity, world=world)
+            validate_epoch_continuation(resume_dir, state, resume_identity, world=world, allow_dino_weight_change=args.continue_with_dino_weight_change)
         if convergence_policy is not None and continuing:
-            convergence, history = replay_convergence(resume_dir.parent / "validation_metrics.jsonl", int(state["epoch"]), convergence_policy, convergence_monitor(stage))
+            if args.continue_with_dino_weight_change:
+                from .continuation import changed_objective_baseline
+                convergence, history = changed_objective_baseline(
+                    resume_dir.parent / "validation_metrics.jsonl", int(state["epoch"]),
+                    args.weight_lm, args.weight_dino)
+            else:
+                convergence, history = replay_convergence(resume_dir.parent / "validation_metrics.jsonl", int(state["epoch"]), convergence_policy, convergence_monitor(stage))
             if is_main():
                 (args.output_dir / "validation_metrics.jsonl").write_text("".join(json.dumps(row) + "\n" for row in history))
         elif continuing:
@@ -1017,7 +1023,8 @@ def main(*, stage: str = "format") -> int:
             raise ValueError(
                 "resume step already reaches --max-optimizer-steps; raise or remove the cap"
             )
-        best_val = float(state.get("best_val", float("inf")))
+        best_val = (convergence.best_loss if continuing and args.continue_with_dino_weight_change
+                    else float(state.get("best_val", float("inf"))))
         if state.get("resume_schema") == RESUME_SCHEMA:
             validate_resume_state(
                 state, expected_identity=resume_identity, rank=rank, world=world
@@ -1070,7 +1077,15 @@ def main(*, stage: str = "format") -> int:
                     break
         if state.get("optimizer") is not None:
             load_optimizer_state(model, optimizer, state["optimizer"])
-        if continuing:
+        if continuing and args.continue_with_dino_weight_change:
+            scheduler.load_state_dict(state["scheduler"])
+            if is_main():
+                provenance = continuation_provenance(resume_dir, resume_identity)
+                provenance.update(schedule_policy="restore_without_rewarm",
+                                  previous_weight_dino=state["identity"]["weight_dino"],
+                                  weight_dino=args.weight_dino, convergence_policy="reset_to_reweighted_source_epoch")
+                (args.output_dir / "continuation.json").write_text(json.dumps(provenance, indent=2) + "\n")
+        elif continuing:
             scheduler = restart_schedule(optimizer, configured_learning_rates, steps_per_epoch=steps_per_epoch, remaining_epochs=(args.epochs - int(state["epoch"])) if args.epochs is not None else 0, warmup_ratio=args.warmup_ratio, until_converged=args.until_converged)
             if is_main():
                 (args.output_dir / "continuation.json").write_text(json.dumps(continuation_provenance(resume_dir, resume_identity), indent=2) + "\n")

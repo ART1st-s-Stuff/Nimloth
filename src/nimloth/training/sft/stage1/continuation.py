@@ -8,7 +8,7 @@ from pathlib import Path
 from .convergence import ConvergenceState
 
 
-def validate_epoch_continuation(path, state, identity, *, world):
+def validate_epoch_continuation(path, state, identity, *, world, allow_dino_weight_change=False):
     path = Path(path)
     marker = json.loads((path / "COMMITTED").read_text())
     epoch = state.get("epoch")
@@ -17,6 +17,8 @@ def validate_epoch_continuation(path, state, identity, *, world):
     if marker != {"epoch": epoch, "step": state.get("step")} or "resume_schema" in state:
         raise ValueError("continuation COMMITTED boundary mismatch")
     allowed = {"epochs", "convergence", "warmup_ratio"}
+    if allow_dino_weight_change:
+        allowed = {"weight_dino"}
     previous = state.get("identity")
     if not isinstance(previous, dict) or (
         {k: v for k, v in previous.items() if k not in allowed}
@@ -72,3 +74,17 @@ def continuation_provenance(path, identity):
             digest.update(chunk)
     return {"parent_checkpoint": str(path), "training_state_sha256": digest.hexdigest(),
             "new_schedule_identity": identity}
+
+def changed_objective_baseline(path, epoch, weight_lm, weight_dino):
+    rows = [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
+    rows = [row for row in rows if row["epoch"] == epoch]
+    if len(rows) != 1:
+        raise ValueError("objective continuation requires exactly one source epoch validation")
+    row = dict(rows[0])
+    row["source_validation_total_loss"] = row["validation_total_loss"]
+    loss = weight_lm * row["validation_lm_loss"] + weight_dino * row["validation_dino_loss"]
+    if not __import__("math").isfinite(loss):
+        raise ValueError("nonfinite objective continuation baseline")
+    row.update(validation_total_loss=loss, weight_lm=weight_lm, weight_dino=weight_dino,
+               continuation_baseline=True)
+    return ConvergenceState(best_loss=loss, previous_loss=loss, last_epoch=epoch), [row]

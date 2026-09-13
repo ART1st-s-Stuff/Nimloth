@@ -42,6 +42,8 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap.add_argument("--output-dir", type=Path, required=True)
     ap.add_argument("--epochs", type=int, default=None)
     ap.add_argument("--until-converged", action="store_true")
+    ap.add_argument("--continue-with-dino-weight-change", action="store_true",
+                    help="Continue an epoch with changed DINO weight, preserving optimizer/scheduler and resetting convergence baseline.")
     ap.add_argument(
         "--max-optimizer-steps", type=int, default=None,
         help="Pause with a resume checkpoint and exit 75 at this absolute optimizer step.",
@@ -212,6 +214,8 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         if action.required and action.default is not None:
             action.required = False
     args = ap.parse_args(argv)
+    if args.continue_with_dino_weight_change and (stage != "query" or args.continue_from_epoch is None or not args.until_converged):
+        raise ValueError("DINO objective continuation requires Stage2, --continue-from-epoch and --until-converged")
     full_language = stage == "query" and args.tuning_mode == "full_language"
     if full_language:
         if "--lora" in (argv if argv is not None else sys.argv[1:]):

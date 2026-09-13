@@ -73,3 +73,59 @@ def test_convergence_schedule_rewarms_then_stays_constant():
         learning_rates.append(optimizer.param_groups[0]['lr'])
     assert learning_rates[:3] == pytest.approx([0., 2.5e-5, 5e-5])
     assert learning_rates[2:] == pytest.approx([5e-5] * 59)
+
+
+def test_dino_change_is_explicit_and_does_not_allow_other_changes(tmp_path):
+    path = tmp_path / "epoch_005"
+    path.mkdir()
+    (path / "COMMITTED").write_text(json.dumps({"epoch": 5, "step": 135}))
+    identity = {"weight_dino": 4., "lr": 2e-5, "warmup_ratio": .1}
+    state = dict(epoch=5, step=135, identity=identity, world_size=1,
+                 rank_rng_states=[capture_rng_state()], optimizer={"state": {}},
+                 scheduler={"last_epoch": 135})
+    changed = {**identity, "weight_dino": 1.}
+    with pytest.raises(ValueError, match="identity"):
+        validate_epoch_continuation(path, state, changed, world=1)
+    assert validate_epoch_continuation(path, state, changed, world=1,
+                                      allow_dino_weight_change=True) == 5
+    for key, value in [("lr", 1e-4), ("warmup_ratio", 0.)]:
+        with pytest.raises(ValueError, match="identity"):
+            validate_epoch_continuation(path, state, {**changed, key: value},
+                                        world=1, allow_dino_weight_change=True)
+
+
+def test_changed_objective_baseline_drops_old_patience(tmp_path):
+    from nimloth.training.sft.stage1.continuation import changed_objective_baseline
+    path = tmp_path / "validation_metrics.jsonl"
+    path.write_text(json.dumps(dict(epoch=5, validation_total_loss=3.5,
+                                   validation_lm_loss=.5, validation_dino_loss=.75)))
+    state, rows = changed_objective_baseline(path, 5, 1., 1.)
+    assert state.previous_loss == state.best_loss == 1.25
+    assert state.last_epoch == 5 and state.bad_epochs == 0 and not state.converged
+    assert rows[0]["source_validation_total_loss"] == 3.5
+    state.observe(epoch=6, loss=1.2, policy=ConvergencePolicy(2, 2, .01))
+    assert state.last_epoch == 6
+
+
+def test_restore_constant_scheduler_preserves_next_update():
+    from transformers import get_constant_schedule_with_warmup
+    p = torch.nn.Parameter(torch.ones(1))
+    opt = torch.optim.AdamW([p], lr=1e-4)
+    sched = get_constant_schedule_with_warmup(opt, 3)
+    for _ in range(5):
+        p.sum().backward()
+        opt.step()
+        sched.step()
+        opt.zero_grad()
+    saved_opt, saved_sched = copy.deepcopy(opt.state_dict()), copy.deepcopy(sched.state_dict())
+    q = torch.nn.Parameter(p.detach().clone())
+    opt2 = torch.optim.AdamW([q], lr=1e-4)
+    sched2 = get_constant_schedule_with_warmup(opt2, 3)
+    opt2.load_state_dict(saved_opt)
+    sched2.load_state_dict(saved_sched)
+    for param, optimizer, scheduler in [(p, opt, sched), (q, opt2, sched2)]:
+        param.sum().backward()
+        optimizer.step()
+        scheduler.step()
+    assert torch.equal(p, q)
+    assert sched2.state_dict() == sched.state_dict()
