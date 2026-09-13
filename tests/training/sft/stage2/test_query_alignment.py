@@ -188,6 +188,15 @@ def test_checkpoint_restores_projector_and_preserves_stage_for_legacy_wm_loader(
     )
     with pytest.raises(ValueError, match="configuration mismatch"):
         restored.restore_projector(checkpoint)
+    restored.restore_projector(checkpoint, allow_dino_weight_change=True)
+    for key, value in model.projector.state_dict().items():
+        assert torch.equal(restored.projector.state_dict()[key], value)
+    config_path = checkpoint / "grid_state_config.json"
+    config = json.loads(config_path.read_text())
+    config["query_token_ids"] = [99, 98, 97, 96]
+    config_path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="configuration mismatch"):
+        restored.restore_projector(checkpoint, allow_dino_weight_change=True)
 
 
 def test_answer_observations_keep_real_turn_alignment_and_cot():

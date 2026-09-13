@@ -886,7 +886,7 @@ def main(*, stage: str = "format") -> int:
 
         model = QueryAlignmentModel.build(model, processor.tokenizer, query_config)
         if resume_dir is not None:
-            model.restore_projector(resume_dir)
+            model.restore_projector(resume_dir, allow_dino_weight_change=continuing and args.continue_with_dino_weight_change)
         elif (args.model / "grid_state_config.json").is_file():
             model.restore_projector(args.model)
     # Build the projector in the original BF16 dtype before promoting PEFT copies.

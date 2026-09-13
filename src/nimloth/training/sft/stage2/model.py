@@ -227,10 +227,13 @@ class QueryAlignmentModel(nn.Module):
             json.dumps(self.grid_metadata(), indent=2) + "\n"
         )
 
-    def restore_projector(self, directory):
+    def restore_projector(self, directory, *, allow_dino_weight_change=False):
         directory = Path(directory)
         saved = json.loads((directory / "grid_state_config.json").read_text())
-        if saved != self.grid_metadata():
+        expected = self.grid_metadata()
+        if allow_dino_weight_change:
+            saved["objective"]["weight_dino"] = expected["objective"]["weight_dino"]
+        if saved != expected:
             raise ValueError(
                 "query checkpoint objective, teacher, token or projector configuration mismatch"
             )
