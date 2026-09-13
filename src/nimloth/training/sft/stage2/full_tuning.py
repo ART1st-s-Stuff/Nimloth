@@ -3,7 +3,7 @@
 import torch
 
 
-def prepare_full_language(model):
+def prepare_full_language(model, query_ids=()):
     """Train dense language/projector FP32 masters; freeze the complete visual stack."""
     language = model.language_model
     if hasattr(language, "peft_config"):
@@ -24,7 +24,11 @@ def prepare_full_language(model):
             parameter.data = parameter.data.float()
     language.config.nimloth_tuning_mode = "full_language"
     language.config.nimloth_embedding_master_dtype = "float32"
-    if hasattr(language.config, "nimloth_token_row_schema"):
+    if query_ids:
+        from .selected_token_rows import install_dense_query_rows
+
+        install_dense_query_rows(language, query_ids)
+    elif hasattr(language.config, "nimloth_token_row_schema"):
         delattr(language.config, "nimloth_token_row_schema")
     return {
         "tuning_mode": "full_language", "master_dtype": "float32", "forward_dtype": "bfloat16",

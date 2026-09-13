@@ -34,8 +34,8 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         ap.add_argument("--projector-hidden-dim", type=int, default=2048)
         ap.add_argument("--weight-lm", type=float, default=1.0)
         ap.add_argument("--weight-dino", type=float, default=1.0)
-        ap.add_argument("--query-token-lr", type=float, default=5e-5)
-        ap.add_argument("--protocol-token-lr", type=float, default=1e-5)
+        ap.add_argument("--query-token-lr", type=float, default=None)
+        ap.add_argument("--protocol-token-lr", type=float, default=None)
     ap.add_argument("--model", type=Path, required=True)
     ap.add_argument("--train-jsonl", type=Path, required=True)
     ap.add_argument("--val-jsonl", type=Path, required=True)
@@ -219,8 +219,15 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         if args.distributed_strategy != "fsdp" or args.embedding_master_dtype != "float32":
             raise ValueError("full_language requires FSDP and FP32 masters")
         args.lora = False
-        args.query_token_lr = args.protocol_token_lr = None
+        if args.protocol_token_lr is not None:
+            raise ValueError("full_language uses --embedding-lr for protocol rows")
+        if args.query_token_lr is not None and not 0 < args.query_token_lr < float("inf"):
+            raise ValueError("query_token_lr must be finite and positive")
     if stage == "query" and not full_language:
+        if args.query_token_lr is None:
+            args.query_token_lr = 5e-5
+        if args.protocol_token_lr is None:
+            args.protocol_token_lr = 1e-5
         for name in ("query_token_lr", "protocol_token_lr"):
             value = getattr(args, name)
             if not 0 < value < float("inf"):

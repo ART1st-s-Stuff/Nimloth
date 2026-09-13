@@ -6,6 +6,7 @@ from torch import nn
 from torch.nn import functional as F
 
 TOKEN_ROW_SCHEMA = "selected_rows_v1"
+DENSE_QUERY_ROW_SCHEMA = "dense_query_rows_v1"
 
 def _active_saved_leaf(module: nn.Module) -> nn.Module:
     copies = getattr(module, "modules_to_save", None)
@@ -64,6 +65,71 @@ def install_selected_token_rows(language_model: nn.Module, query_ids: Sequence[i
     _install_leaf(output_leaf, query_ids, protocol_ids)
     language_model.config.nimloth_token_row_schema = TOKEN_ROW_SCHEMA
 
+
+def _install_dense_query_leaf(leaf: nn.Module, query_ids: tuple[int, ...]) -> None:
+    if getattr(leaf, "_nimloth_dense_query_rows", False):
+        raise ValueError("dense query token rows are already installed")
+    if not isinstance(leaf, (nn.Embedding, nn.Linear)) or (
+        isinstance(leaf, nn.Linear) and leaf.bias is not None
+    ):
+        raise TypeError("dense query rows require nn.Embedding or unbiased nn.Linear")
+    if not leaf.weight.requires_grad:
+        raise ValueError("dense query rows require a trainable dense table")
+    leaf.register_buffer("nimloth_query_ids", torch.tensor(query_ids, dtype=torch.long))
+    leaf.register_parameter(
+        "nimloth_query_rows",
+        nn.Parameter(leaf.weight.detach()[list(query_ids)].float().clone()),
+    )
+    leaf._nimloth_dense_query_rows = True
+    if isinstance(leaf, nn.Embedding):
+        def replace_embedding(module, inputs, output):
+            input_ids = inputs[0]
+            ids = module.nimloth_query_ids.to(input_ids.device)
+            matches = input_ids[..., None] == ids
+            local = matches.to(torch.int64).argmax(-1)
+            replacement = F.embedding(
+                local, module.nimloth_query_rows.to(dtype=output.dtype)
+            )
+            return torch.where(matches.any(-1)[..., None], replacement, output)
+
+        leaf.register_forward_hook(replace_embedding)
+    else:
+        def replace_logits(module, inputs, output):
+            hidden = inputs[0]
+            selected = F.linear(
+                hidden, module.nimloth_query_rows.to(dtype=hidden.dtype)
+            )
+            return output.index_copy(
+                -1, module.nimloth_query_ids.to(output.device), selected.to(output.dtype)
+            )
+
+        leaf.register_forward_hook(replace_logits)
+
+
+def install_dense_query_rows(language_model: nn.Module, query_ids: Sequence[int]) -> None:
+    """Give dense full tuning a separate optimizer group for Query rows."""
+    query_ids = tuple(int(value) for value in query_ids)
+    if not query_ids or len(set(query_ids)) != len(query_ids):
+        raise ValueError("dense query token IDs must be nonempty and distinct")
+    input_leaf = language_model.get_input_embeddings()
+    output_leaf = language_model.get_output_embeddings()
+    if input_leaf.weight is output_leaf.weight:
+        raise ValueError("Stage2 requires independent input embedding and LM head")
+    _install_dense_query_leaf(input_leaf, query_ids)
+    _install_dense_query_leaf(output_leaf, query_ids)
+    language_model.config.nimloth_token_row_schema = DENSE_QUERY_ROW_SCHEMA
+
+
+def dense_query_row_parameters(model: nn.Module) -> list[nn.Parameter]:
+    rows = [
+        module.nimloth_query_rows
+        for module in model.modules()
+        if module.__dict__.get("_nimloth_dense_query_rows", False)
+    ]
+    if len(rows) != 2:
+        raise ValueError("expected dense Query rows for input embedding and LM head")
+    return rows
+
 def selected_row_parameters(model: nn.Module) -> dict[str, list[nn.Parameter]]:
     result = {"query": [], "protocol": []}
     for module in model.modules():
@@ -86,15 +152,19 @@ def materialize_selected_state_dict(state: Mapping[str, torch.Tensor]) -> dict[s
     for prefix in prefixes:
         weight_key = prefix + ".weight"
         query_key = prefix + ".nimloth_query_rows"
-        protocol_key = prefix + ".nimloth_protocol_rows"
         query_ids_key = prefix + ".nimloth_query_ids"
+        protocol_key = prefix + ".nimloth_protocol_rows"
         protocol_ids_key = prefix + ".nimloth_protocol_ids"
-        required = {weight_key, query_key, protocol_key, query_ids_key, protocol_ids_key}
+        required = {weight_key, query_key, query_ids_key}
+        has_protocol = protocol_key in result or protocol_ids_key in result
+        if has_protocol:
+            required.update({protocol_key, protocol_ids_key})
         if not required <= result.keys():
             raise ValueError(f"incomplete selected-row state: {prefix}")
         weight = result[weight_key].clone()
         weight.index_copy_(0, result[query_ids_key].to(weight.device), result[query_key].to(weight.dtype))
-        weight.index_copy_(0, result[protocol_ids_key].to(weight.device), result[protocol_key].to(weight.dtype))
+        if has_protocol:
+            weight.index_copy_(0, result[protocol_ids_key].to(weight.device), result[protocol_key].to(weight.dtype))
         result[weight_key] = weight
         for key in required - {weight_key}:
             result.pop(key)

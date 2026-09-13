@@ -56,10 +56,51 @@ def test_full_mode_cli_and_default():
     assert default.lora and default.tuning_mode == "selected_lora"
     full, _ = parse_args(base + ["--tuning-mode", "full_language"], stage="query")
     assert not full.lora and full.query_token_lr is None and full.protocol_token_lr is None
+    full_query, _ = parse_args(
+        base + ["--tuning-mode", "full_language", "--query-token-lr", "1e-4"],
+        stage="query",
+    )
+    assert full_query.query_token_lr == 1e-4
+    assert full_query.protocol_token_lr is None
+    with pytest.raises(ValueError, match="protocol"):
+        parse_args(
+            base + ["--tuning-mode", "full_language", "--protocol-token-lr", "2e-5"],
+            stage="query",
+        )
     with pytest.raises(ValueError, match="incompatible"):
         parse_args(base + ["--tuning-mode", "full_language", "--lora"], stage="query")
     with pytest.raises(ValueError, match="FSDP"):
         parse_args(base + ["--tuning-mode", "full_language", "--distributed-strategy", "ddp"], stage="query")
+
+
+def test_dense_query_rows_have_independent_lr_and_export_cleanly():
+    from nimloth.training.sft.stage2.selected_token_rows import (
+        materialize_selected_state_dict,
+    )
+
+    model = nn.Module()
+    model.language_model = DenseLanguage().float()
+    model.projector = nn.Linear(4, 3).float()
+    prepare_full_language(model, query_ids=(8, 9, 10, 11))
+    embedding = model.language_model.embed_tokens
+    head = model.language_model.lm_head
+    dense_before = embedding.weight.detach().clone()
+    query_before = embedding.nimloth_query_rows.detach().clone()
+    optimizer = build_optimizer(
+        model, 2e-5, 2e-5, 0.0, 2e-5, query_token_lr=1e-4
+    )
+    assert [group["lr"] for group in optimizer.param_groups] == [2e-5] * 3 + [1e-4]
+    hidden = embedding(torch.tensor([[1, 8, 9]]))
+    (head(hidden).sum() + model.projector(hidden).sum()).backward()
+    optimizer.step()
+    assert torch.equal(embedding.weight[8:], dense_before[8:])
+    assert not torch.equal(embedding.nimloth_query_rows, query_before)
+    exported = materialize_selected_state_dict(model.state_dict())
+    assert not any("nimloth_" in key for key in exported)
+    torch.testing.assert_close(
+        exported["language_model.embed_tokens.weight"][8:],
+        embedding.nimloth_query_rows,
+    )
 
 
 def test_dense_query_export_preserves_fp32_weights(tmp_path):
