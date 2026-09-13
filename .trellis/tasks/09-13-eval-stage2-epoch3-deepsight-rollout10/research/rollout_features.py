@@ -108,7 +108,18 @@ def main():
     processor=AutoProcessor.from_pretrained(args.model)
     if args.max_pixels is not None: processor.image_processor.max_pixels=args.max_pixels
     language=Qwen2_5_VLForConditionalGeneration.from_pretrained(args.model,
-        torch_dtype=torch.bfloat16,attn_implementation='flash_attention_2').to('cuda').eval()
+        torch_dtype=torch.bfloat16,attn_implementation='flash_attention_2')
+    # HF can retain FP32 saved embedding masters despite torch_dtype. This
+    # inference-only copy must match vLLM's BF16 forward, including embeddings.
+    language.to(device='cuda',dtype=torch.bfloat16).eval()
+    if (language.get_input_embeddings().weight.dtype != torch.bfloat16
+            or language.get_output_embeddings().weight.dtype != torch.bfloat16):
+        raise ValueError('replay embedding/head did not convert to BF16')
+    query_projections=[p for name,p in language.named_parameters() if name.endswith('q_proj.weight')]
+    if not query_projections or any(p.dtype != torch.bfloat16 for p in query_projections):
+        raise ValueError('replay attention query projections are not BF16')
+    if any(p.is_floating_point() and p.dtype != torch.bfloat16 for p in language.parameters()):
+        raise ValueError('replay language model retains non-BF16 parameters')
     model=QueryAlignmentModel.build(language,processor.tokenizer,objective)
     model.restore_projector(args.checkpoint)
     model.to('cuda').eval()
