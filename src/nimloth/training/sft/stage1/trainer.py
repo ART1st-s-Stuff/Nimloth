@@ -796,17 +796,18 @@ def main(*, stage: str = "format") -> int:
         raise FileNotFoundError("continuation checkpoint training_state.pt is missing")
     load_path = args.model
     resume_lora = False
+    state = None
     if (args.resume or continuing) and resume_ckpt is not None and resume_ckpt.exists():
-        state_peek = torch.load(resume_ckpt, map_location="cpu", weights_only=False)
-        validate_resume_stage(state_peek, resume_dir, stage)
+        state = torch.load(resume_ckpt, map_location="cpu", weights_only=False)
+        validate_resume_stage(state, resume_dir, stage)
         if continuing:
-            validate_epoch_continuation(resume_dir, state_peek, _resume_identity(args, stage=stage, world=world, train_size=len(train_ds)), world=world)
-            if not args.until_converged and args.epochs <= int(state_peek["epoch"]):
+            validate_epoch_continuation(resume_dir, state, _resume_identity(args, stage=stage, world=world, train_size=len(train_ds)), world=world)
+            if not args.until_converged and args.epochs <= int(state["epoch"]):
                 raise ValueError("--epochs must exceed the completed source epoch")
-        saved_mode = state_peek.get("latent_query_mode")
-        if stage == "query" and saved_mode is None and "mask_latent_query_labels" in state_peek:
+        saved_mode = state.get("latent_query_mode")
+        if stage == "query" and saved_mode is None and "mask_latent_query_labels" in state:
             saved_mode = (
-                "inject" if state_peek["mask_latent_query_labels"] else "generate"
+                "inject" if state["mask_latent_query_labels"] else "generate"
             )
         if saved_mode is not None and saved_mode != args.latent_query_mode:
             raise ValueError(
@@ -814,11 +815,11 @@ def main(*, stage: str = "format") -> int:
                 f"checkpoint={saved_mode}, current={args.latent_query_mode}"
             )
         resume_lora = (
-            bool(state_peek.get("lora"))
+            bool(state.get("lora"))
             or (resume_dir / "adapter_config.json").exists()
         )
         if resume_lora:
-            load_path = state_peek.get("base_model_path", args.model)
+            load_path = state.get("base_model_path", args.model)
         elif (resume_dir / "config.json").exists():
             load_path = str(resume_dir)
         if is_main():
@@ -981,7 +982,6 @@ def main(*, stage: str = "format") -> int:
     resume_rank_rng: dict[str, Any] | None = None
     resume_at_epoch_boundary = False
     if (args.resume or continuing) and resume_ckpt is not None and resume_ckpt.exists():
-        state = torch.load(resume_ckpt, map_location="cpu", weights_only=False)
         if args.action_token_loss_weight != 1 and not objective_identities_match(state.get("identity"), resume_identity):
             raise ValueError("weighted loss resume checkpoint objective identity mismatch")
         if continuing:
@@ -1081,6 +1081,12 @@ def main(*, stage: str = "format") -> int:
                 )
             )
 
+    # Only the small RNG payload is needed by the loop. In full tuning the CPU
+    # optimizer payload can be tens of GB per rank; do not retain it during
+    # training/validation after load_optimizer_state has restored local shards.
+    epoch_rng_states = state.get("rank_rng_states") if state is not None else None
+    del state
+
     if getattr(args, "save_initial_checkpoint", False) and resume_dir is None:
         if (args.output_dir / "epoch_000").exists():
             raise FileExistsError("refusing to overwrite initial checkpoint")
@@ -1120,7 +1126,6 @@ def main(*, stage: str = "format") -> int:
         signal.signal(signal.SIGUSR1, request_boundary_stop)
 
     model.train()
-    epoch_rng_states = state.get("rank_rng_states") if (args.resume or continuing) and resume_ckpt is not None else None
     epoch = start_epoch - 1
     epoch_numbers = (itertools.count(start_epoch) if args.until_converged
                      else range(start_epoch, args.epochs + 1))
