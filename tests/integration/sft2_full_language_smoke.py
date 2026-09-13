@@ -35,6 +35,15 @@ def main():
                                 [6, 7, 8, 9], QueryAlignmentConfig(grid_size=2, projector_hidden_dim=8))
     prepare_full_language(model, query_ids=[6, 7, 8, 9], protocol_ids=list(range(10, 20)))
     selected = selected_row_parameters(model)
+    query_grad_seen = [False] * len(selected["query"])
+    for index, parameter in enumerate(selected["query"]):
+        def record_query_grad(gradient, *, index=index):
+            assert torch.isfinite(gradient).all()
+            assert gradient.abs().sum() > 0
+            query_grad_seen[index] = True
+            return gradient
+
+        parameter.register_hook(record_query_grad)
     assert not language.get_input_embeddings().weight.requires_grad
     assert not language.get_output_embeddings().weight.requires_grad
     assert all(b.dtype == torch.float32 for n, b in language.visual.named_buffers() if "inv_freq" in n)
@@ -61,10 +70,7 @@ def main():
     assert torch.isfinite(loss)
     loss.backward()
     assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
-    assert any(
-        parameter.grad is not None and parameter.grad.abs().sum() > 0
-        for parameter in selected["query"]
-    )
+    assert all(query_grad_seen)
     optimizer.step()
     dist.barrier()
     if dist.get_rank() == 0:
