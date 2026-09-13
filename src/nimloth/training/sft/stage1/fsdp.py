@@ -104,11 +104,18 @@ def wrap_fsdp(model, device):
     if full_language:
         # Keep residual visual tensors (patch Conv3d and merger norms) out of
         # the FP32 language root handle: FSDP flattening requires one dtype.
+        visual_modules = set(model.language_model.visual.modules())
         targets.add(model.language_model.visual)
         mixed = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.float32,
                                buffer_dtype=torch.bfloat16, keep_low_precision_grads=False,
                                cast_forward_inputs=True)
-        policy = CustomPolicy(lambda module: {"mixed_precision": mixed} if module in targets else False)
+        # Visual weights are already BF16. Preserve internally computed FP32
+        # rotary cos/sin inputs: Qwen vision explicitly rotates q.float().
+        visual_precision = MixedPrecision(cast_forward_inputs=False, cast_root_forward_inputs=False)
+        policy = CustomPolicy(
+            lambda module: {"mixed_precision": visual_precision if module in visual_modules else mixed}
+            if module in targets else False
+        )
         return FSDP(model, auto_wrap_policy=policy, mixed_precision=mixed,
                     sharding_strategy=ShardingStrategy.FULL_SHARD,
                     use_orig_params=True, device_id=device, sync_module_states=True,

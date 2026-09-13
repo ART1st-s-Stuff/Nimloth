@@ -31,6 +31,19 @@ def test_full_visual_residuals_have_separate_fsdp_owner(monkeypatch):
     fsdp.wrap_fsdp(model, torch.device("cpu"))
     predicate = captured["auto_wrap_policy"]
     assert predicate(language.visual)
+    for module in language.visual.modules():
+        settings = predicate(module)
+        if settings:
+            precision = settings["mixed_precision"]
+            assert precision.param_dtype is None
+            assert precision.buffer_dtype is None
+            assert not precision.cast_forward_inputs
+            assert not precision.cast_root_forward_inputs
+    for module in (language.embed_tokens, language.lm_head, model.projector):
+        precision = predicate(module)["mixed_precision"]
+        assert precision.param_dtype == torch.bfloat16
+        assert precision.reduce_dtype == torch.float32
+        assert precision.cast_forward_inputs
     targets = {m for m in model.modules() if predicate(m)}
     # Assign each direct parameter to its closest wrapping ancestor.
     dtypes = {}
