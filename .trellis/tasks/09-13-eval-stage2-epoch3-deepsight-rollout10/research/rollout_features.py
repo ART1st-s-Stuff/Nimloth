@@ -73,6 +73,22 @@ def plot(rows, output):
             plt.close(fig)
 
 
+def cast_replay_parameters(model):
+    import torch
+    # Rotary frequency buffers intentionally remain FP32: the visual rotary
+    # kernel pairs them with q.float(). Cast trainable storage, not buffers.
+    rotary_dtypes={name:buffer.dtype for name,buffer in model.named_buffers()
+                   if 'inv_freq' in name}
+    for parameter in model.parameters():
+        if parameter.is_floating_point():
+            parameter.data=parameter.data.to(dtype=torch.bfloat16)
+    for name,buffer in model.named_buffers():
+        if name in rotary_dtypes and buffer.dtype != rotary_dtypes[name]:
+            raise ValueError('replay conversion changed rotary buffer precision')
+        if 'inv_freq' in name and buffer.dtype != torch.float32:
+            raise ValueError('replay rotary frequency buffer must remain FP32')
+
+
 def main():
     import torch
     import torch.nn.functional as F
@@ -111,7 +127,8 @@ def main():
         torch_dtype=torch.bfloat16,attn_implementation='flash_attention_2')
     # HF can retain FP32 saved embedding masters despite torch_dtype. This
     # inference-only copy must match vLLM's BF16 forward, including embeddings.
-    language.to(device='cuda',dtype=torch.bfloat16).eval()
+    language.to(device='cuda').eval()
+    cast_replay_parameters(language)
     if (language.get_input_embeddings().weight.dtype != torch.bfloat16
             or language.get_output_embeddings().weight.dtype != torch.bfloat16):
         raise ValueError('replay embedding/head did not convert to BF16')

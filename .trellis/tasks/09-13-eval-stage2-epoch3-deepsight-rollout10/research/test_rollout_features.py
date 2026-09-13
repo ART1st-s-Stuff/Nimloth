@@ -13,6 +13,17 @@ class Tokenizer:
         return ''.join({1:'<think>',2:'reason',3:'</think>',4:'<|action_start|>'}[i] for i in ids)
 
 class Tests(unittest.TestCase):
+    def test_parameter_cast_preserves_rotary_buffers(self):
+        import torch
+        model=torch.nn.Module()
+        model.weight=torch.nn.Parameter(torch.ones(2,dtype=torch.float32))
+        model.register_buffer('inv_freq',torch.ones(2,dtype=torch.float32))
+        before=model.inv_freq.clone()
+        module.cast_replay_parameters(model)
+        self.assertEqual(model.weight.dtype,torch.bfloat16)
+        self.assertEqual(model.inv_freq.dtype,torch.float32)
+        self.assertTrue(torch.equal(model.inv_freq,before))
+
     def test_query_boundary_excludes_action(self):
         generation=dict(sampled_token_ids=[1,2,3,4],inserted_token_ids=[9,10])
         self.assertEqual(module.query_prefix(generation,Tokenizer(),[9,10]),[1,2,3,9,10])
