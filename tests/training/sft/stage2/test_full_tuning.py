@@ -60,3 +60,37 @@ def test_full_mode_cli_and_default():
         parse_args(base + ["--tuning-mode", "full_language", "--lora"], stage="query")
     with pytest.raises(ValueError, match="FSDP"):
         parse_args(base + ["--tuning-mode", "full_language", "--distributed-strategy", "ddp"], stage="query")
+
+
+def test_dense_query_export_preserves_fp32_weights(tmp_path):
+    from transformers import LlamaConfig, LlamaForCausalLM
+
+    from nimloth.training.sft.stage1.fsdp import save_full_pretrained
+    from nimloth.training.sft.stage2.config import QueryAlignmentConfig
+    from nimloth.training.sft.stage2.model import QueryAlignmentModel
+    from nimloth.wm.grid import SharedSlotProjector
+
+    language = LlamaForCausalLM(LlamaConfig(vocab_size=32, hidden_size=16,
+        intermediate_size=32, num_hidden_layers=1, num_attention_heads=2,
+        num_key_value_heads=2, tie_word_embeddings=False))
+    language.config.nimloth_tuning_mode = "full_language"
+    language.config.nimloth_embedding_master_dtype = "float32"
+    objective = QueryAlignmentConfig(projector_hidden_dim=8)
+    model = QueryAlignmentModel(language, SharedSlotProjector(16, 1024, hidden_dim=8,
+                                grid_tokens=16), list(range(16)), objective)
+    full = {key: value.clone() for key, value in model.state_dict().items()}
+    save_full_pretrained(model, tmp_path, full)
+    assert not (tmp_path / "adapter_config.json").exists()
+    restored = LlamaForCausalLM.from_pretrained(tmp_path, torch_dtype=torch.float32)
+    assert restored.config.nimloth_tuning_mode == "full_language"
+    for name, value in restored.state_dict().items():
+        assert torch.equal(value, full["language_model." + name])
+    from nimloth.latent import latent_state_tokens
+
+    token_ids = dict(zip(latent_state_tokens(16), range(16)))
+    tokenizer = SimpleNamespace(convert_tokens_to_ids=token_ids.__getitem__)
+    query = QueryAlignmentModel.build(restored, tokenizer, objective)
+    assert next(query.projector.parameters()).dtype == torch.float32
+    query.restore_projector(tmp_path)
+    for name, value in query.projector.state_dict().items():
+        assert torch.equal(value, full["projector." + name])

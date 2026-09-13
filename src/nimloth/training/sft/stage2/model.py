@@ -59,8 +59,12 @@ class QueryAlignmentModel(nn.Module):
         )
         embedding = language_model.get_input_embeddings().weight
         # Exported FP32 embedding masters must not promote the DINO projector.
-        projector_dtype = (torch.bfloat16 if getattr(config, "nimloth_embedding_master_dtype", None) == "float32"
-                           else embedding.dtype)
+        if getattr(config, "nimloth_tuning_mode", None) == "full_language":
+            # Restore dense projector masters without an intermediate BF16 rounding.
+            projector_dtype = torch.float32
+        else:
+            projector_dtype = (torch.bfloat16 if getattr(config, "nimloth_embedding_master_dtype", None) == "float32"
+                               else embedding.dtype)
         projector.to(device=embedding.device, dtype=projector_dtype)
         ids = [
             tokenizer.convert_tokens_to_ids(t)

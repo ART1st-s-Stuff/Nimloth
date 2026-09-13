@@ -102,6 +102,9 @@ def wrap_fsdp(model, device):
     masters = {module for module in targets if module.__dict__.get("_nimloth_fp32_embedding_master", False)}
     full_language = getattr(model.config, "nimloth_tuning_mode", None) == "full_language"
     if full_language:
+        # Keep residual visual tensors (patch Conv3d and merger norms) out of
+        # the FP32 language root handle: FSDP flattening requires one dtype.
+        targets.add(model.language_model.visual)
         mixed = MixedPrecision(param_dtype=torch.bfloat16, reduce_dtype=torch.float32,
                                buffer_dtype=torch.bfloat16, keep_low_precision_grads=False,
                                cast_forward_inputs=True)
