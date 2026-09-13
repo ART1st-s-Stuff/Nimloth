@@ -92,6 +92,15 @@ def main():
     parser.add_argument('--expected-episodes',type=int,default=10)
     parser.add_argument('--max-pixels',type=int,default=None)
     args=parser.parse_args()
+    contract=json.loads((args.rollout_dir/'evaluation_contract.json').read_text())
+    rollout_max_pixels=contract['config']['max_pixels']
+    if args.max_pixels is not None and args.max_pixels != rollout_max_pixels:
+        raise ValueError('--max-pixels conflicts with recorded rollout configuration')
+    args.max_pixels=rollout_max_pixels
+    grid_metadata=json.loads((args.checkpoint/'grid_state_config.json').read_text())
+    objective=QueryAlignmentConfig(**grid_metadata['objective'])
+    if args.grid_size != objective.grid_size:
+        raise ValueError('--grid-size conflicts with checkpoint objective')
     records=sorted(args.rollout_dir.glob('episodes/*/record.json'))
     if len(records)!=args.expected_episodes: raise ValueError('wrong completed episode count')
     if not (args.checkpoint/'COMMITTED').is_file(): raise ValueError('uncommitted checkpoint')
@@ -100,7 +109,7 @@ def main():
     if args.max_pixels is not None: processor.image_processor.max_pixels=args.max_pixels
     language=Qwen2_5_VLForConditionalGeneration.from_pretrained(args.model,
         torch_dtype=torch.bfloat16,attn_implementation='flash_attention_2').to('cuda').eval()
-    model=QueryAlignmentModel.build(language,processor.tokenizer,QueryAlignmentConfig(grid_size=args.grid_size))
+    model=QueryAlignmentModel.build(language,processor.tokenizer,objective)
     model.restore_projector(args.checkpoint)
     model.to('cuda').eval()
     teacher, teacher_provenance=load_teacher(args.dino_model,torch.device('cuda'),args.grid_size,1)
@@ -153,7 +162,8 @@ def main():
         aggregation='turn macro (equal slot count)',cosine=float(np.mean([r['cosine'] for r in rows])),
         mse=float(np.mean([r['mse'] for r in rows])),model=str(args.model),checkpoint=str(args.checkpoint),
         projector_sha256=sha(args.checkpoint/'slot_projector.pt'),dino_identity=vars(DINOV2_LARGE_IDENTITY),
-        teacher_provenance=teacher_provenance,
+        teacher_provenance=teacher_provenance,rollout_contract_sha256=sha(args.rollout_dir/'evaluation_contract.json'),
+        max_pixels=args.max_pixels,objective=grid_metadata['objective'],
         precision='merged export loaded BF16, matching vLLM; BF16 DINO matching cache builder',
         scope='executed turns only; terminal unexecuted generation excluded; PC1 not full-dimensional recovery proof')
     for group_name, getter in [('per_episode',lambda r:r['episode']),
