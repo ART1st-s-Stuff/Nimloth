@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
+import os
+import tempfile
 import re
 import shutil
 import time
@@ -231,6 +234,10 @@ class SFT2CheckpointRuntime:
     keep_last: int
     last_periodic_time: float = field(default_factory=time.monotonic)
 
+    deduplicate_epoch_checkpoints: bool = False
+    _last_epoch: tuple[str, int, int, float] | None = field(default=None, init=False)
+    _owned_aliases: dict[str, tuple[int, int]] = field(default_factory=dict, init=False)
+
     def save_stopped(self, *, step: int, epoch: int, micro_step: int,
                      best_val_wm_mse: float) -> Path:
         """Publish all rank states atomically, explicitly without completing an epoch."""
@@ -259,12 +266,14 @@ class SFT2CheckpointRuntime:
         epoch: int,
         best_val_wm_mse: float,
     ) -> None:
-        self._save(
-            "final",
-            step=step,
-            epoch=epoch,
-            best_val_wm_mse=best_val_wm_mse,
-        )
+        identity = (f"epoch_{epoch:03d}", step, epoch, best_val_wm_mse)
+        if self.deduplicate_epoch_checkpoints and self._last_epoch == identity:
+            self._clone_epoch("final", identity)
+        else:
+            if self.deduplicate_epoch_checkpoints and (self.manager.output_dir / "final").exists():
+                raise FileExistsError("refusing to overwrite an existing final checkpoint")
+            self._save("final", step=step, epoch=epoch,
+                       best_val_wm_mse=best_val_wm_mse)
 
     def save_periodic(
         self,
@@ -323,13 +332,63 @@ class SFT2CheckpointRuntime:
             epoch=epoch,
             best_val_wm_mse=best_val_wm_mse,
         )
+        self._last_epoch = (f"epoch_{epoch:03d}", step, epoch, best_val_wm_mse)
         if improved:
-            self._save(
-                "best",
-                step=step,
-                epoch=epoch,
-                best_val_wm_mse=best_val_wm_mse,
-            )
+            if self.deduplicate_epoch_checkpoints:
+                self._clone_epoch("best", self._last_epoch)
+            else:
+                self._save("best", step=step, epoch=epoch,
+                           best_val_wm_mse=best_val_wm_mse)
+
+    def _clone_epoch(self, name: str, identity: tuple[str, int, int, float]) -> None:
+        """Publish immutable hardlinks; replace only aliases owned by this runtime.
+
+        All-rank history files already exist after _save's last barrier. Never
+        write into a linked checkpoint: replacement exchanges whole directories.
+        """
+        self._barrier()
+        if is_main():
+            source_name, step, epoch, best = identity
+            source = self.manager.output_dir / source_name
+            state = torch.load(source / "training_state.pt", map_location="cpu", weights_only=False)
+            if (state.get("step"), state.get("epoch"), state.get("best_val_wm_mse")) != (step, epoch, best):
+                raise ValueError("epoch clone training state identity mismatch")
+            if not state.get("epoch_complete", False):
+                raise ValueError("epoch clone requires completed epoch")
+            target = self.manager.output_dir / name
+            if target.exists() or target.is_symlink():
+                stat = target.lstat()
+                if target.is_symlink() or self._owned_aliases.get(name) != (stat.st_dev, stat.st_ino):
+                    raise FileExistsError(f"refusing to replace unowned checkpoint: {target}")
+            temporary = Path(tempfile.mkdtemp(prefix=f".{name}.links-", dir=self.manager.output_dir))
+            try:
+                for path in source.rglob("*"):
+                    relative = path.relative_to(source)
+                    if path.is_symlink():
+                        raise ValueError("checkpoint hardlink source must not contain symlinks")
+                    destination = temporary / relative
+                    if path.is_dir():
+                        destination.mkdir()
+                    elif path.is_file():
+                        os.link(path, destination)
+                    else:
+                        raise ValueError("checkpoint source contains unsupported file type")
+                if target.exists():
+                    libc = ctypes.CDLL(None, use_errno=True)
+                    exchange = libc.renameat2
+                    exchange.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+                    exchange.restype = ctypes.c_int
+                    if exchange(-100, os.fsencode(temporary), -100, os.fsencode(target), 2):
+                        error = ctypes.get_errno()
+                        raise OSError(error, os.strerror(error))
+                else:
+                    temporary.rename(target)
+                stat = target.stat()
+                self._owned_aliases[name] = (stat.st_dev, stat.st_ino)
+            finally:
+                if temporary.exists():
+                    shutil.rmtree(temporary)
+        self._barrier()
 
     def _save(
         self,
@@ -341,8 +400,12 @@ class SFT2CheckpointRuntime:
         epoch_complete: bool = True,
         micro_step_in_epoch: int = 0,
     ) -> None:
+        self._last_epoch = None
         self._barrier()
         if is_main():
+            target = self.manager.output_dir / name
+            if self.deduplicate_epoch_checkpoints and name.startswith("epoch_") and (target.exists() or target.is_symlink()):
+                raise FileExistsError(f"refusing to overwrite immutable epoch checkpoint: {target}")
             self.manager.save(
                 name,
                 step=step,

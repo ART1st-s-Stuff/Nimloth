@@ -1,7 +1,8 @@
 """Bounded remote-host controller for the reviewed eight-rank outcome A/B run.
 
 Default is command-only dry run. Execute only on the authorized training host;
-this controller never establishes SSH, deletes checkpoints, or retries a phase.
+this controller never establishes SSH or retries a phase. Explicit cleanup flags
+permit only verified intermediate checkpoints created by this run.
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import signal
 import socket
 import subprocess
 import time
+import re
 
 ARM_SECONDS = 12 * 3600
 
@@ -42,7 +44,7 @@ def command(args, arm, phase, port):
               '--config', str(args.worktree / 'configs/training/sft2/action_outcome_k64_h1_t4.yaml')]
     for key, value in values.items():
         result.extend(['--' + key, str(value)])
-    result.extend(['--outcome-head', '--require-prebuilt-cache', '--step-timing'])
+    result.extend(['--outcome-head', '--require-prebuilt-cache', '--step-timing', '--deduplicate-epoch-checkpoints'])
     if phase == 'formal':
         result.extend(['--outcome-eval-dir', str(args.run_root / (arm + '_evaluation'))])
     else:
@@ -60,7 +62,7 @@ def free_port():
         return listener.getsockname()[1]
 
 
-def resources(args):
+def resources(args, *, required_gib=None):
     result = subprocess.run(['nvidia-smi', '--query-gpu=index,uuid,memory.used', '--format=csv,noheader,nounits'],
                             check=True, capture_output=True, text=True, timeout=20).stdout
     devices = [line.split(',')[0].strip() for line in result.splitlines() if line.strip()]
@@ -71,9 +73,10 @@ def resources(args):
     if processes:
         raise RuntimeError(f'existing GPU compute processes must remain untouched: {processes}')
     free = shutil.disk_usage(args.run_root.parent).free / 1024**3
-    if free < args.min_free_gib:
-        raise RuntimeError(f'insufficient disk: {free:.1f} GiB free, require {args.min_free_gib:.1f}')
-    return {'gpu_query': result, 'free_gib': free}
+    required = args.min_free_gib if required_gib is None else required_gib
+    if free < required:
+        raise RuntimeError(f'insufficient disk: {free:.1f} GiB free, require {required:.1f}')
+    return {'gpu_query': result, 'free_gib': free, 'required_gib': required}
 
 
 def terminate_group(process):
@@ -120,6 +123,11 @@ def verify_phase(args, arm, phase):
     if not rows:
         raise RuntimeError('training produced no step metrics')
     for row in rows:
+        for required_metric in ('total_loss', 'wm_mse', 'dino_grid_mse', 'value_mc_mse'):
+            if not row.get(required_metric):
+                raise RuntimeError(f'missing required training metric: {required_metric}')
+        if arm == 'treatment' and not row.get('outcome_bce'):
+            raise RuntimeError('missing treatment outcome BCE')
         for key in ('total_loss', 'wm_mse', 'dino_grid_mse', 'value_mc_mse', 'lm_ce', 'outcome_bce'):
             if row.get(key) and not math.isfinite(float(row[key])):
                 raise RuntimeError(f'non-finite {key} in training log')
@@ -128,13 +136,80 @@ def verify_phase(args, arm, phase):
     for relative in required:
         if not (checkpoint / relative).is_file():
             raise RuntimeError(f'incomplete checkpoint: {checkpoint / relative}')
+    metadata = checkpoint_metadata(args, checkpoint)
+    if (metadata.get('epoch') != 1 or not metadata.get('has_optimizer')
+            or metadata.get('epoch_complete') is not (phase == 'formal')
+            or (phase != 'formal' and metadata.get('step') != step)):
+        raise RuntimeError('checkpoint training state disagrees with completed phase')
+    if not (checkpoint / 'selected_token_rows.pt').is_file():
+        raise RuntimeError('checkpoint missing exact selected token rows')
     return str(checkpoint)
+
+
+def checkpoint_bytes(checkpoint):
+    if checkpoint.is_symlink() or not checkpoint.is_dir():
+        raise RuntimeError('checkpoint must be a real directory')
+    files = list(checkpoint.rglob('*'))
+    if any(path.is_symlink() for path in files):
+        raise RuntimeError('checkpoint tree contains a symlink')
+    return sum(path.stat().st_size for path in files if path.is_file())
+
+
+def checkpoint_metadata(args, checkpoint):
+    script = """import json,sys,torch
+from pathlib import Path
+p=Path(sys.argv[1]); s=torch.load(p/'training_state.pt',map_location='cpu',weights_only=False)
+keys=('step','epoch','epoch_complete','micro_step_in_epoch','training_invariants')
+r={k:s.get(k) for k in keys};r['has_optimizer']=s.get('optimizer') is not None
+print(json.dumps(r))
+"""
+    result = subprocess.run([str(args.python), '-c', script, str(checkpoint)],
+                            check=True, capture_output=True, text=True, timeout=120)
+    return json.loads(result.stdout)
+
+
+def cleanup_checkpoint(args, checkpoint, controller, *, expected_step, final_step, expected_invariants):
+    """Delete only complete intermediate children of this run after audit flush."""
+    checkpoint = Path(checkpoint)
+    allowed_parents = {args.run_root / arm for arm in ('control','treatment','control_canary','treatment_canary')}
+    if checkpoint.parent not in allowed_parents or checkpoint.parent.is_symlink():
+        raise RuntimeError('cleanup path is outside the owned run')
+    if not re.fullmatch(r'(?:stop_step|step)_[0-9]{6,}', checkpoint.name):
+        raise RuntimeError('only intermediate checkpoints may be cleaned')
+    checkpoint_bytes(checkpoint)
+    required = ['training_state.pt','state_proj.pt','outcome_head.pt','wm_predictor/predictor.pt','value_head/value_head.pt',
+                *[f'history_cache_rank_{rank:03d}.pt' for rank in range(8)]]
+    if any(not (checkpoint / name).is_file() for name in required):
+        raise RuntimeError('refusing incomplete intermediate cleanup')
+    metadata = checkpoint_metadata(args, checkpoint)
+    if metadata['step'] != expected_step or expected_step > final_step or metadata['epoch_complete'] is not False or not metadata['has_optimizer']:
+        raise RuntimeError('intermediate metadata does not match validated recovery boundary')
+    if not expected_invariants or metadata.get('training_invariants') != expected_invariants:
+        raise RuntimeError('foreign intermediate training identity')
+    if checkpoint.name.startswith('stop_'):
+        stopped = json.loads((checkpoint/'STOPPED').read_text())
+        if stopped['step'] != expected_step or stopped['epoch_complete']:
+            raise RuntimeError('stopped marker mismatch')
+    hashes = {}
+    for path in sorted(checkpoint.rglob('*')):
+        if path.is_file():
+            digest = hashlib.sha256()
+            with path.open('rb') as stream:
+                for block in iter(lambda: stream.read(4*1024**2), b''):
+                    digest.update(block)
+            hashes[str(path.relative_to(checkpoint))] = {'sha256':digest.hexdigest(),'bytes':path.stat().st_size}
+    audit = controller / (checkpoint.parent.name + '_' + checkpoint.name + '_cleanup.json')
+    with audit.open('x') as stream:
+        json.dump({'checkpoint':str(checkpoint),'metadata':metadata,'files':hashes,'validated_final_step':final_step},stream,indent=2)
+        stream.flush()
+        os.fsync(stream.fileno())
+    shutil.rmtree(checkpoint)
 
 
 def execute(args):
     if args.run_root.exists():
         raise FileExistsError(args.run_root)
-    status = subprocess.check_output(['git', 'status', '--porcelain'], cwd=args.worktree, text=True)
+    status = subprocess.check_output(['git', 'status', '--porcelain', '--ignore-submodules=untracked'], cwd=args.worktree, text=True)
     if status.strip():
         raise RuntimeError('remote worktree must be clean and committed')
     commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=args.worktree, text=True).strip()
@@ -150,26 +225,52 @@ def execute(args):
     environment = dict(os.environ, CUDA_VISIBLE_DEVICES='0,1,2,3,4,5,6,7', TOKENIZERS_PARALLELISM='false')
     environment['PYTHONPATH'] = str(args.worktree / 'src')
     record = {'commit': commit, 'status': 'running', 'phases': [], 'hard_seconds_per_arm': ARM_SECONDS,
-              'retention': 'no controller deletion; trainer rolling steps keep_last=2',
+              'retention': {'rolling_keep_last':2, 'cleanup_validated_canaries':args.cleanup_validated_canaries, 'cleanup_validated_intermediates':args.cleanup_validated_intermediates, 'deduplicate_epoch_checkpoints':True},
               'dataset_sha256': {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in [('train', args.train), ('val', args.val)]}}
-    deadlines = {}
+    consumed_seconds = {}
+    measured_checkpoint_gib = None
     try:
         for arm, phase in [('control','canary'), ('control','resume'), ('treatment','canary'), ('treatment','resume'), ('control','formal'), ('treatment','formal')]:
-            deadlines.setdefault(arm, time.monotonic() + ARM_SECONDS)
-            remaining = deadlines[arm] - time.monotonic()
+            phase_started = time.monotonic()
+            remaining = ARM_SECONDS - consumed_seconds.get(arm, 0.0)
             if remaining <= 0:
                 raise TimeoutError(f'{arm} total deadline expired')
-            snapshot = resources(args)
+            required = (max(120.0, 3 * measured_checkpoint_gib) if phase == "formal" and measured_checkpoint_gib is not None
+                        else max(40.0, measured_checkpoint_gib or 40.0))
+            snapshot = resources(args, required_gib=required)
             argv = command(args, arm, phase, free_port())
             entry = {'arm':arm, 'phase':phase, 'argv':argv, 'resources':snapshot,
                      'environment': {key:environment[key] for key in ('CUDA_VISIBLE_DEVICES','TOKENIZERS_PARALLELISM','PYTHONPATH')},
                      'started_at':time.time(), 'status':'running'}
             record['phases'].append(entry)
             (controller / 'progress.json').write_text(json.dumps(record, indent=2))
+            remaining -= time.monotonic() - phase_started
+            if remaining <= 0:
+                raise TimeoutError(f'{arm} total deadline expired during preflight')
             elapsed = run_process(argv, cwd=args.worktree, environment=environment,
                                   log_path=controller / f'{arm}_{phase}.log',
                                   timeout=min(remaining, 900) if phase != 'formal' else remaining)
             entry.update(status='complete', elapsed_seconds=elapsed, checkpoint=verify_phase(args, arm, phase))
+            size = checkpoint_bytes(Path(entry['checkpoint'])) / 1024**3
+            measured_checkpoint_gib = max(measured_checkpoint_gib or 0, size)
+            entry['checkpoint_gib'] = size
+            if phase == 'resume' and args.cleanup_validated_canaries:
+                validated = [item for item in record['phases'] if item['arm'] == arm and item['status'] == 'complete']
+                if {item['phase'] for item in validated} != {'canary', 'resume'}:
+                    raise RuntimeError('canary cleanup requires both successful phases')
+                resume_metadata = checkpoint_metadata(args, Path(entry['checkpoint']))
+                for step in (1, 2):
+                    checkpoint = args.run_root / (arm+'_canary') / f'stop_step_{step:06d}'
+                    cleanup_checkpoint(args, checkpoint, controller, expected_step=step, final_step=2, expected_invariants=resume_metadata["training_invariants"])
+            if phase == 'formal' and args.cleanup_validated_intermediates:
+                final_meta = checkpoint_metadata(args, Path(entry['checkpoint']))
+                for checkpoint in sorted((args.run_root/arm).glob('step_*')):
+                    if re.fullmatch(r'step_[0-9]{6,}', checkpoint.name):
+                        cleanup_checkpoint(args, checkpoint, controller, expected_step=int(checkpoint.name[5:]), final_step=final_meta['step'], expected_invariants=final_meta['training_invariants'])
+            consumed_seconds[arm] = consumed_seconds.get(arm, 0.0) + time.monotonic() - phase_started
+            entry['arm_consumed_seconds'] = consumed_seconds[arm]
+            if consumed_seconds[arm] > ARM_SECONDS:
+                raise TimeoutError(f'{arm} total deadline exceeded')
             (controller / 'progress.json').write_text(json.dumps(record, indent=2))
         record['status'] = 'complete'
         (controller / 'COMPLETE').write_text(json.dumps(record, indent=2))
@@ -186,14 +287,16 @@ def main(argv=None):
     for name in ('python','worktree','model','train','val','preprocess','dino','run-root'):
         parser.add_argument('--'+name, type=Path, required=True)
     parser.add_argument('--commit', required=True)
-    parser.add_argument('--min-free-gib', type=float, required=True,
-                        help='Reviewed space budget for remaining phases, including all retained checkpoints.')
+    parser.add_argument('--min-free-gib', type=float, default=160.0,
+                        help='Initial free-space gate (at least160GiB). Later gates use measured checkpoint size.')
+    parser.add_argument('--cleanup-validated-canaries', action='store_true')
+    parser.add_argument('--cleanup-validated-intermediates', action='store_true')
     parser.add_argument('--max-length', type=int, default=12000)
     parser.add_argument('--execute', action='store_true')
     parser.add_argument('--preflight', action='store_true')
     args = parser.parse_args(argv)
-    if args.min_free_gib <= 0 or args.max_length < 1:
-        parser.error('disk budget and max length must be positive')
+    if args.min_free_gib < 160 or args.max_length < 1:
+        parser.error('initial disk budget must be at least160GiB and max length positive')
     if args.execute:
         def interrupted(_signum, _frame):
             raise KeyboardInterrupt("controller termination requested")
@@ -205,7 +308,7 @@ def main(argv=None):
     else:
         plan = {'mode':'dry_run', 'commands':[command(args, arm, phase, 29500+index)
                 for index, (arm, phase) in enumerate([('control','canary'),('control','resume'),('treatment','canary'),('treatment','resume'),('control','formal'),('treatment','formal')])],
-                'disk_warning':'Four canary stop checkpoints plus independent epoch/best/final and rolling checkpoints must fit; this controller deletes none.'}
+                'disk_warning':'Initial160GiB gate; each formal requires max(120GiB,3*measured checkpoint size). Without explicit validated-canary cleanup retained tests may exceed available disk.'}
         if args.preflight:
             plan['resources'] = resources(args)
         print(json.dumps(plan, indent=2))

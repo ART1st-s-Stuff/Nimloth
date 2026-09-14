@@ -203,6 +203,8 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         default=0,
         help="Save resumable step_NNNNNN checkpoints every N optimizer steps (0 disables).",
     )
+    ap.add_argument("--deduplicate-epoch-checkpoints", action="store_true", default=False,
+                    help="Hardlink immutable epoch/best/final artifacts in a fresh output directory.")
     ap.add_argument(
         "--checkpoint-keep-last",
         type=int,

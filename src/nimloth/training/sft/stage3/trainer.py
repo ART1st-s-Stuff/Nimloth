@@ -743,6 +743,7 @@ def train_sft2(args=None) -> int:
         interval_steps=int(args.checkpoint_interval_steps or 0),
         interval_minutes=float(args.checkpoint_interval_minutes),
         keep_last=int(args.checkpoint_keep_last or 0),
+        deduplicate_epoch_checkpoints=bool(getattr(args, "deduplicate_epoch_checkpoints", False)),
     )
 
     log_writer = CSVRecordWriter(

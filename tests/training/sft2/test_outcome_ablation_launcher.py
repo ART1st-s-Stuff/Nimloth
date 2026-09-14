@@ -96,3 +96,75 @@ def test_resolved_launch_contract_matches_reviewed_configuration(tmp_path):
             actual = {key:getattr(parsed,key) for key in expected}
             assert actual == expected
             assert parsed.lambda_outcome == int(arm == 'treatment')
+
+
+def make_intermediate(path):
+    path.mkdir(parents=True)
+    names = ['training_state.pt','state_proj.pt','outcome_head.pt','wm_predictor/predictor.pt','value_head/value_head.pt',
+             *[f'history_cache_rank_{i:03d}.pt' for i in range(8)]]
+    for name in names:
+        target = path/name
+        target.parent.mkdir(exist_ok=True)
+        target.write_bytes(b'unit fixture')
+
+
+def test_cleanup_preserves_audit_and_refuses_final_or_incomplete(tmp_path, monkeypatch):
+    import json
+    config = args(tmp_path)
+    controller = config.run_root/'controller'
+    controller.mkdir(parents=True)
+    checkpoint = config.run_root/'control_canary'/'stop_step_000001'
+    make_intermediate(checkpoint)
+    (checkpoint/'STOPPED').write_text(json.dumps(dict(step=1,epoch_complete=False)))
+    monkeypatch.setattr(launcher,'checkpoint_metadata',lambda *_: dict(step=1,epoch_complete=False,has_optimizer=True,training_invariants={'dataset':'owned'}))
+    launcher.cleanup_checkpoint(config,checkpoint,controller,expected_step=1,final_step=2,expected_invariants={'dataset':'owned'})
+    assert not checkpoint.exists()
+    audit = json.loads((controller/'control_canary_stop_step_000001_cleanup.json').read_text())
+    assert len(audit['files']) == 14
+    with pytest.raises(RuntimeError, match='only intermediate'):
+        launcher.cleanup_checkpoint(config,config.run_root/'control'/'epoch_001',controller,expected_step=1,final_step=2,expected_invariants={'dataset':'owned'})
+    incomplete = config.run_root/'control'/'step_000001'
+    incomplete.mkdir(parents=True)
+    with pytest.raises(RuntimeError, match='incomplete'):
+        launcher.cleanup_checkpoint(config,incomplete,controller,expected_step=1,final_step=2,expected_invariants={'dataset':'owned'})
+    assert incomplete.exists()
+
+
+def test_cleanup_rejects_foreign_identity_and_symlink(tmp_path, monkeypatch):
+    config = args(tmp_path)
+    controller = config.run_root/'controller'
+    controller.mkdir(parents=True)
+    checkpoint = config.run_root/'control'/'step_000010'
+    make_intermediate(checkpoint)
+    monkeypatch.setattr(launcher,'checkpoint_metadata',lambda *_: dict(step=10,epoch_complete=False,has_optimizer=True,training_invariants={'dataset':'foreign'}))
+    with pytest.raises(RuntimeError,match='foreign'):
+        launcher.cleanup_checkpoint(config,checkpoint,controller,expected_step=10,final_step=20,expected_invariants={'dataset':'owned'})
+    assert checkpoint.exists()
+    (checkpoint/'link').symlink_to(tmp_path)
+    with pytest.raises(RuntimeError,match='symlink'):
+        launcher.cleanup_checkpoint(config,checkpoint,controller,expected_step=10,final_step=20,expected_invariants={'dataset':'owned'})
+
+
+@pytest.mark.parametrize('mutation', ['missing_metric', 'nonfinite', 'wrong_step', 'missing_rows', None])
+def test_verify_canary_checks_metrics_and_recovery_identity(tmp_path, monkeypatch, mutation):
+    import json
+    config = args(tmp_path)
+    checkpoint = config.run_root/'control_canary'/'stop_step_000001'
+    make_intermediate(checkpoint)
+    (checkpoint/'selected_token_rows.pt').write_bytes(b'fixture')
+    (checkpoint/'STOPPED').write_text(json.dumps(dict(step=1, epoch_complete=False)))
+    values = {'total_loss':'1', 'wm_mse':'1', 'dino_grid_mse':'1', 'value_mc_mse':'1'}
+    if mutation == 'missing_metric':
+        values.pop('wm_mse')
+    if mutation == 'nonfinite':
+        values['wm_mse'] = 'nan'
+    (checkpoint.parent/'train_step_log.csv').write_text(','.join(values)+'\n'+','.join(values.values())+'\n')
+    monkeypatch.setattr(launcher, 'checkpoint_metadata', lambda *_: dict(
+        step=2 if mutation == 'wrong_step' else 1, epoch=1, epoch_complete=False, has_optimizer=True))
+    if mutation == 'missing_rows':
+        (checkpoint/'selected_token_rows.pt').unlink()
+    if mutation is None:
+        assert launcher.verify_phase(config, 'control', 'canary') == str(checkpoint)
+    else:
+        with pytest.raises(RuntimeError):
+            launcher.verify_phase(config, 'control', 'canary')
