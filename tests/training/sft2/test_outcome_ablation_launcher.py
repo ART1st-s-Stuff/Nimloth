@@ -168,3 +168,37 @@ def test_verify_canary_checks_metrics_and_recovery_identity(tmp_path, monkeypatc
     else:
         with pytest.raises(RuntimeError):
             launcher.verify_phase(config, 'control', 'canary')
+
+
+@pytest.mark.parametrize('fail_phase', [1, 2])
+def test_failed_process_marks_only_current_phase_failed(tmp_path, monkeypatch, fail_phase):
+    import json
+    config = args(tmp_path)
+    config.commit = 'abc'
+    config.min_free_gib = 160
+    config.cleanup_validated_canaries = False
+    config.cleanup_validated_intermediates = False
+    for name in ('model', 'train', 'val', 'preprocess', 'dino'):
+        getattr(config, name).touch()
+    monkeypatch.setattr(launcher.subprocess, 'check_output',
+                        lambda argv, **kwargs: '' if 'status' in argv else 'abc')
+    monkeypatch.setattr(launcher, 'resources', lambda *a, **k: {})
+    monkeypatch.setattr(launcher, 'free_port', lambda: 29501)
+    monkeypatch.setattr(launcher, 'verify_phase', lambda *a: str(tmp_path/'checkpoint'))
+    monkeypatch.setattr(launcher, 'checkpoint_bytes', lambda *a: 1)
+    calls = []
+
+    def phase(*args, **kwargs):
+        calls.append(args)
+        if len(calls) == fail_phase:
+            raise RuntimeError('isolated phase failure')
+        return 1
+
+    monkeypatch.setattr(launcher, 'run_process', phase)
+    with pytest.raises(RuntimeError, match='isolated phase failure'):
+        launcher.execute(config)
+    record = json.loads((config.run_root/'controller'/'FAILED').read_text())
+    assert record['status'] == 'failed'
+    assert [item['status'] for item in record['phases']] == ['complete']*(fail_phase-1)+['failed']
+    assert record['phases'][-1]['error'] == 'RuntimeError: isolated phase failure'
+    assert len(calls) == fail_phase

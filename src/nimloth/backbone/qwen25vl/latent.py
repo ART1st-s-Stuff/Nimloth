@@ -68,6 +68,10 @@ def _final_norm_module(model) -> torch.nn.Module:
 def _capture_last_hidden(
     model, model_inputs: dict[str, torch.Tensor], *, full_logits: bool = False
 ):
+    # These are complete-prefix feature/teacher-forcing forwards, never KV-cache
+    # decoding. Explicitly disable the model default even under no_grad (EMA
+    # targets), where gradient checkpointing does not disable it for us.
+    model_inputs = {**model_inputs, "use_cache": False}
     captured: dict[str, torch.Tensor] = {}
 
     # State extraction reads the final decoder norm through the hook below; it

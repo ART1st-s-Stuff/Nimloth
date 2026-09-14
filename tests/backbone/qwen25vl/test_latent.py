@@ -184,7 +184,8 @@ def test_legacy_forward_without_logits_keyword_preserves_hidden_and_gradients(fu
     from nimloth.backbone.qwen25vl.latent import _capture_last_hidden
 
     class LegacyQwen(_FakeQwen):
-        def forward(self, input_ids, output_hidden_states, return_dict):
+        def forward(self, input_ids, output_hidden_states, return_dict, use_cache):
+            assert use_cache is False
             return super().forward(input_ids, output_hidden_states, return_dict)
 
     model = LegacyQwen()
@@ -210,3 +211,48 @@ def test_projection_hook_removed_after_failed_forward():
         _capture_last_hidden(model, {"input_ids": torch.tensor([[1, 2]])})
     assert not model.lm_head._forward_pre_hooks
     assert not model.model.language_model.norm._forward_hooks
+
+
+@pytest.mark.parametrize("mode", ["target", "primary", "sigreg"])
+def test_real_qwen_right_padded_feature_forward_disables_cache(mode):
+    import inspect
+    from transformers import Qwen2_5_VLConfig, Qwen2_5_VLForConditionalGeneration
+    from nimloth.backbone.qwen25vl.latent import _capture_last_hidden
+
+    text = dict(vocab_size=32, hidden_size=16, intermediate_size=32,
+                num_hidden_layers=1, num_attention_heads=2, num_key_value_heads=2,
+                tie_word_embeddings=False, use_cache=True,
+                rope_scaling={"type": "mrope", "mrope_section": [1, 1, 2]})
+    text_kwargs = ({"text_config": text}
+                   if "text_config" in inspect.signature(Qwen2_5_VLConfig).parameters
+                   else text)
+    config = Qwen2_5_VLConfig(**text_kwargs, vision_config=dict(
+        depth=1, hidden_size=16, intermediate_size=32, num_heads=2, out_hidden_size=16))
+    config.image_token_id = 29
+    config.video_token_id = 30
+    config.vision_start_token_id = 31
+    config._attn_implementation = "sdpa"
+    model = Qwen2_5_VLForConditionalGeneration(config).train()
+    ids = torch.tensor([[1, 2, 3, 0], [4, 5, 6, 7]])
+    inputs = {"input_ids": ids, "attention_mask": torch.tensor([[1, 1, 1, 0], [1, 1, 1, 1]]),
+              "use_cache": True}
+    if mode == "primary":
+        inputs["labels"] = ids.masked_fill(inputs["attention_mask"] == 0, -100)
+    seen = []
+    handle = model.register_forward_pre_hook(
+        lambda _module, _args, kwargs: seen.append(kwargs["use_cache"]), with_kwargs=True)
+    try:
+        with torch.set_grad_enabled(mode != "target"):
+            hidden, output = _capture_last_hidden(model, inputs)
+            assert hidden.shape == (2, 4, 16)
+            assert torch.isfinite(hidden).all()
+            assert output.past_key_values is None
+            if mode != "target":
+                loss = output.loss if mode == "primary" else hidden.square().mean()
+                loss.backward()
+                assert model.get_input_embeddings().weight.grad is not None
+    finally:
+        handle.remove()
+    assert seen == [False]
+    assert inputs["use_cache"] is True
+    assert torch.equal(inputs["attention_mask"], torch.tensor([[1, 1, 1, 0], [1, 1, 1, 1]]))

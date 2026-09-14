@@ -275,7 +275,10 @@ def execute(args):
         record['status'] = 'complete'
         (controller / 'COMPLETE').write_text(json.dumps(record, indent=2))
     except BaseException as error:
-        record.update(status='failed', error=f'{type(error).__name__}: {error}')
+        failure = f'{type(error).__name__}: {error}'
+        if record['phases'] and record['phases'][-1]['status'] == 'running':
+            record['phases'][-1].update(status='failed', error=failure)
+        record.update(status='failed', error=failure)
         (controller / 'FAILED').write_text(json.dumps(record, indent=2))
         raise
     finally:
