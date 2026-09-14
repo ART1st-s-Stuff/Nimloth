@@ -1,9 +1,10 @@
+import copy
 import json
 
 import pytest
 
 from nimloth.latent import latent_state_block
-from nimloth.rollout.tail_drop import convert_jsonl, convert_sft_view
+from nimloth.rollout.tail_drop import canonical_sha256, convert_jsonl, convert_sft_view, feedback
 from nimloth.rollout.transitions import expand_record_transitions
 
 
@@ -83,3 +84,56 @@ def test_immutable_cli_output_and_rejected_evidence(tmp_path):
         convert_jsonl(source, failed, latent_token_count=64, max_action_horizon=20)
     assert not (failed / "COMMITTED").exists()
     assert json.loads((failed / "rejected.json").read_text())
+
+
+@pytest.mark.parametrize("flag,expected", [("True", True), ("False", False), ("1.0", True), ("0.0", False)])
+def test_exact_vagen_boolean_or_numeric_done_feedback(flag, expected):
+    result = feedback(f"reward: 0.02\ndone: {flag}\nLast action is not executed successfully.")
+    assert result == (0.02, expected, False)
+
+
+@pytest.mark.parametrize("flag", ["true", "false", "2", "nan", "yes"])
+def test_reject_noncanonical_done_feedback(flag):
+    with pytest.raises(ValueError):
+        feedback(f"reward: 0\ndone: {flag}\nLast action is executed successfully.")
+
+
+def test_single_action_omission_still_validates_observation_image_binding():
+    row = _source(1)
+    row["messages"][1]["content"] = "initial without image"
+    with pytest.raises(ValueError, match="current image"):
+        convert_sft_view(row, latent_token_count=64, max_action_horizon=20)
+
+
+
+def test_action_outcome_is_next_observation_and_source_hash_scope_is_explicit():
+    source = _source()
+    for messages in (source["messages"], source["source_audit"]["source_messages"]):
+        messages[5]["content"] = messages[5]["content"].replace(
+            "Last action is executed successfully.",
+            "Last action is not executed successfully.",
+        )
+    before = copy.deepcopy(source)
+    result = convert_sft_view(source, latent_token_count=64, max_action_horizon=20)
+    assert source == before
+    assert result["action_successes"] == [True, False]
+    samples = expand_record_transitions(result)
+    assert [(sample.action_index, sample.action_success) for sample in samples] == [(0, True), (1, False)]
+    provenance = result["conversion_provenance"]
+    assert provenance["source_record_sha256"] == canonical_sha256(source)
+    assert provenance["source_record_sha256"] != "a" * 64
+    assert provenance["historical_raw_source_hash_claim"] == "a" * 64
+    assert provenance["historical_raw_source_hash_verified"] is False
+
+
+@pytest.mark.parametrize("messages", ["serialized transcript", [None], [{"role": "system", "content": [None]}]])
+def test_malformed_messages_produce_rejected_evidence(tmp_path, messages):
+    row = _source()
+    row["messages"] = messages
+    source = tmp_path / "bad.jsonl"
+    source.write_text(json.dumps(row) + "\n")
+    output = tmp_path / "result"
+    with pytest.raises(ValueError):
+        convert_jsonl(source, output, latent_token_count=64, max_action_horizon=20)
+    assert not (output / "COMMITTED").exists()
+    assert json.loads((output / "rejected.json").read_text())

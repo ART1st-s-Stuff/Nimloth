@@ -12,7 +12,7 @@ from nimloth.rollout.transitions import discounted_action_value_targets, expand_
 def _record():
     return {
         "record_format": "nimloth_trajectory_v1", "id": "test", "split": "train",
-        "success": True, "reward": 4.0, "reward_provenance": "step_rewards",
+        "success": True, "reward": 0.0, "reward_provenance": "step_rewards",
         "rewards": [0.0, 0.0], "terminated": False, "truncated": True,
         "action_indices": [0, 1], "action_space_id": "navigation", "action_space_version": 1,
         "image_paths": ["a.png", "b.png", "c.png"], "system_prompt": "sys",
@@ -84,3 +84,28 @@ def test_legacy_missing_outcome_is_not_failure():
     record.update(terminated=True, truncated=False)
     assert [s.action_success for s in expand_record_transitions(record)] == [None, None]
     assert discounted_action_value_targets(record) == [0.0, 0.0]
+
+
+@pytest.mark.parametrize("updates", [
+    {"terminated": True}, {"truncated": False}, {"reward": 4.0},
+    {"rewards": [False, 0.0]},
+])
+def test_reject_inconsistent_artificial_endpoint(updates):
+    record = _record()
+    record.update(updates)
+    with pytest.raises(ValueError):
+        validated_action_value_targets(record)
+
+
+def test_preserve_recorded_original_success_and_reward():
+    record = _record()
+    provenance = record["finite_horizon_provenance"]
+    provenance.update(original_success=True, original_reward=4.0)
+    assert validated_action_value_targets(record) == [1.0, 2.0]
+    record["success"] = False
+    with pytest.raises(ValueError, match="original trajectory success"):
+        validated_action_value_targets(record)
+    record["success"] = True
+    provenance["original_reward"] = 0.0
+    with pytest.raises(ValueError, match="original_reward"):
+        validated_action_value_targets(record)

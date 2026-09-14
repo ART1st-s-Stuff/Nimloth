@@ -34,7 +34,13 @@ def feedback(text: str) -> tuple[float, bool, bool]:
         matches = re.findall(rf"^{name}:\s*([^\n\r]+)", text, flags=re.MULTILINE)
         if len(matches) != 1:
             raise ValueError(f"source observation requires exactly one {name} field")
-        value = float(matches[0])
+        raw = matches[0].strip()
+        # VAGEN action_template historically emits numeric flags; current source
+        # emits Python booleans. Both are exact spellings, not truthy coercions.
+        if name == "done" and raw in {"True", "False"}:
+            value = {"True": 1.0, "False": 0.0}[raw]
+        else:
+            value = float(raw)
         if not math.isfinite(value):
             raise ValueError(f"non-finite source {name}")
         fields.append(value)
@@ -53,6 +59,8 @@ def _text(content: Any) -> str:
         raise ValueError("message content must be text or multimodal blocks")
     parts = []
     for block in content:
+        if not isinstance(block, dict):
+            raise ValueError("message content blocks must be mappings")
         if block.get("type") in ("text", "input_text") and isinstance(block.get("text"), str):
             parts.append(block["text"])
         elif block.get("type") in ("image", "image_url"):
@@ -63,6 +71,8 @@ def _text(content: Any) -> str:
 
 
 def _responses(messages: list[dict[str, Any]], count: int, *, final_observation: bool):
+    if not isinstance(messages, list) or any(not isinstance(message, dict) for message in messages):
+        raise ValueError("messages must be a list of role/content mappings")
     expected = ["system"] + [role for _ in range(count) for role in ("user", "assistant")]
     if final_observation:
         expected.append("user")
@@ -158,6 +168,8 @@ def convert_sft_view(
         raise ValueError("converted actions differ from recorded source semantic actions")
     if "action_indices" in record and record["action_indices"] != actions:
         raise ValueError("source action_indices disagree with assistant actions")
+    if any(text.count("<image>") != 1 for text in observations):
+        raise ValueError("each converted observation must bind exactly one current image")
     if n == 1:
         return None
     returns = [0.0] * n
@@ -165,8 +177,6 @@ def convert_sft_view(
     for index in range(n - 1, -1, -1):
         running = rewards[index] + gamma * running
         returns[index] = running
-    if any(text.count("<image>") != 1 for text in observations):
-        raise ValueError("each converted observation must bind exactly one current image")
     source_hash = canonical_sha256(record)
     result = {
         "record_format": "nimloth_trajectory_v1", "id": record["id"],

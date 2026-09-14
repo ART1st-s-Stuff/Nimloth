@@ -42,6 +42,10 @@ def validated_action_value_targets(
     if provenance.get("format") != FINITE_HORIZON_FORMAT:
         raise ValueError("unsupported finite_horizon_provenance format")
     n = len(record["action_indices"])
+    if n < 1:
+        raise ValueError("tail-drop records require at least one retained transition")
+    if record.get("terminated") is not False or record.get("truncated") is not True:
+        raise ValueError("tail-drop records must mark their artificial endpoint truncated")
     original_n = provenance.get("original_action_count")
     horizon = provenance.get("max_action_horizon")
     if type(original_n) is not int or original_n != n + 1:
@@ -84,6 +88,18 @@ def validated_action_value_targets(
     retained = [_finite(value, "retained reward") for value in retained]
     if retained != rewards[:-1]:
         raise ValueError("retained rewards must equal original_rewards without final action")
+    if not math.isclose(_finite(record.get("reward"), "retained reward sum"),
+                        sum(retained), rel_tol=1e-7, abs_tol=1e-7):
+        raise ValueError("aggregate reward must equal retained rewards")
+    if "original_reward" in provenance and not math.isclose(
+        _finite(provenance["original_reward"], "original_reward"), sum(rewards),
+        rel_tol=1e-7, abs_tol=1e-7,
+    ):
+        raise ValueError("original_reward must equal full original reward sum")
+    if "original_success" in provenance:
+        success = provenance["original_success"]
+        if type(success) is not bool or record.get("success") is not success:
+            raise ValueError("tail-drop conversion must preserve original trajectory success")
     if _finite(provenance.get("removed_reward"), "removed_reward") != rewards[-1]:
         raise ValueError("removed_reward must match the original final reward")
     removed_action = provenance.get("removed_action_index")

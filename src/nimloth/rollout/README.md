@@ -5,6 +5,7 @@
 
 - `schema.py`：统一 trajectory 记录、序列化和 prompt 重建。
 - `record_format.py`：当前持久化版本、reward来源和最小结构契约。
+- `transcript.py`：离线转换共用的 Qwen 消息解析，不依赖环境运行时。
 - `tail_drop.py`：严格核验 SFT view 中嵌入的完整奖励/动作/CoT，生成删除最后一步的新 Stage3 数据和 manifest。
 - `finite_horizon.py`：有限时域 return 来源、gamma 与删除尾步的跨字段验证。
 - `migration.py`：把未版本化JSONL离线转换为当前格式并写SHA256 manifest。
@@ -76,3 +77,7 @@ advantage。fresh逐步reward用于完整episode return；真正terminal从0 boo
 包含完整原始 rewards/dones、gamma、零 bootstrap 的原始终点依据、source SHA256
 和被移除动作；`finite_horizon.py` 重算完整 return 后再切片验证。
 消费 gamma 不一致拒绝。缺失 outcome 标签保持未监督，不解释成动作失败。
+
+截断转换产物的当前终点必须标记 `terminated=False, truncated=True`；其 reward
+等于保留逐步 reward 之和，原始完整 reward 和 success 独立保留并校验。
+VAGEN 观测中的 done 支持原始数字 0/1 与精确 True/False 文本，不做字符串真值转换。

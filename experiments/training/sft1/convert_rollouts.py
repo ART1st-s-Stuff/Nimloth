@@ -35,6 +35,7 @@ for _dependency_root in (_REPO_ROOT / "src", _VAGEN_ROOT):
         sys.path.insert(0, str(_dependency_root))
 
 from nimloth.agent import NimlothPromptTemplate
+from nimloth.rollout.transcript import parse_im_messages
 
 from vagen.envs.navigation.utils.nimloth_format import (
     ACTION_NAMES,
@@ -134,27 +135,6 @@ def rewrite_prompt_instruction(content: str) -> str:
     content = ACTION_RE.sub(NIMLOTH_ACTION_BLOCK, content)
     return content
 
-
-def parse_im_messages(text: str) -> list[dict[str, str]]:
-    """Parse a Qwen chat-template string into role/content messages."""
-    messages: list[dict[str, str]] = []
-    pos = 0
-    token_re = re.compile(r"<\|im_start\|>(system|user|assistant)\n", re.S)
-    while True:
-        m = token_re.search(text, pos)
-        if not m:
-            break
-        role = m.group(1)
-        content_start = m.end()
-        end = text.find(IM_END, content_start)
-        if end < 0:
-            content = text[content_start:]
-            pos = len(text)
-        else:
-            content = text[content_start:end]
-            pos = end + len(IM_END)
-        messages.append({"role": role, "content": content})
-    return messages
 
 
 def parse_output_messages(text: str) -> list[dict[str, str]]:
