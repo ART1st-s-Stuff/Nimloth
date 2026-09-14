@@ -5,7 +5,7 @@ import pytest
 from PIL import Image
 
 from experiments.training.sft.stage3.prepare_eval_records import (
-    prepare_manifest, raw_record_to_stage3,
+    _task_success_flag, prepare_manifest, raw_record_to_stage3,
 )
 from experiments.training.sft.stage3.prompt_conversion import NAMES, TOKENS, rewrite_text
 from experiments.training.sft1.vagen_step60_data import convert_source_prompt
@@ -107,3 +107,32 @@ def test_check_only_produces_no_outputs(tmp_path):
     assert report["record_count"] == 1
     assert report["retained_transitions"] == 2
     assert not output.exists()
+
+
+@pytest.mark.parametrize("numeric_type", [int, float])
+def test_eval_accepts_exact_numeric_task_success(tmp_path, numeric_type):
+    raw, path, _, source = _write_raw(tmp_path)
+    for step in raw["recording"]["history"][1:]:
+        step["info"]["task_success"] = numeric_type(step["info"]["task_success"])
+    path.write_text(json.dumps(raw))
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    source.write_text(json.dumps({"count": 1, "records": [{"path": path.name, "sha256": digest}]}))
+    output = tmp_path / "numeric"
+    prepare_manifest(source, output, latent_token_count=64, max_action_horizon=20)
+    row = json.loads((output / "data.jsonl").read_text())
+    assert row["success"] is True
+    assert row["action_successes"] == [True, True]
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), 0.5, -1, "0", "False", None])
+def test_eval_rejects_non_binary_task_success(tmp_path, value):
+    with pytest.raises(ValueError, match="task success"):
+        _task_success_flag(value)
+    raw, path, _, _ = _write_raw(tmp_path)
+    raw["recording"]["history"][1]["info"]["task_success"] = value
+    path.write_text(json.dumps(raw))
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    with pytest.raises(ValueError):
+        raw_record_to_stage3(raw, observation_image_paths=[str(tmp_path/f"{i}.png") for i in range(4)],
+                            raw_path=path, raw_sha256=digest, latent_token_count=64,
+                            max_action_horizon=20, gamma=1)

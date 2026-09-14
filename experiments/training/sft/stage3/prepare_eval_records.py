@@ -25,6 +25,15 @@ from nimloth.rollout.tail_drop import convert_sft_view, feedback
 from nimloth.rollout.transcript import parse_im_messages
 
 
+def _task_success_flag(value: Any) -> bool:
+    """VAGEN recordings serialize task success as a boolean or exact numeric 0/1."""
+    if type(value) is bool:
+        return value
+    if type(value) in (int, float) and value in (0, 1):
+        return bool(value)
+    raise ValueError("raw task success must be boolean or exact numeric 0/1")
+
+
 def raw_record_to_sft_view(
     raw: dict[str, Any], *, observation_image_paths: list[str],
     raw_path: Path, raw_sha256: str, latent_token_count: int,
@@ -67,7 +76,7 @@ def raw_record_to_sft_view(
             raise ValueError("raw reward must be finite numeric")
         if not math.isclose(parsed_reward, reward, abs_tol=1e-7, rel_tol=1e-7):
             raise ValueError("raw observation reward differs from history reward")
-        if type(info["task_success"]) is not bool or info["task_success"] != parsed_done:
+        if _task_success_flag(info["task_success"]) != parsed_done:
             raise ValueError("raw task success differs from observation done")
         if type(info["last_action_success"]) is not bool or info["last_action_success"] != parsed_outcome:
             raise ValueError("raw execution outcome differs from observation feedback")
@@ -81,7 +90,7 @@ def raw_record_to_sft_view(
         else:
             content = rewrite_text(convert_source_prompt(message["content"], latent_token_count=latent_token_count))
         converted_messages.append({"role": message["role"], "content": content})
-    success = history[-1]["info"]["task_success"]
+    success = _task_success_flag(history[-1]["info"]["task_success"])
     return {
         "id": f"eval/{raw['source_key']}", "split": "eval", "success": success,
         "reward": sum(rewards), "messages": converted_messages,
