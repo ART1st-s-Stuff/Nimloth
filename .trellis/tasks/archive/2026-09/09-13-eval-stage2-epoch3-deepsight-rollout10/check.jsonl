@@ -1,0 +1,3 @@
+{"file":".trellis/spec/experiments/task-contract.md","reason":"Check the exact 10-rollout split, runtime identity, monitoring, and evidence limits."}
+{"file":".trellis/spec/experiments/outputs-checkpoints-and-evidence.md","reason":"Check source/destination hashes, export lineage, terminal markers, and artifact completeness."}
+{"file":".trellis/tasks/09-13-eval-stage2-epoch3-deepsight-rollout10/research/preflight-2026-09-13.md","reason":"Check execution against the fresh host and checkpoint facts captured before launch."}

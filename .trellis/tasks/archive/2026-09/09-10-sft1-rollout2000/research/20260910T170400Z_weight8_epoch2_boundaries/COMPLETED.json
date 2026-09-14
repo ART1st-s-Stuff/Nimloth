@@ -1,0 +1,10 @@
+{
+  "completed_samples": 1,
+  "states": [
+    "baseline",
+    "checkpoint"
+  ],
+  "boundaries_per_state": 2,
+  "generated_samples": 0,
+  "elapsed_seconds": 170.71248865127563
+}

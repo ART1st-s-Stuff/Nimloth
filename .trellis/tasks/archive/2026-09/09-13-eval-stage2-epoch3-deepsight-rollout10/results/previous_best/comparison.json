@@ -1,0 +1,9 @@
+{
+  "mse": 0.6703940393119459,
+  "cosine": 0.7449836636221172,
+  "states": 151,
+  "variance_ratio": 0.049776218831539154,
+  "centered_cosine": 0.21411071717739105,
+  "mean_prediction_mse": 0.7098172307014465,
+  "inputs_targets_exactly_equal": true
+}

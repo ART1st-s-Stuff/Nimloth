@@ -1,0 +1,37 @@
+{
+  "commit": "fef4a481eed81641efc1819c03dc3824f387a2e2",
+  "checkout": "/mnt/nimloth/.worktree/sft2-epoch5",
+  "run": "/mnt/nimloth/outputs/experiments/sft2-rollout2000/20260911T072059Z_epoch5_query_converge/train",
+  "gate_pass": "/mnt/nimloth/outputs/experiments/sft2-rollout2000/20260911T072059Z_epoch5_query_converge/gate_control_retry2/PASSED.json",
+  "env": {
+    "PYTHONPATH": "/mnt/nimloth/.worktree/sft2-epoch5/src",
+    "PYTHONUNBUFFERED": "1",
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "OMP_NUM_THREADS": "4",
+    "MKL_NUM_THREADS": "4",
+    "TOKENIZERS_PARALLELISM": "false",
+    "CUDA_VISIBLE_DEVICES": "0,1,2,3,4,5,6",
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+    "CPATH": "/mnt/nimloth/dependencies/python310-dev/root/usr/include/python3.10:/mnt/nimloth/dependencies/python310-dev/root/usr/include"
+  },
+  "argv": [
+    "/mnt/nimloth/venv/bin/python3", "-m", "torch.distributed.run", "--standalone", "--nnodes=1", "--nproc-per-node=7",
+    "-m", "nimloth.training.sft.stage2",
+    "--model", "/mnt/nimloth/outputs/experiments/sft2-rollout2000/20260911T072059Z_epoch5_query_converge/base",
+    "--train-jsonl", "/mnt/nimloth/outputs/experiments/sft1-rollout2000/20260910T173759Z_B_semantic_prompt/data/sft1_train_all.jsonl",
+    "--val-jsonl", "/mnt/nimloth/outputs/experiments/sft1-rollout2000/20260910T173759Z_B_semantic_prompt/data/sft1_heldout_all.jsonl",
+    "--output-dir", "/mnt/nimloth/outputs/experiments/sft2-rollout2000/20260911T072059Z_epoch5_query_converge/train",
+    "--dino-cache-root", "/mnt/nimloth/outputs/experiments/sft2-rollout2000/20260911T072059Z_epoch5_query_converge/dino_cache",
+    "--distributed-strategy", "fsdp", "--batch-size", "1", "--grad-accum", "8",
+    "--lr", "1e-6", "--embedding-lr", "5e-6", "--weight-decay", "0.01", "--warmup-ratio", "0.05",
+    "--lora", "--lora-r", "64", "--lora-alpha", "128", "--lora-dropout", "0.05",
+    "--latent-token-count", "16", "--latent-query-mode", "inject", "--grid-size", "4",
+    "--weight-lm", "1", "--weight-dino", "1", "--projector-hidden-dim", "2048",
+    "--max-length", "20000", "--max-pixels", "100352", "--min-pixels", "3136",
+    "--attn-implementation", "flash_attention_2", "--gradient-checkpointing", "--seed", "42",
+    "--resume-save-steps", "10", "--no-wandb", "--no-cache", "--num-workers", "4",
+    "--format-eval-samples", "32", "--max-val-records", "-1", "--max-val-batches", "-1",
+    "--until-converged", "--convergence-min-epochs", "2", "--convergence-patience-epochs", "2",
+    "--convergence-min-relative-improvement", "0.01"
+  ]
+}

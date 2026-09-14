@@ -1,0 +1,602 @@
+{
+  "evaluation": "stage1_static_format_gate_v1",
+  "checkpoint": "/mnt/nimloth/outputs/experiments/sft1-rollout2000/20260911T180000Z_epoch7_test120/checkpoint",
+  "policy_fingerprint": "d42f8fa0a417dbc788d720e5bae18b729517481429f75e2886694b1424ca5283",
+  "full_heldout_jsonl": "/mnt/nimloth/outputs/experiments/sft1-rollout2000/20260911T115012Z_success_only_termination_w8/data/format_eval.jsonl",
+  "full_heldout_sha256": "730361cc9825ce1f65055a1a4528243ee638de861e703b89c88a20e76047215a",
+  "selection": "first_32_records_in_jsonl_order",
+  "denominator": 32,
+  "minimum_correct": 31,
+  "generation": {
+    "temperature": 0.7,
+    "top_p": 0.95,
+    "max_response_tokens": 512,
+    "generation_seed": 0,
+    "tensor_parallel_size": 2,
+    "max_model_len": 32768,
+    "gpu_memory_utilization": 0.85,
+    "max_pixels": 100352,
+    "vllm_mm_processor_cache_gb": 0.0,
+    "vllm_enable_prefix_caching": false,
+    "vllm_distributed_executor_backend": null,
+    "episode_concurrency": 4
+  },
+  "selected": [
+    {
+      "record_id": "vagen-step60/000009",
+      "source_identity": {
+        "source_index": 9,
+        "source_key": "base:13268",
+        "eval_set": "base",
+        "seed": 13268,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "b2717f9e157d94296a82d4d3ca1b102e906005a5a832d50d81f78550e27c91e0",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/three_lane_2_tp2/shard_02/rollouts/row_000009/image_0000.png",
+          "sha256": "d0c5a1fe96d39ad7018b12719572f7a0fe4b0d959b438163bc20bc88a500e867"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000019",
+      "source_identity": {
+        "source_index": 19,
+        "source_key": "base:16537",
+        "eval_set": "base",
+        "seed": 16537,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "e63dd81c87253e1faa42160dcf97ab324980c113dc6c3217bad2fce3b2ff5a70",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/three_lane_0_tp2/shard_00/rollouts/row_000019/image_0000.png",
+          "sha256": "717180764e32ecd1bb39bf515a586f494991870a207e60f88f34851daa77bc20"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000029",
+      "source_identity": {
+        "source_index": 29,
+        "source_key": "base:17451",
+        "eval_set": "base",
+        "seed": 17451,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "49f5047fcdacc435b418ab47ac6d5372571a13b9463ab47d83c4aae7681673b8",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_1_tp2_v2/shard_04/rollouts/row_000029/image_0000.png",
+          "sha256": "b8884d3dfa6e9d12f80b1d389a8d793be5fb0a501ff44ebc70b2e63a169b9176"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000039",
+      "source_identity": {
+        "source_index": 39,
+        "source_key": "base:29453",
+        "eval_set": "base",
+        "seed": 29453,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "af738b671bbd807491eced1442a3175b3a05cd0f85c81a77ab753c7806b56e6d",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/three_lane_2_tp2/shard_02/rollouts/row_000039/image_0000.png",
+          "sha256": "690a9cfea03cc00cd38e170718e3746c5816f93e9f8c56b051579d609eba2ade"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000049",
+      "source_identity": {
+        "source_index": 49,
+        "source_key": "base:20017",
+        "eval_set": "base",
+        "seed": 20017,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "e63dd81c87253e1faa42160dcf97ab324980c113dc6c3217bad2fce3b2ff5a70",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/three_lane_0_tp2/shard_00/rollouts/row_000049/image_0000.png",
+          "sha256": "a4967589ba90ca935c65132936ef64be8603664ca4c5a1a7b4b67b3230ede43e"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000059",
+      "source_identity": {
+        "source_index": 59,
+        "source_key": "base:2040",
+        "eval_set": "base",
+        "seed": 2040,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "d651d0a1876368f1a5d4ec8e0010897b715c2fd3008289e67c1dc9aba5d70c9b",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_2_tp2_v3/shard_05/rollouts/row_000059/image_0000.png",
+          "sha256": "b092b606c73763c281f6a95da3618ea5abeb8b5032a322d173ddd079c9480817"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000069",
+      "source_identity": {
+        "source_index": 69,
+        "source_key": "base:25724",
+        "eval_set": "base",
+        "seed": 25724,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "cf1946ac9fcde63950d256a5c7ebc0d48dca8cadc6433fbc8f67ce2745ceec30",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/three_lane_2_tp2/shard_02/rollouts/row_000069/image_0000.png",
+          "sha256": "ac5b9fe600904c718f76eea9e4e76ecc1ba5bee94420a64b292901aca07bd7b0"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000079",
+      "source_identity": {
+        "source_index": 79,
+        "source_key": "base:23929",
+        "eval_set": "base",
+        "seed": 23929,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "e63dd81c87253e1faa42160dcf97ab324980c113dc6c3217bad2fce3b2ff5a70",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/three_lane_0_tp2/shard_00/rollouts/row_000079/image_0000.png",
+          "sha256": "fa675e46b39b68b7c3750c2684db8df3469e751d97f9263925036e70af17eced"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000089",
+      "source_identity": {
+        "source_index": 89,
+        "source_key": "base:4669",
+        "eval_set": "base",
+        "seed": 4669,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "e63dd81c87253e1faa42160dcf97ab324980c113dc6c3217bad2fce3b2ff5a70",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_0_tp2_v2/shard_06/rollouts/row_000089/image_0000.png",
+          "sha256": "8181d47354350ac6aa378e6b0cba99f75ba586e811bd74002f4cfb7a1372cee0"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000099",
+      "source_identity": {
+        "source_index": 99,
+        "source_key": "base:3573",
+        "eval_set": "base",
+        "seed": 3573,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "1452e19379c9291e59ae044b2172ca2d340bed4f630884bdee5c73b2042733e9",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/three_lane_2_tp2/shard_02/rollouts/row_000099/image_0000.png",
+          "sha256": "1e49072c817a2db149f845a466f571dffa73e1f4a35d8e78e177f461d0d21ae2"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000109",
+      "source_identity": {
+        "source_index": 109,
+        "source_key": "base:6658",
+        "eval_set": "base",
+        "seed": 6658,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "49f5047fcdacc435b418ab47ac6d5372571a13b9463ab47d83c4aae7681673b8",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_1_tp2_v2/shard_07/rollouts/row_000109/image_0000.png",
+          "sha256": "a5c1b7026f38aff9775d689e7bc421236fa68ffbbfef9f18946ce96cc6b8f679"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000119",
+      "source_identity": {
+        "source_index": 119,
+        "source_key": "base:12612",
+        "eval_set": "base",
+        "seed": 12612,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "3399adfff3ba1e90050d004d3d9a33c22d9d57c82eb3a2ab3d4e90efa64a9317",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_2_tp2_v3/shard_08/rollouts/row_000119/image_0000.png",
+          "sha256": "f3c3bc8805477a0f69928f967e8da3ef87af9df92460828b17a5e59595f4bdea"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000129",
+      "source_identity": {
+        "source_index": 129,
+        "source_key": "base:20079",
+        "eval_set": "base",
+        "seed": 20079,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "e63dd81c87253e1faa42160dcf97ab324980c113dc6c3217bad2fce3b2ff5a70",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/three_lane_2_tp2/shard_02/rollouts/row_000129/image_0000.png",
+          "sha256": "376702994ff723b4c72ea235f52910efb8f1fbef664536f2c63758910b8b4ce3"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000139",
+      "source_identity": {
+        "source_index": 139,
+        "source_key": "base:4900",
+        "eval_set": "base",
+        "seed": 4900,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "49f5047fcdacc435b418ab47ac6d5372571a13b9463ab47d83c4aae7681673b8",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume197_lane_0_tp2/shard_00/rollouts/row_000139/image_0000.png",
+          "sha256": "9c27abdd8da0d3a39707565b3715720bd1e0c2b62f48c328844e573a834cecea"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000149",
+      "source_identity": {
+        "source_index": 149,
+        "source_key": "base:27455",
+        "eval_set": "base",
+        "seed": 27455,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "5b770f555c966d79ddb8db5365e7abc857ec0fa284a226d449862a5124e787ec",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume197_lane_1_tp2/shard_01/rollouts/row_000149/image_0000.png",
+          "sha256": "c474d238a2a96d91521b12aaf332fea8170a2eb2bbc5bdb49c85da38684f6864"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000159",
+      "source_identity": {
+        "source_index": 159,
+        "source_key": "base:22265",
+        "eval_set": "base",
+        "seed": 22265,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "4c4aa1f2ff5b40a69b3d234f106298fae655ae5fd6215ebcc64dfca259a690b6",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/three_lane_2_tp2/shard_02/rollouts/row_000159/image_0000.png",
+          "sha256": "95f2c7da093ec8d54dee590ce6567ed04ade7e7351a43b4d30819983ca92b2c7"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000169",
+      "source_identity": {
+        "source_index": 169,
+        "source_key": "base:22944",
+        "eval_set": "base",
+        "seed": 22944,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "5b770f555c966d79ddb8db5365e7abc857ec0fa284a226d449862a5124e787ec",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume197_lane_2_tp2/shard_02/rollouts/row_000169/image_0000.png",
+          "sha256": "1973bfacbc0fcefd8a85923fdfd8bd94151a467b977b3a8775b56c2252622280"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000179",
+      "source_identity": {
+        "source_index": 179,
+        "source_key": "base:10986",
+        "eval_set": "base",
+        "seed": 10986,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "4e4489ef16094060f669f7d0842c4b55a1bffbfafd16a74bada8ce2c4e387ec6",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_0_tp2_v2/shard_00/rollouts/row_000179/image_0000.png",
+          "sha256": "9377df1f1b1b209bbfeec3967aa8235d5d3783e943010e71c9b502426ae53c59"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000189",
+      "source_identity": {
+        "source_index": 189,
+        "source_key": "base:12191",
+        "eval_set": "base",
+        "seed": 12191,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "197b71f89a53e12928902d9472fca436bc7cac96feaccd942861e6b64f607ecd",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/three_lane_2_tp2/shard_02/rollouts/row_000189/image_0000.png",
+          "sha256": "8a3c9dd98e0530d04d2a78ccf1b3e493f7bc99a1687b203d344c212b4e5bb7b2"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000199",
+      "source_identity": {
+        "source_index": 199,
+        "source_key": "base:28027",
+        "eval_set": "base",
+        "seed": 28027,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "b5705b86e8a5895c19bafc439f5fee4b6eb09634479d35fecc6a2ff20bbb4657",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_1_tp2_v2/shard_01/rollouts/row_000199/image_0000.png",
+          "sha256": "950f3dd2829e16971afbb018ca450f85f5be086f65af710f4984e48786517eb9"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000209",
+      "source_identity": {
+        "source_index": 209,
+        "source_key": "base:2424",
+        "eval_set": "base",
+        "seed": 2424,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "5b770f555c966d79ddb8db5365e7abc857ec0fa284a226d449862a5124e787ec",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_2_tp2_v3/shard_02/rollouts/row_000209/image_0000.png",
+          "sha256": "e64e710f6a15aeec87e0b684bfa57f0a446b6573e129f35a80cf9832fbffdc5e"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000219",
+      "source_identity": {
+        "source_index": 219,
+        "source_key": "base:2999",
+        "eval_set": "base",
+        "seed": 2999,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "61b5d8d933dc0b689ba95ff01b5cf743669bd448b401a7085b162b26506dc5e9",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_0_tp2_v2/shard_03/rollouts/row_000219/image_0000.png",
+          "sha256": "f44cabf6908fae2c65fce4574967401d4666b84b3507168790687f05bd26c817"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000229",
+      "source_identity": {
+        "source_index": 229,
+        "source_key": "base:4059",
+        "eval_set": "base",
+        "seed": 4059,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "e63dd81c87253e1faa42160dcf97ab324980c113dc6c3217bad2fce3b2ff5a70",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_1_tp2_v2/shard_04/rollouts/row_000229/image_0000.png",
+          "sha256": "20b977de10282d1c138ccab8c4329c916cc420456517a6ddf488d15790eee5ba"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000239",
+      "source_identity": {
+        "source_index": 239,
+        "source_key": "base:20335",
+        "eval_set": "base",
+        "seed": 20335,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "49f5047fcdacc435b418ab47ac6d5372571a13b9463ab47d83c4aae7681673b8",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_2_tp2_v3/shard_05/rollouts/row_000239/image_0000.png",
+          "sha256": "69047db1834de3aa11eaca5379ec9ffc8ba60d6e17d0b27994da13939c7e0a8d"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000249",
+      "source_identity": {
+        "source_index": 249,
+        "source_key": "base:14289",
+        "eval_set": "base",
+        "seed": 14289,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "b5705b86e8a5895c19bafc439f5fee4b6eb09634479d35fecc6a2ff20bbb4657",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_0_tp2_v2/shard_06/rollouts/row_000249/image_0000.png",
+          "sha256": "131e0ab070730ef1705b5ca3865642404cba7242cc2cb20d7096ec8cde7c3d28"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000259",
+      "source_identity": {
+        "source_index": 259,
+        "source_key": "base:6532",
+        "eval_set": "base",
+        "seed": 6532,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "82945f4d584f8bc5dc21ad7506f3af60389b2177b9ef12e687a3ee7fc4d8a5e2",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_1_tp2_v2/shard_07/rollouts/row_000259/image_0000.png",
+          "sha256": "afde2486829dde137d6803473658583520454f65ecfd956d74b004ed8191550a"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000269",
+      "source_identity": {
+        "source_index": 269,
+        "source_key": "base:22862",
+        "eval_set": "base",
+        "seed": 22862,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "b5705b86e8a5895c19bafc439f5fee4b6eb09634479d35fecc6a2ff20bbb4657",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_2_tp2_v3/shard_08/rollouts/row_000269/image_0000.png",
+          "sha256": "20524f77de55ca803d0a9cd04b6da38031edf2f1ad7b496013d9af7af80c1798"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000279",
+      "source_identity": {
+        "source_index": 279,
+        "source_key": "base:11216",
+        "eval_set": "base",
+        "seed": 11216,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "1452e19379c9291e59ae044b2172ca2d340bed4f630884bdee5c73b2042733e9",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume197_lane_0_tp2/shard_00/rollouts/row_000279/image_0000.png",
+          "sha256": "03509c8223c855b8bb8573647f737a85570069361c5e2eea07d62295dbfe54a9"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000289",
+      "source_identity": {
+        "source_index": 289,
+        "source_key": "base:22324",
+        "eval_set": "base",
+        "seed": 22324,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "1666befff7a7adc259897c1447e98bae2ccf7c179a89e7be04aa73ef2fd4eafa",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume197_lane_1_tp2/shard_01/rollouts/row_000289/image_0000.png",
+          "sha256": "6457b9861f43cefb3475b4a932a1baefbd7428765c6aa64752e764068eb4e427"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000299",
+      "source_identity": {
+        "source_index": 299,
+        "source_key": "base:27448",
+        "eval_set": "base",
+        "seed": 27448,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "5fea26d26326e2d251a8af38055c6aaddc808e52e23512bfb95bd2d0ccf4884c",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume197_lane_2_tp2/shard_02/rollouts/row_000299/image_0000.png",
+          "sha256": "06fb489d4c0dbeb63bf30aa43a0877c2b9e7ad56c9734886cbae2ea6ca2c6269"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000319",
+      "source_identity": {
+        "source_index": 319,
+        "source_key": "base:19992",
+        "eval_set": "base",
+        "seed": 19992,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "3399adfff3ba1e90050d004d3d9a33c22d9d57c82eb3a2ab3d4e90efa64a9317",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_1_tp2_v2/shard_01/rollouts/row_000319/image_0000.png",
+          "sha256": "577f00b297a20f7449bd6b783b4792dfb3e218d60d6062e452cb2228f8d56e51"
+        }
+      ]
+    },
+    {
+      "record_id": "vagen-step60/000329",
+      "source_identity": {
+        "source_index": 329,
+        "source_key": "base:23449",
+        "eval_set": "base",
+        "seed": 23449,
+        "batch": 1,
+        "split": "heldout"
+      },
+      "prompt_messages_sha256": "e63dd81c87253e1faa42160dcf97ab324980c113dc6c3217bad2fce3b2ff5a70",
+      "image_lineage": [
+        {
+          "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_2_tp2_v3/shard_02/rollouts/row_000329/image_0000.png",
+          "sha256": "43e61a16848a7ab3881d6be8a1cf944798908ee942d0addb9ecdfa4ebf038977"
+        }
+      ]
+    }
+  ]
+}

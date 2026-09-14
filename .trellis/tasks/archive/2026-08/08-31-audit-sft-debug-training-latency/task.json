@@ -1,0 +1,29 @@
+{
+  "id": "audit-sft-debug-training-latency",
+  "name": "audit-sft-debug-training-latency",
+  "title": "审计 SFT1/SFT2 调试至重训的工作流延迟",
+  "description": "",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "read-only-workflow-audit",
+  "package": null,
+  "priority": "P2",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-08-31",
+  "completedAt": "2026-08-31",
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "audit_period": "2026-08-26..2026-08-31",
+    "read_only": "true"
+  }
+}

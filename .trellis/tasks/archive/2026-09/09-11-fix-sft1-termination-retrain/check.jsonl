@@ -1,0 +1,5 @@
+{"file":".trellis/spec/python/quality-and-testing.md","reason":"Focused and affected-scope Python verification requirements"}
+{"file":".trellis/spec/domains/sft-stages.md","reason":"Check training and evaluation semantics against the stage contract"}
+{"file":".trellis/spec/experiments/data-and-splits.md","reason":"Verify success filtering and heldout separation evidence"}
+{"file":".trellis/spec/experiments/outputs-checkpoints-and-evidence.md","reason":"Verify resume, export, cleanup, and claims match actual artifacts"}
+{"file":".trellis/tasks/09-11-fix-sft1-termination-retrain/research/zero-success-diagnosis-20260911.md","reason":"Regression-check the exact failure exposed by epoch 5 evaluation"}

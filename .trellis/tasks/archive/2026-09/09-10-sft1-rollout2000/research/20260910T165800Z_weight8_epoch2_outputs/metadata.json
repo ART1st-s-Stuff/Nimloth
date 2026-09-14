@@ -1,0 +1,25 @@
+{
+  "checkpoint": "/mnt/nimloth/outputs/experiments/sft1-rollout2000/20260910T151422Z_format_weight8_converge/epoch_002",
+  "checkpoint_committed": {
+    "epoch": 2,
+    "step": 54
+  },
+  "base_model": "/mnt/nimloth/checkpoint/hf_actor",
+  "dataset": "/mnt/nimloth/outputs/datasets/sft1-vagen-step60/20260910T093222Z_batch1_original_validation_k16/sft1_heldout_all.jsonl",
+  "source_commit": "f62caf7e592db659e59bdab3686a0ac072ed80ed",
+  "stage": "sft1_format_only",
+  "device": "cpu",
+  "base_dtype": "bfloat16",
+  "attention": "sdpa",
+  "numerical_scope": "CPU SDPA generation; not bitwise equivalent to GPU FA2 evaluation",
+  "samples": 4,
+  "selection": "first records, first assistant prompt",
+  "max_new_tokens": 512,
+  "do_sample": false,
+  "min_pixels": 3136,
+  "max_pixels": 100352,
+  "threads": 8,
+  "seed": 42,
+  "started_unix": 1789059432.4482903,
+  "scope": "actual generated text inspection; not environment success evaluation"
+}

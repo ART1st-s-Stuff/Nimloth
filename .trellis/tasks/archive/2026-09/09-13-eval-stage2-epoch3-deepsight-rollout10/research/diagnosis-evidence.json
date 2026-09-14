@@ -1,0 +1,45 @@
+{
+  "scope": "Read-only CPU analysis of saved epoch3 rollout features; no additional training or rollout",
+  "validation_dino_loss": {
+    "1": 1.0503618717193604,
+    "2": 0.9384673237800598,
+    "3": 0.8741996884346008,
+    "4": 0.8436920642852783,
+    "5": 0.8067843914031982
+  },
+  "validation_lm_loss": {
+    "1": 0.366276353597641,
+    "2": 0.3662329316139221,
+    "3": 0.3676115870475769,
+    "4": 0.3709873855113983,
+    "5": 0.3766974210739136
+  },
+  "all_states": {
+    "n": 134,
+    "prediction_variance": 0.0029927559662610292,
+    "target_variance": 0.5592729449272156,
+    "variance_ratio": 0.00535115459933877,
+    "centered_cosine": 0.022561710327863693,
+    "mse": 0.914871335029602,
+    "own_prediction_mean_mse": 0.9139034748077393,
+    "leave_episode_out_target_mean_mse": 0.7150574326515198
+  },
+  "unique_image_subset": {
+    "n": 32,
+    "selection": "one last-occurrence state per image SHA256; descriptive only, histories differ",
+    "variance_ratio": 0.0023703626357018948,
+    "centered_cosine": 0.005666276905685663
+  },
+  "cross_episode_shuffle": {
+    "draws": 20,
+    "seed": 42,
+    "mse": 0.9176643162965774,
+    "cosine": 0.612183591723442
+  },
+  "interpretation_limits": [
+    "Epoch3 only for sensitivity analysis; later feature checkpoints not evaluated",
+    "Mean target control derived from other evaluation episodes, not independent train baseline; environments/images can overlap",
+    "PCA view explains15.5percent variance, full-dimension calculations separately support weak observation dependence",
+    "No proof that query/projector architecture cannot learn; no matched later-epoch comparison yet"
+  ]
+}

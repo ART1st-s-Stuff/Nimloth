@@ -1,0 +1,8 @@
+{
+  "schema": "stage1_static_format_gate_v1",
+  "correct": 31,
+  "denominator": 32,
+  "format_correct_rate": 0.96875,
+  "minimum_correct": 31,
+  "passed": true
+}

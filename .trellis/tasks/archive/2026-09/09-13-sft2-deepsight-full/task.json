@@ -1,0 +1,39 @@
+{
+  "id": "sft2-deepsight-full",
+  "name": "sft2-deepsight-full",
+  "title": "Stage2 DeepSight full finetuning comparison",
+  "description": "Implement explicit DeepSight-style frozen vision and full language tuning; run comparison from same Stage1 epoch2 input on a100-1.",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-09-13",
+  "completedAt": "2026-09-14",
+  "branch": "codex/sft2-deepsight-full",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "kind": "experiment",
+    "worktree": "/workspace/remote2/nimloth/.worktree/sft2-deepsight-full",
+    "commit": "ebe193c43cb56012fcd2e7feaa91a76bf49fabdd",
+    "closeout": {
+      "date": "2026-09-14",
+      "authorization": "User requested closing recent a100-1 and a100-2 experiment tasks",
+      "outcome": "completed_experiment_series",
+      "summary": "Full/LoRA comparisons and bounded joint training ended. Latest full epoch12/324 validation total1.8815873563 LM.4116116464 DINO.7349878550. Frozen-Qwen/Query projector-only original-split probe early-stopped at epoch12(best): MSE.73614049->.55973440; cosine.702013->.783732; observation gain.125039->.290110; pairing advantage.280580->.687827. Evidence supports additional readout capacity on original validation trajectories, not unseen-scene generalization or policy success improvement.",
+      "remote_state": "No matching experiment GPU processes on either host; a100-2 SAM3/ContactGraspNet services preserved",
+      "code_integration": "Experiment branch commits retained; this closure does not merge branches or certify all original acceptance criteria",
+      "archive_authority": "Main checkout archive supersedes historical task snapshots in retained worktrees"
+    }
+  }
+}

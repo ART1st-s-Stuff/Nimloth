@@ -1,0 +1,130 @@
+{
+  "selection": {
+    "index": 14,
+    "record_id": "vagen-step60/000149",
+    "source_identity": {
+      "source_index": 149,
+      "source_key": "base:27455",
+      "eval_set": "base",
+      "seed": 27455,
+      "batch": 1,
+      "split": "heldout"
+    },
+    "prompt_messages_sha256": "5b770f555c966d79ddb8db5365e7abc857ec0fa284a226d449862a5124e787ec",
+    "image_lineage": [
+      {
+        "path": "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume197_lane_1_tp2/shard_01/rollouts/row_000149/image_0000.png",
+        "sha256": "c474d238a2a96d91521b12aaf332fea8170a2eb2bbc5bdb49c85da38684f6864"
+      }
+    ]
+  },
+  "prompt_messages": [
+    {
+      "role": "system",
+      "content": "You are a home robot and perform navigation tasks according to instructions.\nActions you can take: moveahead, moveback, moveright, moveleft, rotateright, rotateleft, lookup, lookdown.\nmoveahead: Move forward by some distance\nmoveback: Move backward by some distance\nmoveright: Move rightward by some distance\nmoveleft: Move leftward by some distance\nrotateright: Rotate to the right by 90 degrees\nrotateleft: Rotate to the left by 90 degrees\nlookup: Tilt the camera upward by 30 degrees\nlookdown: Tilt the camera downward by 30 degrees\nRewards:\nFormat correct only when the action block contains exactly one valid action token between <|action_start|> and <|action_end|>.\nAchieve the human instruction: +10.0\nInvalid action tokens receive negative feedback.\nThe instruction will be provided with each observation. Look at the image carefully and navigate to complete the instruction.\nHints:\n1. You must take exactly one action in each response.\n2. Your whole response must strictly match this format and nothing else:\n<think><observation>...</observation><reasoning>...</reasoning><prediction>...</prediction></think><|action_start|><|action_(idx)|><|action_end|>\n3. Do not write anything before <think> or after <|action_end|>.\n4. The answer must be exactly one of these action tokens: <|action_(0)|>, <|action_(1)|>, <|action_(2)|>, <|action_(3)|>, <|action_(4)|>, <|action_(5)|>, <|action_(6)|>, <|action_(7)|>.\nFor example:\n<think><observation>The target area is ahead.</observation><reasoning>I should move one step closer.</reasoning><prediction>The target should appear closer.</prediction></think><|action_start|><|action_(0)|><|action_end|>\n5. Do not use commas, numbering, bullet points, or natural-language action names between <|action_start|> and <|action_end|>.\n6. There is no stay, stop, end, done, terminate, wait, noop action. Never output those words.\n7. If you believe you are close to the target or the target is visible, do not stop or declare completion; still choose exactly one listed movement or camera action.\n9. The words stay, stop, end, done, terminate, wait, noop, finish, complete, and success are invalid answers even when the target is visible.\n8. If you seem to be stuck, you can lookdown to see if there is any object above or below you, or rotate to inspect what is behind you.\nYou must take exactly one action at a time.\nThe action must be exactly one of these action tokens: <|action_(0)|>, <|action_(1)|>, <|action_(2)|>, <|action_(3)|>, <|action_(4)|>, <|action_(5)|>, <|action_(6)|>, <|action_(7)|>.\nThere is no stay, stop, end, done, terminate, wait, noop action. Never output those words.\nIf you believe you are close to the target or the target is visible, do not stop or declare completion; still choose exactly one listed movement or camera action.\nThe words stay, stop, end, done, terminate, wait, noop, finish, complete, and success are invalid answers even when the target is visible.\nDo not output more than one action or separate actions with ','.\nYou should first give your thought process with the your observation, reasoning, and prediction of next state, then your answer.\nBoth the observation and prediction should describe what you see or expect to see in the environment.\nYour response should be in the format of:\n<think><observation>...</observation><reasoning>...</reasoning><prediction>...</prediction></think><|action_start|><|action_(idx)|><|action_end|>\ne.g. <think><observation>The target object is ahead but slightly off center.</observation><reasoning>I should take one forward step to reduce the distance.</reasoning><prediction>After moving forward, the target should appear larger and closer.</prediction></think><|action_start|><|action_(0)|><|action_end|>\nNimloth action tokens: <|action_(0)|> = moveahead (move forward), <|action_(1)|> = moveback (move backward), <|action_(2)|> = moveright (move right), <|action_(3)|> = moveleft (move left), <|action_(4)|> = rotateright (rotate right), <|action_(5)|> = rotateleft (rotate left), <|action_(6)|> = lookup (tilt camera up), <|action_(7)|> = lookdown (tilt camera down)."
+    },
+    {
+      "role": "user",
+      "content": "[Initial Observation]:\n<image>\nHuman Instruction: navigate to the Pillow in the room and be as close as possible to it\nDecide your next action.\nYou must take exactly one action at a time.\nThe action must be exactly one of these action tokens: <|action_(0)|>, <|action_(1)|>, <|action_(2)|>, <|action_(3)|>, <|action_(4)|>, <|action_(5)|>, <|action_(6)|>, <|action_(7)|>.\nThere is no stay, stop, end, done, terminate, wait, noop action. Never output those words.\nIf you believe you are close to the target or the target is visible, do not stop or declare completion; still choose exactly one listed movement or camera action.\nThe words stay, stop, end, done, terminate, wait, noop, finish, complete, and success are invalid answers even when the target is visible.\nDo not output more than one action or separate actions with ','.\nYou should first give your thought process with the your observation, reasoning, and prediction of next state, then your answer.\nBoth the observation and prediction should describe what you see or expect to see in the environment.\nYour response should be in the format of:\n<think><observation>...</observation><reasoning>...</reasoning><prediction>...</prediction></think><|action_start|><|action_(idx)|><|action_end|>\nNimloth action tokens: <|action_(0)|> = moveahead (move forward), <|action_(1)|> = moveback (move backward), <|action_(2)|> = moveright (move right), <|action_(3)|> = moveleft (move left), <|action_(4)|> = rotateright (rotate right), <|action_(5)|> = rotateleft (rotate left), <|action_(6)|> = lookup (tilt camera up), <|action_(7)|> = lookdown (tilt camera down)."
+    }
+  ],
+  "generation": {
+    "text": "<think><observation>There is a pillow on the couch to the right.</observation><reasoning>I need to move towards the couch to reach the pillow. The couch is to the right, so I should move right to approach it.</reasoning><prediction>After moving right, I should see the couch and the pillow on it.</prediction></think>",
+    "sampled_token_ids": [
+      13708,
+      766,
+      1784,
+      77960,
+      29,
+      3862,
+      374,
+      264,
+      42325,
+      389,
+      279,
+      26148,
+      311,
+      279,
+      1290,
+      3918,
+      77960,
+      1784,
+      19895,
+      287,
+      65828,
+      1184,
+      311,
+      3271,
+      6974,
+      279,
+      26148,
+      311,
+      5545,
+      279,
+      42325,
+      13,
+      576,
+      26148,
+      374,
+      311,
+      279,
+      1290,
+      11,
+      773,
+      358,
+      1265,
+      3271,
+      1290,
+      311,
+      5486,
+      432,
+      3918,
+      19895,
+      287,
+      1784,
+      68931,
+      29,
+      6025,
+      7218,
+      1290,
+      11,
+      358,
+      1265,
+      1490,
+      279,
+      26148,
+      323,
+      279,
+      42325,
+      389,
+      432,
+      3918,
+      68931,
+      1472,
+      26865,
+      29,
+      151645
+    ],
+    "inserted_token_ids": [],
+    "finish_reason": "stop",
+    "stop_reason": null
+  },
+  "termination_validation": {
+    "format_correct": false,
+    "reason": "invalid_response_envelope",
+    "raw_response": "<think><observation>There is a pillow on the couch to the right.</observation><reasoning>I need to move towards the couch to reach the pillow. The couch is to the right, so I should move right to approach it.</reasoning><prediction>After moving right, I should see the couch and the pillow on it.</prediction></think><|im_end|>",
+    "parsed_body": "<think><observation>There is a pillow on the couch to the right.</observation><reasoning>I need to move towards the couch to reach the pillow. The couch is to the right, so I should move right to approach it.</reasoning><prediction>After moving right, I should see the couch and the pillow on it.</prediction></think>",
+    "eos_generated": true,
+    "eos_token_index": 72,
+    "length_reached": false,
+    "parser_result": {
+      "format_correct": false,
+      "action_index": null,
+      "service_response": "",
+      "error": "invalid_response_envelope"
+    },
+    "generation_text_matches": true,
+    "inserted_tokens_absent": true
+  },
+  "reference_success": false
+}

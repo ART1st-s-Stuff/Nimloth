@@ -1,0 +1,20 @@
+{
+  "scope": "matched epoch3 rollout replay, no new rollout success measurement",
+  "input_ids_and_targets_exactly_equal_to_lora_epoch5": true,
+  "all": {
+    "n": 134,
+    "mse": 0.9729393124580383,
+    "cosine": 0.5869101285934448,
+    "variance_ratio": 0.0006251514423638582,
+    "centered_cosine": 0.006269696168601513,
+    "mean_prediction_mse": 0.9728487133979797
+  },
+  "unique_images": {
+    "n": 32,
+    "mse": 0.9632173776626587,
+    "cosine": 0.5978456735610962,
+    "variance_ratio": 0.000771146675106138,
+    "centered_cosine": 0.006042268592864275,
+    "mean_prediction_mse": 0.9630017876625061
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "id": "fix-sft1-termination-retrain",
+  "name": "fix-sft1-termination-retrain",
+  "title": "修复SFT1终止格式并重新训练",
+  "description": "修正SFT1严格格式验收与EOS/动作token权重关系，从原始hf_actor训练到收敛并执行标准held-out评估",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-09-11",
+  "completedAt": "2026-09-14",
+  "branch": "codex/fix-sft1-termination-retrain",
+  "base_branch": "codex/sft-stage-eval-refactor",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "09-05-unify-sft-training-evaluation",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "kind": "experiment",
+    "closeout": {
+      "date": "2026-09-14",
+      "authorization": "User requested closing recent a100-1 and a100-2 experiment tasks",
+      "outcome": "closed_with_partial_acceptance",
+      "summary": "Termination retraining executed and matched evaluation completed in09-11-eval-sft1-epoch5-6-test120. Format/policy quality did not meet original desired preservation: epoch18 standard120 success15/120 versus originalVAGEN30/120. Closed without claiming successful policy repair.",
+      "remote_state": "No matching experiment GPU processes on either host; a100-2 SAM3/ContactGraspNet services preserved",
+      "code_integration": "Experiment branch commits retained; this closure does not merge branches or certify all original acceptance criteria",
+      "archive_authority": "Main checkout archive supersedes historical task snapshots in retained worktrees"
+    }
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "id": "batch-sft1-format-generation",
+  "name": "batch-sft1-format-generation",
+  "title": "批量化 SFT1 格式生成验证",
+  "description": "将每轮固定 32 条 Stage 1 格式生成改为等价的批量推理，并补充可观测耗时。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "src/nimloth/training/sft/stage1, configs/training/sft1, tests/training/sft/stage1",
+  "package": null,
+  "priority": "P2",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-09-11",
+  "completedAt": "2026-09-14",
+  "branch": "codex/fix-sft1-termination-retrain",
+  "base_branch": "dev",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "09-11-eval-sft1-epoch5-6-test120"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "kind": "experiment",
+    "closeout": {
+      "date": "2026-09-14",
+      "authorization": "User requested closing recent a100-1 and a100-2 experiment tasks",
+      "outcome": "completed",
+      "summary": "Batch-size4 format validation implemented and tested; subsequent real epochs16/17 completed with separate validation/format timing (~65s format). Format correctness remained a model-quality issue, not proof of acceptable policy.",
+      "remote_state": "No matching experiment GPU processes on either host; a100-2 SAM3/ContactGraspNet services preserved",
+      "code_integration": "Experiment branch commits retained; this closure does not merge branches or certify all original acceptance criteria",
+      "archive_authority": "Main checkout archive supersedes historical task snapshots in retained worktrees"
+    }
+  }
+}

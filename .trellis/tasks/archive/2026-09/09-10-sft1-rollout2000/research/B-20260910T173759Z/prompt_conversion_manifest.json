@@ -1,0 +1,27 @@
+{
+  "version": "sft1_b_prompt_action_tokens_v1",
+  "source": "/mnt/nimloth/outputs/datasets/sft1-vagen-step60/20260910T093222Z_batch1_original_validation_k16",
+  "counts": {
+    "sft1_train_all.jsonl": 1709,
+    "sft1_heldout_all.jsonl": 193
+  },
+  "source_sha256": {
+    "sft1_train_all.jsonl": "af1f8d11a52279051d0deea96db81f3522de7bf556b089f921943d832e1224e6",
+    "sft1_heldout_all.jsonl": "1632d9aebbe499076fe1d9477fa83c2dbfbadea593189ece640603bdad0115dd"
+  },
+  "output_sha256": {
+    "sft1_train_all.jsonl": "efb0b7d7b3d39c84208617f5c2c352c7ff1b32d3a5b77e155bd3fabd0c9ad9c4",
+    "sft1_heldout_all.jsonl": "a43f018c567eff9c80500b0b7444ad0eaf182c23356b725f073e6fc20d1f0db8"
+  },
+  "scope": "system_prompt and system/user textual output instructions only; assistant, images, metadata and source_audit unchanged",
+  "action_mapping": {
+    "<|action_(0)|>": "moveahead",
+    "<|action_(1)|>": "moveback",
+    "<|action_(2)|>": "moveright",
+    "<|action_(3)|>": "moveleft",
+    "<|action_(4)|>": "rotateright",
+    "<|action_(5)|>": "rotateleft",
+    "<|action_(6)|>": "lookup",
+    "<|action_(7)|>": "lookdown"
+  }
+}

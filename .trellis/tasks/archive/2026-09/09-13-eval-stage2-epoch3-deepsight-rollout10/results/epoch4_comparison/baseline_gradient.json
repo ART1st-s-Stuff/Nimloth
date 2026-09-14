@@ -1,0 +1,353 @@
+{
+  "checkpoint": "/mnt/nimloth/outputs/experiments/sft2-deepsight-full/20260913_epoch4_comparison/baseline_checkpoint",
+  "model": "/mnt/nimloth/outputs/experiments/sft2-deepsight-full/20260913_epoch4_comparison/baseline_checkpoint",
+  "val_jsonl_sha256": "730361cc9825ce1f65055a1a4528243ee638de861e703b89c88a20e76047215a",
+  "selected": [
+    {
+      "index": 4,
+      "tokens": 2821,
+      "answers": 3,
+      "images": [
+        "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/three_lane_0_tp2/shard_00/rollouts/row_000049/image_0000.png",
+        "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/three_lane_0_tp2/shard_00/rollouts/row_000049/image_0001.png",
+        "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/three_lane_0_tp2/shard_00/rollouts/row_000049/image_0002.png"
+      ],
+      "image_sha256": [
+        "a4967589ba90ca935c65132936ef64be8603664ca4c5a1a7b4b67b3230ede43e",
+        "28efe280213fbc5c81ea7a30cb1fbbf92b2438e23c78a9ec1e152a8364f0216e",
+        "1e47082e7e6bb37fcd5ca10aad446c5d9999064508940ade7e8dbe55e6ce42ec"
+      ],
+      "lm_loss": 0.3293901284535726,
+      "dino_loss": 0.7726496855417887,
+      "gradients": {
+        "input_query_rows": {
+          "lm_norm": 0.0789361357926362,
+          "dino_norm": 0.6017238954282681,
+          "dot": 0.001023450304262222,
+          "cosine": 0.02154733872168124,
+          "unweighted_ratio": 7.622920597595326
+        },
+        "model.layers.0.self_attn.q_proj.weight": {
+          "lm_norm": 0.08620958076846344,
+          "dino_norm": 0.027181556283075472,
+          "dot": 5.691187705505222e-05,
+          "cosine": 0.02428695442251014,
+          "unweighted_ratio": 0.3152962355318497
+        },
+        "model.layers.18.self_attn.q_proj.weight": {
+          "lm_norm": 0.2851248841391201,
+          "dino_norm": 0.030771603648898152,
+          "dot": -0.00029529491416874036,
+          "cosine": -0.03365663675023417,
+          "unweighted_ratio": 0.1079232482349168
+        },
+        "model.layers.35.self_attn.q_proj.weight": {
+          "lm_norm": 0.14578728454684153,
+          "dino_norm": 0.014593150428649483,
+          "dot": -1.7237744569497764e-06,
+          "cosine": -0.00081023637181096,
+          "unweighted_ratio": 0.10009892477255584
+        }
+      }
+    },
+    {
+      "index": 5,
+      "tokens": 2818,
+      "answers": 3,
+      "images": [
+        "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_2_tp2_v3/shard_05/rollouts/row_000059/image_0000.png",
+        "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_2_tp2_v3/shard_05/rollouts/row_000059/image_0001.png",
+        "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_2_tp2_v3/shard_05/rollouts/row_000059/image_0002.png"
+      ],
+      "image_sha256": [
+        "b092b606c73763c281f6a95da3618ea5abeb8b5032a322d173ddd079c9480817",
+        "2bf1d266065fb0fb751e602714c20b56214b4598765781df50ed7295b284def3",
+        "90f070b4d0f97fa9d1a5aec6d5a44a174570e0439fde4920f6a2b69cbfc83aff"
+      ],
+      "lm_loss": 0.4126731952031453,
+      "dino_loss": 0.8121169408162435,
+      "gradients": {
+        "input_query_rows": {
+          "lm_norm": 0.14760217047323743,
+          "dino_norm": 1.2088146577454282,
+          "dot": 0.02065299608412175,
+          "cosine": 0.11575255912058319,
+          "unweighted_ratio": 8.189680774136077
+        },
+        "model.layers.0.self_attn.q_proj.weight": {
+          "lm_norm": 0.07555942484305234,
+          "dino_norm": 0.039015975014653335,
+          "dot": 8.681973689096021e-05,
+          "cosine": 0.029450139579738084,
+          "unweighted_ratio": 0.516361461137311
+        },
+        "model.layers.18.self_attn.q_proj.weight": {
+          "lm_norm": 0.3429065263486043,
+          "dino_norm": 0.08270184930322506,
+          "dot": 0.00013827365120391144,
+          "cosine": 0.004875828920209791,
+          "unweighted_ratio": 0.24117898887450462
+        },
+        "model.layers.35.self_attn.q_proj.weight": {
+          "lm_norm": 0.15079834139800982,
+          "dino_norm": 0.010504198288204123,
+          "dot": -5.29561601183679e-06,
+          "cosine": -0.0033431588336618996,
+          "unweighted_ratio": 0.06965725346063224
+        }
+      }
+    },
+    {
+      "index": 11,
+      "tokens": 2858,
+      "answers": 3,
+      "images": [
+        "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_2_tp2_v3/shard_08/rollouts/row_000119/image_0000.png",
+        "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_2_tp2_v3/shard_08/rollouts/row_000119/image_0001.png",
+        "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume146_lane_2_tp2_v3/shard_08/rollouts/row_000119/image_0002.png"
+      ],
+      "image_sha256": [
+        "f3c3bc8805477a0f69928f967e8da3ef87af9df92460828b17a5e59595f4bdea",
+        "8cf8236e6c66bcc52b915405dd84f177858bda1ce751018239af9e032b638c1b",
+        "1cd428fa436fe782cd2e38b1eb273652abb2daffdfa77e1b8d73803b4ca026cd"
+      ],
+      "lm_loss": 0.2724471688270569,
+      "dino_loss": 0.8738318284352621,
+      "gradients": {
+        "input_query_rows": {
+          "lm_norm": 0.046240784894636205,
+          "dino_norm": 0.8372358854224834,
+          "dot": 9.469765883806432e-05,
+          "cosine": 0.00244605495701913,
+          "unweighted_ratio": 18.106005063067176
+        },
+        "model.layers.0.self_attn.q_proj.weight": {
+          "lm_norm": 0.0754003819470333,
+          "dino_norm": 0.014547639078524471,
+          "dot": 3.348944937731329e-07,
+          "cosine": 0.0003053106426631019,
+          "unweighted_ratio": 0.19293853297379565
+        },
+        "model.layers.18.self_attn.q_proj.weight": {
+          "lm_norm": 0.33423531132476714,
+          "dino_norm": 0.08930108194095132,
+          "dot": 6.94536154005623e-05,
+          "cosine": 0.002326943330471866,
+          "unweighted_ratio": 0.26718027364313984
+        },
+        "model.layers.35.self_attn.q_proj.weight": {
+          "lm_norm": 0.11538464440326399,
+          "dino_norm": 0.01550885877297488,
+          "dot": -1.9313721226453647e-06,
+          "cosine": -0.0010792898711390576,
+          "unweighted_ratio": 0.13441007556232645
+        }
+      }
+    },
+    {
+      "index": 13,
+      "tokens": 3427,
+      "answers": 4,
+      "images": [
+        "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume197_lane_0_tp2/shard_00/rollouts/row_000139/image_0000.png",
+        "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume197_lane_0_tp2/shard_00/rollouts/row_000139/image_0001.png",
+        "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume197_lane_0_tp2/shard_00/rollouts/row_000139/image_0002.png",
+        "/mnt/nimloth/outputs/experiments/training/sft1-vagen-step60/20260909T_a100_main-vagen_remaining720/resume197_lane_0_tp2/shard_00/rollouts/row_000139/image_0003.png"
+      ],
+      "image_sha256": [
+        "9c27abdd8da0d3a39707565b3715720bd1e0c2b62f48c328844e573a834cecea",
+        "a73672ebe5a7fb5725438c4d195bbc5c34b89cd9ceecc64b232d4d95d2ba8067",
+        "1d2d263f939af9a4af19307d3d5e6724ac40418fa987e5fee24a11aeba503c11",
+        "770c66f907d0f7c2c86991032120c509b584c276fce7d0642473a9d484dce80e"
+      ],
+      "lm_loss": 0.36479127407073975,
+      "dino_loss": 0.8543355464935303,
+      "gradients": {
+        "input_query_rows": {
+          "lm_norm": 0.09863512156995265,
+          "dino_norm": 0.6586996878840394,
+          "dot": -0.006849869012388689,
+          "cosine": -0.10542976169250695,
+          "unweighted_ratio": 6.67814544555395
+        },
+        "model.layers.0.self_attn.q_proj.weight": {
+          "lm_norm": 0.08446227439905621,
+          "dino_norm": 0.021844369257414026,
+          "dot": 5.595039179007944e-05,
+          "cosine": 0.030325002883653734,
+          "unweighted_ratio": 0.2586287122012205
+        },
+        "model.layers.18.self_attn.q_proj.weight": {
+          "lm_norm": 0.2909560778887473,
+          "dino_norm": 0.04592716521255644,
+          "dot": 6.436176736059827e-05,
+          "cosine": 0.004816492489495173,
+          "unweighted_ratio": 0.15784913498221398
+        },
+        "model.layers.35.self_attn.q_proj.weight": {
+          "lm_norm": 0.1285363555208188,
+          "dino_norm": 0.016241293017089032,
+          "dot": 2.2201457477333647e-05,
+          "cosine": 0.010634936527117321,
+          "unweighted_ratio": 0.12635563651451484
+        }
+      }
+    }
+  ],
+  "skipped_over_length": [
+    {
+      "index": 0,
+      "tokens": 12057
+    },
+    {
+      "index": 1,
+      "tokens": 4804
+    },
+    {
+      "index": 2,
+      "tokens": 4805
+    },
+    {
+      "index": 3,
+      "tokens": 8172
+    },
+    {
+      "index": 7,
+      "tokens": 12957
+    },
+    {
+      "index": 8,
+      "tokens": 5113
+    },
+    {
+      "index": 9,
+      "tokens": 4280
+    },
+    {
+      "index": 10,
+      "tokens": 4759
+    },
+    {
+      "index": 12,
+      "tokens": 6164
+    }
+  ],
+  "objective": {
+    "grid_size": 8,
+    "projector_hidden_dim": 2048,
+    "weight_lm": 1.0,
+    "weight_dino": 1.0
+  },
+  "max_tokens": 4096,
+  "projector_sha256": "8eccdac9fb66cfcc8cb67c925921b3c4cb8dcebd16150314eddb0a487dd935aa",
+  "query_ids": [
+    151675,
+    151676,
+    151677,
+    151678,
+    151679,
+    151680,
+    151681,
+    151682,
+    151683,
+    151684,
+    151685,
+    151686,
+    151687,
+    151688,
+    151689,
+    151690,
+    151691,
+    151692,
+    151693,
+    151694,
+    151695,
+    151696,
+    151697,
+    151698,
+    151699,
+    151700,
+    151701,
+    151702,
+    151703,
+    151704,
+    151705,
+    151706,
+    151707,
+    151708,
+    151709,
+    151710,
+    151711,
+    151712,
+    151713,
+    151714,
+    151715,
+    151716,
+    151717,
+    151718,
+    151719,
+    151720,
+    151721,
+    151722,
+    151723,
+    151724,
+    151725,
+    151726,
+    151727,
+    151728,
+    151729,
+    151730,
+    151731,
+    151732,
+    151733,
+    151734,
+    151735,
+    151736,
+    151737,
+    151738
+  ],
+  "precision": "BF16 inference parameters with preserved rotary buffers; FP32 query leaf; partial gradients are not FP32-master/FSDP training gradients",
+  "gradient_normalization": "sum of per-answer token-mean LM losses and per-answer element-mean DINO losses, divided by total selected answers",
+  "min_pixels": 3136,
+  "max_pixels": 100352,
+  "cache_fingerprint": "8d1fbf066f03d562",
+  "lm_loss": 0.3463612749026372,
+  "dino_loss": 0.8302413500272311,
+  "answer_count": 13,
+  "aggregate_gradients": {
+    "input_query_rows": {
+      "lm_norm": 0.051505371351720806,
+      "dino_norm": 0.44707219602273823,
+      "dot": -0.0010982463555577603,
+      "cosine": -0.04769464126708354,
+      "unweighted_ratio": 8.680108196284298,
+      "weighted_ratio": 8.680108196284298
+    },
+    "model.layers.0.self_attn.q_proj.weight": {
+      "lm_norm": 0.04124903668393474,
+      "dino_norm": 0.01920834977666561,
+      "dot": 4.2456908011494825e-05,
+      "cosine": 0.05358515567219405,
+      "unweighted_ratio": 0.46566783907820775,
+      "weighted_ratio": 0.46566783907820775
+    },
+    "model.layers.18.self_attn.q_proj.weight": {
+      "lm_norm": 0.15376273756339695,
+      "dino_norm": 0.037116504590231296,
+      "dot": -2.530437639950483e-06,
+      "cosine": -0.0004433813958732425,
+      "unweighted_ratio": 0.2413881619070942,
+      "weighted_ratio": 0.2413881619070942
+    },
+    "model.layers.35.self_attn.q_proj.weight": {
+      "lm_norm": 0.07330811560246014,
+      "dino_norm": 0.007426310110096585,
+      "dot": -2.4983737502119373e-06,
+      "cosine": -0.004589150193713555,
+      "unweighted_ratio": 0.10130270092288889,
+      "weighted_ratio": 0.10130270092288889
+    }
+  },
+  "peak_cuda_bytes": 22717028864,
+  "scope": "successful complete validation trajectories only; first stable indices fitting cap; representative parameter blocks; no optimizer; no policy success metric; no failed-trajectory gradient contribution"
+}

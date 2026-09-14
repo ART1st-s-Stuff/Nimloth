@@ -1,0 +1,101 @@
+{
+  "episodes": 10,
+  "turns": 134,
+  "success_count": 4,
+  "success_rate": 0.4,
+  "aggregation": "turn macro (equal slot count)",
+  "cosine": 0.6138268815937327,
+  "mse": 0.914871355490898,
+  "model": "/mnt/nimloth/outputs/experiments/sft2-dino-information-test/20260913_epoch3_deepsight_rollout10/model",
+  "checkpoint": "/mnt/nimloth/outputs/experiments/sft2-dino-information-test/20260913_epoch3_deepsight_rollout10/checkpoint/epoch_003",
+  "projector_sha256": "6678f2f749f4b4e39b9b4de67593b81f273d1b4e02eacccefff22c5aaaa6b7c6",
+  "dino_identity": {
+    "source": "facebook/dinov2-large",
+    "revision": "47b73eefe95e8d44ec3623f8890bd894b6ea2d6c",
+    "processor_fingerprint": "7d65a7de8788e87d",
+    "hidden_size": 1024
+  },
+  "teacher_provenance": {
+    "source": "facebook/dinov2-large",
+    "revision": "47b73eefe95e8d44ec3623f8890bd894b6ea2d6c",
+    "files": {
+      "model.safetensors": "399fba97a95f22c36834418bc69373364a99af3a1153da1c0fb31db567c92e23",
+      "config.json": "12df51c069a2dc1305e34ba71ef58bc2407ea553b75f4722a1715c1bce3bbed0",
+      "preprocessor_config.json": "14e780d86fa1861f8751f868d7f45425b5feb55c38ca26f152ca5097ab30f828"
+    }
+  },
+  "rollout_contract_sha256": "ca183c78d5c51e5da327520e82fef1866f026b1d0ff42cc906f3619fb19b9b22",
+  "max_pixels": null,
+  "objective": {
+    "grid_size": 8,
+    "projector_hidden_dim": 2048,
+    "weight_lm": 1.0,
+    "weight_dino": 1.0
+  },
+  "precision": "merged export loaded BF16, matching vLLM; BF16 DINO matching cache builder",
+  "scope": "executed turns only; terminal unexecuted generation excluded; PC1 not full-dimensional recovery proof",
+  "per_episode": {
+    "base_000001": {
+      "turns": 3,
+      "cosine": 0.656139095624288,
+      "mse": 0.8703438440958658
+    },
+    "base_000002": {
+      "turns": 20,
+      "cosine": 0.5767625659704209,
+      "mse": 0.9778349697589874
+    },
+    "base_000003": {
+      "turns": 20,
+      "cosine": 0.615036141872406,
+      "mse": 0.892175704240799
+    },
+    "base_000004": {
+      "turns": 20,
+      "cosine": 0.6109212547540664,
+      "mse": 0.9357975840568542
+    },
+    "base_000005": {
+      "turns": 20,
+      "cosine": 0.6378072559833526,
+      "mse": 0.8804927468299866
+    },
+    "common_sense_000001": {
+      "turns": 4,
+      "cosine": 0.6492403596639633,
+      "mse": 0.8597899079322815
+    },
+    "common_sense_000002": {
+      "turns": 3,
+      "cosine": 0.6033596992492676,
+      "mse": 0.9204543034235636
+    },
+    "common_sense_000003": {
+      "turns": 20,
+      "cosine": 0.5940437883138656,
+      "mse": 0.9294405966997147
+    },
+    "common_sense_000004": {
+      "turns": 4,
+      "cosine": 0.603145956993103,
+      "mse": 0.965386301279068
+    },
+    "common_sense_000005": {
+      "turns": 20,
+      "cosine": 0.6386670172214508,
+      "mse": 0.8802415162324906
+    }
+  },
+  "per_eval_set": {
+    "base": {
+      "turns": 83,
+      "cosine": 0.6117947187768408,
+      "mse": 0.9197235136147005
+    },
+    "common_sense": {
+      "turns": 51,
+      "cosine": 0.6171341269624,
+      "mse": 0.906974705995298
+    }
+  }
+}

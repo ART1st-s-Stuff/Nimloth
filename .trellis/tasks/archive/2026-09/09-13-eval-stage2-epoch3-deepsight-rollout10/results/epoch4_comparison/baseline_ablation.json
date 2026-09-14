@@ -1,0 +1,451 @@
+{
+  "samples": 32,
+  "selection": "last occurrence of each current-image SHA256, sorted episode/turn traversal",
+  "checkpoint": "/mnt/nimloth/outputs/experiments/sft2-deepsight-full/20260913_epoch4_comparison/baseline_checkpoint",
+  "model": "/mnt/nimloth/outputs/experiments/sft2-deepsight-full/20260913_epoch4_comparison/baseline_checkpoint",
+  "initial_checkpoint": "/mnt/nimloth/outputs/experiments/sft2-deepsight-full/20260913_stage1epoch2_dino4/train/epoch_000",
+  "initial_source": {
+    "file": "/mnt/nimloth/outputs/experiments/sft2-deepsight-full/20260913_stage1epoch2_dino4/train/epoch_000/model-00001-of-00004.safetensors",
+    "key": "model.embed_tokens.weight",
+    "sha256": "8a16ae7441e40983a57a50114d958a67e2c23840628d6e3f0ff5024eabea0460"
+  },
+  "teacher_provenance": {
+    "source": "facebook/dinov2-large",
+    "revision": "47b73eefe95e8d44ec3623f8890bd894b6ea2d6c",
+    "files": {
+      "model.safetensors": "399fba97a95f22c36834418bc69373364a99af3a1153da1c0fb31db567c92e23",
+      "config.json": "12df51c069a2dc1305e34ba71ef58bc2407ea553b75f4722a1715c1bce3bbed0",
+      "preprocessor_config.json": "14e780d86fa1861f8751f868d7f45425b5feb55c38ca26f152ca5097ab30f828"
+    }
+  },
+  "query_ids": [
+    151675,
+    151676,
+    151677,
+    151678,
+    151679,
+    151680,
+    151681,
+    151682,
+    151683,
+    151684,
+    151685,
+    151686,
+    151687,
+    151688,
+    151689,
+    151690,
+    151691,
+    151692,
+    151693,
+    151694,
+    151695,
+    151696,
+    151697,
+    151698,
+    151699,
+    151700,
+    151701,
+    151702,
+    151703,
+    151704,
+    151705,
+    151706,
+    151707,
+    151708,
+    151709,
+    151710,
+    151711,
+    151712,
+    151713,
+    151714,
+    151715,
+    151716,
+    151717,
+    151718,
+    151719,
+    151720,
+    151721,
+    151722,
+    151723,
+    151724,
+    151725,
+    151726,
+    151727,
+    151728,
+    151729,
+    151730,
+    151731,
+    151732,
+    151733,
+    151734,
+    151735,
+    151736,
+    151737,
+    151738
+  ],
+  "projector_sha256": "8eccdac9fb66cfcc8cb67c925921b3c4cb8dcebd16150314eddb0a487dd935aa",
+  "manifest": [
+    {
+      "index": 0,
+      "episode": "base_000001",
+      "step": 0,
+      "image_sha256": "3ceed5e770bd650a454022f4e8d79018b5339a83d561157fdec57529ea951261",
+      "donor_index": 3,
+      "donor_episode": "base_000002"
+    },
+    {
+      "index": 1,
+      "episode": "base_000001",
+      "step": 1,
+      "image_sha256": "05bed2859614047660c1c6fc087e585c10f556a1873884c9b049c0862d3a783d",
+      "donor_index": 4,
+      "donor_episode": "base_000002"
+    },
+    {
+      "index": 2,
+      "episode": "base_000001",
+      "step": 2,
+      "image_sha256": "323146365b53e712aa5f38d580abcb666d1d3570c089f98038a0edfecfb93b0b",
+      "donor_index": 5,
+      "donor_episode": "base_000002"
+    },
+    {
+      "index": 3,
+      "episode": "base_000002",
+      "step": 0,
+      "image_sha256": "f47fa1e033bf1991cda7463a6cabfc3e37938f5a0494e7a11e37abfe60b7b020",
+      "donor_index": 6,
+      "donor_episode": "base_000003"
+    },
+    {
+      "index": 4,
+      "episode": "base_000002",
+      "step": 1,
+      "image_sha256": "e947886ae20f1426371d96cac6f98f5a229271bf887279342ff9389f72bfa1f2",
+      "donor_index": 7,
+      "donor_episode": "base_000003"
+    },
+    {
+      "index": 5,
+      "episode": "base_000002",
+      "step": 19,
+      "image_sha256": "7ec65bc160d6c0f94da5177ee06b8d4ec967caee79a10160d879d760ff77d88c",
+      "donor_index": 8,
+      "donor_episode": "base_000003"
+    },
+    {
+      "index": 6,
+      "episode": "base_000003",
+      "step": 0,
+      "image_sha256": "3a981977ec3b952e73360009ecb77679b34c430447524a6c17d68672ade6e0fd",
+      "donor_index": 9,
+      "donor_episode": "base_000004"
+    },
+    {
+      "index": 7,
+      "episode": "base_000003",
+      "step": 1,
+      "image_sha256": "1e24061c2251265cea222d1f61eeb60ae11463095ec2adbda16cc8a1502c7800",
+      "donor_index": 10,
+      "donor_episode": "base_000004"
+    },
+    {
+      "index": 8,
+      "episode": "base_000003",
+      "step": 19,
+      "image_sha256": "3ac39f6f436463244571a245e0c4be6092c949bded8278e2c12ef04528ff9c6b",
+      "donor_index": 11,
+      "donor_episode": "base_000004"
+    },
+    {
+      "index": 9,
+      "episode": "base_000004",
+      "step": 0,
+      "image_sha256": "a8b076eb911bfb2030b8d72308e7e7aa05658e1f7bb1c5bf9bd39b691316ea44",
+      "donor_index": 13,
+      "donor_episode": "common_sense_000005"
+    },
+    {
+      "index": 10,
+      "episode": "base_000004",
+      "step": 1,
+      "image_sha256": "c15fbbbcca7f8a1bec23e539896ac3bd57a7ab7d752fc32d4ef8b9e12a021d50",
+      "donor_index": 14,
+      "donor_episode": "base_000005"
+    },
+    {
+      "index": 11,
+      "episode": "base_000004",
+      "step": 2,
+      "image_sha256": "03859938aca53d8e6bb177c92963b08b559b84c9e88b8f55ae299274e3206ad5",
+      "donor_index": 15,
+      "donor_episode": "base_000005"
+    },
+    {
+      "index": 12,
+      "episode": "base_000004",
+      "step": 19,
+      "image_sha256": "c7ee3dfedf41f6ae53e88b9e8a10f06d0576936acb4bccf61dc7917c11854d22",
+      "donor_index": 16,
+      "donor_episode": "common_sense_000005"
+    },
+    {
+      "index": 13,
+      "episode": "common_sense_000005",
+      "step": 0,
+      "image_sha256": "85e8c0763cc1296a3871c3c49903202ef00d82f6b8583a14739b5957427728bf",
+      "donor_index": 17,
+      "donor_episode": "common_sense_000001"
+    },
+    {
+      "index": 14,
+      "episode": "base_000005",
+      "step": 1,
+      "image_sha256": "c6649ddf5e6688cf2a2a99fce2df880dcf98ae93e1f73b5dbf33fd0c2efbbaae",
+      "donor_index": 18,
+      "donor_episode": "common_sense_000001"
+    },
+    {
+      "index": 15,
+      "episode": "base_000005",
+      "step": 2,
+      "image_sha256": "5c5a812a43177ed9efb6d0e52464daf489ddae805c14a859301508efc0f94e26",
+      "donor_index": 19,
+      "donor_episode": "common_sense_000001"
+    },
+    {
+      "index": 16,
+      "episode": "common_sense_000005",
+      "step": 19,
+      "image_sha256": "642528a42cdaf23d1317e801483babe75aff83816081296bb519fb193f1ab71d",
+      "donor_index": 20,
+      "donor_episode": "common_sense_000001"
+    },
+    {
+      "index": 17,
+      "episode": "common_sense_000001",
+      "step": 0,
+      "image_sha256": "7c3a52698fb1327bd4577723f3c475f60f998e45be9d39ad25f4ff20f138c4d8",
+      "donor_index": 24,
+      "donor_episode": "common_sense_000003"
+    },
+    {
+      "index": 18,
+      "episode": "common_sense_000001",
+      "step": 1,
+      "image_sha256": "c736df1e87adb6e2c3aefa165350109fc1202c850e9c3c411433056e955f4cce",
+      "donor_index": 25,
+      "donor_episode": "common_sense_000003"
+    },
+    {
+      "index": 19,
+      "episode": "common_sense_000001",
+      "step": 2,
+      "image_sha256": "49eafe611f9f78b205f893341870344db912d1d8bf95fdac6bb95204d3985e7d",
+      "donor_index": 26,
+      "donor_episode": "common_sense_000003"
+    },
+    {
+      "index": 20,
+      "episode": "common_sense_000001",
+      "step": 3,
+      "image_sha256": "7124d5df220dbc592d4ad6cd5665982fec768fe6760eb83aca142e68f2a8dba8",
+      "donor_index": 27,
+      "donor_episode": "common_sense_000003"
+    },
+    {
+      "index": 21,
+      "episode": "common_sense_000002",
+      "step": 0,
+      "image_sha256": "067068540397f688cf7f23d2da21b6df043a8319cb50750b5372eb1f3d20b11a",
+      "donor_index": 27,
+      "donor_episode": "common_sense_000003"
+    },
+    {
+      "index": 22,
+      "episode": "common_sense_000002",
+      "step": 1,
+      "image_sha256": "c000c005faecb638c2311d387a2540c3d9fe6910a8482ac5eee1427a3d9c8c45",
+      "donor_index": 28,
+      "donor_episode": "common_sense_000004"
+    },
+    {
+      "index": 23,
+      "episode": "common_sense_000002",
+      "step": 2,
+      "image_sha256": "d47ea71ec2a046b670d8b75931a4f47c52119082828ec0cdfb5dc9f4eacb9497",
+      "donor_index": 29,
+      "donor_episode": "common_sense_000004"
+    },
+    {
+      "index": 24,
+      "episode": "common_sense_000003",
+      "step": 0,
+      "image_sha256": "78b1828c9255f9b08cbc188db65b31e8e9b7edd5f43e48baadd8ac4214b49d9e",
+      "donor_index": 31,
+      "donor_episode": "common_sense_000004"
+    },
+    {
+      "index": 25,
+      "episode": "common_sense_000003",
+      "step": 1,
+      "image_sha256": "ad7728316b26e4701e644f1770554592e5105ab91545553200a65e90df2155a5",
+      "donor_index": 0,
+      "donor_episode": "base_000001"
+    },
+    {
+      "index": 26,
+      "episode": "common_sense_000003",
+      "step": 2,
+      "image_sha256": "35b2a263a27e3ed27694827e8e99439c29442b04128c02811501cfcc29529fb9",
+      "donor_index": 1,
+      "donor_episode": "base_000001"
+    },
+    {
+      "index": 27,
+      "episode": "common_sense_000003",
+      "step": 19,
+      "image_sha256": "bba602639f215927e884f455fd18598fe03f9654620a48d665a2919c18258d31",
+      "donor_index": 2,
+      "donor_episode": "base_000001"
+    },
+    {
+      "index": 28,
+      "episode": "common_sense_000004",
+      "step": 0,
+      "image_sha256": "3aa885edf470448b1f52e40cda184006a8d8aec2f00cca2f7430d4cdc16ec9f7",
+      "donor_index": 4,
+      "donor_episode": "base_000002"
+    },
+    {
+      "index": 29,
+      "episode": "common_sense_000004",
+      "step": 1,
+      "image_sha256": "9628b624499bab5bc08355f3089c9c67e7efae31a9efe5a5e9c5a0d93bc06e5a",
+      "donor_index": 5,
+      "donor_episode": "base_000002"
+    },
+    {
+      "index": 30,
+      "episode": "common_sense_000004",
+      "step": 2,
+      "image_sha256": "561a0adf4a4c41c63eb784d0705e5ffec85e060f19dfd6ac7e8e020a1a75f3e5",
+      "donor_index": 6,
+      "donor_episode": "base_000003"
+    },
+    {
+      "index": 31,
+      "episode": "common_sense_000004",
+      "step": 3,
+      "image_sha256": "f0ae1400bcc240f07efd8c745b008a8cdf4f1462345d7ed3329278dc19e41e57",
+      "donor_index": 7,
+      "donor_episode": "base_000003"
+    }
+  ],
+  "metrics": {
+    "A": {
+      "original_target": {
+        "mse": 0.8203049302101135,
+        "cosine": 0.6760898232460022,
+        "prediction_variance": 0.0019027707166969776,
+        "target_variance": 0.5878056287765503,
+        "variance_ratio": 0.0032370747067034245,
+        "centered_cosine": 0.022885682061314583,
+        "centered_flattened_cosine": 0.023846648633480072,
+        "fixed_prediction_mean_mse": 0.8201264142990112
+      },
+      "donor_target": {
+        "mse": 0.8229647874832153,
+        "cosine": 0.6733890175819397,
+        "prediction_variance": 0.0019027707166969776,
+        "target_variance": 0.5862276554107666,
+        "variance_ratio": 0.003245788160711527,
+        "centered_cosine": -0.003811593633145094,
+        "centered_flattened_cosine": -0.004940055776387453,
+        "fixed_prediction_mean_mse": 0.8200399279594421
+      },
+      "hidden_across_observation_variance": 0.13265720009803772,
+      "hidden_relative_change": 0.0,
+      "prediction_relative_change": 0.0
+    },
+    "B": {
+      "original_target": {
+        "mse": 0.838823139667511,
+        "cosine": 0.6660515666007996,
+        "prediction_variance": 0.002242559567093849,
+        "target_variance": 0.5878056287765503,
+        "variance_ratio": 0.0038151380140334368,
+        "centered_cosine": 0.023264866322278976,
+        "centered_flattened_cosine": 0.025028634816408157,
+        "fixed_prediction_mean_mse": 0.838544487953186
+      },
+      "donor_target": {
+        "mse": 0.8428492546081543,
+        "cosine": 0.6625320315361023,
+        "prediction_variance": 0.002242559567093849,
+        "target_variance": 0.5862276554107666,
+        "variance_ratio": 0.0038254072424024343,
+        "centered_cosine": -0.003994705155491829,
+        "centered_flattened_cosine": -0.0064353798516094685,
+        "fixed_prediction_mean_mse": 0.8395014405250549
+      },
+      "hidden_across_observation_variance": 0.14844761788845062,
+      "hidden_relative_change": 0.2644634246826172,
+      "prediction_relative_change": 0.19353964924812317
+    },
+    "C": {
+      "original_target": {
+        "mse": 0.8393583297729492,
+        "cosine": 0.6657494902610779,
+        "prediction_variance": 0.002266903407871723,
+        "target_variance": 0.5878056287765503,
+        "variance_ratio": 0.003856552764773369,
+        "centered_cosine": 0.0239124558866024,
+        "centered_flattened_cosine": 0.02563515678048134,
+        "fixed_prediction_mean_mse": 0.839091420173645
+      },
+      "donor_target": {
+        "mse": 0.8434311151504517,
+        "cosine": 0.6622048020362854,
+        "prediction_variance": 0.002266903407871723,
+        "target_variance": 0.5862276554107666,
+        "variance_ratio": 0.0038669335190206766,
+        "centered_cosine": -0.0035462479572743177,
+        "centered_flattened_cosine": -0.005783291067928076,
+        "fixed_prediction_mean_mse": 0.8401075601577759
+      },
+      "hidden_across_observation_variance": 0.14938625693321228,
+      "hidden_relative_change": 0.2670166492462158,
+      "prediction_relative_change": 0.19559501111507416
+    },
+    "D": {
+      "original_target": {
+        "mse": 0.8243481516838074,
+        "cosine": 0.6735062003135681,
+        "prediction_variance": 0.0034505552612245083,
+        "target_variance": 0.5878056287765503,
+        "variance_ratio": 0.00587023189291358,
+        "centered_cosine": 0.016706662252545357,
+        "centered_flattened_cosine": 0.014730142429471016,
+        "fixed_prediction_mean_mse": 0.8219766616821289
+      },
+      "donor_target": {
+        "mse": 0.823300838470459,
+        "cosine": 0.6731941103935242,
+        "prediction_variance": 0.0034505552612245083,
+        "target_variance": 0.5862276554107666,
+        "variance_ratio": 0.005886032711714506,
+        "centered_cosine": 0.00790492258965969,
+        "centered_flattened_cosine": 0.011016720905900002,
+        "fixed_prediction_mean_mse": 0.8218504190444946
+      },
+      "hidden_across_observation_variance": 0.21335840225219727,
+      "hidden_relative_change": 0.10443592071533203,
+      "prediction_relative_change": 0.06408459693193436
+    }
+  },
+  "precision": "BF16 inference parameters, original rotary buffers; E0 cast to BF16 for B; disk checkpoints untouched",
+  "query_relative_drift_inference": 0.021640412509441376,
+  "scope": "fixed sampled CoT, inference only; no LM/policy success evaluation; donor controls use other-seed images; no train-mean baseline"
+}

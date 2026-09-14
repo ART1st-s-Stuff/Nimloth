@@ -1,0 +1,31 @@
+{
+  "train_cache": {
+    "records": 1709,
+    "supervised_tokens": 1814595,
+    "action_blocks": 20212,
+    "records_missing_action_labels": 0,
+    "wrong_next_action": 0
+  },
+  "val_cache": {
+    "records": 193,
+    "supervised_tokens": 192309,
+    "action_blocks": 2152,
+    "records_missing_action_labels": 0,
+    "wrong_next_action": 0
+  },
+  "step50": {
+    "action_elements_per_module": 20480,
+    "head_changed": 2730,
+    "embedding_changed": 2690,
+    "nonzero_momentum_each": 20480,
+    "weight_and_moments_dtype": "bfloat16",
+    "saved_moment_update_rounds_to_same": {
+      "head": 18359,
+      "embedding": 18549
+    },
+    "rounding_scope": "read-only calculation using saved step50 moments, not actual next-step gradient"
+  },
+  "stopped_verified": "2026-09-10T14:35:38Z",
+  "latest_training_step": 54,
+  "latest_resume_step": 50
+}

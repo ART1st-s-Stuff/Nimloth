@@ -1,0 +1,29 @@
+{
+  "matched_inputs_and_targets": true,
+  "states": 134,
+  "unique_images": 32,
+  "epoch3": {
+    "mse": 0.914871335,
+    "cosine": 0.6138269305,
+    "variance_ratio": 0.0053511546,
+    "centered_cosine": 0.0225617103,
+    "fixed_prediction_mean_mse": 0.9139034748,
+    "cross_episode_shuffle_mse": 0.9176643163
+  },
+  "epoch5": {
+    "mse": 0.8478214145,
+    "cosine": 0.650729239,
+    "variance_ratio": 0.0321482569,
+    "centered_cosine": 0.029993359,
+    "fixed_prediction_mean_mse": 0.8348756433,
+    "cross_episode_shuffle_mse": 0.8548577279
+  },
+  "unique_image_epoch5": {
+    "mse": 0.8497186899,
+    "cosine": 0.6520162821,
+    "variance_ratio": 0.0189324971,
+    "centered_cosine": 0.0123868845,
+    "fixed_prediction_mean_mse": 0.8398015499
+  },
+  "scope": "Same epoch3 rollout inputs, no new epoch5 policy success measurement. Shuffle20 draws seed42 across episodes. Fixed mean is diagnostic derived from evaluated predictions, not independently trained baseline."
+}

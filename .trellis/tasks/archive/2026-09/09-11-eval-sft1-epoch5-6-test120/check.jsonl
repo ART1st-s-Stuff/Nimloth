@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/experiments/launch-and-lifecycle.md", "reason": "Verify exact launch identity, monitoring, cleanup, and end records."}
+{"file": ".trellis/spec/experiments/data-and-splits.md", "reason": "Verify held-out Base/Common Sense test statistics and non-overlap claims."}
+{"file": ".trellis/tasks/09-11-eval-sft1-epoch5-6-test120/research/preflight.md", "reason": "Recheck actual preflight evidence against both running arms."}
+{"file": ".trellis/spec/python/structure-and-module-indexes.md", "reason": "Source ownership and matching module README"}
+{"file": ".trellis/spec/python/configuration-and-interfaces.md", "reason": "CLI/YAML typed config and no hardcoded experimental parameters"}
+{"file": ".trellis/spec/domains/sft-stages.md", "reason": "Stage1 loss and objective identity contract"}
+{"file": ".trellis/spec/python/quality-and-testing.md", "reason": "Focused semantic regression tests"}

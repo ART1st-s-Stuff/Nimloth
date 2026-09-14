@@ -1,0 +1,7 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python3 .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/workflow.md", "reason": "Trellis lifecycle and approval gates"}
+{"file": ".trellis/spec/governance/authority-and-safety.md", "reason": "Authorization, evidence, and reporting constraints"}
+{"file": ".trellis/spec/governance/tasks-progress-and-memory.md", "reason": "Task authority, progress persistence, and raw session recall rules"}
+{"file": ".trellis/spec/governance/platform-integration.md", "reason": "Pi adapter and platform behavior contract"}
+{"file": ".trellis/spec/guides/investigation-and-uncertainty.md", "reason": "Evidence-first audit and uncertainty framing"}
+{"file": ".trellis/spec/experiments/launch-and-lifecycle.md", "reason": "Required training launch approvals and lifecycle gates"}

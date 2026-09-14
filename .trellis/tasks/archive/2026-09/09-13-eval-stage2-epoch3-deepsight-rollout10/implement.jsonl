@@ -1,0 +1,3 @@
+{"file":".trellis/spec/experiments/task-contract.md","reason":"Defines the real rollout experiment contract, resource, authorization, monitoring, and evidence boundaries."}
+{"file":".trellis/spec/experiments/outputs-checkpoints-and-evidence.md","reason":"Requires checkpoint lineage, committed output identity, hash validation, and honest recovery/result claims."}
+{"file":".trellis/tasks/09-13-eval-stage2-epoch3-deepsight-rollout10/research/preflight-2026-09-13.md","reason":"Records current checkpoint, host, runtime, prior controller, and transfer evidence for execution."}

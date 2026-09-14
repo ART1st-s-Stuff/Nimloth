@@ -1,0 +1,15 @@
+{
+  "method": "target-only shared PC1",
+  "sign": "largest absolute loading positive",
+  "quantiles": [
+    0.01,
+    0.99
+  ],
+  "vmin": -19.358911345291865,
+  "vmax": 26.987884015790492,
+  "explained_variance_ratio": 0.15475521015792254,
+  "error_range": [
+    0,
+    2
+  ]
+}

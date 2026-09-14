@@ -1,0 +1,37 @@
+{
+  "id": "rollout-vagen-step60-sft1-sft2",
+  "name": "rollout-vagen-step60-sft1-sft2",
+  "title": "基于 VAGEN step 60 rollout 生成 SFT1/SFT2 数据集",
+  "description": "使用远程 VAGEN global_step_60 checkpoint 执行 rollout，并生成新的 SFT1/SFT2 数据集。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-09-01",
+  "completedAt": "2026-09-14",
+  "branch": "dev",
+  "base_branch": "dev",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "kind": "experiment",
+    "closeout": {
+      "date": "2026-09-14",
+      "authorization": "User requested closing recent a100-1 and a100-2 experiment tasks",
+      "outcome": "closed_with_superseded_training",
+      "summary": "2000 source rollouts closed into1709train/193val plus98 excluded trajectories; dataset validation evidence retained. Initial K16 Stage1 attempt failed before first update and was superseded by corrected pure-format Stage1; not successful K16 training.",
+      "remote_state": "No matching experiment GPU processes on either host; a100-2 SAM3/ContactGraspNet services preserved",
+      "code_integration": "Experiment branch commits retained; this closure does not merge branches or certify all original acceptance criteria",
+      "archive_authority": "Main checkout archive supersedes historical task snapshots in retained worktrees"
+    }
+  }
+}

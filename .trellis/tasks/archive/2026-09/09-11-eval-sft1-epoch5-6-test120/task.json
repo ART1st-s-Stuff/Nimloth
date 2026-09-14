@@ -1,0 +1,37 @@
+{
+  "id": "eval-sft1-epoch5-6-test120",
+  "name": "eval-sft1-epoch5-6-test120",
+  "title": "评估 SFT1 epoch 5/6 测试集成功率",
+  "description": "导出 epoch 5 和 epoch 6，并分别执行固定 32 条严格格式门禁与 Base/Common Sense 各 60 条测试集 rollout。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": "User-authorized Stage 1 protocol-weight continuation from committed epoch7; preserve prior evaluation evidence",
+  "package": null,
+  "priority": "P2",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-09-11",
+  "completedAt": "2026-09-14",
+  "branch": "codex/fix-sft1-termination-retrain",
+  "base_branch": "dev",
+  "worktree_path": "/workspace/remote2/nimloth/.worktree/fix-sft1-termination-retrain",
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "09-11-batch-sft1-format-generation",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "kind": "experiment",
+    "closeout": {
+      "date": "2026-09-14",
+      "authorization": "User requested closing recent a100-1 and a100-2 experiment tasks",
+      "outcome": "closed_with_partial_acceptance",
+      "summary": "Scope evolved to epoch18 versus originalVAGEN matched120 evaluation:15/120 versus30/120. Original-test128 follow-up was explicitly paused after16/128 epoch18 episodes and0baseline; not complete or eligible for full success-rate comparison. Original named epoch5/6 acceptance is not claimed complete.",
+      "remote_state": "No matching experiment GPU processes on either host; a100-2 SAM3/ContactGraspNet services preserved",
+      "code_integration": "Experiment branch commits retained; this closure does not merge branches or certify all original acceptance criteria",
+      "archive_authority": "Main checkout archive supersedes historical task snapshots in retained worktrees"
+    }
+  }
+}
