@@ -39,7 +39,7 @@ train:
   gradient_checkpointing: true
   checkpoint_interval_steps: 10
   checkpoint_interval_minutes: 0.0
-  checkpoint_keep_last: 0
+  checkpoint_keep_last: 2
   preprocess_cache_image_dtype: bfloat16
   preprocess_cache_image_shard_size: 128
   preprocess_cache_transition_shard_size: 256

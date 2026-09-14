@@ -25,5 +25,5 @@ def test_shared_ab_config_and_cli_only_arm_difference(tmp_path):
     assert (control.query_lr, control.protocol_lr, control.state_proj_lr) == (1e-4, 2e-5, 8e-5)
     assert control.outcome_head_lr == 1e-4
     assert control.query_tune == "selected_rows"
-    assert control.checkpoint_interval_steps == 10 and control.checkpoint_keep_last == 0
+    assert control.checkpoint_interval_steps == 10 and control.checkpoint_keep_last == 2
     assert control.require_prebuilt_cache

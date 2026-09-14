@@ -84,7 +84,9 @@ A/B hyperparameters. Initialization, train/eval JSONL, DINO/cache and output pat
 provided through CLI; no historical path is silently reused. Explicitly pass
 `--lambda-outcome 0` for control or `--lambda-outcome 1` for treatment, with `--seed 42`
 and eight ranks. Both arms construct the head; only treatment optimizes its ordinary BCE.
-The config retains step checkpoints until the launcher validates the epoch checkpoint.
+The config retains the latest two complete step checkpoints; epoch/best/final checkpoints
+are outside rolling step retention. Incomplete step directories do not count toward the limit
+and are preserved for diagnosis.
 
 `--outcome-eval-dir <new-directory>` enables production-forward export: step-zero
 validation and every completed epoch's validation/training windows are written to

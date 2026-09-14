@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import time
 from dataclasses import dataclass
@@ -358,6 +359,40 @@ class SFT2CheckpointRuntime:
         )
         self._barrier()
 
+    @staticmethod
+    def _complete_step_checkpoint(path: Path) -> bool:
+        """Keep incomplete/foreign directories out of rolling retention accounting."""
+        if path.is_symlink() or re.fullmatch(r"step_[0-9]{6,}", path.name) is None:
+            return False
+        if not is_trainable_checkpoint_dir(path):
+            return False
+        state = torch.load(path / "training_state.pt", map_location="cpu", weights_only=False)
+        if state.get("optimizer") is None or state.get("step") != int(path.name.removeprefix("step_")):
+            return False
+        invariants = state.get("training_invariants") or {}
+        world_size = invariants.get("world_size", 1)
+        if type(world_size) is not int or world_size < 1 or any(
+            not (path / f"history_cache_rank_{rank:03d}.pt").is_file()
+            for rank in range(world_size)
+        ):
+            return False
+        if state.get("query_tune") == "selected_rows" and not (path / "selected_token_rows.pt").is_file():
+            return False
+        if invariants.get("outcome_schema") and not (path / "outcome_head.pt").is_file():
+            return False
+        if state.get("vision_ema") and not (path / "vision_ema.pt").is_file():
+            return False
+        if (path / "adapter_config.json").is_file():
+            return any((path / name).is_file() for name in ("adapter_model.safetensors", "adapter_model.bin"))
+        for index_name in ("model.safetensors.index.json", "pytorch_model.bin.index.json"):
+            if (path / index_name).is_file():
+                weight_map = json.loads((path / index_name).read_text()).get("weight_map", {})
+                return bool(weight_map) and all(
+                    isinstance(name, str) and Path(name).name == name and (path / name).is_file()
+                    for name in weight_map.values()
+                )
+        return any((path / name).is_file() for name in ("model.safetensors", "pytorch_model.bin"))
+
     def _prune_step_checkpoints(self) -> None:
         if self.keep_last <= 0:
             return
@@ -365,14 +400,12 @@ class SFT2CheckpointRuntime:
             (
                 (read_checkpoint_step(path), path)
                 for path in self.manager.output_dir.glob("step_*")
-                if path.is_dir()
-                and path.name.startswith("step_")
-                and (path / "training_state.pt").is_file()
+                if path.is_dir() and self._complete_step_checkpoint(path)
             ),
             key=lambda item: item[0],
         )
         for _, path in checkpoints[: -self.keep_last]:
-            shutil.rmtree(path, ignore_errors=True)
+            shutil.rmtree(path)
 
     def _broadcast_bool(self, value: bool) -> bool:
         if not (dist.is_available() and dist.is_initialized()):
