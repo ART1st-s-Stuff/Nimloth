@@ -158,7 +158,9 @@ def test_window_lm_selection_preserves_state_and_excludes_failed_rows(weights):
             super().__init__()
             self.scores = nn.Parameter(torch.randn(2, 4, 8))
             self.model.language_model.norm = nn.Identity()
-            self.lm_head = nn.Identity()
+            self.lm_head = nn.Linear(8, 8, bias=False)
+            with torch.no_grad():
+                self.lm_head.weight.copy_(torch.eye(8))
         def forward(self, input_ids, **kwargs):
             hidden = self.model.language_model.norm(self.scores)
             logits = self.lm_head(hidden)
@@ -177,7 +179,7 @@ def test_window_lm_selection_preserves_state_and_excludes_failed_rows(weights):
     target = sum(v * w for v, w in zip(expected, weights)) / max(1., sum(weights))
     torch.testing.assert_close(loss, target)
     assert hidden.shape == (2, 8)
-    assert model.logit_shape == (1, 3, 8)
+    assert model.logit_shape == ()
     loss.backward()
     for row, weight in enumerate(weights):
         assert bool(model.scores.grad[row].abs().sum() > 0) == bool(weight)

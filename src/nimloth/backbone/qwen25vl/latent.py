@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from typing import Any
+from contextlib import nullcontext
 
 import torch
-from torch.nn import functional as F
-from torch.utils.checkpoint import checkpoint
 
 from nimloth.latent import (
     extract_latent_state,
@@ -68,6 +67,8 @@ def _final_norm_module(model) -> torch.nn.Module:
 def _capture_last_hidden(
     model, model_inputs: dict[str, torch.Tensor], *, full_logits: bool = False,
     logit_mask: torch.Tensor | None = None,
+    supervised_labels: torch.Tensor | None = None,
+    lm_row_weights: torch.Tensor | None = None,
 ):
     # These are complete-prefix feature/teacher-forcing forwards, never KV-cache
     # decoding. Explicitly disable the model default even under no_grad (EMA
@@ -78,7 +79,9 @@ def _capture_last_hidden(
     # Capture complete decoder states, but project only positions needed by the
     # caller. A packed supervised projection remains one head forward on every
     # rank, including ranks with zero successful rows; FSDP ownership is intact.
-    if (full_logits or logit_mask is not None) and "labels" in model_inputs:
+    if supervised_labels is not None and (full_logits or logit_mask is not None):
+        raise ValueError("weighted LM projection cannot also request vocabulary logits")
+    if (full_logits or logit_mask is not None or supervised_labels is not None) and "labels" in model_inputs:
         raise ValueError("external logit capture computes its loss without labels")
     if logit_mask is not None:
         if logit_mask.dtype != torch.bool or logit_mask.shape != model_inputs["input_ids"].shape:
@@ -87,7 +90,7 @@ def _capture_last_hidden(
             raise ValueError("supervised projection requires at least one position")
 
     projection_handle = None
-    if logit_mask is not None or (not full_logits and "labels" not in model_inputs):
+    if supervised_labels is None and (logit_mask is not None or (not full_logits and "labels" not in model_inputs)):
         root = _unwrap_model(model)
         head = root.get_output_embeddings()
         if not isinstance(head, torch.nn.Module):
@@ -107,7 +110,13 @@ def _capture_last_hidden(
     handle = None
     try:
         handle = _final_norm_module(model).register_forward_hook(hook)
-        output = model(**model_inputs, output_hidden_states=False, return_dict=True)
+        projection_context = nullcontext()
+        if supervised_labels is not None:
+            from .supervised_lm import window_lm_projection
+            projection_context = window_lm_projection(
+                _unwrap_model(model).get_output_embeddings(), supervised_labels, lm_row_weights)
+        with projection_context:
+            output = model(**model_inputs, output_hidden_states=False, return_dict=True)
     finally:
         if handle is not None:
             handle.remove()
@@ -178,43 +187,15 @@ def extract_qwen_latents(
 
     model_inputs = {k: v.to(device, non_blocking=True) for k, v in enc.items()}
     labels = model_inputs.pop("labels") if lm_row_weights is not None else None
-    logit_mask = None
-    counts = None
-    if labels is not None:
-        weights = lm_row_weights.to(device)
-        if weights.shape != (labels.shape[0],) or not torch.all((weights == 0) | (weights == 1)):
-            raise ValueError("LM row weights must be zero or one for each input row")
-        logit_mask = torch.zeros_like(labels, dtype=torch.bool)
-        logit_mask[:, :-1] = labels[:, 1:] != -100
-        counts = logit_mask.sum(dim=1).tolist()
-        if any(count == 0 for count in counts):
-            raise ValueError("LM window has no supervised answer tokens")
-    hidden, output = _capture_last_hidden(model, model_inputs, logit_mask=logit_mask)
-    lm_loss = output.loss
-    if labels is not None:
-        # Packed positions are row-major. Keep each window's token mean and its
-        # original binary weight, including differentiable zero for failed rows.
-        targets = labels[:, 1:][logit_mask[:, :-1]]
-        scores = output.logits.squeeze(0)
-        if scores.ndim != 2 or scores.shape[0] != sum(counts):
-            raise RuntimeError("Qwen supervised projection did not preserve packed positions")
-        row_losses = []
-        offset = 0
-        def token_ce(scores, targets):
-            return F.cross_entropy(scores.float(), targets, reduction="sum")
-        for count in counts:
-            row_sum = scores.new_zeros((), dtype=torch.float32)
-            for start in range(offset, offset + count, 128):
-                end = min(start + 128, offset + count)
-                chunk_scores, chunk_targets = scores[start:end], targets[start:end]
-                row_sum = row_sum + (
-                    checkpoint(token_ce, chunk_scores, chunk_targets, use_reentrant=False)
-                    if torch.is_grad_enabled() and chunk_scores.requires_grad
-                    else token_ce(chunk_scores, chunk_targets)
-                )
-            row_losses.append(row_sum / count)
-            offset += count
-        lm_loss = (torch.stack(row_losses) * weights).sum() / weights.sum().clamp_min(1)
+    hidden, output = _capture_last_hidden(
+        model, model_inputs, supervised_labels=labels,
+        lm_row_weights=lm_row_weights.to(device) if labels is not None else None,
+    )
+    # The private weighted forward returns a scalar from inside the output-head
+    # boundary, retaining its FSDP backward hook without storing full logits.
+    lm_loss = output.logits if labels is not None else output.loss
+    if labels is not None and lm_loss.ndim != 0:
+        raise RuntimeError("weighted LM projection did not return a scalar loss")
     tokens = LatentActionTokens()
     rows: list[torch.Tensor] = []
     input_ids = enc["input_ids"].detach().cpu()

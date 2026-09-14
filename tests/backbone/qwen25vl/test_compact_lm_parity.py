@@ -58,12 +58,34 @@ def test_selected_row_real_qwen_compact_loss_and_all_gradients(weights, bf16_for
     expected_loss = (torch.stack(row_losses) * row_weights).sum() / row_weights.sum().clamp_min(1)
     torch.testing.assert_close(states, dense_hidden[:, 1])
     torch.testing.assert_close(loss, expected_loss)
+    # Keep the full-projection loss comparison above. For BF16 gradient parity,
+    # use independently assembled per-row projection: changing GEMM token axes
+    # changes rounding even without checkpointing (see numerical audit).
+    gradient_reference = expected_loss
+    if bf16_forward:
+        reference_rows = []
+        head = dense.get_output_embeddings()
+        with torch.autocast("cpu", dtype=torch.bfloat16):
+            for row in range(2):
+                valid = labels[row, 1:] != -100
+                position_hidden = dense_hidden[row, :-1][valid]
+                projected = F.linear(position_hidden, head.weight)
+                for selected_ids, selected_rows in (
+                    (head.nimloth_query_ids, head.nimloth_query_rows),
+                    (head.nimloth_protocol_ids, head.nimloth_protocol_rows),
+                ):
+                    projected = projected.index_copy(
+                        -1, selected_ids,
+                        F.linear(position_hidden, selected_rows.to(position_hidden.dtype)).to(projected.dtype),
+                    )
+                reference_rows.append(F.cross_entropy(projected.float(), labels[row, 1:][valid]))
+        gradient_reference = (torch.stack(reference_rows) * row_weights).sum() / row_weights.sum().clamp_min(1)
     (loss + states.square().mean()).backward()
-    (expected_loss + dense_hidden[:, 1].square().mean()).backward()
+    (gradient_reference + dense_hidden[:, 1].square().mean()).backward()
     assert len(head_calls) == 1
-    assert head_calls[0][-1] == 32
-    # The result may retain failed-row positions or use one graph-connected dummy.
-    assert torch.tensor(head_calls[0][:-1]).prod() <= 4
+    # Observer registered before the loss hook sees the one-position native head.
+    assert head_calls[0] == (2, 1, 32)
+    assert loss.ndim == 0
     assert enc["labels"] is labels and enc["input_ids"] is ids
     for (name, parameter), (other_name, other) in zip(compact.named_parameters(), dense.named_parameters()):
         assert name == other_name

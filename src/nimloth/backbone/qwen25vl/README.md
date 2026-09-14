@@ -12,6 +12,7 @@
 | `vllm_logits.py` | 把 turn 状态机接入 vLLM V1 per-request logits processor |
 | `checkpoint.py` | PEFT 与 full vision artifact |
 | `latent.py` | final hidden 捕获与 latent query 提取 |
+| `supervised_lm.py` | 在 FSDP head 边界内分块重算词表投影和窗口加权 CE |
 | `tuning.py` | LLM/vision `freeze | lora | full` 配置 |
 | `vision_ema.py` | 可训练视觉参数 EMA |
 | `monkey_patch.py` | 只供诊断脚本启用的局部实验 patch |
@@ -33,6 +34,8 @@ latent query的注入边界按tokenizer解码后的字面`</think>`匹配，而�
 
 隐藏状态提取不依赖 HF 的 `logits_to_keep` 参数：只需要 state 时，通过临时输出
 embedding pre-hook 将词表投影输入裁至最后一个位置，final norm 保留完整序列；
-原始 HF labels 路径保留完整 logits；带 `lm_row_weights` 的外部 LM loss 仅将
-实际监督位置按行排列后送入一次词表投影，保持完整词表和每行 token 均值。
-前向完成或异常后均移除 hook；完整 hidden states 与各参数梯度须通过对比验证。
+原始 HF labels 路径保留完整 logits；带 `lm_row_weights` 的外部 LM loss 在一次
+FSDP head 调用内按每 128 个监督位置联合重算投影和 CE，保持完整词表、每行
+token 均值和完整 hidden。该私有模式用 head 的标量输出传递窗口 loss，使
+FSDP 反向解分片先于重算；不递归调用 head，不缓存旧参数视图。
+前向完成或异常后均移除 hook；目标和梯度须通过独立参考与分布式对比验证。
