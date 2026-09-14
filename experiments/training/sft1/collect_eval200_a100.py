@@ -8,6 +8,7 @@ import signal
 import socket
 import subprocess
 import time
+import tempfile
 
 BASE = Path('/mnt/nimloth')
 REPO = Path(__file__).resolve().parents[3]
@@ -15,8 +16,8 @@ PYTHON = BASE / 'venv/bin/python3'
 VAGEN = BASE / 'sources/vagen'
 VERL = BASE / 'sources/verl'
 MODEL = BASE / 'checkpoint/hf_actor'
-RUN = BASE / 'outputs/experiments/vagen-eval200/20260914_original_step60'
-DATA = BASE / 'outputs/datasets/vagen-original-train-eval/20260914_eval200'
+RUN = BASE / 'outputs/experiments/vagen-eval200/20260914_original_step60_r2'
+DATA = BASE / 'outputs/datasets/vagen-original-train-eval/20260914_eval200_r2'
 SOURCE = BASE / 'outputs/experiments/sft2-dino-information-test/20260912_epoch2_fp32_lr5e5_r2/data'
 
 def sha(path):
@@ -117,9 +118,11 @@ def prepare():
             inputs.append(dict(data_source='navigation',prompt=[dict(role='user',content='')],extra_info=dict(
                 split='test',env_name='navigation',env_config=dict(configs,eval_set=cat),seed=seed,
                 source_index=len(inputs),source_key=f'{cat}:{seed}')))
-    env=environment()
-    subprocess.run(command()+['--cfg','job','--resolve'],cwd=VAGEN,env=env,check=True,
-                   stdout=subprocess.DEVNULL,timeout=90)
+    with tempfile.TemporaryDirectory(prefix='vagen-eval200-preflight-') as tmp:
+        env={k:v.replace(str(RUN),tmp) for k,v in environment().items()}
+        subprocess.run(command()+['--cfg','job','--resolve'],cwd=VAGEN,env=env,check=True,
+                       stdout=subprocess.DEVNULL,timeout=90)
+    assert not RUN.exists(), 'preflight must not create the real output directory'
     DATA.mkdir(parents=True); RUN.mkdir(parents=True)
     with (DATA/'train.jsonl').open('x') as f:
         for r in rows:
