@@ -60,8 +60,9 @@ def prepare():
         subprocess.run([str(core.PYTHON),'-c',
                         "import ctypes,ctypes.util; p=ctypes.util.find_library('vulkan'); assert p; ctypes.CDLL(p)"],
                        env=env,check=True,timeout=30)
-        subprocess.run([str(collector.VULKAN_ROOT/'bin/vulkaninfo'),'--help'],env=env,check=True,
-                       stdout=subprocess.DEVNULL,timeout=30)
+        help_result=subprocess.run([str(collector.VULKAN_ROOT/'bin/vulkaninfo'),'--help'],env=env,
+                                   capture_output=True,text=True,timeout=30)
+        assert help_result.returncode in (0,1) and 'USAGE:' in help_result.stdout, help_result.stderr
         subprocess.run(['cc','-x','c','-fsyntax-only','-'],input='#include <Python.h>\nint main(void){return 0;}\n',text=True,env=env,check=True)
         subprocess.run(collector.lane_command(0)+['--cfg','job','--resolve'],cwd=core.VAGEN,env=env,check=True,stdout=subprocess.DEVNULL,timeout=90)
     assert not ROOT.exists()
