@@ -14,12 +14,30 @@ import time
 from run_test import argument, run_phase, process_snapshot, remember_owned, terminate_group, utc_now
 
 
+def compute_query_command(contract):
+    """Scope readiness to physical GPUs, independently of CUDA_VISIBLE_DEVICES.
+
+    Omitting physical_gpu_indices retains the legacy whole-host readiness check.
+    Include every physical device the rollout and environment will use.
+    """
+    command = ['nvidia-smi']
+    if 'physical_gpu_indices' in contract:
+        indices = contract['physical_gpu_indices']
+        if (not isinstance(indices, list) or not indices
+                or any(type(index) is not int or index < 0 for index in indices)
+                or len(set(indices)) != len(indices)):
+            raise ValueError('physical_gpu_indices must be a nonempty list of distinct nonnegative integers')
+        command.extend(['-i', ','.join(str(index) for index in indices)])
+    return command + ['--query-compute-apps=pid', '--format=csv,noheader,nounits']
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--contract', type=Path, required=True)
     parser.add_argument('--check-only', action='store_true')
     args = parser.parse_args()
     contract = json.loads(args.contract.read_text())
+    compute_command = compute_query_command(contract)
     root = Path(contract['root'])
     checkout = Path(contract['checkout'])
     budget = contract['total_seconds']
@@ -68,14 +86,13 @@ def main():
             phase='vulkan_loader', checkout=checkout, env=env, logs=logs,
             deadline=min(deadline - 40, time.monotonic() + 100), event=event,
         )
-        event('waiting_for_dino')
+        event('waiting_for_dino', physical_gpu_indices=contract.get('physical_gpu_indices'),
+              compute_query_command=compute_command)
         while True:
             if time.monotonic() >= deadline - 80:
                 raise TimeoutError('DINO dependency did not finish within rollout budget')
             complete = all(Path(path).is_file() for path in contract['requires'])
-            compute = subprocess.check_output([
-                'nvidia-smi', '--query-compute-apps=pid', '--format=csv,noheader,nounits'
-            ], text=True, timeout=15).strip()
+            compute = subprocess.check_output(compute_command, text=True, timeout=15).strip()
             if complete and not compute:
                 break
             time.sleep(5)
