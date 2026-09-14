@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 import math
 import os
@@ -414,7 +415,7 @@ def _build_optimizer(
     return torch.optim.AdamW(parameter_groups, weight_decay=args.weight_decay)
 
 
-def train_sft2(args=None) -> int:
+def _train_sft2_impl(args=None) -> int:
     if args is None:
         args = parse_sft2_args()
     args.latent_token_count = int(getattr(args, "latent_token_count", 1))
@@ -867,8 +868,23 @@ def train_sft2(args=None) -> int:
     training_loop.run()
     if wandb_run is not None:
         wandb_run.finish()
-    cleanup_dist()
     return 0
+
+
+def train_sft2(args=None) -> int:
+    # Let the training frame go out of scope before shutting down NCCL. The
+    # runtime/optimizer callbacks may form cycles retaining FSDP parameters,
+    # gradients and Adam moments even after the loop itself has returned.
+    result = _train_sft2_impl(args)
+    gc.collect()
+    if torch.cuda.is_available():
+        # Surface asynchronous CUDA failures; never turn failed training or
+        # teardown into a successful exit. Release cached blocks only after
+        # outstanding work is complete, leaving headroom for NCCL shutdown.
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+    cleanup_dist()
+    return result
 
 
 def main() -> int:

@@ -92,10 +92,20 @@ before backward. Evaluation retains FSDP wrappers and pads every rank to equal f
 padded examples have zero metric/loss weight and are excluded from exports.
 All ranks participate in full model/optimizer/EMA gathering; rank0 writes complete CPU artifacts.
 Optimizer transformation uses the common Agent parent to include both Qwen and WM groups.
+`configure_qwen_tuning(model, args)` resolves language/vision ownership through actual decoder,
+visual and vocabulary modules before wrapping; full language tuning must include dense decoder
+parameters. Log trainable counts before sharding; selected vocabulary-row freezing follows this
+step. Module-name spelling in one Transformers release is not an ownership contract.
+`train_sft2(args=None)` releases its heavy training frame and cyclic references before CUDA
+synchronization, allocator cache release and ordinary process-group cleanup. CUDA and teardown
+errors still propagate. Collected checkpoint tensors must all be CPU, including ignored tensors
+not covered by FSDP's automatic offload.
 
 ### Validation and errors
 Reject mixed trainable dtypes, missing visual shard ownership, mismatched strategy on resume,
 unequal distributed eval call counts, incomplete artifacts and conflicting selected-row identities.
+Reject unrecognized model ownership or full mode with no dense language parameters. A checkpoint
+from an accidentally frozen language run is not a valid full-training continuation boundary.
 Partition rejects input hash drift, duplicate IDs/keys, missing identity and invalid returns.
 Only top-level split and explicit split provenance change; original rows and prior source identity
 remain auditable. Missing original evaluation keys are reported, never fabricated.
@@ -110,6 +120,9 @@ a checkpoint has never seen examples merely because its continuation split was c
 Check equal-rank zero padding, selected rows and dense export roundtrip, mixed sharded/replicated
 optimizer state, EMA swap/restore/save/load, clipping and separate SIGReg backward. CPU and
 synthetic process-group tests do not replace real multi-rank Qwen GPU save/resume validation.
+Use a real tiny Qwen to check full-mode dense gradients, selected-row masks, ownership layouts
+and trainable counts. Check that training cycles are released before cleanup and that failures
+at training, CUDA synchronization, cache release and process-group destruction remain visible.
 
 ### Wrong versus correct
 Wrong: rank0 saves its local shard as a full model/EMA, or evaluation unwraps a sharded model.
