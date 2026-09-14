@@ -16,8 +16,8 @@ PYTHON = BASE / 'venv/bin/python3'
 VAGEN = BASE / 'sources/vagen'
 VERL = BASE / 'sources/verl'
 MODEL = BASE / 'checkpoint/hf_actor'
-RUN = BASE / 'outputs/experiments/vagen-eval200/20260914_original_step60_r2'
-DATA = BASE / 'outputs/datasets/vagen-original-train-eval/20260914_eval200_r2'
+RUN = BASE / 'outputs/experiments/vagen-eval200/20260914_original_step60_r3'
+DATA = BASE / 'outputs/datasets/vagen-original-train-eval/20260914_eval200_r3'
 SOURCE = BASE / 'outputs/experiments/sft2-dino-information-test/20260912_epoch2_fp32_lr5e5_r2/data'
 
 def sha(path):
@@ -42,7 +42,8 @@ def environment():
         VLLM_USE_V1='0', VLLM_ATTENTION_BACKEND='XFORMERS', NCCL_IB_DISABLE='1',
         TORCHINDUCTOR_DISABLE='1', TORCH_COMPILE_DISABLE='1', TORCHDYNAMO_DISABLE='1',
         CUDA_DEVICE_ORDER='PCI_BUS_ID', WANDB_MODE='disabled', OMP_NUM_THREADS='4',
-        CPATH=str(BASE/'dependencies/python310-dev/root/usr/include/python3.10'),
+        CPATH=':'.join(str(BASE/'dependencies/python310-dev/root/usr/include'/part)
+                      for part in ('python3.10', '.', 'x86_64-linux-gnu/python3.10')),
         VK_ICD_FILENAMES='/usr/share/vulkan/icd.d/nvidia_icd.json',
         VK_DRIVER_FILES='/usr/share/vulkan/icd.d/nvidia_icd.json',
         ORIGINAL_VALIDATION_RUNTIME_DIR=str(RUN/'runtime'),
@@ -120,6 +121,8 @@ def prepare():
                 source_index=len(inputs),source_key=f'{cat}:{seed}')))
     with tempfile.TemporaryDirectory(prefix='vagen-eval200-preflight-') as tmp:
         env={k:v.replace(str(RUN),tmp) for k,v in environment().items()}
+        subprocess.run(['cc','-x','c','-fsyntax-only','-'], input='#include <Python.h>\nint main(void) {return 0;}\n',
+                       text=True,env=env,check=True,timeout=30)
         subprocess.run(command()+['--cfg','job','--resolve'],cwd=VAGEN,env=env,check=True,
                        stdout=subprocess.DEVNULL,timeout=90)
     assert not RUN.exists(), 'preflight must not create the real output directory'
@@ -179,7 +182,7 @@ def run():
             'use_state_reward=False','navigation.max_workers=2','navigation.devices=[0,1]'],ee)
         rayp=spawn('ray',[str(PYTHON),'-m','ray.scripts.scripts','start','--head','--block',
             '--include-dashboard=false','--node-ip-address=127.0.0.1','--port=23861','--dashboard-port=23862',
-            '--temp-dir=/tmp/vagen-eval200-20260914','--num-gpus=2','--num-cpus=32'],pe)
+            '--temp-dir=/tmp/vagen-eval200-20260914-r3','--num-gpus=2','--num-cpus=32'],pe)
         ready=time.monotonic()+180
         while True:
             assert envp.poll() is None and rayp.poll() is None, 'service died'
