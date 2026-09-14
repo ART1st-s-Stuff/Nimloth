@@ -5,6 +5,8 @@
 
 - `schema.py`：统一 trajectory 记录、序列化和 prompt 重建。
 - `record_format.py`：当前持久化版本、reward来源和最小结构契约。
+- `tail_drop.py`：严格核验 SFT view 中嵌入的完整奖励/动作/CoT，生成删除最后一步的新 Stage3 数据和 manifest。
+- `finite_horizon.py`：有限时域 return 来源、gamma 与删除尾步的跨字段验证。
 - `migration.py`：把未版本化JSONL离线转换为当前格式并写SHA256 manifest。
 - `validation.py`：落盘和训练前的跨字段完整性校验。
 - `from_agent.py`：把 `AgentEpisode` 转成 trajectory，不参与 environment 交互。
@@ -68,3 +70,9 @@ planner训练逐真实transition重算一次完整prefix并立即backward，不�
 Qwen graph。窗口模块只负责保持顺序，不计算
 advantage。fresh逐步reward用于完整episode return；真正terminal从0 bootstrap，
 时间上限truncation必须由训练配置显式选择bootstrap语义。
+
+有限时域截断转换可携带 `action_successes`（逐动作布尔值）和
+`action_value_targets`。后者必须携带 `finite_horizon_tail_drop_v1` provenance，
+包含完整原始 rewards/dones、gamma、零 bootstrap 的原始终点依据、source SHA256
+和被移除动作；`finite_horizon.py` 重算完整 return 后再切片验证。
+消费 gamma 不一致拒绝。缺失 outcome 标签保持未监督，不解释成动作失败。

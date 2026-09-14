@@ -49,6 +49,12 @@ def require_trajectory_record(
         raise ValueError(
             f"{TRAJECTORY_RECORD_FORMAT} record is missing field {missing[0]!r}"
         )
+    from nimloth.rollout.finite_horizon import (
+        validate_action_successes, validated_action_value_targets,
+    )
+
+    validate_action_successes(record)
+    validated_action_value_targets(record)
     provenance = record["reward_provenance"]
     if provenance not in REWARD_PROVENANCE_VALUES:
         raise ValueError(f"unsupported reward_provenance {provenance!r}")

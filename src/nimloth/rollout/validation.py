@@ -62,6 +62,14 @@ def _is_verified_offline_source_conversion(
 def validate_rollout_trajectory(trajectory: RolloutTrajectory) -> None:
     """在写盘或训练前校验一条结构化 Agent trajectory。"""
 
+    from nimloth.rollout.finite_horizon import (
+        validate_action_successes, validated_action_value_targets,
+    )
+
+    if trajectory.action_successes is not None or trajectory.action_value_targets is not None or trajectory.finite_horizon_provenance:
+        record = trajectory.to_record()
+        validate_action_successes(record)
+        validated_action_value_targets(record)
     prefix = f"trajectory {trajectory.record_id}"
     if len(trajectory.image_paths) != trajectory.num_steps + 1:
         raise ValueError(
