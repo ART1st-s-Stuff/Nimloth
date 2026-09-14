@@ -8,7 +8,15 @@ from pathlib import Path
 from .convergence import ConvergenceState
 
 
-def validate_epoch_continuation(path, state, identity, *, world, allow_dino_weight_change=False):
+def validate_epoch_continuation(
+    path,
+    state,
+    identity,
+    *,
+    world,
+    allow_dino_weight_change=False,
+    allow_projector_lr_change=False,
+):
     path = Path(path)
     marker = json.loads((path / "COMMITTED").read_text())
     epoch = state.get("epoch")
@@ -19,6 +27,8 @@ def validate_epoch_continuation(path, state, identity, *, world, allow_dino_weig
     allowed = {"epochs", "convergence", "warmup_ratio"}
     if allow_dino_weight_change:
         allowed = {"weight_dino"}
+    elif allow_projector_lr_change:
+        allowed.add("projector_lr")
     previous = state.get("identity")
     if not isinstance(previous, dict) or (
         {k: v for k, v in previous.items() if k not in allowed}

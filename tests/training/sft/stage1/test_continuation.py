@@ -94,6 +94,46 @@ def test_dino_change_is_explicit_and_does_not_allow_other_changes(tmp_path):
                                         world=1, allow_dino_weight_change=True)
 
 
+def test_projector_lr_change_is_explicit_and_does_not_allow_other_changes(tmp_path):
+    path = tmp_path / "epoch_007"
+    path.mkdir()
+    (path / "COMMITTED").write_text(json.dumps({"epoch": 7, "step": 189}))
+    identity = {
+        "projector_lr": 2e-5,
+        "lr": 2e-6,
+        "weight_dino": 2.0,
+        "warmup_ratio": 0.0,
+    }
+    state = dict(
+        epoch=7,
+        step=189,
+        identity=identity,
+        world_size=1,
+        rank_rng_states=[capture_rng_state()],
+        optimizer={"state": {}},
+        scheduler={"last_epoch": 189},
+    )
+    changed = {**identity, "projector_lr": 8e-5}
+    with pytest.raises(ValueError, match="identity"):
+        validate_epoch_continuation(path, state, changed, world=1)
+    assert validate_epoch_continuation(
+        path,
+        state,
+        changed,
+        world=1,
+        allow_projector_lr_change=True,
+    ) == 7
+    for key, value in [("lr", 1e-5), ("weight_dino", 1.0)]:
+        with pytest.raises(ValueError, match="identity"):
+            validate_epoch_continuation(
+                path,
+                state,
+                {**changed, key: value},
+                world=1,
+                allow_projector_lr_change=True,
+            )
+
+
 def test_changed_objective_baseline_drops_old_patience(tmp_path):
     from nimloth.training.sft.stage1.continuation import changed_objective_baseline
     path = tmp_path / "validation_metrics.jsonl"

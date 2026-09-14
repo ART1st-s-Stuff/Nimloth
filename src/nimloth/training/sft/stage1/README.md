@@ -79,3 +79,9 @@ from epoch 2 with `--epochs 4` schedules two additional epochs. Convergence mode
 replays the parent's complete validation history. `continuation.json` records
 parent training-state SHA256 and new schedule identity; ordinary resume remains
 strict and restores the existing scheduler.
+
+Stage2 may explicitly pass `--continue-with-projector-lr-change` together with
+`--continue-from-epoch` and `--until-converged`. This permits only
+`projector_lr` to differ from the committed identity. Optimizer moments, RNG,
+data position, objective, and validation convergence history remain intact;
+the continuation schedule resets every optimizer group to its configured LR.

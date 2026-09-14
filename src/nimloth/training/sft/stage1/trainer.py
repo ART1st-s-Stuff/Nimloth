@@ -807,7 +807,14 @@ def main(*, stage: str = "format") -> int:
         state = torch.load(resume_ckpt, map_location="cpu", weights_only=False)
         validate_resume_stage(state, resume_dir, stage)
         if continuing:
-            validate_epoch_continuation(resume_dir, state, _resume_identity(args, stage=stage, world=world, train_size=len(train_ds)), world=world, allow_dino_weight_change=args.continue_with_dino_weight_change)
+            validate_epoch_continuation(
+                resume_dir,
+                state,
+                _resume_identity(args, stage=stage, world=world, train_size=len(train_ds)),
+                world=world,
+                allow_dino_weight_change=args.continue_with_dino_weight_change,
+                allow_projector_lr_change=args.continue_with_projector_lr_change,
+            )
             if not args.until_converged and args.epochs <= int(state["epoch"]):
                 raise ValueError("--epochs must exceed the completed source epoch")
         saved_mode = state.get("latent_query_mode")
@@ -995,7 +1002,14 @@ def main(*, stage: str = "format") -> int:
         if args.action_token_loss_weight != 1 and not objective_identities_match(state.get("identity"), resume_identity):
             raise ValueError("weighted loss resume checkpoint objective identity mismatch")
         if continuing:
-            validate_epoch_continuation(resume_dir, state, resume_identity, world=world, allow_dino_weight_change=args.continue_with_dino_weight_change)
+            validate_epoch_continuation(
+                resume_dir,
+                state,
+                resume_identity,
+                world=world,
+                allow_dino_weight_change=args.continue_with_dino_weight_change,
+                allow_projector_lr_change=args.continue_with_projector_lr_change,
+            )
         if convergence_policy is not None and continuing:
             if args.continue_with_dino_weight_change:
                 from .continuation import changed_objective_baseline

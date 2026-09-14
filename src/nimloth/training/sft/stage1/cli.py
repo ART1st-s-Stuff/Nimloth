@@ -45,6 +45,14 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap.add_argument("--continue-with-dino-weight-change", action="store_true",
                     help="Continue an epoch with changed DINO weight, preserving optimizer/scheduler and resetting convergence baseline.")
     ap.add_argument(
+        "--continue-with-projector-lr-change",
+        action="store_true",
+        help=(
+            "Continue an epoch with a changed projector LR. Optimizer moments and "
+            "convergence history are preserved; configured group LRs start a new schedule."
+        ),
+    )
+    ap.add_argument(
         "--max-optimizer-steps", type=int, default=None,
         help="Pause with a resume checkpoint and exit 75 at this absolute optimizer step.",
     )
@@ -216,6 +224,14 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     args = ap.parse_args(argv)
     if args.continue_with_dino_weight_change and (stage != "query" or args.continue_from_epoch is None or not args.until_converged):
         raise ValueError("DINO objective continuation requires Stage2, --continue-from-epoch and --until-converged")
+    if args.continue_with_projector_lr_change and (
+        stage != "query" or args.continue_from_epoch is None or not args.until_converged
+    ):
+        raise ValueError(
+            "projector LR continuation requires Stage2, --continue-from-epoch and --until-converged"
+        )
+    if args.continue_with_dino_weight_change and args.continue_with_projector_lr_change:
+        raise ValueError("change only one continuation identity field at a time")
     full_language = stage == "query" and args.tuning_mode == "full_language"
     if full_language:
         if "--lora" in (argv if argv is not None else sys.argv[1:]):

@@ -37,6 +37,11 @@ Checkpoint 保存 `training_stage=query`、语言模型或 adapter，以及 `slo
 
 LoRA 合并导出保留 projector 文件及阶段元数据，SFT3 使用同一 projector 格式。完整恢复包含优化器、调度器、epoch/微批次游标、每 rank 随机数状态及收敛历史；query 收敛监控身份为 `validation_total_loss`。CPU 测试覆盖标签、梯度、空间对齐、收敛与导出接口，不作为真实 GPU 训练或 rollout 质量证据。
 
+从已提交 epoch 提高 projector 学习率时，必须同时使用
+`--continue-with-projector-lr-change`。该显式门禁仅允许
+`projector_lr` 改变：恢复既有优化器 moments、每 rank RNG、数据游标和完整验证历史，
+然后按命令行给出的五组学习率创建新的续训 schedule；普通 resume 仍禁止改变学习率。
+
 优化器更新前只预取一个累积组的 CPU 输入并统计成功/全部回答数，跨 rank 求和后逐微批单次前向。两个损失分别按各自全局分母缩放；恢复身份包含此监督语义，旧的全部回答 LM 优化器状态不能续训为新目标。
 
 ## 数据加载与计算开销
