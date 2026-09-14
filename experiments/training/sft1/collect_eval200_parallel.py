@@ -10,7 +10,8 @@ import tempfile
 import time
 import collect_eval200_a100 as core
 
-ROOT=core.BASE/'outputs/experiments/vagen-eval200/20260914_parallel8'
+PREVIOUS=core.BASE/'outputs/experiments/vagen-eval200/20260914_parallel8'
+ROOT=core.BASE/'outputs/experiments/vagen-eval200/20260914_parallel8_r2'
 OLD=core.RUN
 
 def lane_command(i):
@@ -19,7 +20,7 @@ def lane_command(i):
     replacements={'data.train_files':str(lane/'inputs.parquet'),'data.val_files':str(lane/'inputs.parquet'),
         'trainer.default_local_dir':str(lane/'unused_checkpoints'),
         '+trainer.original_validation_output_dir':str(lane/'rollouts'),
-        'rollout_manager.base_url':f'http://127.0.0.1:{24060+10*i}'}
+        'rollout_manager.base_url':f'http://127.0.0.1:{24260+10*i}'}
     return [s.split('=',1)[0]+'='+replacements[s.split('=',1)[0]] if '=' in s and s.split('=',1)[0] in replacements else s for s in cmd]
 
 def env_for(i):
@@ -42,7 +43,7 @@ def prepare():
     inputs=pq.read_table(core.DATA/'eval_inputs.parquet').to_pylist()
     assert len(inputs)==200
     completed={}
-    for f in sorted((OLD/'rollouts').glob('row_*/record.json')):
+    for f in sorted(list((OLD/'rollouts').glob('row_*/record.json'))+list(PREVIOUS.glob('lane_*/rollouts/row_*/record.json'))):
         r=json.loads(f.read_text());idx=r['source_index'];info=inputs[idx]['extra_info']
         assert r['source_key']==info['source_key'] and r['seed']==info['seed']
         completed[idx]={'path':str(f),'sha256':core.sha(f)}
@@ -54,7 +55,7 @@ def prepare():
     mem={s.split(':')[0]:int(s.split()[1]) for s in Path('/proc/meminfo').read_text().splitlines()}
     assert mem['MemAvailable']>100*1024*1024,'need at least100GiB available host RAM'
     for i in range(4):
-        for port in (24060+10*i,24061+10*i,24062+10*i):
+        for port in list(range(24260+10*i,24265+10*i))+list(range(28000+128*i,28128+128*i)):
             with socket.socket() as s:s.bind(('0.0.0.0',port))
     with tempfile.TemporaryDirectory(prefix='eval200-parallel-preflight-') as temp:
         env={k:v.replace(str(ROOT),temp) for k,v in env_for(0).items()}
@@ -67,7 +68,7 @@ def prepare():
         pq.write_table(pa.Table.from_pylist(rows),lane/'inputs.parquet')
         core.write(lane/'contract.json',dict(count=len(rows),input_hash=core.sha(lane/'inputs.parquet'),
             indices=[r['extra_info']['source_index'] for r in rows],command=lane_command(i),
-            policy_gpus=[2*i,2*i+1],environment_gpu=2*i,ports=[24060+10*i,24061+10*i,24062+10*i],
+            policy_gpus=[2*i,2*i+1],environment_gpu=2*i,ports=list(range(24260+10*i,24265+10*i)),worker_ports=[28000+128*i,28127+128*i],
             python=str(core.PYTHON),env_overrides={k:v for k,v in env_for(i).items() if os.environ.get(k)!=v}))
     core.write(ROOT/'manifest.json',dict(commit=head,completed=completed,remaining=len(remaining),
         total=200,old_run=str(OLD),training_data=str(core.DATA/'train.jsonl'),
@@ -80,7 +81,7 @@ def prepare():
 def lane_run(i):
     lane=ROOT/f'lane_{i}';cfg=json.loads((lane/'contract.json').read_text())
     assert core.sha(lane/'inputs.parquet')==cfg['input_hash']
-    env=env_for(i);port=24060+10*i
+    env=env_for(i);port=24260+10*i
     (lane/'runtime').mkdir();(lane/'env_home/.ai2thor').mkdir(parents=True)
     (lane/'env_home/.ai2thor/releases').symlink_to(core.BASE/'env_home/.ai2thor/releases')
     # Vulkan uses physical GPU ordinals; expose all devices only to the render service.
@@ -100,7 +101,9 @@ def lane_run(i):
             'use_state_reward=False','navigation.max_workers=1',f'navigation.devices=[{2*i}]'],ee)
         rp=spawn('ray',[str(core.PYTHON),'-m','ray.scripts.scripts','start','--head','--block',
             '--include-dashboard=false','--node-ip-address=127.0.0.1',f'--port={port+1}',f'--dashboard-port={port+2}',
-            f'--temp-dir=/tmp/vagen-eval200-parallel8-lane{i}','--num-gpus=2','--num-cpus=12'],pe)
+            f'--temp-dir=/tmp/vagen-eval200-parallel8-r2-lane{i}',f'--node-manager-port={port+3}',
+            f'--object-manager-port={port+4}',f'--min-worker-port={28000+128*i}',
+            f'--max-worker-port={28127+128*i}','--num-gpus=2','--num-cpus=12'],pe)
         end=time.monotonic()+180
         while True:
             assert ep.poll() is None and rp.poll() is None
