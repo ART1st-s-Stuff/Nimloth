@@ -9,6 +9,31 @@ from dataclasses import replace
 import numpy as np
 import torch
 
+from nimloth.agent import Agent
+from nimloth.backbone import Backbone
+
+
+class _PredictorDiagnosticBackbone(Backbone):
+    """Keep exact backbone values and FSDP gathers, without an unused Qwen graph."""
+    def __init__(self, inner):
+        super().__init__()
+        self.inner = inner
+
+    @property
+    def model(self):
+        return self.inner.model
+
+    def forward(self, batch, *, include_lm_loss=False):
+        with torch.no_grad():
+            return self.inner(batch, include_lm_loss=include_lm_loss)
+
+    def with_model(self, model):
+        return _PredictorDiagnosticBackbone(self.inner.with_model(model))
+
+    def save_pretrained(self, *args, **kwargs):
+        raise RuntimeError("diagnostic backbone view is not an exportable artifact")
+
+
 
 def outcome_gradient_diagnostic(algorithm, runtime, batch, *, wm_weight: float) -> dict:
     """Measure rank-local first-microbatch gradients; preserve RNG, history, and .grad.
@@ -20,6 +45,13 @@ def outcome_gradient_diagnostic(algorithm, runtime, batch, *, wm_weight: float) 
         raise ValueError("outcome gradient diagnostic requires an active BCE objective")
     isolated = runtime.unwrapped()
     isolated = replace(isolated, history_cache=copy.deepcopy(isolated.history_cache))
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+    if isinstance(isolated.agent.backbone.model, FSDP):
+        isolated = replace(isolated, agent=Agent(
+            backbone=_PredictorDiagnosticBackbone(isolated.agent.backbone),
+            wm=isolated.agent.wm,
+        ))
     parameters = [p for p in isolated.agent.wm.wm_predictor.parameters() if p.requires_grad]
     if not parameters:
         raise ValueError("outcome gradient diagnostic requires trainable predictor parameters")

@@ -28,6 +28,7 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("tuning", "lora_alpha"): "lora_alpha",
     ("tuning", "lora_dropout"): "lora_dropout",
     ("train", "epochs"): "epochs",
+    ("train", "distributed_strategy"): "distributed_strategy",
     ("train", "stop_after_steps"): "stop_after_steps",
     ("train", "diagnose_outcome_gradients"): "diagnose_outcome_gradients",
     ("train", "batch_size"): "batch_size",

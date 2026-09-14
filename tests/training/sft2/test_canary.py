@@ -129,6 +129,8 @@ def test_two_rank_stop_and_fresh_loop_resume(tmp_path):
 class DiagnosticAgent(nn.Module):
     def __init__(self):
         super().__init__()
+        self.backbone = nn.Module()
+        self.backbone.model = nn.Identity()
         self.wm = nn.Module()
         self.wm.wm_predictor = nn.Linear(1, 1)
 

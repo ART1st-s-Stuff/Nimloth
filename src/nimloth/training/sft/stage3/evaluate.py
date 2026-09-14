@@ -55,6 +55,15 @@ def evaluate(
     """Evaluate with the same forward implementation used during training."""
 
     validation_runtime = runtime.unwrapped()
+    from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+    if isinstance(getattr(getattr(validation_runtime.agent, "backbone", None), "model", None), FSDP):
+        local_batches = len(loader)
+        effective_batches = min(local_batches, max_batches) if max_batches > 0 else local_batches
+        counts = [None] * dist.get_world_size()
+        dist.all_gather_object(counts, effective_batches)
+        if len(set(counts)) != 1:
+            raise ValueError("FSDP evaluation requires equal padded forward counts on every rank")
     accumulator = MetricAccumulator()
     with (
         preserve_module_modes(

@@ -48,6 +48,7 @@ def load_sft2_loop_state(
     resume_checkpoint_dir: Path | None,
     optimizer: torch.optim.Optimizer,
     training_invariants: dict[str, Any],
+    agent=None,
 ) -> SFT2LoopState:
     """读取训练位置并校验影响数据顺序和梯度语义的不变量。"""
 
@@ -78,7 +79,11 @@ def load_sft2_loop_state(
             resume_epoch_and_micro_step(saved_state)
         )
     if saved_state.get("optimizer") is not None:
-        optimizer.load_state_dict(saved_state["optimizer"])
+        state = saved_state["optimizer"]
+        if agent is not None:
+            from nimloth.training.sft.stage3.fsdp_checkpoint import optimizer_state_to_load
+            state = optimizer_state_to_load(agent, optimizer, state)
+        optimizer.load_state_dict(state)
 
     if is_main():
         print(

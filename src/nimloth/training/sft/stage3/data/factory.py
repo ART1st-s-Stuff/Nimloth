@@ -275,7 +275,7 @@ def build_data_bundle(
             rank=rank,
             shuffle=False,
             seed=config.seed,
-            pad_to_equal_batches=False,
+            pad_to_equal_batches=(getattr(config, "distributed_strategy", "ddp") == "fsdp"),
         )
     else:
         train_batch_sampler = OnlineHistoryBatchSampler(
@@ -296,7 +296,7 @@ def build_data_bundle(
             rank=rank,
             shuffle=False,
             seed=config.seed,
-            pad_to_equal_batches=False,
+            pad_to_equal_batches=(getattr(config, "distributed_strategy", "ddp") == "fsdp"),
         )
     if train_batch_sampler.window_count == 0:
         raise ValueError(

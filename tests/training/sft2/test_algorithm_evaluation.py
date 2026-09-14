@@ -92,3 +92,19 @@ def test_evaluate_lm_uses_only_successful_windows(counts, expected):
     else:
         assert result["lm_ce"] == pytest.approx(expected)
     assert result["wm_mse"] == 1.0
+
+
+def test_zero_weight_padding_executes_but_does_not_bias_metrics():
+    calls = []
+    class Algorithm:
+        def evaluation_step(self, runtime, batch):
+            calls.append(batch)
+            return SimpleNamespace(metrics={"wm_mse": batch[0]}, sample_count=batch[1])
+    class Runtime:
+        agent = SimpleNamespace(trainable_modules=())
+        def unwrapped(self): return self
+        def evaluation_context(self): return contextlib.nullcontext()
+    builder = SimpleNamespace(prepare=lambda batch: batch)
+    result = evaluate(Algorithm(), Runtime(), [(2.0, 1), (999.0, 0)], batch_builder=builder)
+    assert len(calls) == 2
+    assert result["wm_mse"] == 2.0

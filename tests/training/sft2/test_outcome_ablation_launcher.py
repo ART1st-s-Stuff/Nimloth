@@ -69,7 +69,7 @@ def test_resolved_launch_contract_matches_reviewed_configuration(tmp_path):
     from nimloth.training.sft.stage3.cli import parse_sft2_args
     config = args(tmp_path)
     expected = {
-        'objective':'dino_grid', 'epochs':1, 'batch_size':1, 'grad_accum':8,
+        'distributed_strategy':'fsdp', 'objective':'dino_grid', 'epochs':1, 'batch_size':1, 'grad_accum':8,
         'seed':42, 'history_size':1, 'prediction_horizon':4, 'grid_size':8,
         'latent_token_count':64, 'latent_query_mode':'inject',
         'llm_tune':'full', 'vision_tune':'full', 'vision_ema':True,

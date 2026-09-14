@@ -130,3 +130,16 @@ without modifying `.grad`, synchronizing diagnostic gradients or imposing a rati
 `outcome_gradients_rank_NNN.json` identifies the rank-local scope and token-input hash;
 it is not the global gradient ratio of the complete accumulation group. Non-finite losses
 or gradients fail. This option requires a positive outcome coefficient.
+
+## 全量 Qwen 的分片训练
+
+`--distributed-strategy fsdp` 将完整 Qwen 主干与选定 FP32 token rows 交给
+FULL_SHARD/use_orig_params，参数前向使用 BF16、梯度归约使用 FP32；冻结 BF16
+词表作为 ignored parameters 保持复制，避免同一 handle 混合 dtype。
+完整 visual 是嵌套 FSDP owner，视觉子模块不转换内部 FP32 rotary 输入。
+WM/projector/value/outcome 仍采用 DDP，学习率和目标不变。优化器保留一个 AdamW，
+梯度裁剪只对 Qwen 分片范数跨 rank 求和，再加入一份 WM 梯度范数。
+不使用 FSDP no_sync 累积，以免保留完整未分片梯度。
+
+FSDP 是新的恢复身份。CPU policy/归一化测试不证明 CUDA all-gather、EMA交换、
+主损失加 SIGReg 两次反传或完整 checkpoint 恢复；启动前必须通过实际多卡 canary。

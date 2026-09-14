@@ -253,6 +253,7 @@ def _wrap_sft2_agent(
     world_model_device: torch.device,
     world_size: int,
     train_wm_predictor: bool,
+    distributed_strategy: str = "ddp",
 ) -> tuple[Agent, bool]:
     """按现有多卡语义包装模型，再组成唯一的神经网络 Agent。"""
 
@@ -262,8 +263,13 @@ def _wrap_sft2_agent(
     value_head = world_model.value_head
     outcome_head = world_model.outcome_head
     static_graph = world_size > 1
+    if distributed_strategy == "fsdp" and (loaded.pair_parallel or world_size < 2):
+        raise ValueError("FSDP requires multi-rank single-device Qwen ranks")
     if world_size > 1:
-        if loaded.pair_parallel:
+        if distributed_strategy == "fsdp":
+            from nimloth.training.sft.stage3.fsdp import wrap_qwen_fsdp
+            model = wrap_qwen_fsdp(model, device)
+        elif loaded.pair_parallel:
             model = DDP(
                 model,
                 device_ids=None,
@@ -535,14 +541,22 @@ def train_sft2(args=None) -> int:
         world_model_device=world_model_device,
         world_size=world,
         train_wm_predictor=train_wm_predictor,
+        distributed_strategy=getattr(args, "distributed_strategy", "ddp"),
     )
-    vision_ema = build_vision_ema(
-        enabled=vision_ema_enabled,
-        decay=args.vision_ema_decay,
-        llm=agent.backbone.model,
-        resume_path=(resume_ckpt_dir / "vision_ema.pt") if resume_ckpt_dir else None,
-        device=device,
-    )
+    if getattr(args, "distributed_strategy", "ddp") == "fsdp" and vision_ema_enabled:
+        from nimloth.training.sft.stage3.vision_ema_fsdp import build_fsdp_vision_ema
+        vision_ema = build_fsdp_vision_ema(
+            decay=args.vision_ema_decay, model=agent.backbone.model,
+            resume_path=(resume_ckpt_dir / "vision_ema.pt") if resume_ckpt_dir else None,
+        )
+    else:
+        vision_ema = build_vision_ema(
+            enabled=vision_ema_enabled,
+            decay=args.vision_ema_decay,
+            llm=agent.backbone.model,
+            resume_path=(resume_ckpt_dir / "vision_ema.pt") if resume_ckpt_dir else None,
+            device=device,
+        )
     input_builder = build_input_builder(
         loaded,
         max_length=args.max_length,
@@ -592,6 +606,7 @@ def train_sft2(args=None) -> int:
         world > 1
         and not loaded.pair_parallel
         and not ddp_static_graph
+        and getattr(args, "distributed_strategy", "ddp") != "fsdp"
     )
     if (
         is_main()
@@ -659,12 +674,17 @@ def train_sft2(args=None) -> int:
         if vision_ema is not None:
             vision_ema.update(agent.backbone.model)
 
+    from nimloth.training.sft.stage3.fsdp import clip_mixed_grad_norm
     optimization_runtime = SFT2OptimizationRuntime(
         optimization=OptimizationRuntime(
             optimizer=optimizer,
             synchronized_modules=agent.synchronized_modules,
             enable_no_sync=use_ddp_no_sync,
             after_step=after_optimizer_step,
+            gradient_clipper=(
+                (lambda limit: clip_mixed_grad_norm(agent.backbone.model, agent.wm.trainable_modules, limit))
+                if getattr(args, "distributed_strategy", "ddp") == "fsdp" else None
+            ),
         ),
         qwen_warmup_steps=qwen_warmup_steps,
         total_steps=total_steps,
@@ -690,6 +710,9 @@ def train_sft2(args=None) -> int:
         "train_micro_batches": int(len(train_loader)),
         "rng_schedule_version": "epoch_micro_rank_v1",
     }
+    if getattr(args, "distributed_strategy", "ddp") == "fsdp":
+        from nimloth.training.sft.stage3.fsdp import STRATEGY_ID
+        checkpoint_invariants["distributed_strategy"] = STRATEGY_ID
     if getattr(args, "outcome_head", False):
         checkpoint_invariants.update({
             "outcome_schema": ActionOutcomeHead.schema,
@@ -805,6 +828,7 @@ def train_sft2(args=None) -> int:
 
     loop_state = load_sft2_loop_state(
         resume=args.resume,
+        agent=agent,
         resume_state_path=resume_state_path,
         resume_checkpoint_dir=resume_ckpt_dir,
         optimizer=optimizer,

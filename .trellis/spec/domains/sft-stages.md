@@ -74,3 +74,43 @@ Outcome head 复用预测 grid，同一 WM 前向产生 logit；普通 BCE 按�
 覆盖转换不改原数据、gamma/done/回报一致、后继outcome对齐、padding全局归约、
 控制组等价、选行冻结及两步优化保存恢复。训练LM与独立SIGReg反传的head参与范围不同；
 static DDP须有真实多rank交替反传测试，CPU测试不放行未经验证的Qwen/FA2八卡训练。
+
+## Stage3 full-shard execution and original VAGEN key partition
+
+### Scope and entrypoints
+`--distributed-strategy fsdp` shards the full joint Qwen branch; WM/projector/value/outcome
+remain replicated DDP. Default DDP remains available for existing compatible scopes.
+`python -m nimloth.rollout.split_by_eval_keys --source ... --eval-keys-manifest ... --output-root ...`
+partitions immutable converted trajectories using explicitly verified original evaluation keys.
+
+### Contracts
+Qwen uses FULL_SHARD/original parameters, FP32 trainable masters and gradient reduction, BF16
+forward. Frozen vocabulary tables have explicit replicated ownership. Do not accumulate full
+FSDP gradients through no_sync. Composite clipping counts each Qwen shard and one WM replica.
+Vision EMA keeps the same decay and target semantics; shard swaps must restore online parameters
+before backward. Evaluation retains FSDP wrappers and pads every rank to equal forward counts;
+padded examples have zero metric/loss weight and are excluded from exports.
+All ranks participate in full model/optimizer/EMA gathering; rank0 writes complete CPU artifacts.
+Optimizer transformation uses the common Agent parent to include both Qwen and WM groups.
+
+### Validation and errors
+Reject mixed trainable dtypes, missing visual shard ownership, mismatched strategy on resume,
+unequal distributed eval call counts, incomplete artifacts and conflicting selected-row identities.
+Partition rejects input hash drift, duplicate IDs/keys, missing identity and invalid returns.
+Only top-level split and explicit split provenance change; original rows and prior source identity
+remain auditable. Missing original evaluation keys are reported, never fabricated.
+
+### Cases
+Valid: a source trajectory whose exact(eval_set,seed) occurs in the pinned test key manifest
+moves wholly to eval with all precomputed finite-horizon targets unchanged.
+Invalid: selecting by generic example seed range, replacing a forbidden action, or claiming
+a checkpoint has never seen examples merely because its continuation split was corrected.
+
+### Required tests
+Check equal-rank zero padding, selected rows and dense export roundtrip, mixed sharded/replicated
+optimizer state, EMA swap/restore/save/load, clipping and separate SIGReg backward. CPU and
+synthetic process-group tests do not replace real multi-rank Qwen GPU save/resume validation.
+
+### Wrong versus correct
+Wrong: rank0 saves its local shard as a full model/EMA, or evaluation unwraps a sharded model.
+Correct: collective gathering with explicit complete export and synchronized wrapped evaluation.

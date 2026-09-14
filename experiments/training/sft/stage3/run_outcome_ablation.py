@@ -29,7 +29,7 @@ def command(args, arm, phase, port):
         'model': args.model, 'train-jsonl': args.train, 'val-jsonl': args.val,
         'preprocess-cache-dir': args.preprocess, 'preprocess-cache-processor-source': args.model,
         'dino-grid-cache': args.dino, 'output-dir': output, 'epochs': 1,
-        'batch-size': 1, 'grad-accum': 8, 'seed': 42, 'history-size': 1, 'prediction-horizon': 4,
+        'distributed-strategy': 'fsdp', 'batch-size': 1, 'grad-accum': 8, 'seed': 42, 'history-size': 1, 'prediction-horizon': 4,
         'grid-size': 8, 'latent-token-count': 64, 'llm-tune': 'full', 'vision-tune': 'full',
         'query-tune': 'selected_rows', 'query-lr': 1e-4, 'protocol-lr': 2e-5,
         'lr-qwen-start': 2e-6, 'lr-qwen-peak': 2e-6, 'state-proj-lr': 8e-5,

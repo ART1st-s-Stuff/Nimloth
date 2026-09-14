@@ -52,9 +52,15 @@ class SFT2ModelRuntime:
         return self.backbone_ema.use_ema_weights(self.agent.backbone.model)
 
     def unwrapped(self) -> "SFT2ModelRuntime":
-        """为不等长分布式验证创建不触发 wrapper collective 的模型视图。"""
+        """解除 replicated wrappers；FSDP 保留参数 all-gather 所需的根包装。"""
 
-        agent = self.agent.unwrapped()
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+        # FSDP owns parameter gathering even for no-grad validation. Only the
+        # replicated WM wrappers may be removed; validation must pad rank counts.
+        agent = (Agent(backbone=self.agent.backbone, wm=self.agent.wm.unwrapped())
+                 if isinstance(self.agent.backbone.model, FSDP)
+                 else self.agent.unwrapped())
         return SFT2ModelRuntime(
             agent=agent,
             history_cache=self.history_cache,

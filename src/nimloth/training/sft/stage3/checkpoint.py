@@ -21,6 +21,9 @@ from nimloth.agent import Agent
 from nimloth.backbone import BackboneEMA
 from nimloth.training.sft.stage3.history_cache import OnlineHistoryStateCache
 from nimloth.util.distributed import is_main
+from nimloth.training.sft.stage3.fsdp_checkpoint import (
+    collect_fsdp_checkpoint, is_fsdp_agent, save_collected_backbone,
+)
 from nimloth.wm.model import WorldModel
 from nimloth.wm.value_head import ValueHead
 
@@ -112,24 +115,31 @@ def save_checkpoint(
     epoch_complete: bool = True,
     micro_step_in_epoch: int = 0,
     training_invariants: dict[str, Any] | None = None,
+    collected_state: dict[str, Any] | None = None,
 ) -> None:
+    if is_fsdp_agent(agent) and collected_state is None:
+        raise ValueError("FSDP save requires all-rank collected state")
     out_dir.mkdir(parents=True, exist_ok=True)
     state_proj = agent.wm.state_proj
     wm_predictor = agent.wm.wm_predictor
     value_head = agent.wm.value_head
     proj = state_proj.module if hasattr(state_proj, "module") else state_proj
-    agent.backbone.save_pretrained(
-        out_dir,
-        metadata={
-            "nimloth_latent_token_count": int(
-                getattr(proj, "latent_token_count", 1)
-            ),
-            "nimloth_latent_query_mode": latent_query_mode,
-            "nimloth_query_tune": query_tune,
-        },
-    )
+    metadata = {
+        "nimloth_latent_token_count": int(getattr(proj, "latent_token_count", 1)),
+        "nimloth_latent_query_mode": latent_query_mode,
+        "nimloth_query_tune": query_tune,
+    }
+    if collected_state is not None:
+        save_collected_backbone(agent, out_dir, collected_state["backbone"], metadata)
+    else:
+        agent.backbone.save_pretrained(out_dir, metadata=metadata)
     processor.save_pretrained(out_dir)
-    if vision_ema is not None and vision_ema.shadow:
+    ema_state = collected_state.get("vision_ema") if collected_state is not None else None
+    if ema_state is not None:
+        torch.save(ema_state, out_dir / "vision_ema.pt")
+    elif vision_ema is not None and vision_ema.shadow:
+        if is_fsdp_agent(agent):
+            raise ValueError("FSDP vision EMA must be collected on all ranks before writing")
         vision_ema.save_checkpoint(out_dir / "vision_ema.pt")
     torch.save(proj.state_dict(), out_dir / "state_proj.pt")
     pred = wm_predictor.module if hasattr(wm_predictor, "module") else wm_predictor
@@ -160,7 +170,7 @@ def save_checkpoint(
         "lora": lora,
         "llm_tune": llm_tune,
         "vision_tune": vision_tune,
-        "vision_ema": vision_ema is not None and bool(vision_ema.shadow),
+        "vision_ema": ema_state is not None or (vision_ema is not None and bool(vision_ema.shadow)),
         "epoch_complete": bool(epoch_complete),
         "micro_step_in_epoch": int(micro_step_in_epoch),
     }
@@ -169,7 +179,8 @@ def save_checkpoint(
     if base_model_path is not None:
         state["base_model_path"] = str(base_model_path)
     if optimizer is not None:
-        state["optimizer"] = optimizer.state_dict()
+        state["optimizer"] = (collected_state["optimizer"] if collected_state is not None
+                              else optimizer.state_dict())
     torch.save(state, out_dir / "training_state.pt")
 
 
@@ -200,6 +211,13 @@ class SFT2CheckpointManager:
         epoch_complete: bool = True,
         micro_step_in_epoch: int = 0,
     ) -> None:
+        collected_state = None
+        if is_fsdp_agent(self.agent):
+            collected_state = collect_fsdp_checkpoint(self.agent, self.optimizer)
+            if self.vision_ema is not None:
+                collected_state["vision_ema"] = self.vision_ema.collect_checkpoint_state()
+            if not is_main():
+                return
         save_checkpoint(
             self.agent,
             self.output_dir / name,
@@ -218,6 +236,7 @@ class SFT2CheckpointManager:
             epoch_complete=epoch_complete,
             micro_step_in_epoch=micro_step_in_epoch,
             training_invariants=self.training_invariants,
+            collected_state=collected_state,
         )
 
 
@@ -402,10 +421,10 @@ class SFT2CheckpointRuntime:
     ) -> None:
         self._last_epoch = None
         self._barrier()
-        if is_main():
-            target = self.manager.output_dir / name
-            if self.deduplicate_epoch_checkpoints and name.startswith("epoch_") and (target.exists() or target.is_symlink()):
-                raise FileExistsError(f"refusing to overwrite immutable epoch checkpoint: {target}")
+        target = self.manager.output_dir / name
+        if self.deduplicate_epoch_checkpoints and name.startswith("epoch_") and (target.exists() or target.is_symlink()):
+            raise FileExistsError(f"refusing to overwrite immutable epoch checkpoint: {target}")
+        if is_main() or is_fsdp_agent(getattr(self.manager, "agent", None)):
             self.manager.save(
                 name,
                 step=step,
