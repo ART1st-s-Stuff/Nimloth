@@ -157,10 +157,13 @@ def test_window_lm_selection_preserves_state_and_excludes_failed_rows(weights):
         def __init__(self):
             super().__init__()
             self.scores = nn.Parameter(torch.randn(2, 4, 8))
+            self.model.language_model.norm = nn.Identity()
+            self.lm_head = nn.Identity()
         def forward(self, input_ids, **kwargs):
-            out = super().forward(input_ids, **kwargs)
-            out.logits = self.scores
-            return out
+            hidden = self.model.language_model.norm(self.scores)
+            logits = self.lm_head(hidden)
+            self.logit_shape = logits.shape
+            return SimpleNamespace(logits=logits, loss=None)
     model = LM()
     tokens = LatentActionTokens()
     mapping = {tokens.latent_state: 10}
@@ -173,7 +176,8 @@ def test_window_lm_selection_preserves_state_and_excludes_failed_rows(weights):
                 torch.nn.functional.cross_entropy(model.scores[1, 2:3], labels[1, 3:])]
     target = sum(v * w for v, w in zip(expected, weights)) / max(1., sum(weights))
     torch.testing.assert_close(loss, target)
-    assert hidden.shape == (2, 4)
+    assert hidden.shape == (2, 8)
+    assert model.logit_shape == (1, 3, 8)
     loss.backward()
     for row, weight in enumerate(weights):
         assert bool(model.scores.grad[row].abs().sum() > 0) == bool(weight)
@@ -256,3 +260,39 @@ def test_real_qwen_right_padded_feature_forward_disables_cache(mode):
     assert seen == [False]
     assert inputs["use_cache"] is True
     assert torch.equal(inputs["attention_mask"], torch.tensor([[1, 1, 1, 0], [1, 1, 1, 1]]))
+
+
+def test_packed_projection_keeps_full_hidden_and_removes_hooks_on_failure():
+    from nimloth.backbone.qwen25vl.latent import _capture_last_hidden
+    model = _FakeQwen()
+    ids = torch.tensor([[1, 2, 3, 4], [5, 6, 7, 0]])
+    mask = torch.tensor([[False, True, False, True], [True, False, False, False]])
+    inputs = {"input_ids": ids, "use_cache": True}
+    hidden, output = _capture_last_hidden(model, inputs, logit_mask=mask)
+    assert hidden.shape == (2, 4, 4)
+    assert output.logits.shape == (1, 3, 8)
+    torch.testing.assert_close(output.logits[0], model.lm_head(hidden[mask]))
+    assert inputs["use_cache"] is True
+    assert torch.equal(inputs["input_ids"], ids)
+    assert not model.lm_head._forward_pre_hooks
+
+    def fail(_module, _args, _output):
+        raise RuntimeError("projection failed")
+    handle = model.lm_head.register_forward_hook(fail)
+    try:
+        with pytest.raises(RuntimeError, match="projection failed"):
+            _capture_last_hidden(model, inputs, logit_mask=mask)
+    finally:
+        handle.remove()
+    assert not model.lm_head._forward_pre_hooks
+    assert not model.model.language_model.norm._forward_hooks
+
+
+@pytest.mark.parametrize("weights", [[1., 0.], [0., 0.]])
+def test_empty_answer_rejected_even_on_unsuccessful_row(weights):
+    ids = torch.tensor([[1, 10, 2], [1, 10, 2]])
+    labels = torch.tensor([[-100, -100, 2], [-100, -100, -100]])
+    with pytest.raises(ValueError, match="no supervised answer tokens"):
+        extract_qwen_latents(_FakeQwen(), {"input_ids": ids, "labels": labels},
+                            {LatentActionTokens().latent_state: 10}, torch.device("cpu"),
+                            lm_row_weights=torch.tensor(weights))

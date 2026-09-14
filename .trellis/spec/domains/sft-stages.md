@@ -100,6 +100,11 @@ step. Module-name spelling in one Transformers release is not an ownership contr
 synchronization, allocator cache release and ordinary process-group cleanup. CUDA and teardown
 errors still propagate. Collected checkpoint tensors must all be CPU, including ignored tensors
 not covered by FSDP's automatic offload.
+For weighted Stage3 LM windows, project only hidden positions whose next-token label is not
+`-100`, in one row-major packed head forward. Keep the full vocabulary, per-window token mean,
+binary row weights and complete query hidden states. Zero-weight rows retain a differentiable
+head path. Dense-reference loss and all parameter gradients must match in FP32/BF16 checks;
+do not substitute truncated labels, sampled vocabulary or per-rank varying head-call counts.
 
 ### Validation and errors
 Reject mixed trainable dtypes, missing visual shard ownership, mismatched strategy on resume,

@@ -66,7 +66,8 @@ def _final_norm_module(model) -> torch.nn.Module:
 
 
 def _capture_last_hidden(
-    model, model_inputs: dict[str, torch.Tensor], *, full_logits: bool = False
+    model, model_inputs: dict[str, torch.Tensor], *, full_logits: bool = False,
+    logit_mask: torch.Tensor | None = None,
 ):
     # These are complete-prefix feature/teacher-forcing forwards, never KV-cache
     # decoding. Explicitly disable the model default even under no_grad (EMA
@@ -74,26 +75,31 @@ def _capture_last_hidden(
     model_inputs = {**model_inputs, "use_cache": False}
     captured: dict[str, torch.Tensor] = {}
 
-    # State extraction reads the final decoder norm through the hook below; it
-    # does not consume vocabulary logits.  Restrict the causal-LM projection to
-    # one trailing position so long trajectory prefixes do not materialize a
-    # full ``[sequence, vocab]`` tensor.  Supervised forwards keep their labels
-    # and therefore retain the model's complete LM-loss semantics.
-    if full_logits:
-        if "labels" in model_inputs:
-            raise ValueError("full-logit capture computes its external loss without labels")
+    # Capture complete decoder states, but project only positions needed by the
+    # caller. A packed supervised projection remains one head forward on every
+    # rank, including ranks with zero successful rows; FSDP ownership is intact.
+    if (full_logits or logit_mask is not None) and "labels" in model_inputs:
+        raise ValueError("external logit capture computes its loss without labels")
+    if logit_mask is not None:
+        if logit_mask.dtype != torch.bool or logit_mask.shape != model_inputs["input_ids"].shape:
+            raise ValueError("logit mask must be boolean with the input sequence shape")
+        if not logit_mask.any():
+            raise ValueError("supervised projection requires at least one position")
 
-    # 在词表投影入口裁剪，而非依赖新版 HF 的 logits_to_keep 参数。
-    # final norm hook 仍捕获完整序列；有监督路径不裁剪、不改变 loss。
     projection_handle = None
-    if not full_logits and "labels" not in model_inputs:
+    if logit_mask is not None or (not full_logits and "labels" not in model_inputs):
         root = _unwrap_model(model)
         head = root.get_output_embeddings()
         if not isinstance(head, torch.nn.Module):
             raise RuntimeError("Qwen output embedding module is required for bounded logits")
-        projection_handle = head.register_forward_pre_hook(
-            lambda _module, args: (args[0][:, -1:, :], *args[1:])
-        )
+
+        def select_projection(_module, args):
+            hidden = args[0]
+            selected = (hidden[logit_mask].unsqueeze(0) if logit_mask is not None
+                        else hidden[:, -1:, :])
+            return (selected, *args[1:])
+
+        projection_handle = head.register_forward_pre_hook(select_projection)
 
     def hook(_module, _inputs, output):
         captured["hidden"] = output[0] if isinstance(output, tuple) else output
@@ -172,31 +178,42 @@ def extract_qwen_latents(
 
     model_inputs = {k: v.to(device, non_blocking=True) for k, v in enc.items()}
     labels = model_inputs.pop("labels") if lm_row_weights is not None else None
-    hidden, output = _capture_last_hidden(model, model_inputs, full_logits=labels is not None)
-    lm_loss = output.loss
+    logit_mask = None
+    counts = None
     if labels is not None:
         weights = lm_row_weights.to(device)
         if weights.shape != (labels.shape[0],) or not torch.all((weights == 0) | (weights == 1)):
             raise ValueError("LM row weights must be zero or one for each input row")
-        # 每个窗口先独立求 token 均值，避免长回答改变窗口权重。
+        logit_mask = torch.zeros_like(labels, dtype=torch.bool)
+        logit_mask[:, :-1] = labels[:, 1:] != -100
+        counts = logit_mask.sum(dim=1).tolist()
+        if any(count == 0 for count in counts):
+            raise ValueError("LM window has no supervised answer tokens")
+    hidden, output = _capture_last_hidden(model, model_inputs, logit_mask=logit_mask)
+    lm_loss = output.loss
+    if labels is not None:
+        # Packed positions are row-major. Keep each window's token mean and its
+        # original binary weight, including differentiable zero for failed rows.
+        targets = labels[:, 1:][logit_mask[:, :-1]]
+        scores = output.logits.squeeze(0)
+        if scores.ndim != 2 or scores.shape[0] != sum(counts):
+            raise RuntimeError("Qwen supervised projection did not preserve packed positions")
         row_losses = []
-        for row in range(labels.shape[0]):
-            valid = labels[row, 1:] != -100
-            if not valid.any():
-                raise ValueError("LM window has no supervised answer tokens")
-            positions = valid.nonzero(as_tuple=True)[0]
-            row_sum = output.logits.new_zeros((), dtype=torch.float32)
-            def token_ce(scores, targets):
-                return F.cross_entropy(scores.float(), targets, reduction="sum")
-            for positions_chunk in positions.split(128):
-                scores = output.logits[row, positions_chunk]
-                targets = labels[row, positions_chunk + 1]
+        offset = 0
+        def token_ce(scores, targets):
+            return F.cross_entropy(scores.float(), targets, reduction="sum")
+        for count in counts:
+            row_sum = scores.new_zeros((), dtype=torch.float32)
+            for start in range(offset, offset + count, 128):
+                end = min(start + 128, offset + count)
+                chunk_scores, chunk_targets = scores[start:end], targets[start:end]
                 row_sum = row_sum + (
-                    checkpoint(token_ce, scores, targets, use_reentrant=False)
-                    if torch.is_grad_enabled() and scores.requires_grad
-                    else token_ce(scores, targets)
+                    checkpoint(token_ce, chunk_scores, chunk_targets, use_reentrant=False)
+                    if torch.is_grad_enabled() and chunk_scores.requires_grad
+                    else token_ce(chunk_scores, chunk_targets)
                 )
-            row_losses.append(row_sum / positions.numel())
+            row_losses.append(row_sum / count)
+            offset += count
         lm_loss = (torch.stack(row_losses) * weights).sum() / weights.sum().clamp_min(1)
     tokens = LatentActionTokens()
     rows: list[torch.Tensor] = []
