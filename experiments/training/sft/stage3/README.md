@@ -22,3 +22,19 @@ record hashes and every verified image identity; record and image sources are no
 without loading Qwen weights. Specify source/output/processor, token count, max
 length and max pixels explicitly. It refuses existing outputs and never filters
 failed trajectories. Run separately for `preprocess/train` and `preprocess/val`.
+
+## Training activation storage
+
+`train.activation_offload` (CLI `--activation-offload` / `--no-activation-offload`)
+selects PyTorch `save_on_cpu(pin_memory=True)` for the primary and SIGReg training
+forwards. It defaults to false; `action_outcome_k64_h1_t4.yaml` enables it for both
+arms. Tensors saved for backward are copied to CPU with their original dtype and
+restored to their original device when needed. This includes saved parameter views
+when autograd needs them; live model parameters and optimizer state remain on GPU.
+The forward objectives, batch, gradients and distributed reductions are unchanged.
+
+This reduces retained GPU activation storage at the cost of pinned host memory and
+GPU/CPU transfers, which can slow each update. It complements gradient checkpointing;
+it does not offload the optimizer or run backward on CPU. The enabled setting is
+recorded in checkpoint training invariants. GPU memory headroom and runtime still
+require validation on the actual training batch and distributed model.

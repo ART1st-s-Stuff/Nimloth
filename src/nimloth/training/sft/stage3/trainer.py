@@ -711,6 +711,8 @@ def _train_sft2_impl(args=None) -> int:
         "train_micro_batches": int(len(train_loader)),
         "rng_schedule_version": "epoch_micro_rank_v1",
     }
+    if getattr(args, "activation_offload", False):
+        checkpoint_invariants["activation_offload"] = True
     if getattr(args, "distributed_strategy", "ddp") == "fsdp":
         from nimloth.training.sft.stage3.fsdp import STRATEGY_ID
         checkpoint_invariants["distributed_strategy"] = STRATEGY_ID

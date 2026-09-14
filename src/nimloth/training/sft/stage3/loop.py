@@ -12,6 +12,7 @@ import torch
 import torch.distributed as dist
 
 from nimloth.config.sft2 import SFT2LoopConfig
+from nimloth.training.sft.stage3.activation_offload import saved_activation_context
 from nimloth.training.sft.stage3.batch import SFT2BatchBuilder
 from nimloth.training.sft.stage3.checkpoint import (
     SFT2CheckpointRuntime,
@@ -308,11 +309,12 @@ class SFT2TrainingLoop:
             with path.open("x") as stream:
                 json.dump(diagnostic, stream, indent=2, allow_nan=False)
             print(json.dumps(diagnostic, allow_nan=False), flush=True)
-        primary = self.algorithm.training_primary_step(
-            self.model_runtime,
-            batch,
-            wm_weight=lambda_wm,
-        )
+        with saved_activation_context(self.config.activation_offload):
+            primary = self.algorithm.training_primary_step(
+                self.model_runtime,
+                batch,
+                wm_weight=lambda_wm,
+            )
         self.step_timer.stop("forward_primary", timer_start)
 
         detached_current_state = primary.current_state.detach()
@@ -342,16 +344,17 @@ class SFT2TrainingLoop:
         sigreg = None
         if self.algorithm.has_sigreg_stage:
             timer_start = self.step_timer.start("forward_sigreg")
-            sigreg = self.algorithm.training_sigreg_step(
-                self.model_runtime,
-                batch,
-                detached_current_state=detached_current_state,
-                sigreg_seed=global_sigreg_seed(
-                    self.config.seed,
-                    epoch,
-                    micro_step,
-                ),
-            )
+            with saved_activation_context(self.config.activation_offload):
+                sigreg = self.algorithm.training_sigreg_step(
+                    self.model_runtime,
+                    batch,
+                    detached_current_state=detached_current_state,
+                    sigreg_seed=global_sigreg_seed(
+                        self.config.seed,
+                        epoch,
+                        micro_step,
+                    ),
+                )
             self.step_timer.stop("forward_sigreg", timer_start)
             timer_start = self.step_timer.start("backward_sigreg")
             self.optimization_runtime.backward(

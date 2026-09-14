@@ -67,7 +67,23 @@ def test_load_loop_state_rejects_invariant_mismatch(tmp_path) -> None:
         )
 
 
-def test_train_microbatch_backwards_primary_before_sigreg_forward() -> None:
+@pytest.mark.parametrize("offload", [False, True])
+def test_train_microbatch_backwards_primary_before_sigreg_forward(monkeypatch, offload) -> None:
+    from contextlib import contextmanager
+    from nimloth.training.sft.stage3 import loop as loop_module
+    active = []
+    scopes = []
+    @contextmanager
+    def saved_context(enabled):
+        assert not active
+        assert enabled == offload
+        active.append(enabled)
+        scopes.append(enabled)
+        try:
+            yield
+        finally:
+            active.pop()
+    monkeypatch.setattr(loop_module, "saved_activation_context", saved_context)
     events: list[str] = []
     current_state = torch.randn(2, 4, requires_grad=True)
 
@@ -78,6 +94,7 @@ def test_train_microbatch_backwards_primary_before_sigreg_forward() -> None:
             return 0.5
 
         def training_primary_step(self, _runtime, batch, *, wm_weight: float):
+            assert active == [offload]
             events.append("primary_forward")
             assert batch == "prepared"
             assert wm_weight == 0.5
@@ -96,6 +113,7 @@ def test_train_microbatch_backwards_primary_before_sigreg_forward() -> None:
             detached_current_state: torch.Tensor,
             sigreg_seed: int,
         ):
+            assert active == [offload]
             events.append("sigreg_forward")
             assert batch == "prepared"
             assert detached_current_state.requires_grad is False
@@ -115,6 +133,7 @@ def test_train_microbatch_backwards_primary_before_sigreg_forward() -> None:
 
     class FakeOptimizationRuntime:
         def backward(self, _loss: torch.Tensor, *, grad_accum: int) -> None:
+            assert not active
             events.append("backward")
             assert grad_accum == 4
 
@@ -126,6 +145,7 @@ def test_train_microbatch_backwards_primary_before_sigreg_forward() -> None:
 
     loop = SFT2TrainingLoop(
         config=SimpleNamespace(
+            activation_offload=offload,
             step_timing=False,
             step_timing_interval=1,
             grad_accum=4,
@@ -160,6 +180,7 @@ def test_train_microbatch_backwards_primary_before_sigreg_forward() -> None:
         "merge_metrics",
     ]
     assert wm_weight == 0.5
+    assert scopes == [offload, offload]
     assert metrics["total_loss"] == pytest.approx(2.3)
     assert sample_count == 2
 
@@ -183,7 +204,7 @@ def test_primary_components_use_separate_global_window_denominators(scales):
             assert grad_accum == 1
             loss.backward()
     loop = SFT2TrainingLoop(
-        config=SimpleNamespace(step_timing=False, step_timing_interval=1, grad_accum=8, seed=42),
+        config=SimpleNamespace(activation_offload=False, step_timing=False, step_timing_interval=1, grad_accum=8, seed=42),
         rank=0, train_loader=[], val_loader=[], train_batch_sampler=None,
         algorithm=Algorithm(), model_runtime=None, optimization_runtime=Optimization(),
         batch_builder=SimpleNamespace(prepare=lambda value: value), checkpoint_runtime=None,

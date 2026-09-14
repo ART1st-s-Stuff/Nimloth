@@ -14,6 +14,7 @@ from nimloth.backbone.qwen25vl.latent import _capture_last_hidden, extract_qwen_
 from nimloth.backbone.selected_token_rows import install_full_language_selected_rows
 from nimloth.latent.extraction import LatentActionTokens
 from nimloth.training.sft.stage3.fsdp import qwen_wrap_policy
+from nimloth.training.sft.stage3.activation_offload import saved_activation_context
 
 
 def _model():
@@ -56,7 +57,7 @@ def _full_grads(model):
                 for name, parameter in model.named_parameters() if parameter.requires_grad}
 
 
-def _worker(rank, rendezvous, cuda, packed_reference=False, fp32=False):
+def _worker(rank, rendezvous, cuda, packed_reference=False, fp32=False, offload=False):
     device = torch.device("cuda", rank) if cuda else torch.device("cpu")
     if cuda:
         torch.cuda.set_device(device)
@@ -76,15 +77,31 @@ def _worker(rank, rendezvous, cuda, packed_reference=False, fp32=False):
         weights = torch.tensor([float(rank)], device=device)
         calls = []
         handle = model.module.lm_head.register_forward_hook(lambda *args: calls.append(1))
-        states, loss = extract_qwen_latents(model, {"input_ids": ids, "labels": labels},
-            {LatentActionTokens().latent_state: 10}, device, lm_row_weights=weights)
+        with saved_activation_context(offload):
+            states, loss = extract_qwen_latents(model, {"input_ids": ids, "labels": labels},
+                {LatentActionTokens().latent_state: 10}, device, lm_row_weights=weights)
         probe = torch.linspace(-0.2, 0.3, states.shape[-1], device=device)
         (loss + (states.float() * probe).sum()).backward()
+        sigreg_ids = ids.repeat(4, 1)
+        sigreg_ids[:, 0] = torch.arange(1, 5, device=device)
+        if offload:
+            with saved_activation_context(True):
+                sigreg_states, no_lm = extract_qwen_latents(model, {"input_ids": sigreg_ids},
+                    {LatentActionTokens().latent_state: 10}, device)
+                # Exercise the real hidden-only SIGReg encoding/backward path;
+                # this fixed probe is not a quality test of the SIGReg objective.
+                sigreg_loss = (sigreg_states.float() * probe).square().mean()
+            assert no_lm is None
+            sigreg_loss.backward()
         handle.remove()
-        assert len(calls) == 1
+        assert len(calls) == (2 if offload else 1)
         got = _full_grads(model)
         valid = labels[0, 1:] != -100
-        if packed_reference:
+        if offload:
+            reference_states, reference_loss = extract_qwen_latents(baseline,
+                {"input_ids": ids, "labels": labels},
+                {LatentActionTokens().latent_state: 10}, device, lm_row_weights=weights)
+        elif packed_reference:
             mask = torch.zeros_like(labels, dtype=torch.bool)
             mask[:, :-1] = labels[:, 1:] != -100
             hidden, output = _capture_last_hidden(baseline, {"input_ids": ids}, logit_mask=mask)
@@ -92,10 +109,19 @@ def _worker(rank, rendezvous, cuda, packed_reference=False, fp32=False):
         else:
             hidden, output = _capture_last_hidden(baseline, {"input_ids": ids}, full_logits=True)
             reference_scores = output.logits[0, :-1][valid]
-        reference_loss = F.cross_entropy(reference_scores.float(), labels[0, 1:][valid]) * rank
+        if not offload:
+            reference_loss = F.cross_entropy(reference_scores.float(), labels[0, 1:][valid]) * rank
+            reference_states = hidden[:, 1]
         torch.testing.assert_close(loss, reference_loss)
-        torch.testing.assert_close(states, hidden[:, 1])
-        (reference_loss + (hidden[:, 1].float() * probe).sum()).backward()
+        torch.testing.assert_close(states, reference_states)
+        (reference_loss + (reference_states.float() * probe).sum()).backward()
+        if offload:
+            reference_sigreg, no_lm = extract_qwen_latents(baseline, {"input_ids": sigreg_ids},
+                {LatentActionTokens().latent_state: 10}, device)
+            torch.testing.assert_close(sigreg_states, reference_sigreg, rtol=0, atol=0)
+            reference_sigreg_loss = (reference_sigreg.float() * probe).square().mean()
+            torch.testing.assert_close(sigreg_loss, reference_sigreg_loss, rtol=0, atol=0)
+            reference_sigreg_loss.backward()
         expected = _full_grads(baseline)
         assert got.keys() == expected.keys()
         for name in got:
@@ -121,4 +147,15 @@ def test_two_rank_cuda_supervised_lm_nested_fsdp(tmp_path):
 
 def test_two_rank_cpu_supervised_lm_against_previous_packed_projection(tmp_path):
     torch.multiprocessing.spawn(_worker, args=(str(tmp_path / "lm-fsdp-packed"), False, True),
+                               nprocs=2, join=True)
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires two CUDA GPUs for saved-tensor transfer")
+def test_two_rank_cuda_activation_offload_primary_and_sigreg(tmp_path):
+    torch.multiprocessing.spawn(_worker, args=(str(tmp_path / "lm-offload-cuda"), True, True, False, True),
+                               nprocs=2, join=True)
+
+
+def test_two_rank_cpu_activation_offload_primary_and_sigreg_interface(tmp_path):
+    torch.multiprocessing.spawn(_worker, args=(str(tmp_path / "lm-offload-cpu"), False, True, False, True),
                                nprocs=2, join=True)

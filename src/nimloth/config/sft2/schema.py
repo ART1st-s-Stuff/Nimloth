@@ -29,6 +29,7 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("tuning", "lora_dropout"): "lora_dropout",
     ("train", "epochs"): "epochs",
     ("train", "distributed_strategy"): "distributed_strategy",
+    ("train", "activation_offload"): "activation_offload",
     ("train", "stop_after_steps"): "stop_after_steps",
     ("train", "diagnose_outcome_gradients"): "diagnose_outcome_gradients",
     ("train", "batch_size"): "batch_size",
@@ -110,11 +111,13 @@ class SFT2LoopConfig:
     step_timing_interval: int
     stop_after_steps: int = 0
     diagnose_outcome_gradients: bool = False
+    activation_offload: bool = False
 
     @classmethod
     def from_namespace(cls, args: argparse.Namespace) -> "SFT2LoopConfig":
         return cls(
             epochs=int(args.epochs),
+            activation_offload=bool(getattr(args, "activation_offload", False)),
             stop_after_steps=int(getattr(args, "stop_after_steps", 0)),
             diagnose_outcome_gradients=bool(getattr(args, "diagnose_outcome_gradients", False)),
             grad_accum=int(args.grad_accum),
@@ -144,6 +147,8 @@ def flatten_sft2_yaml_config(config: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError(f"unknown SFT2 config field: {section}.{key}")
             flat[destination] = value
 
+    if "activation_offload" in flat and not isinstance(flat["activation_offload"], bool):
+        raise ValueError("train.activation_offload must be a boolean")
     if "include_failed_rollouts" in flat:
         flat["success_only"] = not bool(flat.pop("include_failed_rollouts"))
     if "wandb_enabled" in flat:

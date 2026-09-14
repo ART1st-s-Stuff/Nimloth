@@ -32,6 +32,8 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--output-dir", type=Path, required=True)
     ap.add_argument("--epochs", type=int, default=10)
     ap.add_argument("--distributed-strategy", choices=("ddp", "fsdp"), default="ddp")
+    ap.add_argument("--activation-offload", action=argparse.BooleanOptionalAction, default=False,
+                    help="Store forward autograd saved tensors on CPU; computation and backward remain on GPU.")
     ap.add_argument("--stop-after-steps", type=int, default=0,
                     help="Stop at this absolute optimizer step with a partial resumable checkpoint; 0 disables.")
     ap.add_argument("--diagnose-outcome-gradients", action="store_true",
