@@ -49,7 +49,11 @@ def _install_leaf(leaf: nn.Module, query_ids: tuple[int, ...], protocol_ids: tup
             for ids, rows in ((module.nimloth_query_ids, module.nimloth_query_rows),
                               (module.nimloth_protocol_ids, module.nimloth_protocol_rows)):
                 selected = F.linear(hidden, rows.to(dtype=hidden.dtype))
-                output = output.index_copy(-1, ids.to(output.device), selected.to(output.dtype))
+                # This is the fresh Linear result, before any downstream
+                # consumer. Linear backward needs input/weight, not its output;
+                # index_copy backward needs the indices. Reuse this vocabulary
+                # buffer instead of cloning it for each disjoint selected group.
+                output.index_copy_(-1, ids.to(output.device), selected.to(output.dtype))
             return output
         leaf.register_forward_hook(replace_logits)
 
