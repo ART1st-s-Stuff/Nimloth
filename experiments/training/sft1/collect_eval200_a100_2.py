@@ -10,8 +10,9 @@ import argparse
 import collect_eval200_parallel as collector
 
 core=collector.core
-collector.ROOT=core.BASE/'outputs/experiments/vagen-eval200/20260914_a100_2_resume'
+collector.ROOT=core.BASE/'outputs/experiments/vagen-eval200/20260914_a100_2_resume_r2'
 collector.GPU_PAIRS=((2,6),)
+collector.VULKAN_ROOT=core.BASE/'dependencies/vulkan'
 core.MODEL=core.BASE/'inputs/hf_actor'
 ROOT=collector.ROOT
 SNAPSHOT=core.BASE/'handoff/eval200-migration-records.json'
@@ -56,6 +57,11 @@ def prepare():
     assert all(int(gpu[i])<100 for i in (2,6)),gpu
     with tempfile.TemporaryDirectory(prefix='eval200-migrate-preflight-') as tmp:
         env={k:v.replace(str(ROOT),tmp) for k,v in collector.env_for(0).items()}
+        subprocess.run([str(core.PYTHON),'-c',
+                        "import ctypes,ctypes.util; p=ctypes.util.find_library('vulkan'); assert p; ctypes.CDLL(p)"],
+                       env=env,check=True,timeout=30)
+        subprocess.run([str(collector.VULKAN_ROOT/'bin/vulkaninfo'),'--help'],env=env,check=True,
+                       stdout=subprocess.DEVNULL,timeout=30)
         subprocess.run(['cc','-x','c','-fsyntax-only','-'],input='#include <Python.h>\nint main(void){return 0;}\n',text=True,env=env,check=True)
         subprocess.run(collector.lane_command(0)+['--cfg','job','--resolve'],cwd=core.VAGEN,env=env,check=True,stdout=subprocess.DEVNULL,timeout=90)
     assert not ROOT.exists()

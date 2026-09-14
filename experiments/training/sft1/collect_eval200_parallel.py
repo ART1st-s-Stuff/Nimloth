@@ -14,6 +14,7 @@ PREVIOUS=core.BASE/'outputs/experiments/vagen-eval200/20260914_parallel8'
 ROOT=core.BASE/'outputs/experiments/vagen-eval200/20260914_parallel8_r2'
 OLD=core.RUN
 GPU_PAIRS=((0,1),(2,3),(4,5),(6,7))
+VULKAN_ROOT=None
 
 def lane_command(i):
     lane=ROOT/f'lane_{i}'
@@ -28,6 +29,9 @@ def env_for(i):
     lane=ROOT/f'lane_{i}'
     env={k:v.replace(str(OLD),str(lane)) for k,v in core.environment().items()}
     env['VLLM_HOST_IP']='127.0.0.1'
+    if VULKAN_ROOT is not None:
+        env['PATH']=str(VULKAN_ROOT/'bin')+':'+env['PATH']
+        env['LD_LIBRARY_PATH']=str(VULKAN_ROOT/'lib')+':'+env.get('LD_LIBRARY_PATH','')
     return env
 
 def prepare():
