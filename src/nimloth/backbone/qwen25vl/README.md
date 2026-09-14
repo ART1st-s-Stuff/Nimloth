@@ -33,4 +33,6 @@ latent query的注入边界按tokenizer解码后的字面`</think>`匹配，而�
 
 隐藏状态提取不依赖 HF 的 `logits_to_keep` 参数：只需要 state 时，通过临时输出
 embedding pre-hook 将词表投影输入裁至最后一个位置，final norm 保留完整序列；
-有监督或外部 LM loss 使用完整 logits，前向完成或异常后均移除 hook。
+原始 HF labels 路径保留完整 logits；带 `lm_row_weights` 的外部 LM loss 仅将
+实际监督位置按行排列后送入一次词表投影，保持完整词表和每行 token 均值。
+前向完成或异常后均移除 hook；完整 hidden states 与各参数梯度须通过对比验证。
