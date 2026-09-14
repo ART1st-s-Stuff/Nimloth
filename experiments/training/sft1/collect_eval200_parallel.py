@@ -13,6 +13,7 @@ import collect_eval200_a100 as core
 PREVIOUS=core.BASE/'outputs/experiments/vagen-eval200/20260914_parallel8'
 ROOT=core.BASE/'outputs/experiments/vagen-eval200/20260914_parallel8_r2'
 OLD=core.RUN
+GPU_PAIRS=((0,1),(2,3),(4,5),(6,7))
 
 def lane_command(i):
     lane=ROOT/f'lane_{i}'
@@ -86,7 +87,7 @@ def lane_run(i):
     (lane/'env_home/.ai2thor/releases').symlink_to(core.BASE/'env_home/.ai2thor/releases')
     # Vulkan uses physical GPU ordinals; expose all devices only to the render service.
     ee=dict(env,CUDA_VISIBLE_DEVICES='0,1,2,3,4,5,6,7',HOME=str(lane/'env_home'),AI2THOR_HOME_ROOT=str(lane/'env_home'))
-    pe=dict(env,CUDA_VISIBLE_DEVICES=f'{2*i},{2*i+1}',RAY_ADDRESS=f'127.0.0.1:{port+1}')
+    pe=dict(env,CUDA_VISIBLE_DEVICES=','.join(map(str,GPU_PAIRS[i])),RAY_ADDRESS=f'127.0.0.1:{port+1}')
     children=[];status='failed';error=None
     def spawn(name,cmd,e):
         with (lane/f'{name}.log').open('x') as f:
@@ -95,10 +96,10 @@ def lane_run(i):
     def stop(sig,frame):raise RuntimeError(f'interrupted {sig}')
     signal.signal(signal.SIGTERM,stop);signal.signal(signal.SIGINT,stop)
     try:
-        p=spawn('render_probe',[str(core.PYTHON),'-m','vagen.utils.navigation_direct_render_probe','--gpu-device',str(2*i)],ee)
+        p=spawn('render_probe',[str(core.PYTHON),'-m','vagen.utils.navigation_direct_render_probe','--gpu-device',str(GPU_PAIRS[i][0])],ee)
         assert p.wait(timeout=180)==0,'render failed'
         ep=spawn('environment',[str(core.PYTHON),'-m','vagen.server.server',f'server.port={port}',
-            'use_state_reward=False','navigation.max_workers=1',f'navigation.devices=[{2*i}]'],ee)
+            'use_state_reward=False','navigation.max_workers=1',f'navigation.devices=[{GPU_PAIRS[i][0]}]'],ee)
         rp=spawn('ray',[str(core.PYTHON),'-m','ray.scripts.scripts','start','--head','--block',
             '--include-dashboard=false','--node-ip-address=127.0.0.1',f'--port={port+1}',f'--dashboard-port={port+2}',
             f'--temp-dir=/tmp/vagen-eval200-parallel8-r2-lane{i}',f'--node-manager-port={port+3}',
