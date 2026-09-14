@@ -36,6 +36,12 @@ rank-local `history_cache.py` 读取 detached tensor。这与 T 个未来预测�
 无梯度分支。主损失反传完成后才编码相邻在线状态做 SIGReg；起点 detach，梯度只进入
 新状态侧。跨 rank 的有效样本统计、padding 零权重及随机投影同步保持原实现。
 
+DINO grid 的 `grid.size` 与 `latent.token_count` 由配置显式给出，并要求
+`latent.token_count == grid.size ** 2`。训练启动时还会读取初始化 checkpoint 的
+`grid_state_config.json`，核对 grid 大小、slot 数、DINO identity、state 维度和
+row-major 顺序；因此 Stage 3 可以消费相符的 4×4/K16 或 8×8/K64 Stage 2
+checkpoint，但不会在两种 state 接口之间静默转换。
+
 ## 验证、诊断和兼容
 
 `evaluate.py` 负责离线 loss 验证，`mcts_evaluation.py` 提供 MCTS checkpoint 及 value 语义校验；真实环境评估统一由 [`../evaluation/`](../evaluation/README.md) 提供。

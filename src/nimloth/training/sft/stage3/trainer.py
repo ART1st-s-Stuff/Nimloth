@@ -7,6 +7,7 @@ import math
 import os
 import random
 from collections import Counter
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +73,72 @@ from nimloth.wm.grid import (
     TemporalSpatialGridPredictor,
     load_sft1_slot_projector,
 )
+
+
+def _validate_dino_grid_contract(args: Any) -> dict[str, Any]:
+    """Validate the configured grid against the Stage 2 state interface."""
+
+    required = {
+        "emb_dim": (args.emb_dim, DINOV2_LARGE_IDENTITY.hidden_size),
+        "latent_query_mode": (args.latent_query_mode, "inject"),
+        "lambda_sigreg": (args.lambda_sigreg, 0.1),
+    }
+    mismatches = {
+        name: values
+        for name, values in required.items()
+        if values[0] != values[1]
+    }
+    if mismatches:
+        raise ValueError(
+            f"authoritative DINO-grid SFT2 invariants mismatch: {mismatches}"
+        )
+    expected_tokens = int(args.grid_size) ** 2
+    if int(args.latent_token_count) != expected_tokens:
+        raise ValueError(
+            "DINO-grid token/grid mismatch: "
+            f"latent_token_count={args.latent_token_count}, "
+            f"grid_size={args.grid_size}, expected={expected_tokens}"
+        )
+    if args.dino_grid_cache is None:
+        raise ValueError("DINO-grid SFT2 requires --dino-grid-cache")
+
+    config_path = Path(args.model) / "grid_state_config.json"
+    if not config_path.is_file():
+        raise FileNotFoundError(
+            f"DINO-grid Stage 3 requires Stage 2 state metadata: {config_path}"
+        )
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    objective = config.get("objective")
+    checkpoint_grid_size = (
+        objective.get("grid_size") if isinstance(objective, dict) else None
+    )
+    expected = {
+        "grid_tokens": int(args.latent_token_count),
+        "state_dim": int(args.emb_dim),
+        "shared_slot_projector": True,
+        "ordering": "row_major",
+    }
+    checkpoint_mismatches = {
+        key: (config.get(key), value)
+        for key, value in expected.items()
+        if config.get(key) != value
+    }
+    if checkpoint_grid_size != int(args.grid_size):
+        checkpoint_mismatches["objective.grid_size"] = (
+            checkpoint_grid_size,
+            int(args.grid_size),
+        )
+    if config.get("dino_identity") != asdict(DINOV2_LARGE_IDENTITY):
+        checkpoint_mismatches["dino_identity"] = (
+            config.get("dino_identity"),
+            asdict(DINOV2_LARGE_IDENTITY),
+        )
+    if checkpoint_mismatches:
+        raise ValueError(
+            "Stage 2 DINO-grid state interface mismatch: "
+            f"{checkpoint_mismatches}"
+        )
+    return config
 
 
 def _build_world_model(
@@ -344,24 +411,7 @@ def train_sft2(args=None) -> int:
             f"got H={args.history_size}, T={args.prediction_horizon}"
         )
     if args.objective == "dino_grid":
-        required = {
-            "latent_token_count": (args.latent_token_count, 16),
-            "emb_dim": (args.emb_dim, 1024),
-            "latent_query_mode": (args.latent_query_mode, "inject"),
-            "lambda_sigreg": (args.lambda_sigreg, 0.1),
-            "grid_size": (args.grid_size, 4),
-        }
-        mismatches = {
-            name: values
-            for name, values in required.items()
-            if values[0] != values[1]
-        }
-        if mismatches:
-            raise ValueError(
-                f"authoritative DINO-grid SFT2 invariants mismatch: {mismatches}"
-            )
-        if args.dino_grid_cache is None:
-            raise ValueError("DINO-grid SFT2 requires --dino-grid-cache")
+        _validate_dino_grid_contract(args)
 
     llm_tune, vision_tune = resolve_tune_modes(args)
     if args.query_tune == "adapter" and uses_lora(args):
@@ -609,10 +659,10 @@ def train_sft2(args=None) -> int:
     if args.objective == "dino_grid":
         checkpoint_invariants.update(
             {
-                "grid_tokens": 16,
+                "grid_tokens": int(args.latent_token_count),
                 "grid_ordering": "row_major",
-                "dino_grid_size": 4,
-                "dino_identity": vars(DINOV2_LARGE_IDENTITY),
+                "dino_grid_size": int(args.grid_size),
+                "dino_identity": asdict(DINOV2_LARGE_IDENTITY),
                 "dino_cache_fingerprint": args.dino_cache_fingerprint,
                 "dino_weight": float(args.lambda_dino),
                 "grid_state_format": "trainable_sft1_projector_v2",
