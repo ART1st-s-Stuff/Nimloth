@@ -16,8 +16,8 @@ PYTHON = BASE / 'venv/bin/python3'
 VAGEN = BASE / 'sources/vagen'
 VERL = BASE / 'sources/verl'
 MODEL = BASE / 'checkpoint/hf_actor'
-RUN = BASE / 'outputs/experiments/vagen-eval200/20260914_original_step60_r3'
-DATA = BASE / 'outputs/datasets/vagen-original-train-eval/20260914_eval200_r3'
+RUN = BASE / 'outputs/experiments/vagen-eval200/20260914_original_step60_r4'
+DATA = BASE / 'outputs/datasets/vagen-original-train-eval/20260914_eval200_r4'
 SOURCE = BASE / 'outputs/experiments/sft2-dino-information-test/20260912_epoch2_fp32_lr5e5_r2/data'
 
 def sha(path):
@@ -64,7 +64,7 @@ def command():
     actor_rollout_ref.rollout.do_sample=True actor_rollout_ref.rollout.temperature=0.7
     actor_rollout_ref.rollout.top_p=0.95 actor_rollout_ref.rollout.top_k=-1 actor_rollout_ref.rollout.n=1
     actor_rollout_ref.rollout.max_trajectory_length=6144 actor_rollout_ref.rollout.max_model_len=6144
-    actor_rollout_ref.rollout.limit_mm_per_prompt=6 actor_rollout_ref.rollout.gpu_memory_utilization=0.35
+    actor_rollout_ref.rollout.limit_mm_per_prompt=6 actor_rollout_ref.rollout.gpu_memory_utilization=0.75
     actor_rollout_ref.rollout.max_num_batched_tokens=8192 actor_rollout_ref.rollout.enable_chunked_prefill=False
     actor_rollout_ref.rollout.enforce_eager=True actor_rollout_ref.rollout.free_cache_engine=False
     actor_rollout_ref.rollout.disable_log_stats=False +actor_rollout_ref.ref.use_ref=False
@@ -182,7 +182,7 @@ def run():
             'use_state_reward=False','navigation.max_workers=2','navigation.devices=[0,1]'],ee)
         rayp=spawn('ray',[str(PYTHON),'-m','ray.scripts.scripts','start','--head','--block',
             '--include-dashboard=false','--node-ip-address=127.0.0.1','--port=23861','--dashboard-port=23862',
-            '--temp-dir=/tmp/vagen-eval200-20260914-r3','--num-gpus=2','--num-cpus=32'],pe)
+            '--temp-dir=/tmp/vagen-eval200-20260914-r4','--num-gpus=2','--num-cpus=32'],pe)
         ready=time.monotonic()+180
         while True:
             assert envp.poll() is None and rayp.poll() is None, 'service died'
