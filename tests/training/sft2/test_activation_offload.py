@@ -40,8 +40,8 @@ def test_offload_config_defaults_yaml_and_explicit_cli_override():
     assert not SFT2LoopConfig.from_namespace(default).activation_offload
     config = Path(__file__).resolve().parents[3] / "configs/training/sft2/action_outcome_k64_h1_t4.yaml"
     experiment = parse_sft2_args(["--config", str(config), *_REQUIRED])
-    assert experiment.activation_offload
-    assert SFT2LoopConfig.from_namespace(experiment).activation_offload
+    assert not experiment.activation_offload
+    assert not SFT2LoopConfig.from_namespace(experiment).activation_offload
     disabled = parse_sft2_args(["--config", str(config), *_REQUIRED, "--no-activation-offload"])
     assert not disabled.activation_offload
     enabled = parse_sft2_args([*_REQUIRED, "--activation-offload"])

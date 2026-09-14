@@ -710,6 +710,7 @@ def _train_sft2_impl(args=None) -> int:
         "loss_normalization": "global_optimizer_group_counts_v1",
         "train_micro_batches": int(len(train_loader)),
         "rng_schedule_version": "epoch_micro_rank_v1",
+        "training_mode_contract": "online_train_teacher_eval_v1",
     }
     if getattr(args, "activation_offload", False):
         checkpoint_invariants["activation_offload"] = True

@@ -110,12 +110,18 @@ report BF16 accumulation-order rounding separately. Do not retain token-by-vocab
 truncate labels, sample vocabulary or use per-rank varying head-call counts.
 
 ### Validation and errors
-Stage3 `train.activation_offload` defaults to false; the joint outcome experiment enables it.
+Stage3 `train.activation_offload` defaults to false, including the joint outcome experiment.
 Wrap primary and SIGReg forwards in `torch.autograd.graph.save_on_cpu(pin_memory=True)`
 when enabled. Saved tensor copies retain their values and dtypes; live parameters, optimizer,
 backward computation and reduction remain on their original devices. Record enabled state in
 resume invariants. Verify CUDA FSDP gradients against the same path without offload; CPU
 checks alone cannot validate pinned transfers or memory savings. Account for transfer overhead.
+Set online trainable modules recursively to training mode at every training epoch entry;
+`from_pretrained` defaults to evaluation mode and enabling checkpointing alone is insufficient.
+Teacher encodings run without gradients in temporary evaluation mode. Restore every descendant's
+previous mode after teacher/validation contexts, including mixed subtree modes. Verify actual
+language and visual checkpoint function calls after loading a saved pretrained model; a newly
+constructed tiny model already in training mode cannot detect this initialization regression.
 
 Reject mixed trainable dtypes, missing visual shard ownership, mismatched strategy on resume,
 unequal distributed eval call counts, incomplete artifacts and conflicting selected-row identities.

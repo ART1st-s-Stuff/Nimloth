@@ -108,3 +108,35 @@ def test_zero_weight_padding_executes_but_does_not_bias_metrics():
     result = evaluate(Algorithm(), Runtime(), [(2.0, 1), (999.0, 0)], batch_builder=builder)
     assert len(calls) == 2
     assert result["wm_mse"] == 2.0
+
+
+def test_preserve_modes_restores_mixed_descendants_even_on_exception():
+    import pytest
+    parent = torch.nn.Sequential(torch.nn.Linear(2, 2), torch.nn.Dropout()).train()
+    parent[0].eval()
+    before = {module: module.training for module in parent.modules()}
+    with pytest.raises(RuntimeError, match="target failed"):
+        with preserve_module_modes((parent, parent[0]), training=False):
+            assert all(not module.training for module in parent.modules())
+            raise RuntimeError("target failed")
+    assert {module: module.training for module in parent.modules()} == before
+
+
+def test_epoch_sets_online_training_before_any_batch_or_forward():
+    from types import SimpleNamespace
+    import pytest
+    from nimloth.training.sft.stage3.loop import SFT2TrainingLoop
+    from nimloth.training.sft.stage3.runtime import SFT2ModelRuntime
+    online = torch.nn.Sequential(torch.nn.Linear(2, 2)).eval()
+    teacher = torch.nn.Linear(2, 2).eval()
+    runtime = SFT2ModelRuntime(agent=SimpleNamespace(trainable_modules=(online,)), history_cache=None)
+    loop = object.__new__(SFT2TrainingLoop)
+    loop.model_runtime = runtime
+    def first_sampler_operation(epoch):
+        assert epoch == 1
+        assert all(module.training for module in online.modules())
+        assert not teacher.training
+        raise RuntimeError("reached sampler")
+    loop._set_sampler_epoch = first_sampler_operation
+    with pytest.raises(RuntimeError, match="reached sampler"):
+        loop._run_epoch(1)

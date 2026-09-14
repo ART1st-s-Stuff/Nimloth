@@ -153,6 +153,7 @@ class SFT2TrainingLoop:
     def _run_epoch(self, epoch: int) -> None:
         """执行一个 epoch，并在全部 rank 完成后统一验证。"""
 
+        self.model_runtime.set_training_mode()
         self._set_sampler_epoch(epoch)
         resuming_epoch = (
             epoch == self.state.start_epoch and self.state.resume_micro_step > 0

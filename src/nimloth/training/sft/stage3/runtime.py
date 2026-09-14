@@ -11,6 +11,7 @@ import torch
 from nimloth.agent import Agent
 from nimloth.backbone import BackboneBatch, BackboneEMA
 from nimloth.training.sft.stage3.history_cache import OnlineHistoryStateCache
+from nimloth.training.sft.stage3.utils import preserve_module_modes
 from nimloth.util.optim import (
     OptimizationRuntime,
     qwen_lr_schedule,
@@ -26,13 +27,22 @@ class SFT2ModelRuntime:
     history_cache: OnlineHistoryStateCache
     backbone_ema: BackboneEMA | None = None
 
+    def set_training_mode(self) -> None:
+        """Enable online training, including eval-loaded Qwen decoder/vision."""
+        for module in self.agent.trainable_modules:
+            module.train(True)
+
     def encode_next_state(
         self,
         batch: BackboneBatch,
     ) -> torch.Tensor:
         """以固定 Backbone 与 StateProjector 编码 WM 的下一状态监督值。"""
 
-        with torch.no_grad(), self._backbone_context():
+        with (
+            torch.no_grad(),
+            preserve_module_modes((self.agent.backbone, self.agent.wm.state_proj), training=False),
+            self._backbone_context(),
+        ):
             hidden = self.agent.backbone(
                 batch,
                 include_lm_loss=False,

@@ -17,7 +17,7 @@ tuning:
 
 train:
   distributed_strategy: fsdp
-  activation_offload: true
+  activation_offload: false
   epochs: 1
   batch_size: 1
   grad_accum: 8

@@ -27,7 +27,7 @@ failed trajectories. Run separately for `preprocess/train` and `preprocess/val`.
 
 `train.activation_offload` (CLI `--activation-offload` / `--no-activation-offload`)
 selects PyTorch `save_on_cpu(pin_memory=True)` for the primary and SIGReg training
-forwards. It defaults to false; `action_outcome_k64_h1_t4.yaml` enables it for both
+forwards. It defaults to false, including `action_outcome_k64_h1_t4.yaml` for both
 arms. Tensors saved for backward are copied to CPU with their original dtype and
 restored to their original device when needed. This includes saved parameter views
 when autograd needs them; live model parameters and optimizer state remain on GPU.
