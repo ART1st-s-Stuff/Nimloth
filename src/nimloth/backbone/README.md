@@ -18,3 +18,5 @@ Their root manifest hashes source JSONLs, every observation image and feature sh
 records answer-to-image split lineage and the fixed teacher identity, and requires
 a matching `COMPLETED` marker. They do not claim a compact Qwen cache parent.
 The Stage 2 `build_dino_cache` CLI builds these targets using the same frozen encoder.
+
+`selected_token_rows.py` owns shared FP32 Query/protocol input and output row masters, materialized dense export and exact row-state restoration. Stage2 compatibility imports delegate here.

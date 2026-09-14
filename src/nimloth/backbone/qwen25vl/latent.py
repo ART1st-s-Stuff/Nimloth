@@ -209,4 +209,20 @@ def extract_qwen_latents(
                 latent_token_count=latent_token_count,
             )
             rows.append(extract_latent_state_block(hidden[row : row + 1], latent_block))
-    return torch.stack(rows, dim=0), lm_loss
+    state_hidden = torch.stack(rows, dim=0)
+    if lm_loss is None and torch.is_grad_enabled():
+        state_hidden = connect_unused_logits(state_hidden, output.logits)
+    return state_hidden, lm_loss
+
+
+def connect_unused_logits(hidden: torch.Tensor, logits: torch.Tensor) -> torch.Tensor:
+    """Keep an already-computed LM projection in hidden-only backward graphs.
+
+    Stage3 alternates LM and SIGReg forwards under static DDP. The bounded
+    hidden-only logits otherwise receive no backward hook, violating that
+    reducer contract for trainable vocabulary rows. This scalar zero adds no
+    LM objective, no projection forward, and no full-sequence vocabulary buffer.
+    """
+    if not logits.requires_grad:
+        return hidden
+    return hidden + (logits.float().sum() * 0.0).to(hidden.dtype)

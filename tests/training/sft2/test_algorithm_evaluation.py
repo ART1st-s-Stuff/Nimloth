@@ -61,3 +61,34 @@ def test_evaluate_uses_evaluation_step_and_batch_builder() -> None:
     assert algorithm.values == [1.0, 3.0]
     assert metrics["wm_mse"] == pytest.approx(2.0)
     assert module.training is True
+
+
+@pytest.mark.parametrize("counts, expected", [([1, 2, 0], 10 / 3), ([0, 0, 0], None)])
+def test_evaluate_lm_uses_only_successful_windows(counts, expected):
+    class Algorithm:
+        def evaluation_step(self, runtime, batch):
+            return SimpleNamespace(metrics={"lm_ce": batch[0], "wm_mse": 1.0}, sample_count=3)
+
+    class Runtime:
+        agent = SimpleNamespace(trainable_modules=())
+
+        def unwrapped(self):
+            return self
+
+        @contextlib.contextmanager
+        def evaluation_context(self):
+            yield
+
+    class Builder:
+        def prepare(self, batch):
+            return batch
+
+        def supervision_counts(self, batch):
+            return 3, batch[1]
+
+    result = evaluate(Algorithm(), Runtime(), list(zip([2., 4., 0.], counts)), batch_builder=Builder())
+    if expected is None:
+        assert "lm_ce" not in result
+    else:
+        assert result["lm_ce"] == pytest.approx(expected)
+    assert result["wm_mse"] == 1.0

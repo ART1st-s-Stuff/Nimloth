@@ -23,9 +23,9 @@ class DINOGridBatchAssembler:
         base: SFT2BatchAssembler,
         targets: CachedDINOGridTargets,
     ) -> None:
-        if targets.grid_size != 4 or targets.identity.hidden_size != 1024:
+        if targets.grid_size < 1 or targets.identity.hidden_size != 1024:
             raise ValueError(
-                "SFT2 DINO supervision requires a 4x4 grid with hidden size 1024"
+                "SFT2 DINO supervision requires a positive grid size with hidden size 1024"
             )
         self.base = base
         self.targets = targets
@@ -40,6 +40,9 @@ class DINOGridBatchAssembler:
 
     def supervision_counts(self, raw_batch: Any) -> tuple[int, int]:
         return self.base.supervision_counts(raw_batch)
+
+    def outcome_count(self, raw_batch: Any) -> int:
+        return self.base.outcome_count(raw_batch)
 
     def collate_transition_samples(self, batch: list[Any]) -> Any:
         return self.base.collate_transition_samples(batch)
@@ -65,8 +68,12 @@ class DINOGridBatchAssembler:
                 base.prediction_horizon,
                 *targets.shape[1:],
             )
+        current_target = None
+        if base.current_image_paths and all(base.current_image_paths):
+            current_target = self.targets.load(base.current_image_paths, device=base.sample_weights.device)
         return replace(
             base,
             dino_grid_target=targets,
+            current_dino_target=current_target,
         )
 __all__ = ["DINOGridBatchAssembler"]

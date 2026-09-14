@@ -50,6 +50,7 @@ def evaluate(
     *,
     batch_builder: SFT2BatchBuilder,
     max_batches: int = -1,
+    on_batch=None,
 ) -> dict[str, float]:
     """Evaluate with the same forward implementation used during training."""
 
@@ -68,5 +69,16 @@ def evaluate(
             agent_batch = batch_builder.prepare(batch)
             output = algorithm.evaluation_step(validation_runtime, agent_batch)
             if output.sample_count > 0:
-                accumulator.update(output.metrics, count=output.sample_count)
+                if on_batch is not None:
+                    on_batch(agent_batch, output)
+                metrics = dict(output.metrics)
+                lm = metrics.pop("lm_ce", None)
+                if lm is not None:
+                    _, lm_count = batch_builder.supervision_counts(agent_batch)
+                    if lm_count > 0:
+                        accumulator.update({"lm_ce": lm}, count=lm_count)
+                outcome = metrics.pop("outcome_bce", None)
+                if outcome is not None:
+                    accumulator.update({"outcome_bce": outcome}, count=int(agent_batch.outcome_mask.sum().item()))
+                accumulator.update(metrics, count=output.sample_count)
     return distributed_metric_averages(accumulator)

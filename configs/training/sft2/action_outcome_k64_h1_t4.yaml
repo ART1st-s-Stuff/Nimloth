@@ -1,0 +1,80 @@
+# Stage3 one-epoch matched A/B experiment from a Stage2 checkpoint.
+# Paths are intentionally absent: supply --model, --train-jsonl, --val-jsonl,
+# --dino-grid-cache, --preprocess-cache-dir, --output-dir at launch.
+# Both arms instantiate the head; pass --lambda-outcome 0 (control) or 1 (treatment).
+# Eight ranks x batch 1 x accumulation 8 = effective batch 64.
+objective:
+  name: dino_grid
+
+data:
+  include_failed_rollouts: true
+
+tuning:
+  llm_tune: full
+  vision_tune: full
+  vision_ema: true
+  vision_ema_decay: 0.999
+
+train:
+  epochs: 1
+  batch_size: 1
+  grad_accum: 8
+  lr_qwen_start: 2.0e-6
+  lr_qwen_peak: 2.0e-6
+  qwen_lr_warmup_ratio: 0.15
+  state_proj_lr: 8.0e-5
+  wm_predictor_lr: 3.0e-4
+  value_head_lr: 1.0e-4
+  outcome_head: true
+  outcome_head_lr: 1.0e-4
+  train_wm_predictor: true
+  weight_decay: 0.01
+  max_length: 12000
+  max_pixels: 100352
+  emb_dim: 1024
+  history_size: 1
+  prediction_horizon: 4
+  batch_mode: trajectory_online_cache
+  attn_implementation: flash_attention_2
+  gradient_checkpointing: true
+  checkpoint_interval_steps: 10
+  checkpoint_interval_minutes: 0.0
+  checkpoint_keep_last: 0
+  preprocess_cache_image_dtype: bfloat16
+  preprocess_cache_image_shard_size: 128
+  preprocess_cache_transition_shard_size: 256
+  preprocess_cache_shard_lru: 2
+  require_prebuilt_cache: true
+  preprocess_workers: 16
+  dataloader_workers: 4
+  dataloader_prefetch_factor: 2
+
+latent:
+  token_count: 64
+  query_mode: inject
+  query_tune: selected_rows
+  query_lr: 1.0e-4
+  protocol_lr: 2.0e-5
+
+grid:
+  size: 8
+  wm_depth: 6
+  wm_heads: 16
+  wm_dim_head: 64
+  wm_mlp_dim: 2048
+  wm_dropout: 0.1
+
+loss:
+  lambda_wm_start: 0.1
+  lambda_wm_end: 1.0
+  lambda_ce: 1.0
+  lambda_dino: 0.5
+  lambda_value: 1.0
+  lambda_sigreg: 0.1
+  sigreg_num_proj: 1024
+  sigreg_knots: 17
+  value_gamma: 1.0
+
+monitor:
+  wandb: true
+  checkpoint_metric: val_wm_mse

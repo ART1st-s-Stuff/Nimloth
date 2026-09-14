@@ -41,3 +41,36 @@ stage2需要同观测的真实回答/CoT、完整有序的query slots和冻结DI
 
 ## 经审查的选择性 LM 监督
 Stage2 使用全部轨迹的回答对齐 DINO，只对成功轨迹的回答计算 LM；Stage3 使用全部窗口的 WM/value/DINO，只对成功轨迹起点回答计算 LM。success 必须来自完整轨迹的显式布尔字段，缺失拒绝。LM 分母为成功回答/窗口数，其他监督分母为全部有效回答/窗口数，跨累积组和 rank 分别归约；全失败组 LM 为图连接的零。恢复身份须拒绝旧全部轨迹 LM 目标的优化器状态。
+
+## Stage3 outcome 与有限时域转换
+
+### 范围和入口
+Stage3 可选 `--outcome-head --lambda-outcome 1 --outcome-head-lr 1e-4`；
+对照组同样实例化 head，但系数0、参数冻结，不宣称具备 outcome 能力。
+`python -m nimloth.rollout.tail_drop` 将已审计 SFT view 转为真实 T+1 观测的截断记录。
+
+### 数据与梯度合同
+`action_successes` 与 outgoing actions 等长，标签仅取对应下一观测的环境反馈。
+`action_value_targets` 必须带 `finite_horizon_provenance`；完整 original_rewards/dones
+先计算 return，再删除最后一个监督位置。原始任务终点 bootstrap=0 不意味着人为切点
+未来回报为0。保留原轨迹 success 用于 LM mask，不推断未执行动作的结果。
+Outcome head 复用预测 grid，同一 WM 前向产生 logit；普通 BCE 按跨rank/累积组的
+有效动作计数平均，不按类别加权、不按初始loss归一化。无标签和padding不参与。
+`query_tune=selected_rows` 保持未选词表行冻结、选行 FP32 master 和准确恢复sidecar。
+
+### 验证与错误
+缺失/错位reward、done、query顺序或源反馈：拒绝转换；历史raw hash无法核实时明确
+保留为未验证声明，不冒充当前输入hash。恢复必须核对outcome开关、系数、head和选行身份。
+联合训练下目标state可漂移，跨组质量主要比较固定DINO；copy基线也使用固定teacher的
+当前观测。LM CE只按成功窗口平均，无成功窗口不报告伪零。分类准确不能替代状态预测改善。
+
+### 正常、边界与反例
+正常20步失败轨迹保留前19个transition及原20步return；提前真实成功也先用完整reward。
+单动作记录经完整校验后无可训练transition；两类不全时AUC等指标不可用。
+错误：先删除末步reward再算return，或比较各组不同state目标的MSE来宣称DINO改善。
+正确：从完整原轨迹计算目标，按固定teacher、同一trajectory配对比较。
+
+### 必测合同
+覆盖转换不改原数据、gamma/done/回报一致、后继outcome对齐、padding全局归约、
+控制组等价、选行冻结及两步优化保存恢复。训练LM与独立SIGReg反传的head参与范围不同；
+static DDP须有真实多rank交替反传测试，CPU测试不放行未经验证的Qwen/FA2八卡训练。

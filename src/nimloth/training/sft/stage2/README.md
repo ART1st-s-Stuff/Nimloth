@@ -47,3 +47,14 @@ LoRA 合并导出保留 projector 文件及阶段元数据，SFT3 使用同一 p
 ## 数据加载与计算开销
 
 Stage2在线图像处理使用配置的 `num_workers`/预取参数；多进程采用spawn，避免从已初始化CUDA的父进程fork。DINO缓存先由父进程完整验证，再以文件引用传给worker并重新mmap，不复制整份特征张量到共享内存；文件身份变化拒绝加载。失败回答在CE计算前排除，仍保留完整因果前向、DINO监督和LM head的零梯度连接。当前仍生成完整词表logits，不能将此优化描述为消除了全部失败轨迹LM投影开销。
+
+
+`build_dino_cache.py` also indexes every T+1 real image of structured trajectories,
+including their terminal observation; answer-view datasets retain current-answer indexing.
+Empty splits, mixed record formats within a split, and missing terminal/image paths are rejected.
+`--reuse-cache` accepts only completed standalone `dino_grid_images_v1` caches with validated
+teacher/grid identity, source JSONL hashes, image byte hashes, and shard hashes. It copies
+matching image rows into a new immutable output and invokes the teacher only for missing images.
+If every image is reused, no teacher is loaded and `teacher_provenance` is null; the source
+cache path/fingerprint and reused image count remain in the new manifest's `reuse` lineage.
+Legacy path-only caches are not sufficient evidence for byte-exact feature reuse.

@@ -55,3 +55,76 @@ checkpoint，但不会在两种 state 接口之间静默转换。
 训练数据必须包含成功和失败轨迹，不接受 `success_only` 过滤。`batch.py` 将完整轨迹的显式布尔 `success` 传入起点的 `lm_row_weights`；缺失标记拒绝。成功窗口的起点回答先独立计算 token CE 均值，再按成功窗口求平均。失败窗口保留全部真实输入、动作、回报及 WM/value/DINO 监督。全失败组 LM 为图连接的零。
 
 `loop.py` 在一个更新组内统计全部有效窗口数和成功窗口数，跨 rank 归约后分别缩放主损失及 LM。SIGReg 保留原独立反传协议。验证仍沿用状态预测指标；训练 LM 指标按成功窗口数汇总。恢复身份新增监督范围与归一化版本，不能复用旧 LM 目标的优化器状态。
+
+## 可选动作执行结果监督
+
+`--outcome-head` 为 DINO grid 模式建立 FP32 LayerNorm、slot mean pooling 和
+binary linear readout。输入直接复用 predictor 输出的动作条件 grid，不增加
+predictor 或 Qwen 前向；T 步 logits 与 T 个 outgoing action 一一对应。
+`--lambda-outcome` 默认为 0；大于 0 时加入普通 BCEWithLogitsLoss，不做类别
+加权或初始 loss 归一化。有效标签按整个 optimizer 累积组、全部 rank 的动作数
+归一化，padding 与缺失标签不参与。实验数据审计另行要求完整 outcome 标签。
+
+系数为 0 时仍可建立同形状的冻结 head，但不加入 optimizer 或声明预测能力。
+checkpoint 的 `outcome_head.pt` 保存 schema、维度、可用标记和参数；恢复拒绝
+不匹配的 head 或 loss 身份。此 head 尚未用于 RL/MCTS。
+
+`query_tune=selected_rows` requires dense full language tuning and freezes all dense
+input/output vocabulary rows, replacing only Query and eight action/two action-boundary
+rows with FP32 masters. `query_lr` and `protocol_lr` are separate zero-weight-decay
+optimizer groups; language and visual parameters share the Qwen LR schedule. Trainable
+backbone parameters retain FP32 masters and CUDA forwards use BF16 autocast. This mode
+never installs the additive Query adapter. HF export materializes ordinary weights;
+`selected_token_rows.pt` preserves exact FP32 masters and token IDs for resume alongside
+optimizer state. Legacy modes remain unchanged.
+
+
+`configs/training/sft2/action_outcome_k64_h1_t4.yaml` supplies the shared one-epoch
+A/B hyperparameters. Initialization, train/eval JSONL, DINO/cache and output paths must be
+provided through CLI; no historical path is silently reused. Explicitly pass
+`--lambda-outcome 0` for control or `--lambda-outcome 1` for treatment, with `--seed 42`
+and eight ranks. Both arms construct the head; only treatment optimizes its ordinary BCE.
+The config retains step checkpoints until the launcher validates the epoch checkpoint.
+
+`--outcome-eval-dir <new-directory>` enables production-forward export: step-zero
+validation and every completed epoch's validation/training windows are written to
+separate `epoch_NNN_{eval,train}_rank_NNN.jsonl` files. Existing files are refused.
+Rows include pooled WM features and fixed-teacher current/future image hashes;
+`copy_mse` persists the initial frozen DINO feature, while `encoded_copy_mse` is
+only the moving online-state diagnostic. Training exports fit offline probes;
+validation exports never select probe weights or epochs.
+
+After both arms finish, compare their rank exports with:
+
+```bash
+python -m nimloth.eval.stage3_outcome \
+  --control-train 'control/epoch_001_train_rank_*.jsonl' \
+  --treatment-train 'treatment/epoch_001_train_rank_*.jsonl' \
+  --control-eval 'control/epoch_001_eval_rank_*.jsonl' \
+  --treatment-eval 'treatment/epoch_001_eval_rank_*.jsonl' \
+  --fit-probes --output comparison.json
+```
+
+The matched frozen linear probes reuse the existing probe utility's LR 3e-3,
+weight decay 1e-2 and seed 42071, with the same fixed 300-epoch budget for both
+arms. Standardization uses training features only; weights remain in a separate
+`.probe_weights.npz`, never in production checkpoints. These are real evaluator
+fits and must run remotely under the experiment budget; CPU unit tests use
+isolated synthetic inputs only.
+
+
+For a bounded production canary, `--stop-after-steps 1` executes the ordinary sampler,
+losses and accumulation schedule until absolute optimizer step 1. It atomically publishes
+`stop_step_000001/` with `STOPPED`, exact consumed microbatch cursor, optimizer and all
+rank history caches; `epoch_complete` remains false and neither epoch validation nor a
+`final` checkpoint runs. Resume in a fresh process with `--resume --resume-from` that
+checkpoint and `--stop-after-steps 2` to verify the next update. The limit is disabled by
+0, must exceed the restored step, and never changes the full schedule/epoch length.
+
+`--diagnose-outcome-gradients` performs an additional no-update first-microbatch forward
+on unwrapped modules, with an isolated history cache and restored Python/NumPy/Torch RNG.
+It reports each rank's predictor gradient norm for weighted BCE versus weighted WM+DINO,
+without modifying `.grad`, synchronizing diagnostic gradients or imposing a ratio cutoff.
+`outcome_gradients_rank_NNN.json` identifies the rank-local scope and token-input hash;
+it is not the global gradient ratio of the complete accumulation group. Non-finite losses
+or gradients fail. This option requires a positive outcome coefficient.

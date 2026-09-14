@@ -48,6 +48,7 @@ class SFT2StepOutput:
     metrics: dict[str, float]
     current_state: torch.Tensor
     sample_count: int
+    diagnostics: dict[str, torch.Tensor] | None = None
 
 
 @dataclass(frozen=True)
@@ -81,7 +82,11 @@ class SFT2Algorithm:
         wm_warmup_fraction: float = 0.3,
         dino_grid_weight: float = 0.0,
         prediction_horizon: int = 1,
+        outcome_weight: float = 0.0,
     ) -> None:
+        self.outcome_weight = float(outcome_weight)
+        if not math.isfinite(self.outcome_weight) or self.outcome_weight < 0:
+            raise ValueError("outcome_weight must be finite and nonnegative")
         self.history_size = int(history_size)
         if self.history_size < 1:
             raise ValueError(
@@ -265,7 +270,19 @@ class SFT2Algorithm:
             batch.current_action_indices,
             batch.current_value_targets,
         )
+        outcome_head = getattr(runtime.agent.wm, "outcome_head", None)
+        predicted_grid = (model_output.predicted_states if isinstance(batch, SFT2RolloutBatch)
+                          else model_output.predicted_next_state)
+        outcome_logits = outcome_head(predicted_grid) if outcome_head is not None else None
+        outcome_loss = self._outcome_loss(
+            runtime, batch,
+            model_output.predicted_states if isinstance(batch, SFT2RolloutBatch)
+            else model_output.predicted_next_state,
+            logits=outcome_logits,
+        )
         total = wm_objective.loss + self.value_weight * value_objective.loss
+        if outcome_loss is not None:
+            total = total + self.outcome_weight * outcome_loss
         if model_output.lm_loss is not None:
             total = total + self.ce_weight * model_output.lm_loss
         sample_count = 0 if batch.is_padding else batch.batch_size
@@ -294,6 +311,10 @@ class SFT2Algorithm:
             "wm": wm_objective.state_mse,
             "value": value_objective.loss,
         }
+        if outcome_loss is not None:
+            losses["outcome"] = outcome_loss
+            metrics["outcome_bce"] = float(outcome_loss.detach().item())
+            metrics["outcome_count"] = float(batch.outcome_mask.sum().item())
         if wm_objective.dino_grid_mse is not None:
             losses["dino"] = wm_objective.dino_grid_mse
             metrics["dino_grid_mse"] = float(
@@ -308,6 +329,7 @@ class SFT2Algorithm:
             metrics=metrics,
             current_state=model_output.state[:, -1],
             sample_count=sample_count,
+            diagnostics=self._diagnostics(predicted_grid, expected_next_states, batch, outcome_logits),
         )
 
     def _rollout_step(
@@ -362,7 +384,19 @@ class SFT2Algorithm:
             batch.action_sequences,
             batch.value_target_sequences,
         )
+        outcome_head = getattr(runtime.agent.wm, "outcome_head", None)
+        predicted_grid = (model_output.predicted_states if isinstance(batch, SFT2RolloutBatch)
+                          else model_output.predicted_next_state)
+        outcome_logits = outcome_head(predicted_grid) if outcome_head is not None else None
+        outcome_loss = self._outcome_loss(
+            runtime, batch,
+            model_output.predicted_states if isinstance(batch, SFT2RolloutBatch)
+            else model_output.predicted_next_state,
+            logits=outcome_logits,
+        )
         total = wm_objective.loss + self.value_weight * value_objective.loss
+        if outcome_loss is not None:
+            total = total + self.outcome_weight * outcome_loss
         if model_output.lm_loss is not None:
             total = total + self.ce_weight * model_output.lm_loss
         sample_count = 0 if batch.is_padding else batch.batch_size
@@ -389,6 +423,10 @@ class SFT2Algorithm:
             "wm": wm_objective.state_mse,
             "value": value_objective.loss,
         }
+        if outcome_loss is not None:
+            losses["outcome"] = outcome_loss
+            metrics["outcome_bce"] = float(outcome_loss.detach().item())
+            metrics["outcome_count"] = float(batch.outcome_mask.sum().item())
         if wm_objective.dino_grid_mse is not None:
             losses["dino"] = wm_objective.dino_grid_mse
             metrics["dino_grid_mse"] = float(
@@ -402,7 +440,42 @@ class SFT2Algorithm:
             metrics=metrics,
             current_state=model_output.current_state,
             sample_count=sample_count,
+            diagnostics=self._diagnostics(predicted_grid, expected_next_states, batch, outcome_logits),
         )
+
+    @staticmethod
+    def _diagnostics(predicted, expected, batch, logits):
+        # Detached tensors expose the identical production forward for paired
+        # offline export without retaining a second training graph.
+        result = {"predicted_states": predicted.detach(), "target_states": expected.detach()}
+        if batch.current_dino_target is not None:
+            result["current_dino_targets"] = batch.current_dino_target.detach()
+        if logits is not None:
+            result["outcome_logits"] = logits.detach()
+        if batch.dino_grid_target is not None:
+            result["dino_targets"] = batch.dino_grid_target.detach()
+        return result
+
+    def _outcome_loss(self, runtime, batch, predicted_grid, *, logits=None):
+        head = getattr(runtime.agent.wm, "outcome_head", None)
+        if head is None:
+            if self.outcome_weight:
+                raise ValueError("outcome supervision requires an outcome head")
+            return None
+        if logits is None:
+            logits = head(predicted_grid)
+        if self.outcome_weight == 0:
+            return None
+        targets, mask = batch.outcome_targets, batch.outcome_mask
+        if logits.shape != targets.shape or mask.shape != targets.shape:
+            raise ValueError("outcome predictions and labels must have identical shape")
+        if not torch.isfinite(targets[mask]).all() or not ((targets[mask] == 0) | (targets[mask] == 1)).all():
+            raise ValueError("outcome targets must be finite binary labels")
+        # Mask before BCE as missing labels may contain NaN. No valid labels keeps
+        # the head/predictor graph connected for distributed padding ranks.
+        safe_targets = torch.where(mask, targets, torch.zeros_like(targets))
+        terms = torch.nn.functional.binary_cross_entropy_with_logits(logits, safe_targets, reduction="none")
+        return (terms * mask).sum() / mask.sum().clamp_min(1)
 
     def _sigreg_loss(
         self,

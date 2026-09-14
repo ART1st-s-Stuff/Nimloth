@@ -25,3 +25,7 @@ successor `s_{t+1}`不能继续与`a_t`配对。
 `SharedSlotProjector` 的输出作为 grid state，并在 SFT2 继续训练该 projector；
 DINO teacher target 属于 backbone，SFT2/RL 共用的 predicted-state loss属于
 `training/common`；SFT2 可把它应用到完整`(B,T,...)`预测序列。WM 本身不维护 EMA 参数。
+
+`outcome.py` 的 `ActionOutcomeHead` 从既有动作条件预测 grid 读取单步执行
+成功 logit；它不额外调用 predictor。`WorldModel.outcome_head` 可选，随模块
+train/eval 与 DDP accumulation 管理；训练目标和 checkpoint 可用性由 Stage3 管理。

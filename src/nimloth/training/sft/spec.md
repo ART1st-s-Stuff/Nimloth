@@ -67,14 +67,17 @@ def get_state_and_output(model, input, queries):
     model_output = model(input)
     return state, model_output
 
-def wm_predict(wm, value_head, state, actions, num_steps):
-    predicted_states, predicted_values = [], []
+def wm_predict(wm, value_head, state, actions, num_steps, outcome_head=None):
+    predicted_states, predicted_values, outcome_logits = [], [], []
     for i in range(num_steps):
         # 先评价当前状态下的执行动作，再预测下一状态。
         predicted_values.append(value_head(state)[actions[i]])
         state = wm(state, actions[i])
         predicted_states.append(state)
-    return stack(predicted_states), stack(predicted_values)
+        if outcome_head is not None:
+            # 复用同一次WM前向的动作条件表示，不读取真实后继状态。
+            outcome_logits.append(outcome_head(state))
+    return stack(predicted_states), stack(predicted_values), stack_optional(outcome_logits)
 
 def sft1_step(model, config, input, output, action_token_ids):
     """训练回答格式，对目标回答中的动作 token 赋予更高权重。"""
@@ -119,18 +122,20 @@ def sft2_step(model, config, trajectories, proj, dino_model, queries):
     loss.backward()
 
 def sft3_window(model, target_model, config, window, proj,
-              dino_model, wm, value_head, queries):
+              dino_model, wm, value_head, queries, outcome_head=None):
     """从全部轨迹采样连续T步窗口训练WM/value，仅成功轨迹参与LM监督（H=1）。"""
     # success继承原始完整轨迹的任务结果；失败轨迹也保留真实动作、观测和回报。
     # 窗口含T+1个真实观测、T个执行动作，以及各动作对应的MC return。
     # MC return来自原轨迹的后续回报，不在窗口末尾截断。
+    # 有限20动作任务在原始终点bootstrap=0；若缺最后观测而删除最后transition，
+    # 先用完整真实reward计算return，再切片。异常提前中断不得冒充任务终点。
     # 只编码窗口起点作为预测输入，后续状态由WM递推得到。
     num_steps = len(window.actions)
     state, model_output = get_state_and_output(model, window.observations[0], queries)
     state = proj(state)
     current_state = stop_gradient(state)
-    predicted_states, predicted_values = wm_predict(
-        wm, value_head, state, window.actions, num_steps
+    predicted_states, predicted_values, outcome_logits = wm_predict(
+        wm, value_head, state, window.actions, num_steps, outcome_head
     )
     # 第i个预测状态对齐观测i+1；目标编码器使用当前模型或其EMA。
     with no_grad():
@@ -141,11 +146,17 @@ def sft3_window(model, target_model, config, window, proj,
     loss_wm = mse(predicted_states, target_states)
     loss_value = mse(predicted_values, window.mc_returns)
     loss_dino = mse(predicted_states, dino_features) if dino_features is not None else 0
+    # 标签来自动作执行后的真实环境反馈，不等于整条轨迹的success。
+    # 普通BCE，不做类别加权或初始loss归一化；多卡按有效动作全局取平均，排除padding。
+    loss_outcome = (binary_cross_entropy_with_logits(outcome_logits, window.action_successes)
+                    if config.weight_outcome > 0 else 0)
+    # 本次对照weight_outcome=0，实验组=1；outcome head学习率1e-4。
     # WM/value/DINO对成功和失败窗口的所有预测步取平均，不按success屏蔽。
     # 批量或多卡归约时，LM只按成功窗口计数；没有成功窗口时为0。
     # WM权重随训练进度逐渐增加。
     loss = (config.weight_lm * loss_lm + config.weight_wm * loss_wm
-            + config.weight_value * loss_value + config.weight_dino * loss_dino)
+            + config.weight_value * loss_value + config.weight_dino * loss_dino
+            + config.weight_outcome * loss_outcome)
     loss.backward()
 
     # 可选正则：重新编码相邻真实观测，梯度只进入下一状态。

@@ -38,6 +38,7 @@ class SFT2LoopState:
     best_val_wm_mse: float = float("inf")
     start_epoch: int = 1
     resume_micro_step: int = 0
+    stopped: bool = False
 
 
 def load_sft2_loop_state(
@@ -61,6 +62,8 @@ def load_sft2_loop_state(
     )
 
     saved_invariants = saved_state.get("training_invariants")
+    if training_invariants.get("outcome_schema") is not None and saved_invariants is None:
+        raise ValueError("outcome resume requires saved training invariants")
     if saved_invariants is not None:
         mismatches = {
             key: (saved_invariants.get(key), current_value)
@@ -110,6 +113,8 @@ class SFT2TrainingLoop:
     reporter: SFT2Reporter
     state: SFT2LoopState
     total_steps: int
+    outcome_eval_dir: Path | None = None
+    outcome_export_identity: dict | None = None
     step_timer: StepTimer = field(init=False)
 
     def __post_init__(self) -> None:
@@ -121,8 +126,16 @@ class SFT2TrainingLoop:
     def run(self) -> SFT2LoopState:
         """执行剩余 epoch，并返回最终可保存状态。"""
 
+        cap = getattr(self.config, "stop_after_steps", 0)
+        if cap and self.state.global_step >= cap:
+            raise ValueError("stop_after_steps must exceed the restored global step")
+        if self.outcome_eval_dir is not None and self.state.global_step == 0:
+            self.model_runtime.history_cache.start(epoch=0, phase="val")
+            self._evaluate_export(self.val_loader, epoch=0, split="eval")
         for epoch in range(self.state.start_epoch, self.config.epochs + 1):
             self._run_epoch(epoch)
+            if self.state.stopped:
+                return self.state
 
         self.checkpoint_runtime.save_final(
             step=self.state.global_step,
@@ -150,15 +163,18 @@ class SFT2TrainingLoop:
         def normalized_batches():
             while group := list(itertools.islice(train_iterator, self.config.grad_accum)):
                 counts = [self.batch_builder.supervision_counts(item) for item in group]
-                totals = torch.tensor([sum(n for n, _ in counts), sum(n for _, n in counts)],
+                outcome_counts = ([self.batch_builder.outcome_count(item) for item in group]
+                                  if getattr(self.algorithm, "outcome_weight", 0) > 0 else [0] * len(group))
+                totals = torch.tensor([sum(n for n, _ in counts), sum(n for _, n in counts), sum(outcome_counts)],
                                       device=self.batch_builder.device)
                 world = 1
                 if dist.is_available() and dist.is_initialized():
                     world = dist.get_world_size()
                     dist.all_reduce(totals)
-                for item, (all_count, lm_count) in zip(group, counts, strict=True):
+                for item, (all_count, lm_count), outcome_count in zip(group, counts, outcome_counts, strict=True):
                     yield item, (world * all_count / max(1, int(totals[0])),
-                                 world * lm_count / max(1, int(totals[1])), lm_count)
+                                 world * lm_count / max(1, int(totals[1])), lm_count,
+                                 world * outcome_count / max(1, int(totals[2])), outcome_count)
 
         normalized_iterator = iter(normalized_batches())
         while True:
@@ -182,12 +198,15 @@ class SFT2TrainingLoop:
                     batch_samples,
                     epoch=epoch,
                     micro_step=micro_index,
-                    loss_scales=loss_scales[:2],
+                    loss_scales=(loss_scales[0], loss_scales[1], loss_scales[3]),
                 )
             if sample_count > 0:
                 lm_metric = metrics.pop("lm_ce", None)
-                if lm_metric is not None:
+                if lm_metric is not None and loss_scales[2] > 0:
                     accumulator.update({"lm_ce": lm_metric}, count=loss_scales[2])
+                outcome_metric = metrics.pop("outcome_bce", None)
+                if outcome_metric is not None:
+                    accumulator.update({"outcome_bce": outcome_metric}, count=loss_scales[4])
                 accumulator.update(metrics, count=sample_count)
 
             if sync_gradients:
@@ -198,6 +217,14 @@ class SFT2TrainingLoop:
                     global_step=self.state.global_step,
                     epoch=epoch,
                 )
+                cap = getattr(self.config, "stop_after_steps", 0)
+                if cap and self.state.global_step >= cap:
+                    self.checkpoint_runtime.save_stopped(
+                        step=self.state.global_step, epoch=epoch, micro_step=micro_index,
+                        best_val_wm_mse=self.state.best_val_wm_mse,
+                    )
+                    self.state.stopped = True
+                    return
                 self.checkpoint_runtime.save_periodic(
                     step=self.state.global_step,
                     epoch=epoch,
@@ -255,7 +282,7 @@ class SFT2TrainingLoop:
         *,
         epoch: int,
         micro_step: int,
-        loss_scales: tuple[float, float] | None = None,
+        loss_scales: tuple[float, ...] | None = None,
     ) -> tuple[float, dict[str, float], int]:
         """先反传单次 CE/WM/value，再构建并反传单向 SIGReg 图。"""
 
@@ -265,6 +292,17 @@ class SFT2TrainingLoop:
             self.total_steps,
         )
         batch = self.batch_builder.prepare(batch_samples)
+        if (getattr(self.config, "diagnose_outcome_gradients", False)
+                and self.state.global_step == 0 and micro_step == 1):
+            from nimloth.training.sft.stage3.diagnostics import outcome_gradient_diagnostic
+            diagnostic = outcome_gradient_diagnostic(
+                self.algorithm, self.model_runtime, batch, wm_weight=lambda_wm,
+            )
+            diagnostic.update(rank=self.rank, epoch=epoch, micro_step=micro_step)
+            path = self.checkpoint_runtime.manager.output_dir / f"outcome_gradients_rank_{self.rank:03d}.json"
+            with path.open("x") as stream:
+                json.dump(diagnostic, stream, indent=2, allow_nan=False)
+            print(json.dumps(diagnostic, allow_nan=False), flush=True)
         primary = self.algorithm.training_primary_step(
             self.model_runtime,
             batch,
@@ -281,13 +319,16 @@ class SFT2TrainingLoop:
         if loss_scales is not None:
             lm = primary.losses["lm"]
             lm_term = self.algorithm.ce_weight * lm if lm is not None else 0
-            primary_loss = ((primary_loss - lm_term) * loss_scales[0]
-                            + lm_term * loss_scales[1])
+            outcome = primary.losses.get("outcome")
+            outcome_term = self.algorithm.outcome_weight * outcome if outcome is not None else 0
+            primary_loss = ((primary_loss - lm_term - outcome_term) * loss_scales[0]
+                            + lm_term * loss_scales[1]
+                            + outcome_term * (loss_scales[2] if len(loss_scales) > 2 else loss_scales[0]))
             divisor = 1
         self.optimization_runtime.backward(primary_loss, grad_accum=divisor)
         del primary_loss
         if loss_scales is not None:
-            del lm, lm_term
+            del lm, lm_term, outcome, outcome_term
 
         self.step_timer.stop("backward_primary", timer_start)
         # 不让任何主阶段 Tensor 引用跨入下一次 Qwen forward。
@@ -339,6 +380,7 @@ class SFT2TrainingLoop:
             + self.algorithm.dino_grid_weight * averages.get("dino_grid_mse", 0.)
             + self.algorithm.ce_weight * averages.get("lm_ce", 0.)
             + self.algorithm.sigreg_weight * averages.get("sigreg_loss", 0.)
+            + self.algorithm.outcome_weight * averages.get("outcome_bce", 0.)
         )
         self.reporter.log_train_step(
             epoch=epoch,
@@ -353,13 +395,10 @@ class SFT2TrainingLoop:
         """验证当前模型，并根据 WM MSE 更新 epoch/best checkpoint。"""
 
         self.model_runtime.history_cache.start(epoch=epoch, phase="val")
-        val_metrics = evaluate(
-            self.algorithm,
-            self.model_runtime,
-            self.val_loader,
-            batch_builder=self.batch_builder,
-            max_batches=self.config.max_val_batches,
-        )
+        val_metrics = self._evaluate_export(self.val_loader, epoch=epoch, split="eval")
+        if self.outcome_eval_dir is not None:
+            self.model_runtime.history_cache.start(epoch=epoch, phase="probe_train")
+            self._evaluate_export(self.train_loader, epoch=epoch, split="train")
         val_wm_mse = val_metrics.get("wm_mse", float("inf"))
         improved = val_wm_mse < self.state.best_val_wm_mse
         if improved:
@@ -370,6 +409,8 @@ class SFT2TrainingLoop:
             best_val_wm_mse=self.state.best_val_wm_mse,
             improved=improved,
         )
+        if self.outcome_eval_dir is not None:
+            self._seal_exports(epoch)
         self.reporter.log_validation(
             epoch=epoch,
             global_step=self.state.global_step,
@@ -377,6 +418,66 @@ class SFT2TrainingLoop:
             best_val_wm_mse=self.state.best_val_wm_mse,
             checkpoint_metric=self.config.checkpoint_metric,
         )
+
+    def _evaluate_export(self, loader, *, epoch: int, split: str):
+        writer = None
+        if self.outcome_eval_dir is not None:
+            from nimloth.eval.stage3_outcome import OutcomeRowsWriter
+            directory = Path(self.outcome_eval_dir)
+            directory.mkdir(parents=True, exist_ok=True)
+            writer = OutcomeRowsWriter(
+                directory / f"epoch_{epoch:03d}_{split}_rank_{self.rank:03d}.jsonl",
+                outcome_available=self.algorithm.outcome_weight > 0,
+            )
+        try:
+            metrics = evaluate(self.algorithm, self.model_runtime, loader,
+                            batch_builder=self.batch_builder,
+                            max_batches=self.config.max_val_batches if split == "eval" else -1,
+                            on_batch=writer)
+        finally:
+            if writer is not None:
+                writer.close()
+        if writer is not None:
+            self._publish_export_manifest(loader, epoch=epoch, split=split, writer=writer)
+        return metrics
+
+    def _publish_export_manifest(self, loader, *, epoch, split, writer):
+        from nimloth.eval.stage3_outcome import file_sha256
+        expected = int(loader.batch_sampler.window_count) * self.algorithm.prediction_horizon
+        local = {"name": Path(writer.stream.name).name, "rows": writer.row_count, "sha256": file_sha256(writer.stream.name)}
+        files = [local]
+        if dist.is_available() and dist.is_initialized():
+            files = [None] * dist.get_world_size()
+            dist.all_gather_object(files, local)
+        if sum(item["rows"] for item in files) != expected:
+            raise ValueError("export did not cover all expected windows")
+        if not self.outcome_export_identity:
+            raise ValueError("export requires dataset and initialization identity")
+        if self.rank == 0:
+            manifest = {"status": "pending_checkpoint", "expected_rows": expected, "files": files,
+                        "identity": self.outcome_export_identity, "epoch": epoch, "step": self.state.global_step}
+            if epoch == 0:
+                manifest.update(status="complete", checkpoint_identity={"initialization": self.outcome_export_identity})
+            path = Path(self.outcome_eval_dir) / f"epoch_{epoch:03d}_{split}.complete.json"
+            with path.open("x") as stream:
+                json.dump(manifest, stream, indent=2)
+
+    def _seal_exports(self, epoch):
+        if self.rank != 0:
+            return
+        from nimloth.eval.stage3_outcome import file_sha256
+        checkpoint = self.checkpoint_runtime.manager.output_dir / f"epoch_{epoch:03d}"
+        state_path = checkpoint / "training_state.pt"
+        identity = {"path": str(checkpoint), "training_state_sha256": file_sha256(state_path),
+                    "step": self.state.global_step, "epoch": epoch}
+        for split in ("train", "eval"):
+            path = Path(self.outcome_eval_dir) / f"epoch_{epoch:03d}_{split}.complete.json"
+            manifest = json.loads(path.read_text())
+            manifest.update(status="complete", checkpoint_identity=identity)
+            temporary = path.with_suffix(".tmp")
+            with temporary.open("x") as stream:
+                json.dump(manifest, stream, indent=2)
+            temporary.replace(path)
 
     @staticmethod
     def _barrier() -> None:

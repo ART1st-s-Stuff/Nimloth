@@ -27,6 +27,7 @@ from nimloth.backbone.qwen25vl.tuning import (
 )
 from nimloth.backbone.qwen25vl.vision_ema import VisionEncoderEMA
 from nimloth.latent import (
+    LatentActionTokens,
     initialize_extra_latent_token_embeddings,
     install_query_embedding_adapter,
     latent_state_tokens,
@@ -196,7 +197,11 @@ def load_backbone(
         if model_parallel_size is None
         else int(model_parallel_size)
     )
-    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    selected_rows = getattr(args, "query_tune", "freeze") == "selected_rows"
+    # 不先经 BF16 再转 FP32，否则恢复时主干 master 低位会被舍弃。
+    dtype = torch.float32 if selected_rows else (
+        torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    )
     base_model_path: Path | str = args.model
     resume_applied = False
 
@@ -268,6 +273,32 @@ def load_backbone(
             for token in latent_state_tokens(latent_token_count)
         ]
         query_adapter = install_query_embedding_adapter(model, query_token_ids)
+    if getattr(args, "query_tune", "freeze") == "selected_rows":
+        if _llm_tune != "full" or uses_lora(args):
+            raise ValueError("selected_rows requires full dense language tuning")
+        from nimloth.backbone.selected_token_rows import (
+            install_full_language_selected_rows,
+            restore_selected_rows,
+        )
+        tokens = LatentActionTokens()
+        install_full_language_selected_rows(
+            model,
+            [token_id_map[token] for token in latent_state_tokens(latent_token_count)],
+            [token_id_map[token] for token in
+             (*tokens.action_tokens, tokens.action_start, tokens.action_end)],
+        )
+        # 小学习率更新保留 FP32 master；前向由 Backbone 的 autocast 使用 BF16。
+        for parameter in model.parameters():
+            if parameter.requires_grad:
+                parameter.data = parameter.data.float()
+            elif torch.cuda.is_available():
+                parameter.data = parameter.data.to(torch.bfloat16)
+        model.config.nimloth_fp32_master_bf16_forward = True
+        if can_resume:
+            rows_path = resume_dir / "selected_token_rows.pt"
+            if not rows_path.is_file():
+                raise ValueError("selected_rows resume requires exact FP32 token-row state")
+            restore_selected_rows(model, torch.load(rows_path, map_location="cpu", weights_only=True))
     if not pair_parallel:
         model.to(device)
     else:

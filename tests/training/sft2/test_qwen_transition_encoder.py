@@ -234,3 +234,32 @@ def test_missing_or_non_boolean_success_is_rejected(success):
     item["success"] = success
     with pytest.raises(ValueError, match="success boolean"):
         _assembler().supervision_counts([item])
+
+
+@pytest.mark.parametrize("padding", [False, True])
+def test_outcome_labels_align_rollout_and_exclude_padding(padding):
+    assembler = _rollout_assembler()
+    items = []
+    for index, label in enumerate([True, False, None, True]):
+        item = _item(str(index), [{"role": "user", "content": f"next {index}"}])
+        item.update(step_index=index, prediction_horizon=4, rollout_position=index,
+                    is_current_step=index == 0, needs_next_state=True,
+                    action_success=label, loss_weight=float(not padding))
+        items.append(item)
+    assert assembler.outcome_count(items) == (0 if padding else 3)
+    with patch("nimloth.backbone.qwen25vl.input.build_qwen_batch",
+               return_value={"input_ids": torch.zeros((1, 4), dtype=torch.long)}):
+        batch = assembler.prepare(items)
+    assert batch.outcome_targets.tolist() == [[1.0, 0.0, 0.0, 1.0]]
+    assert batch.outcome_mask.tolist() == [[not padding, not padding, False, not padding]]
+    assert assembler.outcome_count(batch) == (0 if padding else 3)
+
+
+def test_missing_outcome_remains_unsupervised():
+    assembler = _assembler()
+    item = _item("a", [{"role": "user", "content": "next"}])
+    with patch("nimloth.backbone.qwen25vl.input.build_qwen_batch",
+               return_value={"input_ids": torch.zeros((1, 4), dtype=torch.long)}):
+        batch = assembler.prepare([item])
+    assert batch.outcome_mask.tolist() == [False]
+    assert assembler.outcome_count([item]) == 0

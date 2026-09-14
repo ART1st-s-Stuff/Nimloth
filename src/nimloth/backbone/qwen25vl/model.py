@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -49,14 +50,21 @@ class Qwen25VLBackbone(Backbone):
         lm_row_weights = model_inputs.pop("lm_row_weights", None)
         if not include_lm_loss:
             model_inputs.pop("labels", None)
-        hidden, lm_loss = extract_qwen_latents(
-            self.model,
-            model_inputs,
-            self.token_id_map,
-            self.device,
-            latent_token_count=self.latent_token_count,
-            lm_row_weights=lm_row_weights if include_lm_loss else None,
+        raw_model = self.model.module if hasattr(self.model, "module") else self.model
+        mixed = getattr(getattr(raw_model, "config", None), "nimloth_fp32_master_bf16_forward", False)
+        context = (
+            torch.autocast("cuda", dtype=torch.bfloat16)
+            if mixed and self.device.type == "cuda" else nullcontext()
         )
+        with context:
+            hidden, lm_loss = extract_qwen_latents(
+                self.model,
+                model_inputs,
+                self.token_id_map,
+                self.device,
+                latent_token_count=self.latent_token_count,
+                lm_row_weights=lm_row_weights if include_lm_loss else None,
+            )
         return BackboneOutput(
             hidden=hidden,
             lm_loss=lm_loss if include_lm_loss else None,
@@ -86,10 +94,22 @@ class Qwen25VLBackbone(Backbone):
             setattr(model.config, key, value)
         with materialize_query_embedding_adapter(model) as materialized_state:
             save_state = materialized_state if materialized_state is not None else state_dict
+            from nimloth.backbone.selected_token_rows import (
+                materialize_selected_state_dict, selected_rows_state,
+            )
+            row_state = selected_rows_state(model)
+            if row_state:
+                if materialized_state is not None:
+                    raise ValueError("selected rows cannot coexist with Query delta adapter")
+                save_state = materialize_selected_state_dict(
+                    model.state_dict() if save_state is None else save_state
+                )
             kwargs: dict[str, Any] = {"safe_serialization": True}
             if save_state is not None:
                 kwargs["state_dict"] = save_state
             model.save_pretrained(output_dir, **kwargs)
+            if row_state:
+                torch.save(row_state, output_dir / "selected_token_rows.pt")
         if self.lora and self.vision_tune == "full":
             save_full_vision_state(model, output_dir / "vision_full_state.pt")
 

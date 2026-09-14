@@ -26,10 +26,28 @@ def observation_index(train_jsonl: Path, val_jsonl: Path):
     for name, source in (("train", train_jsonl), ("val", val_jsonl)):
         source = source.resolve()
         source_hash = file_sha256(source)
-        dataset = NimlothVLSFTDataset(source, processor=None)
+        with source.open() as stream:
+            records = [json.loads(line) for line in stream if line.strip()]
+        if not records or any(not isinstance(record, dict) for record in records):
+            raise ValueError(f"{name} JSONL must contain nonempty mapping records")
+        is_trajectory = [r.get("record_format") == "nimloth_trajectory_v1" for r in records]
+        if any(is_trajectory) and not all(is_trajectory):
+            raise ValueError("cannot mix trajectory and answer-view records")
+        dataset = None if all(is_trajectory) else NimlothVLSFTDataset(source, processor=None)
         references = []
-        for row in range(len(dataset)):
-            paths = answer_observation_paths([dataset[row]])
+        for row, record in enumerate(records):
+            if dataset is None:
+                from nimloth.rollout.record_format import require_trajectory_record
+                require_trajectory_record(record)
+                paths = record["image_paths"]
+                if not isinstance(paths, list) or not paths or any(
+                    not isinstance(path, str) or not path for path in paths
+                ):
+                    raise ValueError("trajectory DINO indexing requires nonempty image paths")
+                if len(paths) != len(record["action_indices"]) + 1:
+                    raise ValueError("trajectory DINO indexing requires all T+1 images")
+            else:
+                paths = answer_observation_paths([dataset[row]])
             for raw in paths:
                 path = str(Path(raw).resolve())
                 if path not in indices:
@@ -41,7 +59,7 @@ def observation_index(train_jsonl: Path, val_jsonl: Path):
         splits[name] = {
             "jsonl": str(source),
             "sha256": source_hash,
-            "trajectories": len(dataset),
+            "trajectories": len(records),
             "answers": len(references),
             "image_indices": references,
         }
@@ -94,20 +112,39 @@ def build(args):
         raise ValueError("DINO cache batch size must be between 1 and 32")
     args.output.mkdir(parents=True, exist_ok=False)
     images, splits = observation_index(args.train_jsonl, args.val_jsonl)
-    teacher, provenance = load_teacher(
-        args.teacher_path,
-        torch.device(args.device),
-        objective.grid_size,
-        args.batch_size,
-    )
+    teacher, provenance = None, None
+    reuse_path = getattr(args, "reuse_cache", None)
+    if reuse_path is not None:
+        reuse_path = Path(reuse_path).resolve()
+        reuse_manifest = json.loads((reuse_path / "manifest.json").read_text())
+        if reuse_manifest.get("format") != STANDALONE_DINO_GRID_CACHE_FORMAT:
+            raise ValueError("reuse requires a standalone cache with verified image byte hashes")
+    reused = (CachedDINOGridTargets.from_cache_root(
+        reuse_path, identity=DINOV2_LARGE_IDENTITY, grid_size=objective.grid_size
+    ) if reuse_path is not None else None)
+    reused_count = 0
     shards = []
     # A shard contains one bounded teacher batch; clear the online memo after writing.
     for offset in range(0, len(images), args.batch_size):
         entries = images[offset : offset + args.batch_size]
-        features = teacher.load(
-            [e["path"] for e in entries], device=torch.device("cpu")
-        )
-        if features.dtype != torch.float32 or not torch.isfinite(features).all():
+        paths = [entry["path"] for entry in entries]
+        missing = [path for path in paths if reused is None or path not in reused.path_to_feature]
+        if missing and teacher is None:
+            teacher, provenance = load_teacher(
+                args.teacher_path, torch.device(args.device), objective.grid_size, args.batch_size
+            )
+        new = teacher.load(missing, device=torch.device("cpu")) if missing else None
+        new_indices = {path: i for i, path in enumerate(missing)}
+        rows = []
+        for path in paths:
+            if path in new_indices:
+                rows.append(new[new_indices[path]])
+            else:
+                rows.append(reused.load([path], device=torch.device("cpu"))[0])
+                reused_count += 1
+        features = torch.stack(rows)
+        if (features.shape != (len(entries), objective.grid_size**2, DINOV2_LARGE_IDENTITY.hidden_size)
+                or features.dtype != torch.float32 or not torch.isfinite(features).all()):
             raise ValueError("teacher returned invalid grid values")
         name = f"shard_{len(shards):05d}.pt"
         torch.save({"features": features}, args.output / name)
@@ -118,7 +155,8 @@ def build(args):
                 "sha256": file_sha256(args.output / name),
             }
         )
-        teacher._cached_targets.clear()
+        if teacher is not None:
+            teacher._cached_targets.clear()
         print(
             json.dumps(
                 {"images_complete": offset + len(entries), "images_total": len(images)}
@@ -134,6 +172,9 @@ def build(args):
         "images": images,
         "splits": splits,
         "shards": shards,
+        "reuse": {"source": str(reuse_path) if reuse_path else None,
+                  "fingerprint": reused.cache_fingerprint if reused else None,
+                  "images": reused_count},
     }
     manifest["fingerprint"] = _json_fingerprint(manifest)
     (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -160,6 +201,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("teacher-path", "train-jsonl", "val-jsonl", "output"):
         parser.add_argument(f"--{name}", type=Path, required=True)
+    parser.add_argument("--reuse-cache", type=Path)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--grid-size", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=32)

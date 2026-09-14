@@ -630,6 +630,7 @@ class GridWorldModel(WorldModel):
             state_proj=_unwrap(self.state_proj),
             wm_predictor=_unwrap(self.wm_predictor),
             value_head=_unwrap(self.value_head),
+            outcome_head=_unwrap(self.outcome_head) if self.outcome_head is not None else None,
             planner_policy_head=(
                 _unwrap(self.planner_policy_head)
                 if self.planner_policy_head is not None

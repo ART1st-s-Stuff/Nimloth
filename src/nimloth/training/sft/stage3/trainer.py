@@ -40,6 +40,7 @@ from nimloth.training.sft.stage3.batch import SFT2BatchAssembler
 from nimloth.training.sft.stage3.cli import parse_sft2_args
 from nimloth.training.sft.stage3.data.factory import build_data_bundle
 from nimloth.training.sft.stage3.dino_grid import DINOGridBatchAssembler
+from nimloth.wm.outcome import ActionOutcomeHead
 from nimloth.training.sft.stage3.algorithm import (
     SFT2Algorithm,
     SFT2_VALUE_OBJECTIVE,
@@ -186,7 +187,12 @@ def _build_world_model(
                 dropout=args.grid_wm_dropout,
             )
         ).to(device=world_model_device, dtype=grid_dtype)
+        outcome_head = None
+        if getattr(args, "outcome_head", False):
+            outcome_head = ActionOutcomeHead(args.emb_dim).to(world_model_device)
+            outcome_head.requires_grad_(getattr(args, "lambda_outcome", 0.0) > 0)
         world_model = GridWorldModel(
+            outcome_head=outcome_head,
             state_proj=state_proj,
             wm_predictor=wm_predictor,
             value_head=ValueHead(args.emb_dim).to(
@@ -254,6 +260,7 @@ def _wrap_sft2_agent(
     state_proj = world_model.state_proj
     wm_predictor = world_model.wm_predictor
     value_head = world_model.value_head
+    outcome_head = world_model.outcome_head
     static_graph = world_size > 1
     if world_size > 1:
         if loaded.pair_parallel:
@@ -288,6 +295,9 @@ def _wrap_sft2_agent(
             find_unused_parameters=False,
             static_graph=static_graph,
         )
+        if outcome_head is not None and any(p.requires_grad for p in outcome_head.parameters()):
+            outcome_head = DDP(outcome_head, device_ids=[world_model_device_index],
+                               output_device=world_model_device_index, static_graph=static_graph)
         if train_wm_predictor:
             wm_predictor = DDP(
                 wm_predictor,
@@ -301,12 +311,14 @@ def _wrap_sft2_agent(
             state_proj=state_proj,
             wm_predictor=wm_predictor,
             value_head=value_head,
+            outcome_head=outcome_head,
         )
     else:
         wrapped_world_model = WorldModel(
             state_proj=state_proj,
             wm_predictor=wm_predictor,
             value_head=value_head,
+            outcome_head=outcome_head,
         )
 
     return (
@@ -328,12 +340,21 @@ def _build_optimizer(
     """按模块名称建立可审计的 SFT2 参数组。"""
 
     query_parameter = query_adapter.delta if query_adapter is not None else None
+    selected_groups = None
+    selected_ids: set[int] = set()
+    if getattr(args, "query_tune", "freeze") == "selected_rows":
+        from nimloth.backbone.selected_token_rows import selected_row_parameters
+        if query_adapter is not None:
+            raise ValueError("selected rows cannot coexist with Query delta adapter")
+        selected_groups = selected_row_parameters(agent.backbone.model)
+        selected_ids = {id(p) for group in selected_groups.values() for p in group}
     parameter_groups: list[dict[str, Any]] = [
         {
             "params": [
                 parameter
                 for parameter in agent.backbone.model.parameters()
                 if parameter.requires_grad and parameter is not query_parameter
+                and id(parameter) not in selected_ids
             ],
             "lr": args.lr_qwen_start,
             "name": "qwen",
@@ -353,6 +374,10 @@ def _build_optimizer(
             "name": "value_head",
         },
     ]
+    if selected_groups is not None:
+        for name, rate in (("query", args.query_lr), ("protocol", args.protocol_lr)):
+            parameter_groups.append({"params": selected_groups[name], "lr": rate,
+                                     "weight_decay": 0.0, "name": f"selected_{name}_rows"})
     if query_parameter is not None:
         parameter_groups.append(
             {
@@ -376,6 +401,10 @@ def _build_optimizer(
                 "name": "wm_predictor",
             }
         )
+    if agent.wm.outcome_head is not None:
+        params = [p for p in agent.wm.outcome_head.parameters() if p.requires_grad]
+        if params:
+            parameter_groups.append({"params": params, "lr": args.outcome_head_lr, "name": "outcome_head"})
     return torch.optim.AdamW(parameter_groups, weight_decay=args.weight_decay)
 
 
@@ -393,8 +422,8 @@ def train_sft2(args=None) -> int:
     args.objective = str(getattr(args, "objective", "latent"))
     if args.objective not in {"latent", "dino_grid"}:
         raise ValueError(f"unsupported SFT2 objective: {args.objective!r}")
-    if args.query_tune not in {"freeze", "adapter"}:
-        raise ValueError(f"query_tune must be freeze or adapter, got {args.query_tune!r}")
+    if args.query_tune not in {"freeze", "adapter", "selected_rows"}:
+        raise ValueError(f"query_tune must be freeze, adapter or selected_rows, got {args.query_tune!r}")
     if args.latent_token_count < 1:
         raise ValueError(f"--latent-token-count must be >= 1, got {args.latent_token_count}")
     args.history_size = int(getattr(args, "history_size", 4))
@@ -416,6 +445,11 @@ def train_sft2(args=None) -> int:
     llm_tune, vision_tune = resolve_tune_modes(args)
     if args.query_tune == "adapter" and uses_lora(args):
         raise ValueError("query_tune=adapter is not supported with LoRA tuning")
+    if args.query_tune == "selected_rows":
+        if llm_tune != "full" or uses_lora(args):
+            raise ValueError("selected_rows requires full dense language tuning")
+        if args.query_lr <= 0 or args.protocol_lr <= 0:
+            raise ValueError("selected-row learning rates must be positive")
     vision_ema_enabled = resolve_vision_ema(args, vision_tune)
     train_wm_predictor = args.train_wm_predictor and not args.freeze_wm_predictor
 
@@ -656,6 +690,20 @@ def train_sft2(args=None) -> int:
         "train_micro_batches": int(len(train_loader)),
         "rng_schedule_version": "epoch_micro_rank_v1",
     }
+    if getattr(args, "outcome_head", False):
+        checkpoint_invariants.update({
+            "outcome_schema": ActionOutcomeHead.schema,
+            "lambda_outcome": args.lambda_outcome,
+            "outcome_head_lr": args.outcome_head_lr,
+        })
+    if args.query_tune == "selected_rows":
+        checkpoint_invariants.update({
+            "query_lr": float(args.query_lr),
+            "protocol_lr": float(args.protocol_lr),
+            "lr_qwen_start": float(args.lr_qwen_start),
+            "lr_qwen_peak": float(args.lr_qwen_peak),
+            "backbone_master_dtype": "float32",
+        })
     if args.objective == "dino_grid":
         checkpoint_invariants.update(
             {
@@ -711,6 +759,8 @@ def train_sft2(args=None) -> int:
             "value_total",
             "value_mc_mse",
             "lm_ce",
+            "outcome_bce",
+            "outcome_count",
             "lambda_wm",
             "lambda_dino",
             "lambda_sigreg",
@@ -749,6 +799,7 @@ def train_sft2(args=None) -> int:
         dino_grid_weight=(args.lambda_dino if args.objective == "dino_grid" else 0.0),
         prediction_horizon=args.prediction_horizon,
     )
+    algorithm_kwargs["outcome_weight"] = getattr(args, "lambda_outcome", 0.0)
     algorithm = SFT2Algorithm(**algorithm_kwargs)
 
     loop_state = load_sft2_loop_state(
@@ -758,8 +809,23 @@ def train_sft2(args=None) -> int:
         optimizer=optimizer,
         training_invariants=checkpoint_invariants,
     )
+    outcome_export_identity = None
+    if getattr(args, "outcome_eval_dir", None) is not None:
+        from nimloth.eval.stage3_outcome import file_sha256
+        import subprocess
+        if args.max_val_batches > 0:
+            raise ValueError("complete outcome exports require max_val_batches=-1")
+        outcome_export_identity = {
+            "train_sha256": file_sha256(args.train_jsonl), "eval_sha256": file_sha256(args.val_jsonl),
+            "initial_checkpoint": str(args.model), "initial_config_sha256": file_sha256(Path(args.model) / "config.json"),
+            "initial_training_state_sha256": file_sha256(Path(args.model) / "training_state.pt"),
+            "seed": args.seed, "run_output": str(args.output_dir),
+            "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        }
     training_loop = SFT2TrainingLoop(
         config=SFT2LoopConfig.from_namespace(args),
+        outcome_eval_dir=getattr(args, "outcome_eval_dir", None),
+        outcome_export_identity=outcome_export_identity,
         rank=rank,
         train_loader=train_loader,
         val_loader=val_loader,

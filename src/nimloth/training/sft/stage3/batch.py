@@ -36,6 +36,8 @@ class SFT2Batch:
     sample_weights: torch.Tensor
     next_image_paths: tuple[str, ...] = ()
     dino_grid_target: torch.Tensor | None = None
+    current_image_paths: tuple[str, ...] = ()
+    current_dino_target: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         if self.history_size < 1:
@@ -147,6 +149,20 @@ class SFT2Batch:
         )
 
     @property
+    def outcome_targets(self) -> torch.Tensor | None:
+        targets = self.transitions.outcome_targets
+        if targets is None:
+            return None
+        return targets.reshape(self.batch_size, self.history_size)[:, -1]
+
+    @property
+    def outcome_mask(self) -> torch.Tensor | None:
+        mask = self.transitions.outcome_mask
+        if mask is None:
+            return None
+        return mask.reshape(self.batch_size, self.history_size)[:, -1] & self.sample_weights.bool()
+
+    @property
     def is_padding(self) -> bool:
         return bool(torch.count_nonzero(self.sample_weights).item() == 0)
 
@@ -161,6 +177,8 @@ class SFT2RolloutBatch:
     sample_weights: torch.Tensor
     next_image_paths: tuple[str, ...] = ()
     dino_grid_target: torch.Tensor | None = None
+    current_image_paths: tuple[str, ...] = ()
+    current_dino_target: torch.Tensor | None = None
 
     def __post_init__(self) -> None:
         if self.prediction_horizon < 1:
@@ -254,6 +272,20 @@ class SFT2RolloutBatch:
         )
 
     @property
+    def outcome_targets(self) -> torch.Tensor | None:
+        targets = self.transitions.outcome_targets
+        if targets is None:
+            return None
+        return targets.reshape(self.batch_size, self.prediction_horizon)
+
+    @property
+    def outcome_mask(self) -> torch.Tensor | None:
+        mask = self.transitions.outcome_mask
+        if mask is None:
+            return None
+        return mask.reshape(self.batch_size, self.prediction_horizon) & self.sample_weights.bool()[:, None]
+
+    @property
     def is_padding(self) -> bool:
         return bool(torch.count_nonzero(self.sample_weights).item() == 0)
 
@@ -268,6 +300,8 @@ class SFT2BatchBuilder(Protocol):
     device: torch.device
 
     def supervision_counts(self, raw_batch: Any) -> tuple[int, int]: ...
+
+    def outcome_count(self, raw_batch: Any) -> int: ...
 
     def prepare(self, raw_batch: Any) -> SFT2Batch | SFT2RolloutBatch: ...
 
@@ -338,6 +372,19 @@ class SFT2BatchAssembler:
         starts = [item for item in items if item["is_current_step"]]
         return (sum(int(item["loss_weight"]) for item in starts),
                 sum(int(item["loss_weight"]) * item["success"] for item in starts))
+
+    def outcome_count(self, raw_batch: Any) -> int:
+        """Count supervised executed actions, excluding sampler padding."""
+        if isinstance(raw_batch, (SFT2Batch, SFT2RolloutBatch)):
+            mask = raw_batch.outcome_mask
+            return 0 if mask is None else int(mask.sum().item())
+        rows = raw_batch["items"] if isinstance(raw_batch, dict) else raw_batch
+        items = [self._metadata(item) for item in rows]
+        return sum(
+            int(item["loss_weight"] > 0 and item["action_success"] is not None)
+            for item in items
+            if item["prediction_horizon"] is not None or item["is_current_step"]
+        )
 
     def prepare(self, raw_batch: Any) -> SFT2Batch | SFT2RolloutBatch:
         """构造 current/next 模型输入和对齐后的 transition target。"""
@@ -438,6 +485,14 @@ class SFT2BatchAssembler:
                     dtype=torch.long,
                     device=self.device,
                 ),
+                outcome_targets=torch.tensor(
+                    [float(item["action_success"] or False) for item in items],
+                    dtype=torch.float32, device=self.device,
+                ),
+                outcome_mask=torch.tensor(
+                    [item["action_success"] is not None and item["loss_weight"] > 0
+                     for item in items], dtype=torch.bool, device=self.device,
+                ),
                 value_targets=torch.tensor(
                     [item["action_value_target"] for item in items],
                     dtype=torch.float32,
@@ -460,6 +515,7 @@ class SFT2BatchAssembler:
                 dtype=torch.float32,
                 device=self.device,
             ),
+            current_image_paths=tuple(str(item.get("current_image_path", "")) for item in items if item["is_current_step"]),
             next_image_paths=tuple(
                 str(item["next_image_path"])
                 for item in items
@@ -513,6 +569,14 @@ class SFT2BatchAssembler:
                     dtype=torch.long,
                     device=self.device,
                 ),
+                outcome_targets=torch.tensor(
+                    [float(item["action_success"] or False) for item in items],
+                    dtype=torch.float32, device=self.device,
+                ),
+                outcome_mask=torch.tensor(
+                    [item["action_success"] is not None and item["loss_weight"] > 0
+                     for item in items], dtype=torch.bool, device=self.device,
+                ),
                 value_targets=torch.tensor(
                     [item["action_value_target"] for item in items],
                     dtype=torch.float32,
@@ -539,6 +603,7 @@ class SFT2BatchAssembler:
                 dtype=torch.float32,
                 device=self.device,
             ),
+            current_image_paths=tuple(str(item.get("current_image_path", "")) for item in items if item["rollout_position"] == 0),
             next_image_paths=tuple(str(item["next_image_path"]) for item in items),
         )
 
@@ -768,6 +833,8 @@ class SFT2BatchAssembler:
     def _metadata(self, item: dict[str, Any]) -> dict[str, Any]:
         if type(item.get("success")) is not bool:
             raise ValueError("transition requires explicit trajectory success boolean")
+        if item.get("action_success") is not None and type(item["action_success"]) is not bool:
+            raise ValueError("action_success must be a boolean or None")
         current_messages = item.get("messages")
         if not isinstance(current_messages, list):
             raise ValueError("transition is missing current Agent messages")
@@ -781,6 +848,7 @@ class SFT2BatchAssembler:
             "action_index": int(item["action_index"]),
             "action_value_target": float(item["action_value_target"]),
             "success": item["success"],
+            "action_success": item.get("action_success"),
             "messages": current_messages,
             "next_messages": next_messages,
             "context_length": int(
@@ -813,6 +881,7 @@ class SFT2BatchAssembler:
             ),
             "loss_weight": float(item.get("loss_weight", 1.0)),
             "next_image_path": str(item.get("next_image_path", "")),
+            "current_image_path": str(item.get("current_image_path", "")),
         }
 
     @staticmethod

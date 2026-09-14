@@ -255,6 +255,7 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
                     "step_index": 0,
                     "action_index": 0,
                     "action_value_target": 1.0,
+                    "action_success": True,
                     "success": True,
                     "current_enc": enc([1, 2], [0], [[1, 1, 2]]),
                 },
@@ -264,6 +265,7 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
                     "step_index": 1,
                     "action_index": 1,
                     "action_value_target": 1.0,
+                    "action_success": True,
                     "success": True,
                     "current_enc": enc([3, 4, 5], [0, 1], [[1, 1, 2], [1, 1, 3]]),
                     "next_enc": enc([6], [1], [[1, 1, 3]]),
@@ -275,6 +277,8 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
     samples = [
         TransitionSample(
             record_id="rec",
+            action_value_target=1.0,
+            action_success=True,
             step_index=0,
             prefix_messages=[{"role": "assistant", "content": "a <image>"}],
             prefix_image_paths=["im0"],
@@ -288,6 +292,8 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
         ),
         TransitionSample(
             record_id="rec",
+            action_value_target=1.0,
+            action_success=True,
             step_index=1,
             prefix_messages=[
                 {"role": "assistant", "content": "b <image> <image>"}
@@ -304,6 +310,7 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
     ]
     dataset = CachedTransitionDataset(cache_dir, samples, max_open_shards=1)
     collator = CompactCachedTransitionCollator(cache_dir, max_open_shards=1)
+    assert dataset[0]["action_success"] is True
     history_row = dataset[
         TransitionContextIndex(
             sample_index=0,
@@ -320,6 +327,7 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
     ]
     batch = collator([history_row, current_row])
 
+    assert [item["action_success"] for item in batch["items"]] == [True, True]
     assert [item["context_length"] for item in batch["items"]] == [2, 2]
     assert [item["is_current_step"] for item in batch["items"]] == [False, True]
 

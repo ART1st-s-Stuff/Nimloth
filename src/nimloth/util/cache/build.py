@@ -174,6 +174,7 @@ def _cache_one_compact_transition_shard(
                 "step_index": item["step_index"],
                 "action_index": item["action_index"],
                 "action_value_target": item["action_value_target"],
+                "action_success": item.get("action_success"),
                 "success": item["success"],
                 "current_enc": current_enc,
             }

@@ -192,3 +192,36 @@ def test_primary_components_use_separate_global_window_denominators(scales):
     loop._train_microbatch(None, epoch=1, micro_step=1, loss_scales=scales)
     assert wm.grad.item() == pytest.approx(scales[0])
     assert lm.grad.item() == pytest.approx(3 * scales[1])
+
+
+def test_optional_export_routes_step_zero_and_each_epoch(tmp_path):
+    calls = []
+    loop = object.__new__(SFT2TrainingLoop)
+    loop.outcome_eval_dir = tmp_path
+    loop.state = SFT2LoopState()
+    loop.config = SimpleNamespace(epochs=1)
+    loop.val_loader = 'validation'
+    loop.model_runtime = SimpleNamespace(history_cache=SimpleNamespace(start=lambda **kw: None))
+    loop._evaluate_export = lambda loader, **kw: calls.append((loader, kw))
+    loop._run_epoch = lambda epoch: calls.append(('epoch', epoch))
+    loop.checkpoint_runtime = SimpleNamespace(save_final=lambda **kw: None)
+    loop.run()
+    assert calls == [('validation', {'epoch': 0, 'split': 'eval'}), ('epoch', 1)]
+
+
+def test_export_opens_rank_owned_file_and_passes_callback(tmp_path, monkeypatch):
+    import nimloth.training.sft.stage3.loop as module
+    loop = object.__new__(SFT2TrainingLoop)
+    loop.outcome_eval_dir = tmp_path
+    loop.rank = 3
+    loop.algorithm = SimpleNamespace(outcome_weight=1)
+    loop.model_runtime = object()
+    loop.batch_builder = object()
+    loop.config = SimpleNamespace(max_val_batches=-1)
+    loop._publish_export_manifest = lambda *args, **kwargs: None
+    def evaluate(*args, **kwargs):
+        assert kwargs['on_batch'].outcome_available
+        return {'wm_mse': .25}
+    monkeypatch.setattr(module, 'evaluate', evaluate)
+    assert loop._evaluate_export([], epoch=1, split='train') == {'wm_mse': .25}
+    assert (tmp_path/'epoch_001_train_rank_003.jsonl').is_file()

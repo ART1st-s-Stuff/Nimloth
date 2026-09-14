@@ -31,6 +31,10 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--val-jsonl", type=Path, required=True)
     ap.add_argument("--output-dir", type=Path, required=True)
     ap.add_argument("--epochs", type=int, default=10)
+    ap.add_argument("--stop-after-steps", type=int, default=0,
+                    help="Stop at this absolute optimizer step with a partial resumable checkpoint; 0 disables.")
+    ap.add_argument("--diagnose-outcome-gradients", action="store_true",
+                    help="Measure first-batch outcome versus WM+DINO predictor gradients without an update.")
     ap.add_argument("--batch-size", type=int, default=2)
     ap.add_argument("--grad-accum", type=int, default=4)
     ap.add_argument("--lr-qwen-start", type=float, default=1e-8)
@@ -81,11 +85,12 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     )
     ap.add_argument(
         "--query-tune",
-        choices=("freeze", "adapter"),
+        choices=("freeze", "adapter", "selected_rows"),
         default="freeze",
-        help="Optionally tune a small additive latent-query embedding adapter.",
+        help="Freeze Query, tune an additive adapter, or train selected input/head rows.",
     )
     ap.add_argument("--query-lr", type=float, default=5e-5)
+    ap.add_argument("--protocol-lr", type=float, default=2e-5)
     ap.add_argument("--max-train-records", type=int, default=-1)
     ap.add_argument("--max-val-records", type=int, default=-1)
     ap.add_argument("--max-val-batches", type=int, default=-1)
@@ -93,6 +98,10 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--lambda-ce", type=float, default=1.0)
     ap.add_argument("--lambda-dino", type=float, default=0.5)
     ap.add_argument("--lambda-value", type=float, default=1.0)
+    ap.add_argument("--outcome-head", action="store_true")
+    ap.add_argument("--outcome-eval-dir", type=Path, default=None)
+    ap.add_argument("--lambda-outcome", type=float, default=0.0)
+    ap.add_argument("--outcome-head-lr", type=float, default=1e-4)
     ap.add_argument("--value-gamma", type=float, default=1.0)
     ap.add_argument("--lambda-sigreg", type=float, default=0.1)
     ap.add_argument("--sigreg-num-proj", type=int, default=1024)
@@ -226,5 +235,17 @@ def parse_sft2_args(argv: list[str] | None = None) -> argparse.Namespace:
         args.latent_query_mode,
         default="inject",
     )
+    if not 0 <= args.lambda_outcome < float("inf"):
+        ap.error("lambda_outcome must be finite and nonnegative")
+    if args.lambda_outcome > 0 and not args.outcome_head:
+        ap.error("lambda_outcome > 0 requires --outcome-head")
+    if args.outcome_head and args.objective != "dino_grid":
+        ap.error("outcome head requires dino_grid objective")
+    if not 0 < args.outcome_head_lr < float("inf"):
+        ap.error("outcome_head_lr must be finite and positive")
+    if args.stop_after_steps < 0:
+        ap.error("stop_after_steps must be nonnegative")
+    if args.diagnose_outcome_gradients and args.lambda_outcome <= 0:
+        ap.error("outcome gradient diagnostic requires positive lambda_outcome")
     args.mask_latent_query_labels = query_labels_are_masked(args.latent_query_mode)
     return args

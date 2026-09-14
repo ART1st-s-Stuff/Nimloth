@@ -17,3 +17,8 @@ Replace `--check-only` with `--output-root NEW_DIRECTORY` to write `data.jsonl`,
 `manifest.json` and `COMMITTED`. The output directory must not exist. Failure writes
 rejection evidence without a completion marker. The manifest preserves the original raw
 record hashes and every verified image identity; record and image sources are not modified.
+
+`prepare_transition_cache.py` builds one split with the production CPU cache API,
+without loading Qwen weights. Specify source/output/processor, token count, max
+length and max pixels explicitly. It refuses existing outputs and never filters
+failed trajectories. Run separately for `preprocess/train` and `preprocess/val`.

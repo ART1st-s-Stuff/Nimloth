@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import time
 from dataclasses import dataclass
@@ -67,7 +68,7 @@ def find_resume_checkpoint(output_dir: Path) -> Path | None:
         ckpt_dir = output_dir / name
         if is_trainable_checkpoint_dir(ckpt_dir):
             candidates.append((read_checkpoint_step(ckpt_dir), ckpt_dir))
-    for epoch_dir in sorted(output_dir.glob("epoch_*")):
+    for epoch_dir in sorted([*output_dir.glob("epoch_*"), *output_dir.glob("stop_step_*")]):
         if is_trainable_checkpoint_dir(epoch_dir):
             candidates.append((read_checkpoint_step(epoch_dir), epoch_dir))
     if not candidates:
@@ -131,6 +132,12 @@ def save_checkpoint(
     pred.save_checkpoint(out_dir / "wm_predictor")
     head = value_head.module if hasattr(value_head, "module") else value_head
     head.save_checkpoint(out_dir / "value_head")
+    outcome = getattr(agent.wm, "outcome_head", None)
+    if outcome is not None:
+        outcome = outcome.module if hasattr(outcome, "module") else outcome
+        torch.save({"schema": outcome.schema, "emb_dim": outcome.emb_dim,
+                    "available": any(p.requires_grad for p in outcome.parameters()),
+                    "state_dict": outcome.state_dict()}, out_dir / "outcome_head.pt")
     state_proj_input_dim = getattr(proj, "input_dim", None)
     if state_proj_input_dim is None:
         net_layers = getattr(getattr(proj, "net", None), "net", None)
@@ -222,6 +229,27 @@ class SFT2CheckpointRuntime:
     interval_minutes: float
     keep_last: int
     last_periodic_time: float = field(default_factory=time.monotonic)
+
+    def save_stopped(self, *, step: int, epoch: int, micro_step: int,
+                     best_val_wm_mse: float) -> Path:
+        """Publish all rank states atomically, explicitly without completing an epoch."""
+        name = f"stop_step_{step:06d}"
+        partial_name = f".{name}.partial"
+        target = self.manager.output_dir / name
+        temporary = self.manager.output_dir / partial_name
+        if target.exists() or temporary.exists():
+            raise FileExistsError(f"refusing to overwrite stopped checkpoint: {target}")
+        self._save(partial_name, step=step, epoch=epoch,
+                   best_val_wm_mse=best_val_wm_mse, epoch_complete=False,
+                   micro_step_in_epoch=micro_step)
+        if is_main():
+            metadata = {"reason": "stop_after_steps", "step": step, "epoch": epoch,
+                        "epoch_complete": False, "micro_step_in_epoch": micro_step}
+            (temporary / "STOPPED").write_text(json.dumps(metadata, indent=2) + "\n")
+            temporary.rename(target)
+            print(json.dumps({"status": "stopped", "checkpoint": str(target), **metadata}), flush=True)
+        self._barrier()
+        return target
 
     def save_final(
         self,
@@ -445,3 +473,15 @@ def load_world_model_checkpoint(
         map_location=device,
     )
     head.load_state_dict(loaded_head.state_dict())
+    outcome = getattr(wm, "outcome_head", None)
+    outcome_path = ckpt_dir / "outcome_head.pt"
+    if outcome is not None:
+        outcome = outcome.module if hasattr(outcome, "module") else outcome
+        payload = torch.load(outcome_path, map_location=device, weights_only=True)
+        if payload["schema"] != outcome.schema or payload["emb_dim"] != outcome.emb_dim:
+            raise ValueError("outcome checkpoint schema/dimension mismatch")
+        if payload["available"] != any(p.requires_grad for p in outcome.parameters()):
+            raise ValueError("outcome checkpoint capability mismatch")
+        outcome.load_state_dict(payload["state_dict"])
+    elif outcome_path.exists():
+        raise ValueError("outcome checkpoint requires configured outcome head")

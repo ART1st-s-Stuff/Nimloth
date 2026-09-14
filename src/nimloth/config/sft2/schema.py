@@ -28,6 +28,8 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("tuning", "lora_alpha"): "lora_alpha",
     ("tuning", "lora_dropout"): "lora_dropout",
     ("train", "epochs"): "epochs",
+    ("train", "stop_after_steps"): "stop_after_steps",
+    ("train", "diagnose_outcome_gradients"): "diagnose_outcome_gradients",
     ("train", "batch_size"): "batch_size",
     ("train", "grad_accum"): "grad_accum",
     ("train", "lr_qwen_start"): "lr_qwen_start",
@@ -72,11 +74,16 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("latent", "query_mode"): "latent_query_mode",
     ("latent", "query_tune"): "query_tune",
     ("latent", "query_lr"): "query_lr",
+    ("latent", "protocol_lr"): "protocol_lr",
     ("loss", "lambda_wm_start"): "lambda_wm_start",
     ("loss", "lambda_wm_end"): "lambda_wm_end",
     ("loss", "lambda_ce"): "lambda_ce",
     ("loss", "lambda_dino"): "lambda_dino",
     ("loss", "lambda_value"): "lambda_value",
+    ("loss", "lambda_outcome"): "lambda_outcome",
+    ("train", "outcome_head_lr"): "outcome_head_lr",
+    ("train", "outcome_head"): "outcome_head",
+    ("monitor", "outcome_eval_dir"): "outcome_eval_dir",
     ("loss", "value_gamma"): "value_gamma",
     ("loss", "lambda_sigreg"): "lambda_sigreg",
     ("loss", "sigreg_num_proj"): "sigreg_num_proj",
@@ -99,11 +106,15 @@ class SFT2LoopConfig:
     checkpoint_metric: str
     step_timing: bool
     step_timing_interval: int
+    stop_after_steps: int = 0
+    diagnose_outcome_gradients: bool = False
 
     @classmethod
     def from_namespace(cls, args: argparse.Namespace) -> "SFT2LoopConfig":
         return cls(
             epochs=int(args.epochs),
+            stop_after_steps=int(getattr(args, "stop_after_steps", 0)),
+            diagnose_outcome_gradients=bool(getattr(args, "diagnose_outcome_gradients", False)),
             grad_accum=int(args.grad_accum),
             seed=int(args.seed),
             max_val_batches=int(args.max_val_batches),

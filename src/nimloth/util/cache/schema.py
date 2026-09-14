@@ -8,7 +8,7 @@ from pathlib import Path
 from nimloth.rollout.transitions import TransitionSample
 
 CE_MASK_VERSION = "last_assistant_span_v1"
-TRANSITION_EXPANSION_VERSION = "wm_expand_v3_terminal_cot"
+TRANSITION_EXPANSION_VERSION = "wm_expand_v4_finite_horizon_outcome"
 DEFAULT_MIN_PIXELS = 3136
 COMPACT_CACHE_FORMAT = "dedup_sharded_v2"
 

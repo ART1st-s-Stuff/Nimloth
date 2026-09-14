@@ -46,6 +46,7 @@ def encode_transition_item(
         "step_index": item.get("step_index", 0),
         "action_index": item["action_index"],
         "action_value_target": item["action_value_target"],
+        "action_success": item.get("action_success"),
         "success": item["success"],
         "current_enc": current_enc,
         "next_enc": next_enc,
