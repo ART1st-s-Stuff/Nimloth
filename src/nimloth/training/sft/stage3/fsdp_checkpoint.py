@@ -35,6 +35,12 @@ def collect_fsdp_checkpoint(agent, optimizer) -> dict[str, Any]:
         FullOptimStateDictConfig(offload_to_cpu=True, rank0_only=True),
     ):
         backbone_state = agent.backbone.model.state_dict()
+        # FSDP offloading does not cover every ignored parameter/buffer (or
+        # NO_SHARD state). Keep the gathered dictionary and its metadata, but
+        # explicitly move remaining replicated tensors to the export device.
+        for key, value in backbone_state.items():
+            if value.device.type != "cpu":
+                backbone_state[key] = value.detach().cpu()
         optimizer_state = FSDP.optim_state_dict(agent, optimizer) if optimizer is not None else None
     return {"backbone": backbone_state, "optimizer": optimizer_state}
 

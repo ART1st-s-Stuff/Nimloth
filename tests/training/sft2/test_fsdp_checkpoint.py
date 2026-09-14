@@ -3,6 +3,7 @@ from contextlib import contextmanager
 from types import SimpleNamespace
 
 import torch
+import pytest
 
 from nimloth.training.sft.stage3 import fsdp_checkpoint as checkpoint
 
@@ -111,13 +112,16 @@ class _TinySelectedLanguage(torch.nn.Module):
         return self.head(hidden.bfloat16()).float()
 
 
-def _cpu_roundtrip_worker(rank, rendezvous):
+def _cpu_roundtrip_worker(rank, rendezvous, cuda=False):
     from torch import distributed as dist
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
     from torch.nn.parallel import DistributedDataParallel as DDP
     from nimloth.backbone.selected_token_rows import install_full_language_selected_rows
 
-    dist.init_process_group('gloo', init_method='file://' + rendezvous, rank=rank, world_size=2)
+    device = torch.device('cuda', rank) if cuda else torch.device('cpu')
+    if cuda:
+        torch.cuda.set_device(device)
+    dist.init_process_group('nccl' if cuda else 'gloo', init_method='file://' + rendezvous, rank=rank, world_size=2)
     # CPU FSDP already owns CPU tensors; PyTorch CPU-offload on a CPU handle
     # segfaults in this runtime. GPU offload remains an explicit remote gate.
     original_context = FSDP.state_dict_type
@@ -128,25 +132,27 @@ def _cpu_roundtrip_worker(rank, rendezvous):
         with original_context(root, kind, model_config, optim_config):
             yield
 
-    FSDP.state_dict_type = cpu_context
+    if not cuda:
+        FSDP.state_dict_type = cpu_context
     try:
         torch.manual_seed(42)
-        model = _TinySelectedLanguage()
+        model = _TinySelectedLanguage().to(device)
         install_full_language_selected_rows(model, [0], list(range(1, 11)))
         ignored = {p for p in model.parameters() if not p.requires_grad}
         frozen = [p.detach().clone() for p in ignored]
         agent = torch.nn.Module()
         agent.backbone = torch.nn.Module()
         agent.backbone.model = FSDP(model, ignored_states=ignored,
-                                   device_id=torch.device('cpu'), use_orig_params=True)
-        agent.wm = DDP(torch.nn.Linear(12, 1))
+                                   device_id=device, use_orig_params=True)
+        agent.wm = DDP(torch.nn.Linear(12, 1).to(device))
         optimizer = torch.optim.AdamW([p for p in agent.parameters() if p.requires_grad], lr=.001)
-        tokens = torch.tensor([0, 1])
+        tokens = torch.tensor([0, 1], device=device)
         agent.wm(agent.backbone.model(tokens)).square().mean().backward()
         optimizer.step()
         optimizer.zero_grad()
         payload = checkpoint.collect_fsdp_checkpoint(agent, optimizer)
         if rank == 0:
+            assert all(value.device.type == 'cpu' for value in payload['backbone'].values())
             assert payload['backbone']['embedding.nimloth_query_rows'].shape == (1, 4)
             assert payload['backbone']['embedding.weight'].dtype == torch.bfloat16
             assert payload['backbone']['head.nimloth_protocol_rows'].dtype == torch.float32
@@ -168,3 +174,9 @@ def _cpu_roundtrip_worker(rank, rendezvous):
 def test_two_rank_cpu_fsdp_ddp_named_optimizer_roundtrip(tmp_path):
     torch.multiprocessing.spawn(_cpu_roundtrip_worker,
                                args=(str(tmp_path/'fsdp-cpu'),), nprocs=2, join=True)
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires two CUDA GPUs")
+def test_two_rank_cuda_fsdp_ddp_named_optimizer_roundtrip(tmp_path):
+    torch.multiprocessing.spawn(_cpu_roundtrip_worker,
+                               args=(str(tmp_path / "fsdp-cuda"), True), nprocs=2, join=True)
