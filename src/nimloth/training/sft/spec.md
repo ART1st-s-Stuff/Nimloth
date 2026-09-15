@@ -121,51 +121,46 @@ def sft2_step(model, config, trajectories, proj, dino_model, queries):
     loss = config.weight_lm * loss_lm + config.weight_dino * loss_dino
     loss.backward()
 
-def sft3_update(model, target_model, config, window_groups, proj,
+def sft3_update(model, target_model, config, trajectory_batches, proj,
                 dino_model, wm, value_head, queries, outcome_head=None):
-    """同一次更新内按轨迹编码，按原窗口及微批分组监督（H=1）。"""
-    # 窗口含T+1个真实观测和T个执行动作；success继承完整轨迹结果。
-    # MC return由完整真实reward计算后再切片，有限20动作任务原终点bootstrap=0。
-    # 保留原采样顺序、有效batch、微批SIGReg分组，不跨参数更新复用state。
-    # 同轨迹输入须为完全一致的因果前缀，保留每步真实CoT、Query及全部历史。
-    trajectories, indices = merge_exact_prefixes(window_groups)
-    with no_grad():
-        # 目标分支保持eval/EMA；先完成目标前向，再构建在线计算图。
-        target_states = proj(target_model.get_all_query_embeddings(trajectories, queries))
-        dino_features = dino_model(trajectories.images) if config.weight_dino > 0 else None
-
-    # 每个轨迹只编码一次，提取全部所需Query和各窗口起点回答的LM loss。
-    # 共享编码器及proj须无随机dropout；WM仍按原微步种子执行。
-    states, answer_losses = encode_trajectory_states_and_lm(model, proj, trajectories, queries)
-    state_leaves = detached_gradient_leaves(states)
-    lm_leaves = detached_gradient_leaves(answer_losses)
-    for windows in window_groups:
-        state = state_leaves[indices.current(windows)]
+    """完整轨迹为采样单位，全部有效窗口联合监督（H=1）。"""
+    # 每条轨迹仅属于一次更新；长度不足T的轨迹不产生训练样本。
+    # MC return先由完整真实reward计算，有限20动作任务原终点bootstrap=0。
+    counts = global_supervision_counts(trajectory_batches)
+    for trajectories in trajectory_batches:
+        windows = all_valid_windows(trajectories, config.prediction_horizon)
+        with no_grad():
+            # 先完成EMA/eval目标前向，再构建在线图。
+            target_states = proj(target_model.get_all_query_embeddings(trajectories, queries))
+            dino_features = dino_model(trajectories.images) if config.weight_dino > 0 else None
+        states, answer_losses = encode_trajectory_states_and_lm(model, proj, trajectories, queries)
         predictions, values, outcome_logits = wm_predict(
-            wm, value_head, state, windows.actions, windows.num_steps, outcome_head
+            wm, value_head, states[windows.current], windows.actions,
+            config.prediction_horizon, outcome_head
         )
-        # 各窗口独立递推，后续输入为预测state，不以真实后继state替代。
-        loss_wm = mse(predictions, target_states[indices.future(windows)])
+        # 各窗口独立递推，后续输入为预测state；LM仅监督成功轨迹的有效窗口起点。
+        loss_wm = mse(predictions, target_states[windows.future])
         loss_value = mse(values, windows.mc_returns)
-        loss_dino = (mse(predictions, dino_features[indices.future(windows)])
+        loss_dino = (mse(predictions, dino_features[windows.future])
                      if dino_features is not None else 0)
-        loss_lm = successful_window_mean(lm_leaves[indices.answers(windows)], windows.success)
-        # Outcome为动作执行后的真实成功/失败，普通BCE，不等于轨迹success。
+        loss_lm = successful_window_losses(answer_losses, windows.success)
+        # Outcome是动作执行结果，普通BCE；缺失标签及分布式补齐不参与监督。
         loss_outcome = (binary_cross_entropy_with_logits(outcome_logits, windows.action_successes)
                         if config.weight_outcome > 0 else 0)
-        # 按整个更新的跨rank有效计数归约：LM按成功窗口，其他按各自有效监督。
-        loss = normalize_original_window_losses(
-            loss_lm, loss_wm, loss_value, loss_dino, loss_outcome, windows, config
+        loss = globally_normalized_losses(
+            loss_lm, loss_wm, loss_value, loss_dino, loss_outcome, windows, counts, config
         )
-        loss.backward()
         if config.weight_sigreg > 0:
-            # 保留原微批跨rank统计和随机投影种子；梯度只进入真实下一state。
-            next_state = state_leaves[indices.next(windows)]
-            loss_sigreg = sigreg(stop_gradient(state), next_state)
-            (config.weight_sigreg * loss_sigreg / config.grad_accum).backward()
+            # 全部真实相邻transition按(轨迹,时间)去重，排除补齐样本。
+            # 跨卡形成当前微批的统计组；起点detach，梯度进入真实后继state。
+            pairs = unique_valid_transitions(trajectories)
+            loss_sigreg = distributed_sigreg(
+                stop_gradient(states[pairs.current]), states[pairs.next]
+            )
+            loss += config.weight_sigreg * loss_sigreg / len(trajectory_batches)
+        loss.backward()
+    # 所有微批完成后更新参数和EMA，不跨更新复用在线state。
 
-    # 将所有窗口累加到叶子的梯度一次传回共享在线图，随后才更新参数/EMA。
-    backward_with_gradients((states, answer_losses), (state_leaves.grad, lm_leaves.grad))
 
 def eval_direct(model, env, episodes, config):
     """直接由模型生成动作，在真实环境中进行rollout评估。"""

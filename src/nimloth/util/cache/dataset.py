@@ -101,6 +101,10 @@ class CompactCachedTransitionCollator:
         out["pixel_values"] = torch.cat(pixel_rows, dim=0).contiguous()
         return out
 
+    def materialize_encoding(self, compact: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        """Load one complete cached prefix, preserving its original image order."""
+        return self._materialize_encoding(compact)
+
     def __call__(self, batch: list[dict[str, Any]]) -> dict[str, Any]:
         materialized: dict[int, dict[str, torch.Tensor]] = {}
         current_rows: list[dict[str, torch.Tensor]] = []

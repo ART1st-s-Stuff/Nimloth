@@ -10,7 +10,6 @@ import torch
 
 from nimloth.agent import Agent
 from nimloth.backbone import BackboneBatch, BackboneEMA
-from nimloth.training.sft.stage3.history_cache import OnlineHistoryStateCache
 from nimloth.training.sft.stage3.utils import preserve_module_modes
 from nimloth.util.optim import (
     OptimizationRuntime,
@@ -24,7 +23,6 @@ class SFT2ModelRuntime:
     """封装 SFT2 的在线 Agent、下一 observation 编码与 Backbone EMA。"""
 
     agent: Agent
-    history_cache: OnlineHistoryStateCache
     backbone_ema: BackboneEMA | None = None
 
     def set_training_mode(self) -> None:
@@ -49,11 +47,6 @@ class SFT2ModelRuntime:
             ).hidden.detach()
             return self.agent.wm.project_state(hidden)
 
-    def evaluation_context(self) -> AbstractContextManager[object]:
-        """让验证阶段的完整 Agent forward 使用 EMA Backbone 权重。"""
-
-        return self._backbone_context()
-
     def _backbone_context(self) -> AbstractContextManager[object]:
         """按当前 runtime 的 Agent 创建 Backbone EMA 权重上下文。"""
 
@@ -73,7 +66,6 @@ class SFT2ModelRuntime:
                  else self.agent.unwrapped())
         return SFT2ModelRuntime(
             agent=agent,
-            history_cache=self.history_cache,
             backbone_ema=self.backbone_ema,
         )
 

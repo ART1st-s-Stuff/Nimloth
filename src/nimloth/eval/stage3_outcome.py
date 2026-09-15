@@ -41,7 +41,7 @@ class OutcomeRowsWriter:
             raise ValueError("fixed-teacher copy baseline requires current DINO targets")
         teacher_current = diagnostic["current_dino_targets"].float().cpu()
         copy = teacher_current[:, None].expand_as(prediction)
-        actions = (batch.action_sequences if horizon > 1 else batch.current_action_indices[:, None]).cpu()
+        actions = batch.action_sequences.cpu()
         labels = batch.outcome_targets.reshape(batch.batch_size, horizon).cpu()
         masks = batch.outcome_mask.reshape(batch.batch_size, horizon).cpu()
         logits = diagnostic.get("outcome_logits")

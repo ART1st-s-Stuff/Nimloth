@@ -20,10 +20,8 @@ from nimloth.util.cache import (
     build_compact_transition_preprocess_cache,
     cache_fingerprint,
 )
-from nimloth.training.sft.stage3.data.samplers import (
-    FutureRolloutBatchSampler,
-    OnlineHistoryBatchSampler,
-)
+from nimloth.training.sft.stage3.data.samplers import TrajectoryBatchSampler
+from nimloth.training.sft.stage3.data.trajectory import TrajectoryDataset, TrajectoryCollator
 from nimloth.rollout.transitions import TransitionJsonlDataset, TransitionSample
 
 
@@ -33,8 +31,8 @@ class DataBundle:
     val_loader: DataLoader
     train_samples: list[TransitionSample]
     val_samples: list[TransitionSample]
-    train_batch_sampler: OnlineHistoryBatchSampler | FutureRolloutBatchSampler
-    val_batch_sampler: OnlineHistoryBatchSampler | FutureRolloutBatchSampler
+    train_batch_sampler: TrajectoryBatchSampler
+    val_batch_sampler: TrajectoryBatchSampler
 
 
 def _dataloader_workers(config: Any) -> int:
@@ -223,123 +221,42 @@ def build_data_bundle(
 ) -> DataBundle:
     """Construct the complete SFT2 data plane from one validated config."""
 
+    if int(config.history_size) != 1:
+        raise ValueError("Stage3 requires history_size=1")
     train_samples, val_samples = _load_transition_samples(config)
-    if config.preprocess_cache_dir is None:
-        train_dataset = TransitionJsonlDataset.from_samples(train_samples)
-        val_dataset = TransitionJsonlDataset.from_samples(val_samples)
-        train_collate = batch_builder.collate_transition_samples
-        val_collate = batch_builder.collate_transition_samples
-    else:
-        (
-            train_dataset,
-            val_dataset,
-            train_collate,
-            val_collate,
-        ) = _build_or_open_cached_datasets(
-            config,
-            batch_builder,
-            train_samples,
-            val_samples,
-        )
-
+    horizon = int(config.prediction_horizon)
+    train_cache = val_cache = train_materializer = val_materializer = None
+    if config.preprocess_cache_dir is not None:
+        train_cache, val_cache, train_materializer, val_materializer = _build_or_open_cached_datasets(
+            config, batch_builder, train_samples, val_samples)
+    train_dataset = TrajectoryDataset(train_samples, prediction_horizon=horizon, cached=train_cache)
+    val_dataset = TrajectoryDataset(val_samples, prediction_horizon=horizon, cached=val_cache)
+    train_collate = TrajectoryCollator(batch_builder.input_builder, prediction_horizon=horizon,
+                                      cache_collator=train_materializer)
+    val_collate = TrajectoryCollator(batch_builder.input_builder, prediction_horizon=horizon,
+                                    cache_collator=val_materializer)
     workers = _dataloader_workers(config)
     loader_kwargs: dict[str, Any] = {"num_workers": workers, "pin_memory": True}
     if workers > 0:
-        loader_kwargs.update(
-            persistent_workers=True,
-            prefetch_factor=max(1, int(config.dataloader_prefetch_factor)),
-        )
-
-    if config.batch_mode != "trajectory_online_cache":
-        raise ValueError(
-            "SFT2 requires batch_mode='trajectory_online_cache' so detached "
-            "history states are written before use"
-        )
-    prediction_horizon = int(getattr(config, "prediction_horizon", 1))
-    if prediction_horizon > 1:
-        train_batch_sampler = FutureRolloutBatchSampler(
-            train_samples,
-            prediction_horizon=prediction_horizon,
-            batch_size=config.batch_size,
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=True,
-            seed=config.seed,
-            pad_to_equal_batches=True,
-        )
-        val_batch_sampler = FutureRolloutBatchSampler(
-            val_samples,
-            prediction_horizon=prediction_horizon,
-            batch_size=config.batch_size,
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=False,
-            seed=config.seed,
-            pad_to_equal_batches=(getattr(config, "distributed_strategy", "ddp") == "fsdp"),
-        )
-    else:
-        train_batch_sampler = OnlineHistoryBatchSampler(
-            train_samples,
-            history_size=config.history_size,
-            batch_size=config.batch_size,
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=True,
-            seed=config.seed,
-            pad_to_equal_batches=True,
-        )
-        val_batch_sampler = OnlineHistoryBatchSampler(
-            val_samples,
-            history_size=config.history_size,
-            batch_size=config.batch_size,
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=False,
-            seed=config.seed,
-            pad_to_equal_batches=(getattr(config, "distributed_strategy", "ddp") == "fsdp"),
-        )
-    if train_batch_sampler.window_count == 0:
-        raise ValueError(
-            "SFT2 training data has no transition with a real next state: "
-            f"history_size={config.history_size}, prediction_horizon={prediction_horizon}"
-        )
-    if val_batch_sampler.window_count == 0:
-        raise ValueError(
-            "SFT2 validation data has no transition with a real next state: "
-            f"history_size={config.history_size}, prediction_horizon={prediction_horizon}"
-        )
+        loader_kwargs.update(persistent_workers=True,
+                             prefetch_factor=max(1, int(config.dataloader_prefetch_factor)))
+    train_batch_sampler = TrajectoryBatchSampler(train_dataset, batch_size=config.batch_size,
+        num_replicas=world_size, rank=rank, shuffle=True, seed=config.seed,
+        pad_to_equal_batches=True)
+    val_batch_sampler = TrajectoryBatchSampler(val_dataset, batch_size=config.batch_size,
+        num_replicas=world_size, rank=rank, shuffle=False, seed=config.seed,
+        pad_to_equal_batches=True)
     if is_main():
-        print(
-            json.dumps(
-                {
-                    "sft2_window_sampler": (
-                        "future_rollout_v1"
-                        if prediction_horizon > 1
-                        else "trajectory_history_v1"
-                    ),
-                    "prediction_horizon": prediction_horizon,
-                    "train_padding_batches_rank0": train_batch_sampler.padding_batch_count,
-                }
-            )
-        )
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_sampler=train_batch_sampler,
-        collate_fn=train_collate,
-        **loader_kwargs,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_sampler=val_batch_sampler,
-        collate_fn=val_collate,
-        **loader_kwargs,
-    )
-    return DataBundle(
-        train_loader=train_loader,
-        val_loader=val_loader,
-        train_samples=train_samples,
-        val_samples=val_samples,
-        train_batch_sampler=train_batch_sampler,
-        val_batch_sampler=val_batch_sampler,
-    )
+        print(json.dumps({"stage3_sampler": "complete_trajectory_v1",
+            "prediction_horizon": horizon,
+            "train_trajectories": len(train_dataset), "train_windows": train_dataset.window_count,
+            "val_trajectories": len(val_dataset), "val_windows": val_dataset.window_count,
+            "train_omitted_short_trajectories": train_dataset.omitted_short_trajectories,
+            "val_omitted_short_trajectories": val_dataset.omitted_short_trajectories,
+            "train_padding_batches_rank0": train_batch_sampler.padding_batch_count}))
+    train_loader = DataLoader(train_dataset, batch_sampler=train_batch_sampler,
+                             collate_fn=train_collate, **loader_kwargs)
+    val_loader = DataLoader(val_dataset, batch_sampler=val_batch_sampler,
+                           collate_fn=val_collate, **loader_kwargs)
+    return DataBundle(train_loader, val_loader, train_samples, val_samples,
+                      train_batch_sampler, val_batch_sampler)

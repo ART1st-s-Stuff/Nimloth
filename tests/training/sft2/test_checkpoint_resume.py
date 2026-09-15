@@ -35,8 +35,9 @@ def _write_aux_markers(ckpt_dir: Path) -> None:
 def _write_ckpt(ckpt_dir: Path, *, step: int, epoch: int) -> None:
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     (ckpt_dir / "config.json").write_text("{}", encoding="utf-8")
-    torch.save({"step": step, "epoch": epoch}, ckpt_dir / "training_state.pt")
-    torch.save({}, ckpt_dir / "history_cache_rank_000.pt")
+    torch.save({"step": step, "epoch": epoch,
+                "training_invariants": {"training_unit": "complete_trajectory_v1"}},
+               ckpt_dir / "training_state.pt")
     _write_aux_markers(ckpt_dir)
 
 
@@ -213,3 +214,25 @@ def test_sft2_requires_checkpoint_history_to_match_config() -> None:
             history_size=2,
             source=Path("wm"),
         )
+
+
+def test_find_resume_checkpoint_includes_newest_periodic_step(tmp_path):
+    out = tmp_path / "run"
+    _write_ckpt(out / "epoch_001", step=10, epoch=1)
+    _write_ckpt(out / "step_000020", step=20, epoch=2)
+    assert find_resume_checkpoint(out) == out / "step_000020"
+
+
+@pytest.mark.parametrize("saved_unit", [None, "current_step_once_v2_online_cache"])
+def test_native_resume_rejects_window_unit_before_loading_optimizer(tmp_path, saved_unit):
+    from nimloth.training.sft.stage3.loop import load_sft2_loop_state
+    model = torch.nn.Linear(2, 1)
+    optimizer = torch.optim.AdamW(model.parameters())
+    state = tmp_path / "training_state.pt"
+    torch.save({"step": 5, "epoch": 1, "optimizer": {"deliberately_invalid": True},
+                "training_invariants": {"training_unit": saved_unit}}, state)
+    with pytest.raises(ValueError, match="complete_trajectory_v1"):
+        load_sft2_loop_state(resume=True, resume_state_path=state,
+            resume_checkpoint_dir=tmp_path, optimizer=optimizer,
+            training_invariants={"training_unit": "complete_trajectory_v1"})
+    assert not optimizer.state

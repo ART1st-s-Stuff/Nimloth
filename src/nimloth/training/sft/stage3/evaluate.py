@@ -70,7 +70,6 @@ def evaluate(
             validation_runtime.agent.trainable_modules,
             training=False,
         ),
-        validation_runtime.evaluation_context(),
     ):
         for index, batch in enumerate(loader):
             if max_batches > 0 and index >= max_batches:
@@ -83,11 +82,22 @@ def evaluate(
                 metrics = dict(output.metrics)
                 lm = metrics.pop("lm_ce", None)
                 if lm is not None:
-                    _, lm_count = batch_builder.supervision_counts(agent_batch)
+                    lm_count = int(agent_batch.lm_weights.sum().item())
                     if lm_count > 0:
                         accumulator.update({"lm_ce": lm}, count=lm_count)
                 outcome = metrics.pop("outcome_bce", None)
                 if outcome is not None:
                     accumulator.update({"outcome_bce": outcome}, count=int(agent_batch.outcome_mask.sum().item()))
                 accumulator.update(metrics, count=output.sample_count)
-    return distributed_metric_averages(accumulator)
+    averages = distributed_metric_averages(accumulator)
+    if "total_loss" in averages:
+        # Components have different populations: successful windows for LM,
+        # labeled transitions for outcome, and all windows for WM/value/DINO.
+        averages["total_loss"] = (
+            averages.get("wm_mse", 0.0)
+            + algorithm.value_weight * averages.get("value_total", 0.0)
+            + algorithm.dino_grid_weight * averages.get("dino_grid_mse", 0.0)
+            + algorithm.ce_weight * averages.get("lm_ce", 0.0)
+            + algorithm.outcome_weight * averages.get("outcome_bce", 0.0)
+        )
+    return averages

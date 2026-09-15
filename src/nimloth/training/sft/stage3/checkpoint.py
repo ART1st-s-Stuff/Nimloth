@@ -19,7 +19,6 @@ import torch.distributed as dist
 
 from nimloth.agent import Agent
 from nimloth.backbone import BackboneEMA
-from nimloth.training.sft.stage3.history_cache import OnlineHistoryStateCache
 from nimloth.util.distributed import is_main
 from nimloth.training.sft.stage3.fsdp_checkpoint import (
     collect_fsdp_checkpoint, is_fsdp_agent, save_collected_backbone,
@@ -59,7 +58,6 @@ def is_trainable_checkpoint_dir(ckpt_dir: Path) -> bool:
         ckpt_dir / "wm_predictor" / "config.json",
         ckpt_dir / "wm_predictor" / "predictor.pt",
         ckpt_dir / "value_head" / "value_head.pt",
-        ckpt_dir / "history_cache_rank_000.pt",
     )
     ready = all(path.is_file() for path in required) and (
         (ckpt_dir / "config.json").is_file()
@@ -75,7 +73,7 @@ def find_resume_checkpoint(output_dir: Path) -> Path | None:
         ckpt_dir = output_dir / name
         if is_trainable_checkpoint_dir(ckpt_dir):
             candidates.append((read_checkpoint_step(ckpt_dir), ckpt_dir))
-    for epoch_dir in sorted([*output_dir.glob("epoch_*"), *output_dir.glob("stop_step_*")]):
+    for epoch_dir in sorted([*output_dir.glob("epoch_*"), *output_dir.glob("stop_step_*"), *output_dir.glob("step_*")]):
         if is_trainable_checkpoint_dir(epoch_dir):
             candidates.append((read_checkpoint_step(epoch_dir), epoch_dir))
     if not candidates:
@@ -245,7 +243,6 @@ class SFT2CheckpointRuntime:
     """统一 checkpoint 的触发、分布式同步和历史清理策略。"""
 
     manager: SFT2CheckpointManager
-    history_cache: OnlineHistoryStateCache
     rank: int
     device: torch.device
     interval_steps: int
@@ -362,7 +359,7 @@ class SFT2CheckpointRuntime:
     def _clone_epoch(self, name: str, identity: tuple[str, int, int, float]) -> None:
         """Publish immutable hardlinks; replace only aliases owned by this runtime.
 
-        All-rank history files already exist after _save's last barrier. Never
+        All model and optimizer files exist after _save's final barrier. Never
         write into a linked checkpoint: replacement exchanges whole directories.
         """
         self._barrier()
@@ -434,12 +431,6 @@ class SFT2CheckpointRuntime:
                 micro_step_in_epoch=micro_step_in_epoch,
             )
         self._barrier()
-        self.history_cache.save(
-            self.manager.output_dir
-            / name
-            / f"history_cache_rank_{self.rank:03d}.pt"
-        )
-        self._barrier()
 
     @staticmethod
     def _complete_step_checkpoint(path: Path) -> bool:
@@ -452,11 +443,7 @@ class SFT2CheckpointRuntime:
         if state.get("optimizer") is None or state.get("step") != int(path.name.removeprefix("step_")):
             return False
         invariants = state.get("training_invariants") or {}
-        world_size = invariants.get("world_size", 1)
-        if type(world_size) is not int or world_size < 1 or any(
-            not (path / f"history_cache_rank_{rank:03d}.pt").is_file()
-            for rank in range(world_size)
-        ):
+        if invariants.get("training_unit") != "complete_trajectory_v1":
             return False
         if state.get("query_tune") == "selected_rows" and not (path / "selected_token_rows.pt").is_file():
             return False

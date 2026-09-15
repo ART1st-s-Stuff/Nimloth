@@ -151,18 +151,19 @@ def test_factory_fsdp_validation_uses_zero_weight_equal_padding(monkeypatch, str
                 prefix_messages=[], prefix_image_paths=[], action_index=0,
                 current_image_path="a", next_image_path="b",
                 next_prefix_messages=[], next_prefix_image_paths=[])
-               for i, length in enumerate([5, 7]) for j in range(length)]
+               for i, length in enumerate([5, 7, 6]) for j in range(length)]
     monkeypatch.setattr("nimloth.training.sft.stage3.data.factory._load_transition_samples",
                         lambda config: (samples, samples))
     config = SimpleNamespace(preprocess_cache_dir=None, dataloader_workers=0,
         batch_mode="trajectory_online_cache", prediction_horizon=4,
         batch_size=1, history_size=1, seed=42, distributed_strategy=strategy)
-    builder = SimpleNamespace(collate_transition_samples=lambda x: x)
+    builder = SimpleNamespace(input_builder=SimpleNamespace())
     bundles = [build_data_bundle(config, builder, rank=rank, world_size=2) for rank in range(2)]
     samplers = [bundle.val_batch_sampler for bundle in bundles]
-    assert all(s.pad_to_equal_batches == (strategy == "fsdp") for s in samplers)
-    if strategy == "fsdp":
-        assert len(samplers[0]) == len(samplers[1])
-        weights = [batch[0].loss_weight for sampler in samplers for batch in sampler]
-        assert sum(weights) == 6  # two plus four real windows; remaining forwards are padding
-        assert 0.0 in weights
+    assert all(s.pad_to_equal_batches for s in samplers)
+    assert len(samplers[0]) == len(samplers[1]) == 2
+    indices = [item for sampler in samplers for batch in sampler for item in batch]
+    assert sum(item.loss_weight for item in indices) == 3
+    assert sum(s.current_steps_per_batch[i] for s in samplers for i in range(len(s))) == 9
+    assert sum(item.loss_weight == 0 for item in indices) == 1
+    assert sorted(item.index for item in indices if item.loss_weight) == [0, 1, 2]

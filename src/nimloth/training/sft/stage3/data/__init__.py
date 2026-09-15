@@ -1,8 +1,5 @@
-"""SFT2 datasets, cache adapters, and distributed samplers."""
+"""Trajectory-native Stage3 data loading."""
+from .samplers import TrajectoryBatchSampler
+from .trajectory import TrajectoryDataset, TrajectoryCollator
 
-from nimloth.training.sft.stage3.data.samplers import (
-    FutureRolloutBatchSampler,
-    OnlineHistoryBatchSampler,
-)
-
-__all__ = ["FutureRolloutBatchSampler", "OnlineHistoryBatchSampler"]
+__all__ = ["TrajectoryBatchSampler", "TrajectoryDataset", "TrajectoryCollator"]

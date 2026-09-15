@@ -31,7 +31,7 @@ REQUIRED = [
 
 
 def test_yaml_defaults_apply_after_argument_registration() -> None:
-    args = parse_sft2_args(["--config", str(K8_CONFIG), *REQUIRED])
+    args = parse_sft2_args(["--config", str(K8_CONFIG), *REQUIRED, "--history-size", "1"])
 
     assert args.config == K8_CONFIG
     assert args.latent_token_count == 8
@@ -46,7 +46,7 @@ def test_yaml_defaults_apply_after_argument_registration() -> None:
     assert args.grad_accum == 4
     assert args.max_length == 12000
     assert args.max_pixels == 100352
-    assert args.history_size == 4
+    assert args.history_size == 1
     assert not hasattr(args, "backbone_rows_per_forward")
     assert not hasattr(args, "offload_backbone_chunk_activations")
     assert not hasattr(args, "preprocess_cache_format")
@@ -56,7 +56,7 @@ def test_yaml_defaults_apply_after_argument_registration() -> None:
 
 
 def test_k1_control_uses_b1_ga8_for_global_sigreg_batch() -> None:
-    args = parse_sft2_args(["--config", str(K1_CONTROL_CONFIG), *REQUIRED])
+    args = parse_sft2_args(["--config", str(K1_CONTROL_CONFIG), *REQUIRED, "--history-size", "1"])
 
     assert args.latent_token_count == 1
     assert args.latent_query_mode == "inject"
@@ -65,7 +65,7 @@ def test_k1_control_uses_b1_ga8_for_global_sigreg_batch() -> None:
     assert args.batch_size == 1
     assert args.grad_accum == 8
     assert args.max_pixels == 100352
-    assert args.history_size == 4
+    assert args.history_size == 1
     assert args.batch_mode == "trajectory_online_cache"
     assert not hasattr(args, "backbone_rows_per_forward")
     assert not hasattr(args, "offload_backbone_chunk_activations")
@@ -78,6 +78,8 @@ def test_cli_values_override_yaml_defaults() -> None:
             "--config",
             str(K8_CONFIG),
             *REQUIRED,
+            "--history-size",
+            "1",
             "--latent-token-count",
             "3",
             "--latent-query-mode",
@@ -97,7 +99,7 @@ def test_cli_values_override_yaml_defaults() -> None:
 
 
 def test_dino_grid_config_has_no_retired_wm_ema_or_decoder_options() -> None:
-    args = parse_sft2_args(["--config", str(DINO_GRID_CONFIG), *REQUIRED])
+    args = parse_sft2_args(["--config", str(DINO_GRID_CONFIG), *REQUIRED, "--history-size", "1"])
 
     assert args.objective == "dino_grid"
     assert args.latent_token_count == 16
@@ -158,3 +160,10 @@ def test_sft2_config_rejects_retired_grid_ema_and_decoder_fields() -> None:
         match="unknown SFT2 config field: grid.ema_decay",
     ):
         flatten_sft2_yaml_config({"grid": {"ema_decay": 0.99}})
+
+
+@pytest.mark.parametrize("config", [K8_CONFIG, K1_CONTROL_CONFIG, DINO_GRID_CONFIG])
+def test_historical_h4_configs_require_explicit_native_override(config):
+    with pytest.raises(SystemExit) as error:
+        parse_sft2_args(["--config", str(config), *REQUIRED])
+    assert error.value.code == 2

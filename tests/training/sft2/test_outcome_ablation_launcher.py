@@ -100,8 +100,7 @@ def test_resolved_launch_contract_matches_reviewed_configuration(tmp_path):
 
 def make_intermediate(path):
     path.mkdir(parents=True)
-    names = ['training_state.pt','state_proj.pt','outcome_head.pt','wm_predictor/predictor.pt','value_head/value_head.pt',
-             *[f'history_cache_rank_{i:03d}.pt' for i in range(8)]]
+    names = ['training_state.pt','state_proj.pt','outcome_head.pt','wm_predictor/predictor.pt','value_head/value_head.pt']
     for name in names:
         target = path/name
         target.parent.mkdir(exist_ok=True)
@@ -116,17 +115,17 @@ def test_cleanup_preserves_audit_and_refuses_final_or_incomplete(tmp_path, monke
     checkpoint = config.run_root/'control_canary'/'stop_step_000001'
     make_intermediate(checkpoint)
     (checkpoint/'STOPPED').write_text(json.dumps(dict(step=1,epoch_complete=False)))
-    monkeypatch.setattr(launcher,'checkpoint_metadata',lambda *_: dict(step=1,epoch_complete=False,has_optimizer=True,training_invariants={'dataset':'owned'}))
-    launcher.cleanup_checkpoint(config,checkpoint,controller,expected_step=1,final_step=2,expected_invariants={'dataset':'owned'})
+    monkeypatch.setattr(launcher,'checkpoint_metadata',lambda *_: dict(step=1,epoch_complete=False,has_optimizer=True,training_invariants={'dataset':'owned', 'training_unit':'complete_trajectory_v1'}))
+    launcher.cleanup_checkpoint(config,checkpoint,controller,expected_step=1,final_step=2,expected_invariants={'dataset':'owned', 'training_unit':'complete_trajectory_v1'})
     assert not checkpoint.exists()
     audit = json.loads((controller/'control_canary_stop_step_000001_cleanup.json').read_text())
-    assert len(audit['files']) == 14
+    assert len(audit['files']) == 6
     with pytest.raises(RuntimeError, match='only intermediate'):
-        launcher.cleanup_checkpoint(config,config.run_root/'control'/'epoch_001',controller,expected_step=1,final_step=2,expected_invariants={'dataset':'owned'})
+        launcher.cleanup_checkpoint(config,config.run_root/'control'/'epoch_001',controller,expected_step=1,final_step=2,expected_invariants={'dataset':'owned', 'training_unit':'complete_trajectory_v1'})
     incomplete = config.run_root/'control'/'step_000001'
     incomplete.mkdir(parents=True)
     with pytest.raises(RuntimeError, match='incomplete'):
-        launcher.cleanup_checkpoint(config,incomplete,controller,expected_step=1,final_step=2,expected_invariants={'dataset':'owned'})
+        launcher.cleanup_checkpoint(config,incomplete,controller,expected_step=1,final_step=2,expected_invariants={'dataset':'owned', 'training_unit':'complete_trajectory_v1'})
     assert incomplete.exists()
 
 
@@ -136,16 +135,16 @@ def test_cleanup_rejects_foreign_identity_and_symlink(tmp_path, monkeypatch):
     controller.mkdir(parents=True)
     checkpoint = config.run_root/'control'/'step_000010'
     make_intermediate(checkpoint)
-    monkeypatch.setattr(launcher,'checkpoint_metadata',lambda *_: dict(step=10,epoch_complete=False,has_optimizer=True,training_invariants={'dataset':'foreign'}))
+    monkeypatch.setattr(launcher,'checkpoint_metadata',lambda *_: dict(step=10,epoch_complete=False,has_optimizer=True,training_invariants={'dataset':'foreign', 'training_unit':'complete_trajectory_v1'}))
     with pytest.raises(RuntimeError,match='foreign'):
-        launcher.cleanup_checkpoint(config,checkpoint,controller,expected_step=10,final_step=20,expected_invariants={'dataset':'owned'})
+        launcher.cleanup_checkpoint(config,checkpoint,controller,expected_step=10,final_step=20,expected_invariants={'dataset':'owned', 'training_unit':'complete_trajectory_v1'})
     assert checkpoint.exists()
     (checkpoint/'link').symlink_to(tmp_path)
     with pytest.raises(RuntimeError,match='symlink'):
-        launcher.cleanup_checkpoint(config,checkpoint,controller,expected_step=10,final_step=20,expected_invariants={'dataset':'owned'})
+        launcher.cleanup_checkpoint(config,checkpoint,controller,expected_step=10,final_step=20,expected_invariants={'dataset':'owned', 'training_unit':'complete_trajectory_v1'})
 
 
-@pytest.mark.parametrize('mutation', ['missing_metric', 'nonfinite', 'wrong_step', 'missing_rows', None])
+@pytest.mark.parametrize('mutation', ['missing_metric', 'nonfinite', 'wrong_step', 'missing_rows', 'legacy_unit', None])
 def test_verify_canary_checks_metrics_and_recovery_identity(tmp_path, monkeypatch, mutation):
     import json
     config = args(tmp_path)
@@ -160,7 +159,8 @@ def test_verify_canary_checks_metrics_and_recovery_identity(tmp_path, monkeypatc
         values['wm_mse'] = 'nan'
     (checkpoint.parent/'train_step_log.csv').write_text(','.join(values)+'\n'+','.join(values.values())+'\n')
     monkeypatch.setattr(launcher, 'checkpoint_metadata', lambda *_: dict(
-        step=2 if mutation == 'wrong_step' else 1, epoch=1, epoch_complete=False, has_optimizer=True))
+        step=2 if mutation == 'wrong_step' else 1, epoch=1, epoch_complete=False, has_optimizer=True,
+        training_invariants={'training_unit': 'window_v1' if mutation == 'legacy_unit' else 'complete_trajectory_v1'}))
     if mutation == 'missing_rows':
         (checkpoint/'selected_token_rows.pt').unlink()
     if mutation is None:
@@ -204,134 +204,64 @@ def test_failed_process_marks_only_current_phase_failed(tmp_path, monkeypatch, f
     assert len(calls) == fail_phase
 
 
-def resume_fixture(tmp_path, monkeypatch):
-    import hashlib
-    import json
+
+def test_fresh_ab_phases_have_canary_reload_and_no_formal_resume(tmp_path):
     config = args(tmp_path)
-    config.step_timing_sample_interval = 10
-    old = tmp_path/'old'
-    config.resume_control_from = old/'control'/'step_000020'
-    for name in ('train', 'val'):
-        getattr(config, name).write_text(name)
-    make_intermediate(config.resume_control_from)
-    for name in ('selected_token_rows.pt', 'model.safetensors', 'vision_ema.pt'):
-        (config.resume_control_from/name).write_bytes(b'fixture')
-    old_config = SimpleNamespace(**vars(config))
-    old_config.run_root = old
-    old_config.resume_control_from = None
-    completed = [dict(arm=a, phase=p, status='complete', arm_consumed_seconds=100)
-                 for a in ('control', 'treatment') for p in ('canary', 'resume')]
-    completed.append(dict(arm='control', phase='formal', status='failed', started_at=950,
-                          argv=launcher.command(old_config, 'control', 'formal', 12345)))
-    record = dict(phases=completed, dataset_sha256={name: hashlib.sha256(getattr(config,name).read_bytes()).hexdigest()
-                                                  for name in ('train', 'val')})
-    (old/'controller').mkdir()
-    (old/'controller/progress.json').write_text(json.dumps(record))
-    monkeypatch.setattr(launcher.time, 'time', lambda: 1000)
-    monkeypatch.setattr(launcher, 'checkpoint_metadata', lambda *_: dict(
-        epoch=1, epoch_complete=False, step=20, micro_step_in_epoch=160,
-        has_optimizer=True, training_invariants={'lambda_outcome': 0}))
-    return config, record
+    assert launcher.phases(config) == [
+        ('control', 'canary'), ('control', 'resume'),
+        ('treatment', 'canary'), ('treatment', 'resume'),
+        ('control', 'formal'), ('treatment', 'formal'),
+    ]
+    for arm in ('control', 'treatment'):
+        formal = launcher.command(config, arm, 'formal', 29501)
+        assert '--resume' not in formal and '--resume-from' not in formal
+        assert formal[formal.index('--model') + 1] == str(config.model)
+        assert '--trajectory-shared-forward' not in formal
 
 
-def test_control_resume_preserves_budget_and_treatment_initialization(tmp_path, monkeypatch):
-    config, _ = resume_fixture(tmp_path, monkeypatch)
-    result = launcher.validate_control_resume(config)
-    assert result['consumed_seconds'] == {'control': 150, 'treatment': 100}
-    assert launcher.phases(config) == [('control', 'formal'), ('treatment', 'formal')]
-    control = launcher.command(config, 'control', 'formal', 29501)
-    treatment = launcher.command(config, 'treatment', 'formal', 29502)
-    assert '--resume' in control and '--resume' not in treatment
-    assert control[control.index('--resume-from')+1] == str(config.resume_control_from)
-    assert control[control.index('--step-timing-sample-interval')+1] == '10'
-    canary = launcher.command(config, 'control', 'canary', 29503)
-    assert canary[canary.index('--step-timing-sample-interval')+1] == '1'
-
-
-@pytest.mark.parametrize('mutation', ['gate', 'treatment', 'dataset', 'lr', 'history', 'weights', 'missing_ema', 'budget'])
-def test_control_resume_rejects_unmatched_or_incomplete_source(tmp_path, monkeypatch, mutation):
-    import json
-    config, record = resume_fixture(tmp_path, monkeypatch)
-    if mutation == 'gate':
-        record['phases'][0]['status'] = 'failed'
-    elif mutation == 'treatment':
-        record['phases'].append(dict(arm='treatment', phase='formal', status='running'))
-    elif mutation == 'dataset':
-        config.train.write_text('changed')
-    elif mutation == 'lr':
-        argv = record['phases'][-1]['argv']
-        argv[argv.index('--query-lr')+1] = '0.5'
-    elif mutation == 'history':
-        (config.resume_control_from/'history_cache_rank_007.pt').unlink()
-    elif mutation == 'missing_ema':
-        (config.resume_control_from/'vision_ema.pt').unlink()
-    elif mutation == 'weights':
-        (config.resume_control_from/'model.safetensors').unlink()
-    else:
-        record['phases'][-1]['started_at'] = -100000
-    (config.resume_control_from.parent.parent/'controller/progress.json').write_text(json.dumps(record))
-    with pytest.raises((RuntimeError, TimeoutError)):
-        launcher.validate_control_resume(config)
-
-
-@pytest.mark.parametrize('mutation', [None, 'source_record', 'hash', 'budget', 'source_path'])
-def test_repeated_control_resume_validates_provenance_and_budget(tmp_path, monkeypatch, mutation):
-    import json
-    config, _ = resume_fixture(tmp_path, monkeypatch)
-    inherited = launcher.validate_control_resume(config)
-    old_source = config.resume_control_from
-    next_root = tmp_path/'next'
-    resumed_config = SimpleNamespace(**vars(config))
-    resumed_config.run_root = next_root
-    argv = launcher.command(resumed_config, 'control', 'formal', 29501)
-    checkpoint = next_root/'control'/'step_000020'
-    make_intermediate(checkpoint)
-    for name in ('selected_token_rows.pt', 'model.safetensors', 'vision_ema.pt'):
-        (checkpoint/name).write_bytes(b'fixture')
-    record = dict(dataset_sha256=inherited['original_progress']['dataset_sha256'],
-                  resume_control=inherited,
-                  phases=[dict(arm='control', phase='formal', status='failed', started_at=1010, argv=argv)])
-    if mutation == 'source_record':
-        inherited['original_progress']['phases'][0]['status'] = 'failed'
-    elif mutation == 'hash':
-        (old_source/'training_state.pt').write_bytes(b'changed')
-    elif mutation == 'budget':
-        inherited['consumed_seconds']['control'] = launcher.ARM_SECONDS
-    elif mutation == 'source_path':
-        inherited['source'] = str(checkpoint)
-    (next_root/'controller').mkdir()
-    (next_root/'controller/progress.json').write_text(json.dumps(record))
-    config.resume_control_from = checkpoint
-    monkeypatch.setattr(launcher.time, 'time', lambda: 1100)
-    if mutation is None:
-        result = launcher.validate_control_resume(config)
-        assert result['consumed_seconds'] == {'control': 250, 'treatment': 100}
-    else:
-        with pytest.raises((RuntimeError, TimeoutError)):
-            launcher.validate_control_resume(config)
-
-
-def test_block_layout_is_explicit_operational_override(tmp_path):
+def test_block_layout_override_preserves_all_other_training_arguments(tmp_path):
     config = args(tmp_path)
     original = launcher.command(config, 'control', 'formal', 29501)
     config.fsdp_wrap_granularity = 'block'
     updated = launcher.command(config, 'control', 'formal', 29501)
-    assert updated[updated.index('--fsdp-wrap-granularity') + 1] == 'block'
-    assert launcher.semantic_command(original) == launcher.semantic_command(updated)
-    # Only the wrapping layout may differ; loss/LR/source arguments remain bound.
-    changed = list(updated)
-    changed[changed.index('--lambda-outcome') + 1] = '1'
-    assert launcher.semantic_command(original) != launcher.semantic_command(changed)
+    index = updated.index('--fsdp-wrap-granularity') + 1
+    assert updated[index] == 'block'
+    updated[index] = original[index]
+    assert updated == original
 
 
-def test_trajectory_shared_forward_wired_to_both_arms_and_resume_comparison(tmp_path):
+def test_cpu_subprocess_timeout_stops_without_retry(tmp_path):
+    import subprocess
+    with pytest.raises(subprocess.TimeoutExpired):
+        launcher.run_process([sys.executable, '-c', 'import time; time.sleep(30)'],
+            cwd=tmp_path, environment={}, log_path=tmp_path/'timeout.log', timeout=0.1)
+
+
+def test_cleanup_rejects_legacy_unit_even_when_identity_matches(tmp_path, monkeypatch):
     config = args(tmp_path)
-    original = launcher.command(config, 'control', 'formal', 29501)
-    assert '--trajectory-shared-forward' not in original
-    config.trajectory_shared_forward = True
-    for arm in ('control', 'treatment'):
-        for phase in ('canary', 'resume', 'formal'):
-            command = launcher.command(config, arm, phase, 29501)
-            assert command.count('--trajectory-shared-forward') == 1
-    shared = launcher.command(config, 'control', 'formal', 29501)
-    assert launcher.semantic_command(shared) == launcher.semantic_command(original)
+    controller = config.run_root/'controller'
+    controller.mkdir(parents=True)
+    checkpoint = config.run_root/'control'/'step_000010'
+    make_intermediate(checkpoint)
+    invariants = {'dataset': 'owned', 'training_unit': 'window_v1'}
+    monkeypatch.setattr(launcher, 'checkpoint_metadata', lambda *_: dict(
+        step=10, epoch_complete=False, has_optimizer=True, training_invariants=invariants))
+    with pytest.raises(RuntimeError, match='trajectory'):
+        launcher.cleanup_checkpoint(config, checkpoint, controller,
+            expected_step=10, final_step=20, expected_invariants=invariants)
+    assert checkpoint.exists()
+
+
+@pytest.mark.parametrize('retired', [
+    ['--resume-control-from', '/tmp/old-window-checkpoint'],
+    ['--trajectory-shared-forward'],
+])
+def test_retired_window_launcher_flags_are_rejected(tmp_path, retired):
+    config = args(tmp_path)
+    argv = []
+    for key in ('python', 'worktree', 'model', 'train', 'val', 'preprocess', 'dino', 'run_root'):
+        argv += ['--' + key.replace('_', '-'), str(getattr(config, key))]
+    with pytest.raises(SystemExit) as error:
+        launcher.main(argv + ['--commit', 'deadbeef'] + retired)
+    assert error.value.code == 2
+    assert not config.run_root.exists()

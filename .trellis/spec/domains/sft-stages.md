@@ -15,7 +15,7 @@ Qwen 多模态编码必须保留完整 prefix。先按 image grids 展开图像�
 
 仅重建文本缓存时，可显式复用完成且通过身份校验的图像分片。必须核验预处理器、像素参数、dtype、有序图像来源及 grid/像素布局；新目录只链接图像分片，重新生成全部文本与标签，并保留复用审计。不得以图像可复用为由接受旧 CE 缓存版本，也不得修改源分片。
 
-新stage2不是历史`sft2`。旧`training.sft1`、`training.sft2` Python 包已移除，活动调用使用`training.sft.stage1`或`stage3`。历史checkpoint字段仍指WM/value阶段；不改写已保存的历史产物。stage3迁移保持旧目标、类型与恢复协议。
+新stage2不是历史`sft2`。旧`training.sft1`、`training.sft2` Python 包已移除，活动调用使用`training.sft.stage1`或`stage3`。历史checkpoint字段仍指WM/value阶段；不改写已保存的历史产物。历史目标字段仍保持原阶段含义；新的整轨迹更新使用独立训练身份，不接受旧窗口优化器续训。
 
 stage2需要同观测的真实回答/CoT、完整有序的query slots和冻结DINO grid；projector输出形状必须精确匹配teacher目标。空间grid、teacher身份和projector参数随checkpoint保存，供stage3校验读取。
 
@@ -36,10 +36,10 @@ stage2需要同观测的真实回答/CoT、完整有序的query slots和冻结DI
 
 ## 7. 错误与正确
 错误：因目录从sft2迁到stage3，重写WM目标、改变Q评分时刻或把旧checkpoint标为query。
-正确：保留stage3旧计算和恢复语义，用明确的新stage2实现Query对齐，通过版本/阶段字段验证交界。
+正确：保留WM目标时刻及阶段含义；对新的轨迹更新显式版本化，拒绝混用旧优化器恢复状态。
 
 ## 模块边界补充
-`stage3.algorithm`拥有损失和反传顺序，`stage3.sigreg`拥有跨rank有效状态汇聚及同步随机投影，提取时不改变collective顺序或梯度。canary、动作头专项修复、packed/KV原型及依赖它们的特征审计归`experiments/training/sft/diagnosis`，不得由生产训练导入。Python旧路径不再兼容；保存的tensor/state_dict、目标标识及恢复语义保持不变。
+`stage3.algorithm`拥有损失和反传顺序，`stage3.sigreg`拥有跨rank有效状态汇聚及同步随机投影，提取时不改变collective顺序或梯度。canary、动作头专项修复、packed/KV原型及依赖它们的特征审计归`experiments/training/sft/diagnosis`，不得由生产训练导入。Python旧路径不再兼容；保存的模型tensor/state_dict与目标标识保持阶段含义，训练采样和恢复身份须显式版本化。
 
 `stage1.cli.parse_args(argv=None, *, stage="format")`负责入口参数校验；`stage1.checkpoint`负责保存及恢复阶段校验；`stage1.trainer`负责模型构建与训练生命周期，不再动态转发数据模块中的任意属性。数据调用者直接依赖`stage1.data`。
 
@@ -76,8 +76,8 @@ Outcome head 复用预测 grid，同一 WM 前向产生 logit；普通 BCE 按�
 
 ### 必测合同
 覆盖转换不改原数据、gamma/done/回报一致、后继outcome对齐、padding全局归约、
-控制组等价、选行冻结及两步优化保存恢复。训练LM与独立SIGReg反传的head参与范围不同；
-static DDP须有真实多rank交替反传测试，CPU测试不放行未经验证的Qwen/FA2八卡训练。
+控制组等价、选行冻结及两步优化保存恢复。LM、WM和SIGReg共用在线图并联合反传；
+static DDP须有真实多rank联合反传测试，CPU测试不放行未经验证的Qwen/FA2八卡训练。
 
 ## Stage3 full-shard execution and original VAGEN key partition
 
@@ -114,7 +114,7 @@ errors still propagate. Collected checkpoint tensors must all be CPU, including 
 not covered by FSDP's automatic offload.
 For weighted Stage3 LM windows, one FSDP-owned head invocation jointly checkpoints projection
 and CE in chunks of 128 positions whose next-token label is not `-100`. Keep the full vocabulary,
-per-window token mean, binary row weights and complete query hidden states. Its private scalar
+per-window token mean, binary row weights and complete query hidden states. Its private per-window loss
 head result keeps backward unsharding ahead of recomputation; read current parameter views.
 Zero-weight rows skip answer-token projection and CE, but retain a differentiable single-token head path when all rows have zero weight. Preserve one FSDP-owned head invocation on every rank and explicit zero gradients for trainable head/selected rows. Validate labels for excluded rows too; do not silently accept an empty answer. Validate the mathematical objective against
 dense FP32 gradients and validate checkpoint/FSDP behavior against independent chunk references;
@@ -123,7 +123,7 @@ truncate labels, sample vocabulary or use per-rank varying head-call counts.
 
 ### Validation and errors
 Stage3 `train.activation_offload` defaults to false, including the joint outcome experiment.
-Wrap primary and SIGReg forwards in `torch.autograd.graph.save_on_cpu(pin_memory=True)`
+Wrap the joint online forward in `torch.autograd.graph.save_on_cpu(pin_memory=True)`
 when enabled. Saved tensor copies retain their values and dtypes; live parameters, optimizer,
 backward computation and reduction remain on their original devices. Record enabled state in
 resume invariants. Verify CUDA FSDP gradients against the same path without offload; CPU
@@ -151,7 +151,7 @@ a checkpoint has never seen examples merely because its continuation split was c
 
 ### Required tests
 Check equal-rank zero padding, selected rows and dense export roundtrip, mixed sharded/replicated
-optimizer state, EMA swap/restore/save/load, clipping and separate SIGReg backward. CPU and
+optimizer state, EMA swap/restore/save/load, clipping and joint supervised/SIGReg backward. CPU and
 synthetic process-group tests do not replace real multi-rank Qwen GPU save/resume validation.
 Use a real tiny Qwen to check full-mode dense gradients, selected-row masks, ownership layouts
 and trainable counts. Check that training cycles are released before cleanup and that failures
@@ -171,31 +171,44 @@ Correct: collective gathering with explicit complete export and synchronized wra
 - Tests: count synchronization calls across accumulated microbatches, check unsampled silence, mean denominators, defaults and CLI/config validation.
 - Wrong versus correct: sampled phase means are not end-to-end throughput. Measure wall time over matched batches separately and account for save/evaluation stalls. Equal effective batch alone does not preserve nonlinear SIGReg microbatch statistics or sampler/resume identity.
 
-### Trajectory-shared Stage3 encoding
+## Trajectory-native Stage3 training
 
-- Scope: opt-in `--trajectory-shared-forward` / `train.trajectory_shared_forward`
-  for H=1, multi-step WM supervision. Default remains the window encoder.
-- Interface: the Qwen backbone accepts explicit ordered query positions
-  `[N,K,2]` (input row, token position) and virtual LM window labels/source rows.
-  It returns all requested states and one CE mean per window from one head call.
-- Contract: merge only exact nested causal prefixes within the original optimizer
-  accumulation group; preserve images, positions, true CoT, sampler order,
-  successful-window LM means, masks and distributed denominators. Target encoding
-  is separately eval/no-grad with EMA, completed before the live online graph.
-  Accumulate original window/SIGReg gradients on detached leaves, then propagate
-  their sum through the shared online graph once. SIGReg retains original global
-  microbatch grouping, RNG seed and stop-gradient on current state. No learned
-  state may survive an optimizer/EMA update. WM continues predicted-state rollout.
-- Validation errors: reject incompatible prefix/image/position input, invalid
-  query positions, nonzero stochastic encoder/projector dropout, unsupported
-  history/horizon, and malformed virtual LM mappings; no approximate fallback.
-- Cases: ordinary overlap shares a trajectory; a group crossing a trajectory
-  boundary batches separate trajectories; failed/padded windows retain connected
-  zero LM gradients without creating supervised token loss.
-- Tests: causal prefix states/CE and future perturbation; original-versus-shared
-  parameter gradients and loss normalization; asymmetric distributed masks,
-  FSDP backward and canonical checkpoint resume; production memory/throughput.
-- Wrong: replace EMA targets with detached online states, average all answer
-  tokens together, or regroup SIGReg merely because effective batch is unchanged.
-  Correct: share encoder computation while retaining each original objective and
-  optimizer boundary. Fewer forwards alone are not measured speed evidence.
+- Scope: complete trajectories are the sole Stage3 data/encoding unit, with H=1.
+  `--batch-size` counts trajectories per rank/microbatch; `--grad-accum` combines
+  complete microbatches. A trajectory never crosses an optimizer update boundary.
+- Interface: `Stage3TrajectoryBatch` contains full transcripts, ordered query
+  positions `[N,K,2]`, original per-window LM labels, trajectory/state/window
+  offsets and current/successor/action/return/outcome/DINO indices.
+- Contract: every eligible T-step start contributes one window. Short trajectories
+  without such windows are counted and excluded. Successful-window LM means and
+  WM/value/DINO/outcome denominators retain their distinct global counts.
+  Encode targets first with EMA/eval/no-grad, then online states once. Predict all
+  windows from their current state using predicted-state recursion. Aggregate
+  differentiable losses and perform ordinary backward; no detached leaf/VJP bridge,
+  no window-prefix reconstruction and no cross-update online history cache.
+- SIGReg: include all real adjacent transitions of each eligible trajectory once,
+  keyed by trajectory/time, irrespective of overlapping WM windows. Exclude
+  distributed padding. Gather valid pairs across ranks for each microbatch;
+  current states are detached and successor states remain differentiable.
+  Preserve the existing formula and synchronized projections. Average microbatch
+  regularizers over the actual accumulation-group length (including tails), not
+  window counts. Transition weighting is intentional; longer trajectories
+  contribute more unique transitions. This is a new statistical grouping, not
+  numerical equivalence to the old window batches. Test unequal rank lengths,
+  zero-valid ranks, no duplicate overlap, and gradient recipients.
+- Evaluation: use the same trajectory/window path; online policy uses current
+  weights in eval mode, target branch uses EMA. Identity is
+  `online_policy_eval_target_visual_ema_v1`; old EMA-online metrics are not treated
+  as identical. Exports retain every valid window/horizon row and exclude padding.
+- Validation: reject noncontiguous trajectories, wrong query/image/label mapping,
+  H!=1 and incomplete targets. Resume requires
+  `training_unit=complete_trajectory_v1`, trajectory batch units and matching
+  sampling/RNG/objective metadata before optimizer restoration. Legacy window
+  optimizer checkpoints and missing native identity are rejected.
+- Cases/tests: unequal trajectory lengths, globally padded ranks, no-success LM,
+  zero-label outcome, complete window coverage, true terminal CoT, causal queries,
+  direct gradient recipients, mixed FSDP/DDP and native checkpoint round trip.
+- Wrong: retain both old window and native pipelines, carry learned states between
+  updates, silently reinterpret batch units or reuse old optimizer histories.
+  Correct: one trajectory path for train/eval, explicit masks/counts and a new
+  training identity. Sharing representation does not remove WM supervision.

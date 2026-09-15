@@ -37,7 +37,7 @@ from nimloth.training.sft.stage3.checkpoint import (
     load_world_model_checkpoint,
     resolve_resume_checkpoint_dir,
 )
-from nimloth.training.sft.stage3.batch import SFT2BatchAssembler
+from nimloth.training.sft.stage3.batch import Stage3BatchAssembler
 from nimloth.training.sft.stage3.cli import parse_sft2_args
 from nimloth.training.sft.stage3.data.factory import build_data_bundle
 from nimloth.training.sft.stage3.dino_grid import DINOGridBatchAssembler
@@ -51,7 +51,6 @@ from nimloth.training.sft.stage3.loop import (
     SFT2TrainingLoop,
     load_sft2_loop_state,
 )
-from nimloth.training.sft.stage3.history_cache import OnlineHistoryStateCache
 from nimloth.training.sft.stage3.runtime import (
     SFT2ModelRuntime,
     SFT2OptimizationRuntime,
@@ -505,7 +504,8 @@ def _train_sft2_impl(args=None) -> int:
                     "batch_mode": args.batch_mode,
                     "history_size": args.history_size,
                     "prediction_horizon": args.prediction_horizon,
-                    "history_state_cache": "online_detached_state_v1",
+                    "training_unit": "complete_trajectory_v1",
+                    "batch_unit": "trajectory",
                     "latent_token_count": args.latent_token_count,
                     "latent_query_mode": args.latent_query_mode,
                     "query_tune": args.query_tune,
@@ -566,10 +566,9 @@ def _train_sft2_impl(args=None) -> int:
         latent_token_count=args.latent_token_count,
         mask_latent_query_labels=args.mask_latent_query_labels,
     )
-    base_batch_builder = SFT2BatchAssembler(
+    base_batch_builder = Stage3BatchAssembler(
         input_builder=input_builder,
         device=world_model_device,
-        history_size=args.history_size,
         prediction_horizon=args.prediction_horizon,
     )
     if args.objective == "dino_grid":
@@ -586,17 +585,8 @@ def _train_sft2_impl(args=None) -> int:
     else:
         args.dino_cache_fingerprint = None
         batch_builder = base_batch_builder
-    history_cache = OnlineHistoryStateCache()
-    if resume_ckpt_dir is not None:
-        history_cache_path = resume_ckpt_dir / f"history_cache_rank_{rank:03d}.pt"
-        if not history_cache_path.is_file():
-            raise FileNotFoundError(
-                f"resume checkpoint is missing rank history cache: {history_cache_path}"
-            )
-        history_cache.load(history_cache_path)
     model_runtime = SFT2ModelRuntime(
         agent=agent,
-        history_cache=history_cache,
         backbone_ema=vision_ema,
     )
     optimizer = _build_optimizer(
@@ -634,7 +624,7 @@ def _train_sft2_impl(args=None) -> int:
     train_loader = data.train_loader
     val_loader = data.val_loader
     train_batch_sampler = data.train_batch_sampler
-    local_batch_histogram = Counter(train_batch_sampler.current_steps_per_batch)
+    local_batch_histogram = Counter(train_batch_sampler.trajectories_per_batch)
     batch_histograms: list[dict[int, int] | None] = [None] * world
     if torch.distributed.is_available() and torch.distributed.is_initialized():
         torch.distributed.all_gather_object(
@@ -647,22 +637,23 @@ def _train_sft2_impl(args=None) -> int:
     for histogram in batch_histograms:
         if histogram is not None:
             global_batch_histogram.update(histogram)
-    owned_current_steps = sum(
+    owned_trajectories = sum(
         batch_size * count
         for batch_size, count in global_batch_histogram.items()
     )
-    if owned_current_steps != train_batch_sampler.window_count:
+    if owned_trajectories != train_batch_sampler.trajectory_count:
         raise RuntimeError(
-            "online history sampler current-step ownership mismatch: "
-            f"expected={train_batch_sampler.window_count}, actual={owned_current_steps}"
+            "complete trajectory sampler ownership mismatch: "
+            f"expected={train_batch_sampler.trajectory_count}, actual={owned_trajectories}"
         )
     if is_main():
         print(
             json.dumps(
                 {
-                    "sft2_step_ownership": "current_step_once_v2_online_cache",
+                    "stage3_sample_ownership": "trajectory_windows_once_v1",
+                    "train_trajectories": train_batch_sampler.trajectory_count,
                     "train_current_steps": train_batch_sampler.window_count,
-                    "actual_current_steps_per_microbatch": dict(
+                    "actual_trajectories_per_microbatch": dict(
                         sorted(global_batch_histogram.items())
                     ),
                 }
@@ -704,15 +695,17 @@ def _train_sft2_impl(args=None) -> int:
         "query_tune": args.query_tune,
         "history_size": int(args.history_size),
         "prediction_horizon": int(args.prediction_horizon),
-        "history_state_cache": "online_detached_state_v1",
-        "sigreg_batch_scope": "global_valid_states_v1",
-        "sample_ownership_version": "current_step_once_v2_online_cache",
+        "training_unit": "complete_trajectory_v1",
+        "batch_unit": "trajectory",
+        "sigreg_batch_scope": "global_unique_trajectory_transitions_v1",
+        "sample_ownership_version": "trajectory_windows_once_v1",
         "value_objective": SFT2_VALUE_OBJECTIVE,
         "lm_supervision": "successful_trajectory_window_mean_v1",
         "loss_normalization": "global_optimizer_group_counts_v1",
         "train_micro_batches": int(len(train_loader)),
-        "rng_schedule_version": "epoch_micro_rank_v1",
+        "rng_schedule_version": "trajectory_micro_rank_v1",
         "training_mode_contract": "online_train_teacher_eval_v1",
+        "evaluation_state_contract": "online_policy_eval_target_visual_ema_v1",
     }
     if getattr(args, "activation_offload", False):
         checkpoint_invariants["activation_offload"] = True
@@ -766,7 +759,6 @@ def _train_sft2_impl(args=None) -> int:
     )
     checkpoint_runtime = SFT2CheckpointRuntime(
         manager=checkpoint_manager,
-        history_cache=history_cache,
         rank=rank,
         device=device,
         interval_steps=int(args.checkpoint_interval_steps or 0),
@@ -798,7 +790,7 @@ def _train_sft2_impl(args=None) -> int:
             "context_length",
             "prediction_horizon",
             "current_batch_size",
-            "history_cache_entries",
+            "trajectory_batch_size",
             "val_wm_mse",
         ),
     )
@@ -851,6 +843,7 @@ def _train_sft2_impl(args=None) -> int:
             "initial_checkpoint": str(args.model), "initial_config_sha256": file_sha256(Path(args.model) / "config.json"),
             "initial_training_state_sha256": file_sha256(Path(args.model) / "training_state.pt"),
             "seed": args.seed, "run_output": str(args.output_dir),
+            "evaluation_state_contract": "online_policy_eval_target_visual_ema_v1",
             "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         }
     training_loop = SFT2TrainingLoop(

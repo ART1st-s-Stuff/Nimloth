@@ -67,7 +67,7 @@ def test_evaluate_uses_evaluation_step_and_batch_builder() -> None:
 def test_evaluate_lm_uses_only_successful_windows(counts, expected):
     class Algorithm:
         def evaluation_step(self, runtime, batch):
-            return SimpleNamespace(metrics={"lm_ce": batch[0], "wm_mse": 1.0}, sample_count=3)
+            return SimpleNamespace(metrics={"lm_ce": batch.value, "wm_mse": 1.0}, sample_count=3)
 
     class Runtime:
         agent = SimpleNamespace(trainable_modules=())
@@ -81,10 +81,7 @@ def test_evaluate_lm_uses_only_successful_windows(counts, expected):
 
     class Builder:
         def prepare(self, batch):
-            return batch
-
-        def supervision_counts(self, batch):
-            return 3, batch[1]
+            return SimpleNamespace(value=batch[0], lm_weights=torch.ones(batch[1]))
 
     result = evaluate(Algorithm(), Runtime(), list(zip([2., 4., 0.], counts)), batch_builder=Builder())
     if expected is None:
@@ -129,7 +126,7 @@ def test_epoch_sets_online_training_before_any_batch_or_forward():
     from nimloth.training.sft.stage3.runtime import SFT2ModelRuntime
     online = torch.nn.Sequential(torch.nn.Linear(2, 2)).eval()
     teacher = torch.nn.Linear(2, 2).eval()
-    runtime = SFT2ModelRuntime(agent=SimpleNamespace(trainable_modules=(online,)), history_cache=None)
+    runtime = SFT2ModelRuntime(agent=SimpleNamespace(trainable_modules=(online,)))
     loop = object.__new__(SFT2TrainingLoop)
     loop.model_runtime = runtime
     def first_sampler_operation(epoch):
@@ -140,3 +137,36 @@ def test_epoch_sets_online_training_before_any_batch_or_forward():
     loop._set_sampler_epoch = first_sampler_operation
     with pytest.raises(RuntimeError, match="reached sampler"):
         loop._run_epoch(1)
+
+
+def test_evaluate_total_uses_component_populations():
+    class Algorithm:
+        value_weight = 1.0
+        dino_grid_weight = 2.0
+        ce_weight = 3.0
+        outcome_weight = 4.0
+
+        def evaluation_step(self, runtime, batch):
+            return SimpleNamespace(sample_count=batch.windows, metrics={
+                "wm_mse": 1.0, "value_total": 2.0, "dino_grid_mse": 3.0,
+                "lm_ce": batch.lm, "outcome_bce": batch.outcome,
+                "total_loss": 9.0 + 3.0 * batch.lm + 4.0 * batch.outcome,
+            })
+
+    class Runtime:
+        agent = SimpleNamespace(trainable_modules=())
+
+        def unwrapped(self):
+            return self
+
+    batches = [
+        SimpleNamespace(windows=1, lm=2.0, outcome=1.0,
+                        lm_weights=torch.ones(1), outcome_mask=torch.ones(1, dtype=torch.bool)),
+        SimpleNamespace(windows=3, lm=0.0, outcome=3.0,
+                        lm_weights=torch.zeros(3), outcome_mask=torch.ones(3, dtype=torch.bool)),
+    ]
+    result = evaluate(Algorithm(), Runtime(), batches,
+                      batch_builder=SimpleNamespace(prepare=lambda item: item))
+    assert result["lm_ce"] == pytest.approx(2.0)
+    assert result["outcome_bce"] == pytest.approx(2.5)
+    assert result["total_loss"] == pytest.approx(25.0)

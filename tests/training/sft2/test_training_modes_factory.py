@@ -57,7 +57,7 @@ def test_pretrained_factory_training_and_target_modes_use_both_checkpoints(tmp_p
     agent = SimpleNamespace(backbone=backbone,
         wm=SimpleNamespace(state_proj=projector, project_state=projector),
         trainable_modules=(backbone, projector))
-    runtime = SFT2ModelRuntime(agent, history_cache=SimpleNamespace())
+    runtime = SFT2ModelRuntime(agent)
     batch = dict(input_ids=torch.tensor([[1, 31, 29, 29, 29, 29, 10, 2]]),
                  pixel_values=torch.randn(4, 24), image_grid_thw=torch.tensor([[1, 2, 2]]))
     # Prove enablement alone is ineffective after the actual from_pretrained call.

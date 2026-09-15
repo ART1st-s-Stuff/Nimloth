@@ -5,8 +5,9 @@ checkpoint 标识保留历史名称，避免目录迁移改变恢复及下游加
 这里的 SFT3 不等于新 SFT2 的 query/DINO 对齐阶段。
 
 训练入口为 `python -m nimloth.training.sft.stage3 --config <原 WM/value 配置>`，
-调用 `trainer.main()` / `train_sft2()`。继续使用 `nimloth.config.sft2` 的已验证配置。
-迁移未改变默认配置、模型结构、损失权重、优化器或 checkpoint schema。
+调用 `trainer.main()` / `train_sft2()`，配置类型仍为 `nimloth.config.sft2`。
+当前入口要求 H=1；历史 H4 配置不属于原生轨迹训练入口，加载时明确拒绝，不能直接复用旧命令。
+模型结构与损失系数沿用已有配置；当前训练单位改为完整轨迹，旧窗口模式的优化器状态不可续训。
 
 ## 阅读顺序
 
@@ -14,27 +15,22 @@ checkpoint 标识保留历史名称，避免目录迁移改变恢复及下游加
 2. `data/factory.py` 选择 sampler；`data/samplers.py` 定义真实轨迹的采样单位。
 3. `batch.py` 对齐起点、执行动作、完整 episode 的 MC return 和后继观测；
    `dino_grid.py` 装配冻结 teacher cache 的空间 target。
-4. `algorithm.py` 组织主损失及独立 SIGReg 的计算/反传顺序；`sigreg.py` 负责跨 rank 的有效样本汇聚、可微通信和同步随机投影；`runtime.py` 管理目标编码、反传和更新。
+4. `algorithm.py` 组织共享在线计算图上的联合损失与反传；`sigreg.py` 负责跨 rank 的有效样本汇聚、可微通信和同步随机投影；`runtime.py` 管理目标编码、反传和更新。
 5. `loop.py` 驱动 microbatch、恢复游标和验证；`reporting.py` 汇总指标；
-   `checkpoint.py` 保存模型、优化器、EMA 与各 rank 的历史缓存。
+   `checkpoint.py` 保存模型、优化器、EMA 与恢复游标。
 
-## 多步窗口与旧单步模式
+## 完整轨迹与多步窗口
 
-`prediction_horizon=T>1` 使用 `FutureRolloutBatchSampler`，要求 `history_size=1`。
-每个窗口含同一 episode 的 T 个连续执行动作及 T+1 个真实观测，只编码起点
-作为在线递推输入。`SFT2Algorithm._rollout_step` 调用 Agent 的真实多步前向：
-在动作前状态评分 outgoing Q，再预测后继状态。WM/DINO 对齐全部 T 个后继状态，
-value 对齐 T 个实际执行动作的 MC return；这些 return 在完整 episode 上计算，
-不在窗口尾截断。CE 只来自窗口起点。采样采用固定长度滑窗，短于 T 的片段不产生
-窗口，不补造后继状态，也不跨越 episode 或缺失后继观测的位置。
+一个数据样本是一条完整轨迹，H=1；微批和梯度累积均以完整轨迹为单位。
+每条轨迹仅加载一次完整图像历史，目标 EMA/eval 分支先无梯度编码全部状态，
+在线分支随后一次编码全部状态与有效窗口起点的回答 LM loss。
+长度 L 的轨迹提供 L−T+1 个有效窗口，各含 T 个动作和 T+1 个真实观测；
+短轨迹排除，不补造观测。所有窗口统一递推，后续 WM 输入是预测状态。
+value 监督使用完整 episode 上计算的 MC return，不在窗口末尾截断。
 
-`prediction_horizon=1` 保留 `OnlineHistoryBatchSampler` 及 H 步历史兼容模式。
-此模式的统计单位是当前 transition，历史仅提供因果上下文；旧历史 state 从
-rank-local `history_cache.py` 读取 detached tensor。这与 T 个未来预测步不同。
-
-目标状态编码沿用冻结 backbone（可使用已有 backbone EMA）和共享 projector 的
-无梯度分支。主损失反传完成后才编码相邻在线状态做 SIGReg；起点 detach，梯度只进入
-新状态侧。跨 rank 的有效样本统计、padding 零权重及随机投影同步保持原实现。
+主损失直接在共享计算图上反传，不再使用 detached leaf、手工 VJP 或历史 state 缓存。
+SIGReg 使用全部真实相邻 transition，按轨迹和时间位置去重，排除分布式补齐；
+每个微批跨卡形成统计组。起点 detach，梯度进入在线后继状态；与主损失联合反传。
 
 DINO grid 的 `grid.size` 与 `latent.token_count` 由配置显式给出，并要求
 `latent.token_count == grid.size ** 2`。训练启动时还会读取初始化 checkpoint 的
@@ -54,7 +50,7 @@ checkpoint，但不会在两种 state 接口之间静默转换。
 
 训练数据必须包含成功和失败轨迹，不接受 `success_only` 过滤。`batch.py` 将完整轨迹的显式布尔 `success` 传入起点的 `lm_row_weights`；缺失标记拒绝。成功窗口的起点回答先独立计算 token CE 均值，再按成功窗口求平均。失败窗口保留全部真实输入、动作、回报及 WM/value/DINO 监督。全失败组 LM 为图连接的零。
 
-`loop.py` 在一个更新组内统计全部有效窗口数和成功窗口数，跨 rank 归约后分别缩放主损失及 LM。SIGReg 保留原独立反传协议。验证仍沿用状态预测指标；训练 LM 指标按成功窗口数汇总。恢复身份新增监督范围与归一化版本，不能复用旧 LM 目标的优化器状态。
+`loop.py` 在一个更新组内统计全部有效窗口数和成功窗口数，跨 rank 归约后分别缩放主损失及 LM。SIGReg 每个微批计算一次，按当前累积组的实际微批数取平均。验证在线状态使用当前 policy 的 eval 权重，目标状态独立使用 EMA；训练 LM 指标按成功窗口数汇总。恢复身份新增监督范围与归一化版本，不能复用旧 LM 目标的优化器状态。
 
 ## 可选动作执行结果监督
 
@@ -142,17 +138,11 @@ WM/projector/value/outcome 仍采用 DDP，学习率和目标不变。优化器�
 不使用 FSDP no_sync 累积，以免保留完整未分片梯度。
 
 FSDP 是新的恢复身份。CPU policy/归一化测试不证明 CUDA all-gather、EMA交换、
-主损失加 SIGReg 两次反传或完整 checkpoint 恢复；启动前必须通过实际多卡 canary。
+联合损失反传或完整 checkpoint 恢复；启动前必须通过实际多卡 canary。
 
-## 同一次更新内共享轨迹编码
+## 恢复身份
 
-`--trajectory-shared-forward` 启用 `trajectory.py`：校验 token、图像及 mRoPE
-前缀后，按轨迹合并同一参数更新中的输入。目标 EMA/eval 分支先执行，在线
-分支再一次返回各步 Query states 与逐窗口 LM loss。窗口与 SIGReg 仍按原
-微批执行，先累加对共享输出的梯度，再统一反传在线编码器和 projector。
-当前只支持 H=1、T>1、K>1 且无 encoder/projector dropout 的配置；默认关闭。
-参数更新后不保留共享 states。详见三阶段 SFT spec 的梯度和归约合同。
-
-`target_encode`、`online_encode`、`shared_backward` 分别计时；主阶段计时
-此时只含窗口 heads。规划与前缀校验开销不在这些分项内，总加速按墙钟时间
-比较。`encoder_*` 指标是本地更新组数量的汇总均值，不是全局累计 token 数。
+新训练使用 `training_unit=complete_trajectory_v1`，batch 单位为轨迹。
+旧窗口运行的优化器状态在加载前拒绝；初始化模型与原有 Stage2 基座仍可使用。
+原 `--trajectory-shared-forward` 入口及兼容路径已移除，完整轨迹是唯一训练路径。
+CPU 检查不能证明真实多卡训练正确；当前重构须通过集成测试与实际多卡验证。

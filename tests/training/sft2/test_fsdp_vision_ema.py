@@ -136,7 +136,7 @@ def test_runtime_keeps_fsdp_root_in_validation_view(fsdp_model):
     backbone.model = fsdp_model
     wm = nn.Module()
     wm.unwrapped = lambda: wm
-    runtime = SFT2ModelRuntime(agent=Agent(backbone=backbone, wm=wm), history_cache=None)
+    runtime = SFT2ModelRuntime(agent=Agent(backbone=backbone, wm=wm))
     assert runtime.unwrapped().agent.backbone.model is fsdp_model
 
 
@@ -145,7 +145,6 @@ def test_fsdp_predictor_diagnostic_leaves_backbone_ready_for_backward(fsdp_model
     from nimloth.agent import Agent
     from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
     from nimloth.training.sft.stage3.diagnostics import outcome_gradient_diagnostic
-    from nimloth.training.sft.stage3.history_cache import OnlineHistoryStateCache
     from nimloth.training.sft.stage3.runtime import SFT2ModelRuntime
     class TestBackbone(Backbone):
         def __init__(self, model): super().__init__(); self.inner = model
@@ -158,17 +157,16 @@ def test_fsdp_predictor_diagnostic_leaves_backbone_ready_for_backward(fsdp_model
     wm = nn.Module()
     wm.wm_predictor = nn.Linear(1, 1)
     wm.unwrapped = lambda: wm
-    runtime = SFT2ModelRuntime(agent=Agent(backbone=TestBackbone(fsdp_model), wm=wm),
-                              history_cache=OnlineHistoryStateCache())
+    runtime = SFT2ModelRuntime(agent=Agent(backbone=TestBackbone(fsdp_model), wm=wm))
     class Algorithm:
         outcome_weight = 1.0
         dino_grid_weight = 0.5
         def training_primary_step(self, runtime, batch, *, wm_weight):
-            hidden = runtime.agent.backbone(batch.current).hidden
+            hidden = runtime.agent.backbone(batch.inputs).hidden
             assert not hidden.requires_grad
             loss = runtime.agent.wm.wm_predictor(hidden).square().mean()
             return SimpleNamespace(losses={"wm": loss, "dino": loss, "outcome": loss})
-    batch = SimpleNamespace(current=BackboneBatch({"input_ids": torch.ones(1, 2, dtype=torch.long)}))
+    batch = SimpleNamespace(inputs=BackboneBatch({"input_ids": torch.ones(1, 2, dtype=torch.long)}))
     report = outcome_gradient_diagnostic(Algorithm(), runtime, batch, wm_weight=0.5)
     assert report["outcome_to_wm_dino_gradient_ratio"] == pytest.approx(1.0)
     fsdp_model(torch.ones(1, 2)).sum().backward()

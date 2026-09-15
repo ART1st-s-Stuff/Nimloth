@@ -21,9 +21,8 @@ def test_bce_matches_valid_labels_and_gradients(horizon):
     mask = torch.ones_like(labels, dtype=torch.bool)
     mask[0, 0] = False
     labels[0, 0] = float('nan')
-    batch = SimpleNamespace(outcome_targets=labels, outcome_mask=mask)
-    runtime = SimpleNamespace(agent=SimpleNamespace(wm=SimpleNamespace(outcome_head=head)))
-    loss = algorithm()._outcome_loss(runtime, batch, states)
+    batch = SimpleNamespace(outcome_targets=labels, outcome_mask=mask, sample_weights=torch.ones(2))
+    loss = algorithm()._outcome_loss(batch, head(states))
     reference = torch.nn.functional.binary_cross_entropy_with_logits(head(states)[mask], labels[mask])
     torch.testing.assert_close(loss, reference)
     loss.backward()
@@ -33,12 +32,11 @@ def test_bce_matches_valid_labels_and_gradients(horizon):
 
 def test_empty_labels_connected_zero_and_disabled_no_loss():
     head = ActionOutcomeHead(8)
-    states = torch.randn(2, 4, 8, requires_grad=True)
-    batch = SimpleNamespace(outcome_targets=torch.full((2,), float('nan')),
-                            outcome_mask=torch.zeros(2, dtype=torch.bool))
-    runtime = SimpleNamespace(agent=SimpleNamespace(wm=SimpleNamespace(outcome_head=head)))
-    loss = algorithm()._outcome_loss(runtime, batch, states)
+    states = torch.randn(2, 1, 4, 8, requires_grad=True)
+    batch = SimpleNamespace(outcome_targets=torch.full((2, 1), float('nan')),
+                            outcome_mask=torch.zeros(2, 1, dtype=torch.bool), sample_weights=torch.ones(2))
+    loss = algorithm()._outcome_loss(batch, head(states))
     assert loss.item() == 0
     loss.backward()
     assert states.grad is not None and states.grad.count_nonzero() == 0
-    assert algorithm(0)._outcome_loss(runtime, batch, states) is None
+    assert algorithm(0)._outcome_loss(batch, head(states)) is None

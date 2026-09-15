@@ -55,5 +55,9 @@ def test_labels_for_trajectory_steps_marks_each_assistant_span() -> None:
     cache = processor.apply_chat_template(steps_messages[1], tokenize=False, add_generation_prompt=False)
     input_ids = torch.tensor([ord(c) for c in cache], dtype=torch.long)
     labels = labels_for_trajectory_steps(input_ids, cache, steps, processor, max_length=512)
-    assert supervised_token_count(labels) > 0
-    assert int((labels != -100).sum()) >= 2
+    expected = torch.full_like(input_ids, -100)
+    for answer in ("a0", "a1"):
+        start = cache.index(answer)
+        expected[start:start + len(answer)] = input_ids[start:start + len(answer)]
+    torch.testing.assert_close(labels, expected)
+    assert supervised_token_count(labels) == 4

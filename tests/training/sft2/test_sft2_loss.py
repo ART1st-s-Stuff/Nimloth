@@ -1,733 +1,185 @@
-"""SFT2 Agent forward、objective 与梯度语义测试。"""
-
+"""Native trajectory objectives retain window timing and direct gradient paths."""
 from __future__ import annotations
 
 import contextlib
-from pathlib import Path
+import copy
 from types import SimpleNamespace
 
 import pytest
 import torch
+from torch import nn
 
 from nimloth.agent import Agent
 from nimloth.backbone import Backbone, BackboneBatch, BackboneOutput
-from nimloth.rollout import TransitionBatch
 from nimloth.training.sft.stage3.algorithm import SFT2Algorithm
-from nimloth.training.sft.stage3.batch import SFT2Batch, SFT2RolloutBatch
-from nimloth.training.sft.stage3.history_cache import OnlineHistoryStateCache
 from nimloth.training.sft.stage3.runtime import SFT2ModelRuntime
-from nimloth.wm import SequenceSIGReg, StateProjector, ValueHead, WorldModel
+from nimloth.wm import WorldModel
 
 
-class _TensorBackbone(Backbone):
-    def __init__(self) -> None:
+class TensorBackbone(Backbone):
+    def __init__(self):
         super().__init__()
-        self.language_model = torch.nn.Identity()
-        self.calls = 0
+        self.language_model = nn.Linear(4, 4, bias=False)
+        self.calls = []
 
     @property
-    def model(self) -> torch.nn.Module:
+    def model(self):
         return self.language_model
 
-    def forward(
-        self,
-        batch: BackboneBatch,
-        *,
-        include_lm_loss: bool = False,
-    ) -> BackboneOutput:
+    def forward(self, batch, *, include_lm_loss=False):
+        self.calls.append((torch.is_grad_enabled(), self.training, include_lm_loss))
+        hidden = self.model(batch.tensors['hidden'])
+        losses = hidden[batch.tensors['starts']].square().mean(-1) if include_lm_loss else None
+        return BackboneOutput(hidden, lm_losses=losses)
+
+    def with_model(self, model):
+        result = TensorBackbone()
+        result.language_model = model
+        return result
+
+    def save_pretrained(self, *args, **kwargs):
+        raise NotImplementedError
+
+
+class Predictor(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.net = nn.Linear(4, 4, bias=False)
+        self.config = SimpleNamespace(history_size=1)
+        self.calls = 0
+
+    def forward(self, states, actions):
         self.calls += 1
-        hidden = self.language_model(batch.tensors["hidden"])
-        return BackboneOutput(
-            hidden=hidden,
-            lm_loss=hidden.mean() if include_lm_loss else None,
-        )
-
-    def with_model(self, model: torch.nn.Module) -> "_TensorBackbone":
-        return self
-
-    def save_pretrained(self, output_dir: Path, **_kwargs) -> None:
-        raise NotImplementedError
+        assert states.shape[1] == actions.shape[1] == 1
+        return self.net(states) + actions[..., None]
 
 
-class _WrappedModel(torch.nn.Module):
-    def __init__(self) -> None:
-        super().__init__()
-        self.module = torch.nn.Identity()
-
-    def forward(self, value: torch.Tensor) -> torch.Tensor:
-        return self.module(value)
-
-
-class _ReplaceableBackbone(Backbone):
-    def __init__(self, model: torch.nn.Module) -> None:
-        super().__init__()
-        self._model = model
-
-    @property
-    def model(self) -> torch.nn.Module:
-        return self._model
-
-    def forward(self, batch: BackboneBatch, **_kwargs) -> BackboneOutput:
-        return BackboneOutput(self._model(batch.tensors["hidden"]))
-
-    def with_model(self, model: torch.nn.Module) -> "_ReplaceableBackbone":
-        return _ReplaceableBackbone(model)
-
-    def save_pretrained(self, output_dir: Path, **_kwargs) -> None:
-        raise NotImplementedError
-
-
-class _RecordingEMA:
-    def __init__(self) -> None:
-        self.shadow: dict[str, torch.Tensor] = {}
-        self.models: list[torch.nn.Module] = []
-
-    def update(self, model: torch.nn.Module) -> None:
-        pass
-
-    @contextlib.contextmanager
-    def use_ema_weights(self, model: torch.nn.Module):
-        self.models.append(model)
-        yield
-
-    def save_checkpoint(self, path: Path) -> None:
-        pass
-
-
-class _Predictor(torch.nn.Module):
-    def __init__(self, dimension: int, *, history_size: int = 2) -> None:
-        super().__init__()
-        self.config = SimpleNamespace(history_size=history_size)
-        self.net = torch.nn.Linear(dimension, dimension, bias=False)
-
-    def forward(
-        self,
-        state: torch.Tensor,
-        action_indices: torch.Tensor,
-    ) -> torch.Tensor:
-        return self.net(state) + action_indices.to(state.dtype).unsqueeze(-1)
-
-    def rollout_from_history(
-        self,
-        state_history: torch.Tensor,
-        previous_actions: torch.Tensor,
-        future_actions: torch.Tensor,
-    ) -> torch.Tensor:
-        assert state_history.shape[1] == 1
-        assert previous_actions.shape[1] == 0
-        state = state_history[:, -1]
-        predicted = []
-        for step in range(future_actions.shape[1]):
-            state = self.net(state) + future_actions[:, step].float().unsqueeze(-1)
-            predicted.append(state)
-        return torch.stack(predicted, dim=1)
-
-
-class _RecordingProjector(torch.nn.Linear):
-    def __init__(self) -> None:
-        super().__init__(4, 4, bias=False)
-        self.outputs: list[torch.Tensor] = []
-
-    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
-        output = super().forward(hidden)
-        if output.requires_grad:
-            output.retain_grad()
-        self.outputs.append(output)
-        return output
-
-
-class _RecordingSIGReg(torch.nn.Module):
-    """记录算法传给 SIGReg 的实际 ``(T, B, D)`` 输入。"""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.inputs: list[torch.Tensor] = []
-
-    def forward(self, value: torch.Tensor) -> torch.Tensor:
-        self.inputs.append(value)
-        return value.pow(2).mean()
-
-
-def _algorithm(
-    sigreg: SequenceSIGReg | None = None,
-    *,
-    history_size: int = 2,
-    sigreg_weight: float = 0.1,
-    prediction_horizon: int = 1,
-):
-    backbone = _TensorBackbone()
-    projector = _RecordingProjector()
-    agent = Agent(
-        backbone=backbone,
-        wm=WorldModel(
-            state_proj=projector,
-            wm_predictor=_Predictor(4, history_size=history_size),
-            value_head=ValueHead(emb_dim=4, num_actions=3),
-        ),
+def runtime_and_batch(weights=(1., 1., 1.), success=(1., 1., 0.)):
+    torch.manual_seed(17)
+    agent = Agent(backbone=TensorBackbone(), wm=WorldModel(
+        state_proj=nn.Linear(4, 4, bias=False), wm_predictor=Predictor(),
+        value_head=nn.Linear(4, 3, bias=False)))
+    # Two complete trajectories, states[0:4] and states[4:7], T=2 -> W=2+1.
+    starts = torch.tensor([0, 1, 4])
+    batch = SimpleNamespace(
+        inputs=BackboneBatch({'hidden': torch.randn(7, 4), 'starts': starts}),
+        current_indices=starts, next_indices=torch.tensor([[1, 2], [2, 3], [5, 6]]),
+        action_sequences=torch.tensor([[0, 1], [1, 2], [2, 0]]),
+        value_targets=torch.tensor([[.3, .2], [.2, .1], [1., .5]]),
+        sample_weights=torch.tensor(weights), lm_weights=torch.tensor(success) * torch.tensor(weights),
+        outcome_targets=torch.zeros(3, 2), outcome_mask=torch.zeros(3, 2, dtype=torch.bool),
+        dino_grid_target=torch.randn(3, 2, 4), current_dino_target=None,
+        prediction_horizon=2, state_offsets=(0, 4, 7), window_offsets=(0, 2, 3),
+        trajectory_ids=('first', 'second'), batch_size=3,
     )
-    history_cache = OnlineHistoryStateCache()
-    history_cache.start(epoch=1, phase="train")
-    runtime = SFT2ModelRuntime(agent=agent, history_cache=history_cache)
-    return (
-        SFT2Algorithm(
-            history_size=history_size,
-            sigreg=sigreg,
-            sigreg_weight=sigreg_weight,
-            value_weight=1.0,
-            ce_weight=1.0,
-            prediction_horizon=prediction_horizon,
-        ),
-        runtime,
-        backbone,
-        projector,
-    )
-
-
-def _batch(
-    *,
-    trajectory_steps: tuple[tuple[str, int], ...] = (
-        ("rec_A", 0),
-        ("rec_A", 1),
-        ("rec_B", 0),
-        ("rec_B", 1),
-    ),
-    history_size: int = 2,
-) -> SFT2Batch:
-    row_count = len(trajectory_steps)
-    batch_size = row_count // history_size
-    return SFT2Batch(
-        transitions=TransitionBatch(
-            current=BackboneBatch(
-                {"hidden": torch.randn(batch_size, 4, requires_grad=True)}
-            ),
-            next=BackboneBatch(
-                {"hidden": torch.randn(row_count, 4, requires_grad=True)}
-            ),
-            action_indices=torch.arange(row_count) % 3,
-            value_targets=torch.linspace(-0.5, 1.0, row_count),
-            next_indices=torch.arange(row_count),
-            non_terminal_mask=torch.ones(row_count, dtype=torch.bool),
-            trajectory_steps=trajectory_steps,
-        ),
-        online_tail=BackboneBatch(
-            {"hidden": torch.randn(batch_size, 4, requires_grad=True)}
-        ),
-        history_size=history_size,
-        sample_weights=torch.ones(batch_size),
-    )
-
-
-def _seed_history(runtime: SFT2ModelRuntime, batch: SFT2Batch) -> torch.Tensor:
-    history_steps = batch.history_size - 1
-    if history_steps == 0:
-        return torch.empty((batch.batch_size, 0, 4))
-    values = torch.arange(
-        batch.batch_size * history_steps * 4,
-        dtype=torch.float32,
-    ).reshape(batch.batch_size, history_steps, 4)
-    keys = [key for row in batch.history_keys for key in row]
-    runtime.history_cache.store(keys, values.flatten(0, 1))
-    return values
-
-
-def _rollout_batch() -> SFT2RolloutBatch:
-    horizon = 4
-    batch_size = 2
-    trajectory_steps = tuple(
-        (record_id, step)
-        for record_id in ("rec_A", "rec_B")
-        for step in range(horizon)
-    )
-    return SFT2RolloutBatch(
-        transitions=TransitionBatch(
-            current=BackboneBatch(
-                {"hidden": torch.randn(batch_size, 4, requires_grad=True)}
-            ),
-            next=BackboneBatch(
-                {
-                    "hidden": torch.randn(
-                        batch_size * horizon,
-                        4,
-                        requires_grad=True,
-                    )
-                }
-            ),
-            action_indices=torch.tensor([2, 0, 1, 2, 1, 2, 0, 1]),
-            value_targets=torch.tensor([8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0]),
-            next_indices=torch.arange(batch_size * horizon),
-            non_terminal_mask=torch.ones(batch_size * horizon, dtype=torch.bool),
-            trajectory_steps=trajectory_steps,
-        ),
-        online_tail=BackboneBatch(
-            {"hidden": torch.randn(batch_size, 4, requires_grad=True)}
-        ),
-        prediction_horizon=horizon,
-        sample_weights=torch.ones(batch_size),
-    )
-
-
-def test_state_projector_accepts_multi_latent_block() -> None:
-    state_proj = StateProjector(
-        qwen_hidden_dim=8,
-        lewm_emb_dim=4,
-        projector_hidden_dim=16,
-        latent_token_count=3,
-    )
-    out = state_proj(torch.randn(2, 3, 8))
-    assert out.shape == (2, 4)
-    assert state_proj.input_dim == 24
-
-
-def test_sft2_algorithm_is_pure_compute_configuration() -> None:
-    algorithm, _, _, _ = _algorithm()
-
-    assert not isinstance(algorithm, torch.nn.Module)
-    assert not hasattr(algorithm, "agent")
-    assert not hasattr(algorithm, "target")
-    assert not hasattr(algorithm, "optimizer")
-
-
-def test_unwrapped_runtime_applies_ema_to_its_own_backbone_model() -> None:
-    wrapped_model = _WrappedModel()
-    agent = Agent(
-        backbone=_ReplaceableBackbone(wrapped_model),
-        wm=WorldModel(
-            state_proj=torch.nn.Linear(4, 4),
-            wm_predictor=_Predictor(4),
-            value_head=ValueHead(emb_dim=4, num_actions=3),
-        ),
-    )
-    ema = _RecordingEMA()
-    validation_runtime = SFT2ModelRuntime(
-        agent=agent,
-        history_cache=OnlineHistoryStateCache(),
-        backbone_ema=ema,
-    ).unwrapped()
-
-    with validation_runtime.evaluation_context():
-        pass
-
-    assert validation_runtime.agent.backbone.model is wrapped_model.module
-    assert ema.models == [validation_runtime.agent.backbone.model]
-
-
-def test_sft2_primary_step_computes_one_current_step_loss_and_detaches_history() -> None:
-    algorithm, runtime, backbone, projector = _algorithm()
-    batch = _batch()
-    cached_history = _seed_history(runtime, batch)
-
-    output = algorithm.training_primary_step(runtime, batch, wm_weight=0.5)
-    output.losses["wm"].backward()
-
-    assert backbone.calls == 2
-    assert output.losses["lm"] is not None
-    assert projector.outputs[0].grad is not None
-    assert not projector.outputs[1].requires_grad
-    assert projector.outputs[1].grad is None
-    current_grad = batch.current.tensors["hidden"].grad
-    assert current_grad is not None
-    assert torch.count_nonzero(current_grad) > 0
-    assert cached_history.grad is None
-    assert batch.next.tensors["hidden"].grad is None
-    assert runtime.history_cache.count == 4
-
-
-def test_sft2_ce_supervises_each_contexts_current_step_only() -> None:
-    algorithm, runtime, _, _ = _algorithm()
-    batch = _batch()
-    _seed_history(runtime, batch)
-
-    output = algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
-
-    expected = batch.current.tensors["hidden"].mean()
-    torch.testing.assert_close(output.losses["lm"], expected)
-
-
-def test_sft2_value_scores_current_state_and_only_executed_action_slots() -> None:
-    torch.manual_seed(0)
-    algorithm, runtime, _, projector = _algorithm()
-    batch = _batch()
-    _seed_history(runtime, batch)
-    batch.transitions.value_targets.fill_(1000.0)
-    predictor = runtime.agent.wm.wm_predictor
-    value_head = runtime.agent.wm.value_head
-    with torch.no_grad():
-        predictor.net.weight.copy_(2.0 * torch.eye(4))
-    captured: dict[str, torch.Tensor] = {}
-
-    def record_prediction(
-        _module: torch.nn.Module,
-        _inputs: tuple[torch.Tensor, ...],
-        output: torch.Tensor,
-    ) -> None:
-        output.retain_grad()
-        captured["predicted_sequence"] = output
-
-    def record_values(
-        _module: torch.nn.Module,
-        inputs: tuple[torch.Tensor, ...],
-        output: torch.Tensor,
-    ) -> None:
-        output.retain_grad()
-        captured["value_input"] = inputs[0]
-        captured["action_values"] = output
-
-    prediction_hook = predictor.register_forward_hook(record_prediction)
-    value_hook = value_head.register_forward_hook(record_values)
-    try:
-        output = algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
-        output.losses["value"].backward()
-    finally:
-        prediction_hook.remove()
-        value_hook.remove()
-
-    predicted_sequence = captured["predicted_sequence"]
-    torch.testing.assert_close(captured["value_input"], projector.outputs[0])
-    assert predicted_sequence.grad is None
-    assert predictor.net.weight.grad is None
-    assert projector.outputs[0].grad is not None
-    assert torch.count_nonzero(projector.outputs[0].grad) > 0
-
-    action_value_grad = captured["action_values"].grad
-    assert action_value_grad is not None
-    executed_mask = torch.nn.functional.one_hot(
-        batch.current_action_indices,
-        num_classes=action_value_grad.shape[-1],
-    ).bool()
-    assert torch.count_nonzero(action_value_grad[executed_mask]) == batch.batch_size
-    assert torch.count_nonzero(action_value_grad[~executed_mask]) == 0
-
-
-def test_sft2_t4_rollout_aligns_recorded_actions_with_four_decision_states() -> None:
-    torch.manual_seed(0)
-    algorithm, runtime, backbone, projector = _algorithm(
-        history_size=1,
-        prediction_horizon=4,
-        sigreg_weight=0.0,
-    )
-    batch = _rollout_batch()
-    predictor = runtime.agent.wm.wm_predictor
-    value_head = runtime.agent.wm.value_head
-    with torch.no_grad():
-        projector.weight.copy_(torch.eye(4))
-        predictor.net.weight.copy_(torch.eye(4))
-    captured: dict[str, torch.Tensor | list[torch.Tensor]] = {
-        "successor_states": []
-    }
-
-    def record_predictions(
-        _module: torch.nn.Module,
-        _inputs: tuple[torch.Tensor, ...],
-        output: torch.Tensor,
-    ) -> None:
-        successors = captured["successor_states"]
-        assert isinstance(successors, list)
-        successors.append(output[:, -1])
-
-    def record_values(
-        _module: torch.nn.Module,
-        inputs: tuple[torch.Tensor, ...],
-        output: torch.Tensor,
-    ) -> None:
-        inputs[0].retain_grad()
-        output.retain_grad()
-        captured["decision_states"] = inputs[0]
-        captured["action_values"] = output
-
-    predictor_hook = predictor.register_forward_hook(record_predictions)
-    value_hook = value_head.register_forward_hook(record_values)
-    try:
-        output = algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
-        output.losses["value"].backward()
-    finally:
-        predictor_hook.remove()
-        value_hook.remove()
-
-    decision_states = captured["decision_states"]
-    successor_list = captured["successor_states"]
-    assert isinstance(decision_states, torch.Tensor)
-    assert isinstance(successor_list, list)
-    successor_states = torch.stack(successor_list, dim=1)
-    expected_decisions = []
-    expected_successors = []
-    state = projector.outputs[0]
-    for step in range(4):
-        expected_decisions.append(state)
-        state = state + batch.action_sequences[:, step].float().unsqueeze(-1)
-        expected_successors.append(state)
-    torch.testing.assert_close(
-        decision_states,
-        torch.stack(expected_decisions, dim=1),
-    )
-    torch.testing.assert_close(
-        successor_states,
-        torch.stack(expected_successors, dim=1),
-    )
-    assert decision_states.shape == (2, 4, 4)
-    assert output.metrics["prediction_horizon"] == 4.0
-    assert set(output.losses) == {"lm", "wm", "value"}
-    assert backbone.calls == 2
-    assert batch.next.tensors["hidden"].grad is None
-    assert predictor.net.weight.grad is not None
-    assert torch.count_nonzero(predictor.net.weight.grad) > 0
-    assert projector.outputs[0].grad is not None
-    assert torch.count_nonzero(projector.outputs[0].grad) > 0
-
-    action_value_grad = captured["action_values"].grad
-    assert action_value_grad is not None
-    executed_mask = torch.nn.functional.one_hot(
-        batch.action_sequences,
-        num_classes=action_value_grad.shape[-1],
-    ).bool()
-    assert torch.count_nonzero(action_value_grad[executed_mask]) == 8
-    assert torch.count_nonzero(action_value_grad[~executed_mask]) == 0
-    assert decision_states.grad is not None
-    assert all(
-        torch.count_nonzero(decision_states.grad[:, step]) > 0
-        for step in range(4)
-    )
-
-
-def test_sft2_predictor_receives_full_configured_history_axis() -> None:
-    algorithm, runtime, _, _ = _algorithm(history_size=2)
-    batch = _batch()
-    _seed_history(runtime, batch)
-    predictor = runtime.agent.wm.wm_predictor
-    seen: list[tuple[tuple[int, ...], tuple[int, ...]]] = []
-
-    def record_shape(state: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
-        seen.append((tuple(state.shape), tuple(actions.shape)))
-        return state
-
-    predictor.forward = record_shape  # type: ignore[method-assign]
-    output = algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
-
-    assert seen == [((2, 2, 4), (2, 2))]
-    assert output.current_state.shape == (2, 4)
-    assert output.metrics["context_length"] == 2.0
-    assert output.metrics["current_batch_size"] == 2.0
-    assert output.metrics["history_cache_entries"] == 4.0
-
-
-def test_sft2_sigreg_detaches_current_and_updates_online_next_only() -> None:
-    recording = _RecordingSIGReg()
-    sigreg = SequenceSIGReg(regularizer=recording)
-    algorithm, runtime, _, projector = _algorithm(sigreg)
-    batch = _batch()
-    _seed_history(runtime, batch)
-
-    primary = algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
-    assert recording.inputs == []
-    primary.loss.backward()
-    current_grad_after_primary = projector.outputs[0].grad.clone()
-
-    sigreg_output = algorithm.training_sigreg_step(
-        runtime,
-        batch,
-        detached_current_state=primary.current_state.detach(),
-        sigreg_seed=123,
-    )
-
-    assert len(recording.inputs) == 1
-    assert recording.inputs[0].shape == (2, 2, 4)
-    expected = torch.stack(
-        (
-            projector.outputs[0],
-            projector.outputs[2],
-        ),
-        dim=0,
-    )
-    torch.testing.assert_close(recording.inputs[0], expected)
-    assert sigreg_output.raw_loss is not None
-    assert sigreg_output.metrics["sigreg_loss"] > 0.0
-    assert sigreg_output.metrics["sigreg_global_batch_size"] == 2.0
-    sigreg_output.loss.backward()
-    torch.testing.assert_close(projector.outputs[0].grad, current_grad_after_primary)
-    assert projector.outputs[2].grad is not None
-    assert batch.online_tail.tensors["hidden"].grad is not None
-    assert batch.next.tensors["hidden"].grad is None
-
-    metrics = algorithm.merge_training_metrics(primary.metrics, sigreg_output)
-    assert metrics["total_loss"] == pytest.approx(
-        primary.metrics["total_loss"] + sigreg_output.loss.item()
-    )
-
-
-def test_sft2_sigreg_rejects_current_state_with_gradient() -> None:
-    algorithm, runtime, _, _ = _algorithm(
-        SequenceSIGReg(regularizer=_RecordingSIGReg())
-    )
-    batch = _batch()
-    _seed_history(runtime, batch)
-    primary = algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
-
-    with pytest.raises(ValueError, match="current_state must be detached"):
-        algorithm.training_sigreg_step(
-            runtime,
-            batch,
-            detached_current_state=primary.current_state,
-            sigreg_seed=123,
-        )
-
-
-def test_sft2_sigreg_skips_single_window_batch() -> None:
-    recording = _RecordingSIGReg()
-    algorithm, runtime, _, _ = _algorithm(
-        SequenceSIGReg(regularizer=recording)
-    )
-
-    batch = _batch(
-        trajectory_steps=(("rec_A", 0), ("rec_A", 1)),
-    )
-    _seed_history(runtime, batch)
-    primary = algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
-    output = algorithm.training_sigreg_step(
-        runtime,
-        batch,
-        detached_current_state=primary.current_state.detach(),
-        sigreg_seed=123,
-    )
-
-    assert recording.inputs == []
-    assert output.raw_loss is None
-    assert output.loss.requires_grad
-    assert output.loss.item() == 0.0
-    assert output.metrics["sigreg_skipped_small_batch"] == 1.0
-    assert output.metrics["sigreg_global_batch_size"] == 1.0
-
-
-def test_sft2_evaluation_does_not_use_training_sigreg_layout() -> None:
-    recording = _RecordingSIGReg()
-    algorithm, runtime, _, _ = _algorithm(
-        SequenceSIGReg(regularizer=recording)
-    )
-
-    batch = _batch()
-    _seed_history(runtime, batch)
-    output = algorithm.evaluation_step(runtime, batch)
-
-    assert recording.inputs == []
-    assert "sigreg" not in output.losses
-    assert output.metrics["lambda_sigreg"] == 0.0
-
-
-def test_sft2_zero_sigreg_weight_does_not_run_module() -> None:
-    recording = _RecordingSIGReg()
-    algorithm, runtime, _, _ = _algorithm(
-        SequenceSIGReg(regularizer=recording),
-        sigreg_weight=0.0,
-    )
-    batch = _batch()
-    _seed_history(runtime, batch)
-
-    output = algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
-    metrics = algorithm.merge_training_metrics(output.metrics, None)
-
-    assert recording.inputs == []
-    assert algorithm.has_sigreg_stage is False
-    assert "sigreg" not in output.losses
-    assert "sigreg_skipped_small_batch" not in metrics
-
-
-def test_online_cache_reuses_a_prior_current_state_without_history_qwen() -> None:
-    algorithm, runtime, backbone, _ = _algorithm(history_size=2, sigreg_weight=0.0)
-    first = _batch(
-        trajectory_steps=(("rec_A", 0), ("rec_B", 0)),
-        history_size=1,
-    )
-    second = _batch(
-        trajectory_steps=(
-            ("rec_A", 0),
-            ("rec_A", 1),
-            ("rec_B", 0),
-            ("rec_B", 1),
-        ),
-        history_size=2,
-    )
-
-    first_output = algorithm.training_primary_step(runtime, first, wm_weight=1.0)
-    calls_after_first = backbone.calls
-    output = algorithm.training_primary_step(runtime, second, wm_weight=1.0)
-
-    assert calls_after_first == 2
-    assert backbone.calls == 4
-    assert output.current_state.shape == (2, 4)
-    cached_history = runtime.history_cache.history(
-        second.history_keys,
-        reference=output.current_state,
-    )
-    torch.testing.assert_close(
-        cached_history[:, 0],
-        first_output.current_state.detach(),
-    )
-    assert runtime.history_cache.count == 4
-
-
-def test_online_cache_miss_fails_instead_of_recomputing_history() -> None:
-    algorithm, runtime, backbone, _ = _algorithm(history_size=2, sigreg_weight=0.0)
-    batch = _batch()
-
-    try:
-        algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
-    except KeyError as error:
-        assert "online history cache miss" in str(error)
-    else:
-        raise AssertionError("missing online history must fail")
-
-    assert backbone.calls == 1
-    assert runtime.history_cache.count == 0
-
-
-def test_padding_batch_has_zero_loss_and_does_not_write_cache() -> None:
-    algorithm, runtime, _, _ = _algorithm(history_size=1, sigreg_weight=0.0)
-    batch = _batch(
-        trajectory_steps=(("rec_A", 0), ("rec_B", 0)),
-        history_size=1,
-    )
-    object.__setattr__(batch, "sample_weights", torch.zeros(2))
-
-    output = algorithm.training_primary_step(runtime, batch, wm_weight=1.0)
-
-    assert output.sample_count == 0
-    assert output.loss.item() == 0.0
-    assert runtime.history_cache.count == 0
-
-
-def test_online_history_cache_checkpoint_round_trip(tmp_path: Path) -> None:
-    cache = OnlineHistoryStateCache()
-    cache.start(epoch=3, phase="train")
-    states = torch.randn(2, 4, requires_grad=True)
-    cache.store((("rec_A", 0), ("rec_B", 0)), states)
-    path = tmp_path / "history_cache_rank_000.pt"
-    cache.save(path)
-
-    restored = OnlineHistoryStateCache()
-    restored.load(path)
-    restored.start(epoch=3, phase="train", resume=True)
-    actual = restored.history(
-        ((('rec_A', 0),), (('rec_B', 0),)),
-        reference=torch.empty(2, 4),
-    )
-
-    torch.testing.assert_close(actual[:, 0], states.detach())
-    assert not actual.requires_grad
-    assert restored.count == 2
-
-
-def test_online_history_cache_rejects_duplicate_current_keys() -> None:
-    cache = OnlineHistoryStateCache()
-    cache.start(epoch=1, phase="train")
-
-    try:
-        cache.store((("rec_A", 0), ("rec_A", 0)), torch.randn(2, 4))
-    except ValueError as error:
-        assert "current step was emitted more than once" in str(error)
-    else:
-        raise AssertionError("duplicate current keys must fail")
-
-
-def test_algorithm_wm_weight_warms_up() -> None:
-    algorithm, _, _, _ = _algorithm()
-    assert algorithm.wm_weight(0, 100) == 0.1
-    assert 0.1 < algorithm.wm_weight(15, 100) < 1.0
-    assert algorithm.wm_weight(60, 100) == 1.0
+    return SFT2ModelRuntime(agent), batch
+
+
+def algorithm(**kwargs):
+    config = dict(history_size=1, prediction_horizon=2, sigreg=None,
+                  sigreg_weight=0., value_weight=.7, ce_weight=.3, dino_grid_weight=.5)
+    return SFT2Algorithm(**(config | kwargs))
+
+
+def test_native_targets_first_then_one_online_and_one_batched_rollout():
+    runtime, batch = runtime_and_batch()
+    events = []
+    class EMA:
+        @contextlib.contextmanager
+        def use_ema_weights(self, model):
+            events.append('enter')
+            yield
+            events.append('exit')
+    runtime = SFT2ModelRuntime(runtime.agent, EMA())
+    output = algorithm().training_primary_step(runtime, batch, wm_weight=.4)
+    assert runtime.agent.backbone.calls == [(False, False, False), (True, True, True)]
+    assert events == ['enter', 'exit']
+    assert runtime.agent.wm.wm_predictor.calls == batch.prediction_horizon
+    assert output.sample_count == 3
+    assert output.online_states.shape == (7, 4)
+    assert not output.diagnostics['target_states'].requires_grad
+    output.loss.backward()
+    for name, parameter in runtime.agent.named_parameters():
+        assert parameter.grad is not None and torch.isfinite(parameter.grad).all(), name
+
+
+@pytest.mark.parametrize('padding', [False, True])
+def test_native_window_losses_and_parameter_gradients_match_individual_windows(padding):
+    runtime, batch = runtime_and_batch(weights=(1., 1., 0.) if padding else (1., 1., 1.))
+    reference = copy.deepcopy(runtime.agent)
+    output = algorithm().training_primary_step(runtime, batch, wm_weight=.4)
+    output.loss.backward()
+    all_count = batch.sample_weights.sum().clamp_min(1)
+    lm_count = batch.lm_weights.sum().clamp_min(1)
+    manual = 0.
+    for row in range(3):
+        with torch.no_grad():
+            hidden = reference.backbone.model(batch.inputs.tensors['hidden'])
+            target = reference.wm.project_state(hidden)[batch.next_indices[row]]
+        hidden = reference.backbone.model(batch.inputs.tensors['hidden'][batch.current_indices[row]:batch.current_indices[row]+1])
+        state = reference.wm.project_state(hidden)
+        actions = batch.action_sequences[row:row+1]
+        predictions = reference.wm.simulate_action_sequences(state[:, None], actions[:, :0], actions)
+        decisions = torch.cat([state[:, None], predictions[:, :-1]], 1)
+        values = reference.wm.predict_action_values(decisions).gather(-1, actions[..., None]).squeeze(-1)
+        loss = (.4 * (predictions[0]-target).square().mean()
+                + .5 * (predictions[0]-batch.dino_grid_target[row]).square().mean()
+                + .7 * (values[0]-batch.value_targets[row]).square().mean())
+        manual = manual + loss * batch.sample_weights[row] / all_count
+        manual = manual + .3 * hidden.square().mean() * batch.lm_weights[row] / lm_count
+    torch.testing.assert_close(output.loss, manual)
+    manual.backward()
+    for (name, actual), (_, expected) in zip(runtime.agent.named_parameters(), reference.named_parameters()):
+        torch.testing.assert_close(actual.grad, expected.grad, msg=name, atol=2e-6, rtol=2e-5)
+
+
+def test_all_padding_is_connected_zero_for_every_trained_component():
+    runtime, batch = runtime_and_batch(weights=(0., 0., 0.))
+    output = algorithm().training_primary_step(runtime, batch, wm_weight=.4)
+    assert output.sample_count == 0 and output.loss.item() == 0
+    output.loss.backward()
+    for name, parameter in runtime.agent.named_parameters():
+        assert parameter.grad is not None and parameter.grad.count_nonzero() == 0, name
+
+
+def test_outgoing_values_use_predicted_decisions_and_only_executed_actions():
+    runtime, batch = runtime_and_batch()
+    values = []
+    hook = runtime.agent.wm.value_head.register_forward_hook(lambda module, args, output: values.append((args[0], output)))
+    output = algorithm().training_primary_step(runtime, batch, wm_weight=.4)
+    hook.remove()
+    decisions, action_values = values[0]
+    assert decisions.shape == (3, 2, 4)
+    torch.testing.assert_close(decisions[:, 0], output.current_state)
+    torch.testing.assert_close(decisions[:, 1], output.diagnostics['predicted_states'][:, 0])
+    grad, = torch.autograd.grad(output.losses['value'], action_values)
+    selected = torch.nn.functional.one_hot(batch.action_sequences, 3).bool()
+    assert grad[~selected].count_nonzero() == 0
+
+
+def test_ema_target_uses_its_own_values_and_restores_online_parameters():
+    runtime, batch = runtime_and_batch()
+    original = runtime.agent.backbone.model.weight.detach().clone()
+    class EMA:
+        @contextlib.contextmanager
+        def use_ema_weights(self, model):
+            with torch.no_grad():
+                model.weight.fill_(.5)
+            yield
+            with torch.no_grad():
+                model.weight.copy_(original)
+    runtime = SFT2ModelRuntime(runtime.agent, EMA())
+    output = algorithm().training_primary_step(runtime, batch, wm_weight=.4)
+    target_hidden = torch.nn.functional.linear(batch.inputs.tensors['hidden'], torch.full_like(original, .5))
+    expected = runtime.agent.wm.project_state(target_hidden)[batch.next_indices]
+    torch.testing.assert_close(output.diagnostics['target_states'], expected)
+    torch.testing.assert_close(runtime.agent.backbone.model.weight, original)
+    output.loss.backward()  # EMA restoration preceded graph construction; no version error.
+
+
+def test_native_rejects_historical_context_and_warms_weight():
+    with pytest.raises(ValueError, match='history_size=1'):
+        algorithm(history_size=2)
+    instance = algorithm()
+    assert instance.wm_weight(0, 100) == pytest.approx(.1)
+    assert instance.wm_weight(30, 100) == pytest.approx(1.)

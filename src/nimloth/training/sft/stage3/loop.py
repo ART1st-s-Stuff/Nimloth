@@ -64,8 +64,8 @@ def load_sft2_loop_state(
     )
 
     saved_invariants = saved_state.get("training_invariants")
-    if training_invariants.get("outcome_schema") is not None and saved_invariants is None:
-        raise ValueError("outcome resume requires saved training invariants")
+    if not isinstance(saved_invariants, dict) or saved_invariants.get("training_unit") != "complete_trajectory_v1":
+        raise ValueError("trajectory-native resume requires complete_trajectory_v1 training invariants")
     if saved_invariants is not None:
         mismatches = {
             key: (saved_invariants.get(key), current_value)
@@ -137,7 +137,6 @@ class SFT2TrainingLoop:
         if cap and self.state.global_step >= cap:
             raise ValueError("stop_after_steps must exceed the restored global step")
         if self.outcome_eval_dir is not None and self.state.global_step == 0:
-            self.model_runtime.history_cache.start(epoch=0, phase="val")
             self._evaluate_export(self.val_loader, epoch=0, split="eval")
         for epoch in range(self.state.start_epoch, self.config.epochs + 1):
             self._run_epoch(epoch)
@@ -156,14 +155,6 @@ class SFT2TrainingLoop:
 
         self.model_runtime.set_training_mode()
         self._set_sampler_epoch(epoch)
-        resuming_epoch = (
-            epoch == self.state.start_epoch and self.state.resume_micro_step > 0
-        )
-        self.model_runtime.history_cache.start(
-            epoch=epoch,
-            phase="train",
-            resume=resuming_epoch,
-        )
         self.optimization_runtime.zero_grad()
         accumulator = MetricAccumulator()
         train_iterator, micro_index = self._resume_train_iterator(epoch)
@@ -179,16 +170,11 @@ class SFT2TrainingLoop:
                 if dist.is_available() and dist.is_initialized():
                     world = dist.get_world_size()
                     dist.all_reduce(totals)
-                if getattr(self.config, "trajectory_shared_forward", False):
-                    from nimloth.training.sft.stage3.trajectory import SharedMicrobatch, SharedTrajectoryExecution
-                    prepared = [self.batch_builder.prepare(item) for item in group]
-                    shared = SharedTrajectoryExecution(prepared, self.model_runtime, self.batch_builder,
-                        self.step_timer, activation_offload=self.config.activation_offload)
-                    group = [SharedMicrobatch(batch, shared, index) for index, batch in enumerate(prepared)]
                 for item, (all_count, lm_count), outcome_count in zip(group, counts, outcome_counts, strict=True):
                     yield item, (world * all_count / max(1, int(totals[0])),
                                  world * lm_count / max(1, int(totals[1])), lm_count,
-                                 world * outcome_count / max(1, int(totals[2])), outcome_count)
+                                 world * outcome_count / max(1, int(totals[2])), outcome_count,
+                                 1. / len(group))
 
         normalized_iterator = iter(normalized_batches())
         while True:
@@ -212,8 +198,13 @@ class SFT2TrainingLoop:
                     batch_samples,
                     epoch=epoch,
                     micro_step=micro_index,
-                    loss_scales=(loss_scales[0], loss_scales[1], loss_scales[3]),
+                    loss_scales=(loss_scales[0], loss_scales[1], loss_scales[3], loss_scales[5]),
                 )
+            # SIGReg is a microbatch statistic, not a window-weighted mean.
+            regularizer_metrics = {key: metrics.pop(key) for key in tuple(metrics)
+                                   if key.startswith("sigreg_")}
+            if regularizer_metrics:
+                accumulator.update(regularizer_metrics, count=1)
             if sample_count > 0:
                 lm_metric = metrics.pop("lm_ce", None)
                 if lm_metric is not None and loss_scales[2] > 0:
@@ -298,93 +289,46 @@ class SFT2TrainingLoop:
         micro_step: int,
         loss_scales: tuple[float, ...] | None = None,
     ) -> tuple[float, dict[str, float], int]:
-        """先反传单次 CE/WM/value，再构建并反传单向 SIGReg 图。"""
-
-        from nimloth.training.sft.stage3.trajectory import SharedMicrobatch
-        shared = batch_samples if isinstance(batch_samples, SharedMicrobatch) else None
-        lambda_wm = self.algorithm.wm_weight(
-            self.state.global_step,
-            self.total_steps,
-        )
-        batch = shared.batch if shared is not None else self.batch_builder.prepare(batch_samples)
+        """Encode each complete trajectory once and backpropagate one combined loss."""
+        lambda_wm = self.algorithm.wm_weight(self.state.global_step, self.total_steps)
+        batch = self.batch_builder.prepare(batch_samples)
         if (getattr(self.config, "diagnose_outcome_gradients", False)
                 and self.state.global_step == 0 and micro_step == 1):
             from nimloth.training.sft.stage3.diagnostics import outcome_gradient_diagnostic
-            diagnostic = outcome_gradient_diagnostic(
-                self.algorithm, self.model_runtime, batch, wm_weight=lambda_wm,
-            )
+            diagnostic = outcome_gradient_diagnostic(self.algorithm, self.model_runtime, batch, wm_weight=lambda_wm)
             diagnostic.update(rank=self.rank, epoch=epoch, micro_step=micro_step)
             path = self.checkpoint_runtime.manager.output_dir / f"outcome_gradients_rank_{self.rank:03d}.json"
             with path.open("x") as stream:
                 json.dump(diagnostic, stream, indent=2, allow_nan=False)
             print(json.dumps(diagnostic, allow_nan=False), flush=True)
-        if shared is not None:
-            shared.group.initialize()
-        timer_start = self.step_timer.start("forward_primary")
+        timer_start = self.step_timer.start("forward")
         with saved_activation_context(self.config.activation_offload):
-            primary = self.algorithm.training_primary_step(
-                self.model_runtime,
-                batch,
-                wm_weight=lambda_wm,
-                **(dict(zip(("encoded_current", "target_states"),
-                            shared.group.primary_inputs(shared.index), strict=True))
-                   if shared is not None else {}),
-            )
-        self.step_timer.stop("forward_primary", timer_start)
-
-        detached_current_state = primary.current_state.detach()
-        primary_metrics = primary.metrics
-        sample_count = primary.sample_count
-        timer_start = self.step_timer.start("backward_primary")
-        primary_loss = primary.loss
-        divisor = self.config.grad_accum
-        if loss_scales is not None:
-            lm = primary.losses["lm"]
-            lm_term = self.algorithm.ce_weight * lm if lm is not None else 0
-            outcome = primary.losses.get("outcome")
-            outcome_term = self.algorithm.outcome_weight * outcome if outcome is not None else 0
-            primary_loss = ((primary_loss - lm_term - outcome_term) * loss_scales[0]
-                            + lm_term * loss_scales[1]
-                            + outcome_term * (loss_scales[2] if len(loss_scales) > 2 else loss_scales[0]))
-            divisor = 1
-        self.optimization_runtime.backward(primary_loss, grad_accum=divisor)
-        del primary_loss
-        if loss_scales is not None:
-            del lm, lm_term, outcome, outcome_term
-
-        self.step_timer.stop("backward_primary", timer_start)
-        # 不让任何主阶段 Tensor 引用跨入下一次 Qwen forward。
-        del primary
-
-        sigreg = None
-        if self.algorithm.has_sigreg_stage:
-            timer_start = self.step_timer.start("forward_sigreg")
-            with saved_activation_context(self.config.activation_offload):
+            primary = self.algorithm.training_primary_step(self.model_runtime, batch, wm_weight=lambda_wm)
+            sigreg = None
+            if self.algorithm.has_sigreg_stage:
                 sigreg = self.algorithm.training_sigreg_step(
-                    self.model_runtime,
-                    batch,
-                    detached_current_state=detached_current_state,
-                    sigreg_seed=global_sigreg_seed(
-                        self.config.seed,
-                        epoch,
-                        micro_step,
-                    ),
-                    **({"online_next_state": shared.group.tail(shared.index)} if shared is not None else {}),
+                    self.model_runtime, batch, online_states=primary.online_states,
+                    sigreg_seed=global_sigreg_seed(self.config.seed, epoch, micro_step),
                 )
-            self.step_timer.stop("forward_sigreg", timer_start)
-            timer_start = self.step_timer.start("backward_sigreg")
-            self.optimization_runtime.backward(
-                sigreg.loss,
-                grad_accum=self.config.grad_accum,
-            )
-            self.step_timer.stop("backward_sigreg", timer_start)
-
-        metrics = self.algorithm.merge_training_metrics(primary_metrics, sigreg)
-        if shared is not None:
-            metrics.update(shared.group.stats)
-            if shared.index == len(shared.group.batches) - 1:
-                shared.group.finish()
-        return lambda_wm, metrics, sample_count
+            loss = primary.loss
+            divisor = self.config.grad_accum
+            if loss_scales is not None:
+                lm = primary.losses.get("lm")
+                lm_term = self.algorithm.ce_weight * lm if lm is not None else 0
+                outcome = primary.losses.get("outcome")
+                outcome_term = self.algorithm.outcome_weight * outcome if outcome is not None else 0
+                loss = ((loss - lm_term - outcome_term) * loss_scales[0]
+                        + lm_term * loss_scales[1]
+                        + outcome_term * loss_scales[2])
+                divisor = 1
+            if sigreg is not None:
+                loss = loss + sigreg.loss * (loss_scales[3] if loss_scales is not None else 1.)
+        self.step_timer.stop("forward", timer_start)
+        timer_start = self.step_timer.start("backward")
+        self.optimization_runtime.backward(loss, grad_accum=divisor)
+        self.step_timer.stop("backward", timer_start)
+        metrics = self.algorithm.merge_training_metrics(primary.metrics, sigreg)
+        return lambda_wm, metrics, primary.sample_count
 
     def _optimizer_step(
         self,
@@ -422,10 +366,8 @@ class SFT2TrainingLoop:
     def _validate_and_checkpoint(self, epoch: int) -> None:
         """验证当前模型，并根据 WM MSE 更新 epoch/best checkpoint。"""
 
-        self.model_runtime.history_cache.start(epoch=epoch, phase="val")
         val_metrics = self._evaluate_export(self.val_loader, epoch=epoch, split="eval")
         if self.outcome_eval_dir is not None:
-            self.model_runtime.history_cache.start(epoch=epoch, phase="probe_train")
             self._evaluate_export(self.train_loader, epoch=epoch, split="train")
         val_wm_mse = val_metrics.get("wm_mse", float("inf"))
         improved = val_wm_mse < self.state.best_val_wm_mse

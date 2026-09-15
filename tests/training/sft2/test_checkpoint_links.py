@@ -18,11 +18,7 @@ def runtime(root, *, deduplicate=True):
             (directory / "weights").mkdir(exist_ok=True)
             (directory / "weights" / "part").write_bytes(str(state["step"]).encode())
 
-    class History:
-        def save(self, path):
-            path.write_bytes(b"history")
-
-    return SFT2CheckpointRuntime(Manager(), History(), 0, torch.device("cpu"), 10, 0, 2, deduplicate_epoch_checkpoints=deduplicate)
+    return SFT2CheckpointRuntime(Manager(), 0, torch.device("cpu"), 10, 0, 2, deduplicate_epoch_checkpoints=deduplicate)
 
 
 def test_epoch_best_final_share_files_and_only_save_once(tmp_path):
@@ -30,7 +26,7 @@ def test_epoch_best_final_share_files_and_only_save_once(tmp_path):
     checkpoint.save_epoch(step=10, epoch=1, best_val_wm_mse=.5, improved=True)
     checkpoint.save_final(step=10, epoch=1, best_val_wm_mse=.5)
     assert checkpoint.manager.calls == ["epoch_001"]
-    for relative in ("weights/part", "training_state.pt", "history_cache_rank_000.pt"):
+    for relative in ("weights/part", "training_state.pt"):
         files = [tmp_path / name / relative for name in ("epoch_001", "best", "final")]
         assert len({file.stat().st_ino for file in files}) == 1
         assert len({file.read_bytes() for file in files}) == 1

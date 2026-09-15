@@ -28,7 +28,7 @@ def test_load_loop_state_restores_partial_epoch(tmp_path) -> None:
             "epoch_complete": False,
             "micro_step_in_epoch": 4,
             "best_val_wm_mse": 0.25,
-            "training_invariants": {"seed": 42},
+            "training_invariants": {"seed": 42, "training_unit": "complete_trajectory_v1"},
             "optimizer": optimizer.state_dict(),
         },
         state_path,
@@ -39,7 +39,7 @@ def test_load_loop_state_restores_partial_epoch(tmp_path) -> None:
         resume_state_path=state_path,
         resume_checkpoint_dir=tmp_path,
         optimizer=optimizer,
-        training_invariants={"seed": 42},
+        training_invariants={"seed": 42, "training_unit": "complete_trajectory_v1"},
     )
 
     assert state.global_step == 7
@@ -52,7 +52,7 @@ def test_load_loop_state_rejects_invariant_mismatch(tmp_path) -> None:
     state_path = tmp_path / "training_state.pt"
     torch.save(
         {
-            "training_invariants": {"world_size": 2},
+            "training_invariants": {"world_size": 2, "training_unit": "complete_trajectory_v1"},
         },
         state_path,
     )
@@ -63,12 +63,12 @@ def test_load_loop_state_rejects_invariant_mismatch(tmp_path) -> None:
             resume_state_path=state_path,
             resume_checkpoint_dir=tmp_path,
             optimizer=_optimizer(),
-            training_invariants={"world_size": 1},
+            training_invariants={"world_size": 1, "training_unit": "complete_trajectory_v1"},
         )
 
 
 @pytest.mark.parametrize("offload", [False, True])
-def test_train_microbatch_backwards_primary_before_sigreg_forward(monkeypatch, offload) -> None:
+def test_train_microbatch_combines_primary_and_sigreg_before_one_backward(monkeypatch, offload) -> None:
     from contextlib import contextmanager
     from nimloth.training.sft.stage3 import loop as loop_module
     active = []
@@ -100,6 +100,7 @@ def test_train_microbatch_backwards_primary_before_sigreg_forward(monkeypatch, o
             assert wm_weight == 0.5
             return SimpleNamespace(
                 current_state=current_state,
+                online_states=current_state,
                 metrics={"total_loss": 2.0},
                 sample_count=2,
                 loss=torch.tensor(2.0, requires_grad=True),
@@ -110,13 +111,13 @@ def test_train_microbatch_backwards_primary_before_sigreg_forward(monkeypatch, o
             _runtime,
             batch,
             *,
-            detached_current_state: torch.Tensor,
+            online_states: torch.Tensor,
             sigreg_seed: int,
         ):
             assert active == [offload]
             events.append("sigreg_forward")
             assert batch == "prepared"
-            assert detached_current_state.requires_grad is False
+            assert online_states is current_state
             assert sigreg_seed == 1_010_052
             return SimpleNamespace(
                 loss=torch.tensor(0.3, requires_grad=True),
@@ -174,18 +175,17 @@ def test_train_microbatch_backwards_primary_before_sigreg_forward(monkeypatch, o
     assert events == [
         "prepare",
         "primary_forward",
-        "backward",
         "sigreg_forward",
         "backward",
         "merge_metrics",
     ]
     assert wm_weight == 0.5
-    assert scopes == [offload, offload]
+    assert scopes == [offload]
     assert metrics["total_loss"] == pytest.approx(2.3)
     assert sample_count == 2
 
 
-@pytest.mark.parametrize("scales", [(0.2, 0.5), (0.2, 0.0)])
+@pytest.mark.parametrize("scales", [(0.2, 0.5, 0.2, .125), (0.2, 0.0, 0.2, .125)])
 def test_primary_components_use_separate_global_window_denominators(scales):
     wm = torch.tensor(2., requires_grad=True)
     lm = torch.tensor(7., requires_grad=True)
@@ -222,7 +222,7 @@ def test_optional_export_routes_step_zero_and_each_epoch(tmp_path):
     loop.state = SFT2LoopState()
     loop.config = SimpleNamespace(epochs=1)
     loop.val_loader = 'validation'
-    loop.model_runtime = SimpleNamespace(history_cache=SimpleNamespace(start=lambda **kw: None))
+    loop.model_runtime = object()
     loop._evaluate_export = lambda loader, **kw: calls.append((loader, kw))
     loop._run_epoch = lambda epoch: calls.append(('epoch', epoch))
     loop.checkpoint_runtime = SimpleNamespace(save_final=lambda **kw: None)
@@ -246,3 +246,12 @@ def test_export_opens_rank_owned_file_and_passes_callback(tmp_path, monkeypatch)
     monkeypatch.setattr(module, 'evaluate', evaluate)
     assert loop._evaluate_export([], epoch=1, split='train') == {'wm_mse': .25}
     assert (tmp_path/'epoch_001_train_rank_003.jsonl').is_file()
+
+
+@pytest.mark.parametrize("invariants", [None, {}, {"training_unit": "window_v1"}])
+def test_native_resume_rejects_missing_or_legacy_unit(tmp_path, invariants):
+    path = tmp_path / 'training_state.pt'
+    torch.save({'training_invariants': invariants}, path)
+    with pytest.raises(ValueError, match='complete_trajectory_v1'):
+        load_sft2_loop_state(resume=True, resume_state_path=path, resume_checkpoint_dir=tmp_path,
+                            optimizer=_optimizer(), training_invariants={'training_unit': 'complete_trajectory_v1'})

@@ -1,7 +1,6 @@
 """No-update diagnostics of the production Stage3 predictor objective."""
 from __future__ import annotations
 
-import copy
 import hashlib
 import random
 from dataclasses import replace
@@ -36,7 +35,7 @@ class _PredictorDiagnosticBackbone(Backbone):
 
 
 def outcome_gradient_diagnostic(algorithm, runtime, batch, *, wm_weight: float) -> dict:
-    """Measure rank-local first-microbatch gradients; preserve RNG, history, and .grad.
+    """Measure rank-local first-microbatch gradients; preserve RNG and .grad.
 
     This does not estimate the full accumulated/global update. In particular, neither
     manually synchronized gradients nor a ratio cutoff enter the training objective.
@@ -44,7 +43,6 @@ def outcome_gradient_diagnostic(algorithm, runtime, batch, *, wm_weight: float) 
     if algorithm.outcome_weight <= 0:
         raise ValueError("outcome gradient diagnostic requires an active BCE objective")
     isolated = runtime.unwrapped()
-    isolated = replace(isolated, history_cache=copy.deepcopy(isolated.history_cache))
     from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
     if isinstance(isolated.agent.backbone.model, FSDP):
@@ -79,7 +77,7 @@ def outcome_gradient_diagnostic(algorithm, runtime, batch, *, wm_weight: float) 
                 norms.append(sum(float(value.detach().double().square().sum().item())
                                  for value in values if value is not None) ** 0.5)
             # Hash token identity, not raw prompt content, for matching canary inputs.
-            ids = batch.current.tensors["input_ids"].detach().cpu().contiguous()
+            ids = batch.inputs.tensors["input_ids"].detach().cpu().contiguous()
             digest = hashlib.sha256(ids.numpy().tobytes()).hexdigest()
             return {
                 "diagnostic": "outcome_predictor_gradient_ratio_v1",
