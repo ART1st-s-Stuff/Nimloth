@@ -114,7 +114,15 @@ def test_shared_encoder_rejects_stochastic_dropout():
 def test_preencoded_rollout_matches_original_losses_and_all_gradients():
     import copy
     from nimloth.agent.model import AgentStateOutput
-    from tests.training.sft2.test_sft2_loss import _algorithm, _rollout_batch, _RecordingSIGReg
+    import importlib.util
+    from pathlib import Path
+    fixture_path = Path(__file__).with_name("test_sft2_loss.py")
+    spec = importlib.util.spec_from_file_location("shared_trajectory_loss_fixtures", fixture_path)
+    assert spec is not None and spec.loader is not None
+    fixtures = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixtures)
+    _algorithm, _rollout_batch, _RecordingSIGReg = (
+        fixtures._algorithm, fixtures._rollout_batch, fixtures._RecordingSIGReg)
     torch.manual_seed(8)
     algorithm, runtime, _, _ = _algorithm(history_size=1, prediction_horizon=4,
                                          sigreg=_RecordingSIGReg())
