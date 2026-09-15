@@ -196,6 +196,9 @@ Correct: collective gathering with explicit complete export and synchronized wra
   contribute more unique transitions. This is a new statistical grouping, not
   numerical equivalence to the old window batches. Test unequal rank lengths,
   zero-valid ranks, no duplicate overlap, and gradient recipients.
+  `lambda_sigreg` defaults to 0.1 and accepts finite nonnegative values; zero
+  disables the regularizer for an explicitly configured ablation. It is not a
+  fixed DINO-grid interface invariant. Resume still requires the same coefficient.
 - Evaluation: use the same trajectory/window path; online policy uses current
   weights in eval mode, target branch uses EMA. Identity is
   `online_policy_eval_target_visual_ema_v1`; old EMA-online metrics are not treated

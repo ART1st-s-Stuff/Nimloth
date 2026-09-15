@@ -67,6 +67,22 @@ def test_load_loop_state_rejects_invariant_mismatch(tmp_path) -> None:
         )
 
 
+@pytest.mark.parametrize("previous", [None, 0.1])
+def test_resume_rejects_changed_or_unknown_sigreg_coefficient(tmp_path, previous):
+    path = tmp_path / "training_state.pt"
+    invariants = {"training_unit": "complete_trajectory_v1"}
+    if previous is not None:
+        invariants["lambda_sigreg"] = previous
+    torch.save({"training_invariants": invariants}, path)
+    with pytest.raises(ValueError, match="lambda_sigreg"):
+        load_sft2_loop_state(
+            resume=True, resume_state_path=path, resume_checkpoint_dir=tmp_path,
+            optimizer=_optimizer(), training_invariants={
+                "training_unit": "complete_trajectory_v1", "lambda_sigreg": 0.0,
+            },
+        )
+
+
 @pytest.mark.parametrize("offload", [False, True])
 def test_train_microbatch_combines_primary_and_sigreg_before_one_backward(monkeypatch, offload) -> None:
     from contextlib import contextmanager

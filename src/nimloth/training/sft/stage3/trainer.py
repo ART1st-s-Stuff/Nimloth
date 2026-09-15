@@ -82,7 +82,6 @@ def _validate_dino_grid_contract(args: Any) -> dict[str, Any]:
     required = {
         "emb_dim": (args.emb_dim, DINOV2_LARGE_IDENTITY.hidden_size),
         "latent_query_mode": (args.latent_query_mode, "inject"),
-        "lambda_sigreg": (args.lambda_sigreg, 0.1),
     }
     mismatches = {
         name: values
@@ -93,6 +92,8 @@ def _validate_dino_grid_contract(args: Any) -> dict[str, Any]:
         raise ValueError(
             f"authoritative DINO-grid SFT2 invariants mismatch: {mismatches}"
         )
+    if not math.isfinite(args.lambda_sigreg) or args.lambda_sigreg < 0:
+        raise ValueError("lambda_sigreg must be finite and nonnegative")
     expected_tokens = int(args.grid_size) ** 2
     if int(args.latent_token_count) != expected_tokens:
         raise ValueError(
@@ -698,6 +699,7 @@ def _train_sft2_impl(args=None) -> int:
         "training_unit": "complete_trajectory_v1",
         "batch_unit": "trajectory",
         "sigreg_batch_scope": "global_unique_trajectory_transitions_v1",
+        "lambda_sigreg": float(args.lambda_sigreg),
         "sample_ownership_version": "trajectory_windows_once_v1",
         "value_objective": SFT2_VALUE_OBJECTIVE,
         "lm_supervision": "successful_trajectory_window_mean_v1",

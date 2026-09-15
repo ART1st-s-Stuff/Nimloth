@@ -9,6 +9,7 @@ import pytest
 
 from nimloth.backbone import DINOV2_LARGE_IDENTITY
 from nimloth.training.sft.stage3.trainer import _validate_dino_grid_contract
+from nimloth.training.sft.stage3.cli import parse_sft2_args
 
 
 def _args(model: Path, **overrides):
@@ -66,3 +67,51 @@ def test_dino_grid_contract_rejects_checkpoint_grid_mismatch(tmp_path: Path):
 
     with pytest.raises(ValueError, match="state interface mismatch"):
         _validate_dino_grid_contract(_args(model))
+
+
+def _cli_args(model: Path, coefficient: str) -> list[str]:
+    return [
+        "--model", str(model), "--train-jsonl", "train.jsonl",
+        "--val-jsonl", "val.jsonl", "--output-dir", "out",
+        "--objective", "dino_grid", "--grid-size", "8",
+        "--latent-token-count", "64", "--dino-grid-cache", "cache",
+        f"--lambda-sigreg={coefficient}",
+    ]
+
+
+@pytest.mark.parametrize("coefficient", [0.0, 0.1, 0.25])
+def test_sigreg_coefficient_passes_cli_and_grid_validation(tmp_path, coefficient):
+    model = tmp_path / "model"
+    _write_state_config(model)
+    args = parse_sft2_args(_cli_args(model, str(coefficient)))
+    assert args.lambda_sigreg == coefficient
+    assert _validate_dino_grid_contract(args)["grid_tokens"] == 64
+
+
+@pytest.mark.parametrize("coefficient", [-0.1, float("nan"), float("inf"), -float("inf")])
+def test_sigreg_coefficient_rejects_invalid_cli_and_direct_calls(tmp_path, coefficient):
+    model = tmp_path / "model"
+    with pytest.raises(SystemExit):
+        parse_sft2_args(_cli_args(model, str(coefficient)))
+    with pytest.raises(ValueError, match="lambda_sigreg must be finite and nonnegative"):
+        _validate_dino_grid_contract(_args(model, lambda_sigreg=coefficient))
+
+
+@pytest.mark.parametrize("mutation", ["grid", "teacher", "dimension", "query_mode"])
+def test_disabling_sigreg_preserves_state_interface_checks(tmp_path, mutation):
+    model = tmp_path / "model"
+    _write_state_config(model)
+    args = parse_sft2_args(_cli_args(model, "0"))
+    if mutation == "teacher":
+        path = model / "grid_state_config.json"
+        config = json.loads(path.read_text())
+        config["dino_identity"] = {}
+        path.write_text(json.dumps(config))
+    elif mutation == "grid":
+        args.latent_token_count = 16
+    elif mutation == "dimension":
+        args.emb_dim = 512
+    else:
+        args.latent_query_mode = "generate"
+    with pytest.raises(ValueError):
+        _validate_dino_grid_contract(args)

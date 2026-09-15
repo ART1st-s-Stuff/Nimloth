@@ -262,6 +262,8 @@ def parse_sft2_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     if not 0 <= args.lambda_outcome < float("inf"):
         ap.error("lambda_outcome must be finite and nonnegative")
+    if not 0 <= args.lambda_sigreg < float("inf"):
+        ap.error("lambda_sigreg must be finite and nonnegative")
     if args.lambda_outcome > 0 and not args.outcome_head:
         ap.error("lambda_outcome > 0 requires --outcome-head")
     if args.outcome_head and args.objective != "dino_grid":
