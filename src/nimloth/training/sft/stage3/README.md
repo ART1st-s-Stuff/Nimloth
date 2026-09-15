@@ -143,3 +143,16 @@ WM/projector/value/outcome 仍采用 DDP，学习率和目标不变。优化器�
 
 FSDP 是新的恢复身份。CPU policy/归一化测试不证明 CUDA all-gather、EMA交换、
 主损失加 SIGReg 两次反传或完整 checkpoint 恢复；启动前必须通过实际多卡 canary。
+
+## 同一次更新内共享轨迹编码
+
+`--trajectory-shared-forward` 启用 `trajectory.py`：校验 token、图像及 mRoPE
+前缀后，按轨迹合并同一参数更新中的输入。目标 EMA/eval 分支先执行，在线
+分支再一次返回各步 Query states 与逐窗口 LM loss。窗口与 SIGReg 仍按原
+微批执行，先累加对共享输出的梯度，再统一反传在线编码器和 projector。
+当前只支持 H=1、T>1、K>1 且无 encoder/projector dropout 的配置；默认关闭。
+参数更新后不保留共享 states。详见三阶段 SFT spec 的梯度和归约合同。
+
+`target_encode`、`online_encode`、`shared_backward` 分别计时；主阶段计时
+此时只含窗口 heads。规划与前缀校验开销不在这些分项内，总加速按墙钟时间
+比较。`encoder_*` 指标是本地更新组数量的汇总均值，不是全局累计 token 数。
