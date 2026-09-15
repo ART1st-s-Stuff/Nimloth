@@ -293,6 +293,7 @@ def build_compact_transition_preprocess_cache(
     image_dtype: str = "bfloat16",
     image_shard_size: int = 128,
     transition_shard_size: int = 256,
+    reuse_image_cache: Path | None = None,
 ) -> None:
     """Build a deduplicated cache: each image once, token prefixes in mmap shards."""
 
@@ -356,6 +357,37 @@ def build_compact_transition_preprocess_cache(
     image_shard_count = len(image_chunks)
     transition_shard_count = math.ceil(transition_count / transition_shard_size) if transition_count else 0
 
+    image_reuse = None
+    if reuse_image_cache is not None:
+        from .image_reuse import validate_image_reuse
+        source_root, destination_root = reuse_image_cache.resolve(), cache_dir.resolve()
+        if (source_root == destination_root or source_root in destination_root.parents
+                or destination_root in source_root.parents):
+            raise ValueError("image reuse source and destination caches must not overlap")
+        old_manifest = json.loads((reuse_image_cache / "manifest.json").read_text())
+        # Recompute the old identity using its text length/mask version. Images
+        # are unchanged, while the destination always uses current text identity.
+        old_base = cache_fingerprint(
+            jsonl_path, max_length=int(old_manifest["max_length"]),
+            max_pixels=max_pixels, min_pixels=min_pixels, vocab_size=len(processor.tokenizer),
+            value_gamma=value_gamma, latent_token_count=latent_token_count,
+            mask_latent_query_labels=mask_latent_query_labels,
+            cache_format=COMPACT_CACHE_FORMAT, image_dtype=image_dtype,
+            processor_source=str(model_path.resolve()),
+            ce_mask_version=old_manifest["ce_mask_version"],
+            transition_expansion_version=old_manifest["transition_expansion_version"],
+        )
+        image_reuse = validate_image_reuse(
+            reuse_image_cache, paths=unique_image_paths,
+            source_fingerprint=image_source_fingerprint, base_fingerprint=old_base,
+            image_dtype=image_dtype, max_pixels=max_pixels, min_pixels=min_pixels,
+            image_shard_size=image_shard_size,
+            pixel_width=(int(processor.image_processor.patch_size) ** 2
+                         * int(processor.image_processor.temporal_patch_size)
+                         * len(processor.image_processor.image_mean)),
+            merge_size=int(processor.image_processor.merge_size),
+        )
+
     cache_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = cache_dir / "manifest.json"
     build_state_path = cache_dir / "build_state.json"
@@ -403,6 +435,8 @@ def build_compact_transition_preprocess_cache(
         "image_shard_size": image_shard_size,
         "transition_shard_size": transition_shard_size,
     }
+    if image_reuse is not None:
+        expected_build_state["image_reuse"] = image_reuse
     if build_state_path.is_file():
         build_state = json.loads(build_state_path.read_text(encoding="utf-8"))
         if build_state != expected_build_state:
@@ -424,6 +458,10 @@ def build_compact_transition_preprocess_cache(
         state_tmp = build_state_path.with_suffix(".json.tmp")
         state_tmp.write_text(json.dumps(expected_build_state, indent=2), encoding="utf-8")
         os.replace(state_tmp, build_state_path)
+
+    if image_reuse is not None:
+        from .image_reuse import link_verified_images
+        link_verified_images(image_reuse, cache_dir)
 
     workers = max(1, int(preprocess_workers))
     image_tasks = [
@@ -583,6 +621,8 @@ def build_compact_transition_preprocess_cache(
         "transition_expansion_version": TRANSITION_EXPANSION_VERSION,
         "dir": str(cache_dir),
     }
+    if image_reuse is not None:
+        manifest["image_reuse"] = image_reuse
     manifest_tmp = manifest_path.with_suffix(".json.tmp")
     manifest_tmp.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     os.replace(manifest_tmp, manifest_path)

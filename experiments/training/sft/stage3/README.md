@@ -22,6 +22,12 @@ record hashes and every verified image identity; record and image sources are no
 without loading Qwen weights. Specify source/output/processor, token count, max
 length and max pixels explicitly. It refuses existing outputs and never filters
 failed trajectories. Run separately for `preprocess/train` and `preprocess/val`.
+Optionally pass `--reuse-image-cache OLD_SPLIT_DIRECTORY` to validate and hardlink
+unchanged image shards into the new output. Text and labels are rebuilt with the
+current encoding contract; old transitions are never reused. Source identity,
+image settings, ordered indices, grids and shard layout must match. This saves
+disk space but still reads the image shards for validation and SHA256 recording.
+The source remains unchanged, and the two directories must not overlap.
 
 ## Training activation storage
 

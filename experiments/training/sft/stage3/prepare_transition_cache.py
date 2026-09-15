@@ -18,6 +18,7 @@ def main(argv=None):
     parser.add_argument('--max-length', type=int, required=True)
     parser.add_argument('--max-pixels', type=int, required=True)
     parser.add_argument('--workers', type=int, default=16)
+    parser.add_argument('--reuse-image-cache', type=Path, default=None)
     parser.add_argument('--gamma', type=float, default=1.0)
     args = parser.parse_args(argv)
     if min(args.latent_token_count, args.max_length, args.max_pixels, args.workers) < 1:
@@ -38,6 +39,7 @@ def main(argv=None):
         latent_token_count=args.latent_token_count, mask_latent_query_labels=True,
         success_only=False, force=False, image_dtype='bfloat16',
         image_shard_size=128, transition_shard_size=256,
+        reuse_image_cache=args.reuse_image_cache,
     )
 
 

@@ -35,6 +35,7 @@ def cache_fingerprint(
     image_dtype: str = "float32",
     processor_source: str = "",
     transition_expansion_version: str = TRANSITION_EXPANSION_VERSION,
+    ce_mask_version: str = CE_MASK_VERSION,
 ) -> str:
     stat = jsonl_path.stat()
     payload = "|".join(
@@ -53,7 +54,7 @@ def cache_fingerprint(
             cache_format,
             image_dtype,
             processor_source,
-            CE_MASK_VERSION,
+            ce_mask_version,
             transition_expansion_version,
         ]
     )

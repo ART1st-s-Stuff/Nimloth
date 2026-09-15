@@ -104,7 +104,7 @@ def test_cached_incomplete_image_tokens_rejected_before_collation(image_path):
         Qwen25VLInputBuilder(processor, 512).collate_encoded([row], include_labels=True)
 
 
-def test_old_label_cache_version_rejected_by_production_loader(tmp_path, monkeypatch):
+def test_old_label_cache_version_rejected_by_production_loader(tmp_path):
     import json
     from types import SimpleNamespace
     from nimloth.util.cache import schema
@@ -123,9 +123,7 @@ def test_old_label_cache_version_rejected_by_production_loader(tmp_path, monkeyp
         mask_latent_query_labels=True, cache_format=schema.COMPACT_CACHE_FORMAT,
         image_dtype="bfloat16", processor_source=str(tmp_path.resolve()))
     current = schema.cache_fingerprint(data, **kwargs)
-    with monkeypatch.context() as old_version:
-        old_version.setattr(schema, "CE_MASK_VERSION", "last_assistant_span_v1")
-        old = schema.cache_fingerprint(data, **kwargs)
+    old = schema.cache_fingerprint(data, **kwargs, ce_mask_version="last_assistant_span_v1")
     assert old != current
     manifest = dict(format=schema.COMPACT_CACHE_FORMAT, base_fingerprint=current, count=1)
     (cache / "manifest.json").write_text(json.dumps(manifest))
@@ -136,3 +134,84 @@ def test_old_label_cache_version_rejected_by_production_loader(tmp_path, monkeyp
     (cache / "manifest.json").write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match="fingerprint/count mismatch"):
         _verify_cache_manifest(**verify)
+
+
+def test_image_reuse_builds_fresh_transition_labels_without_touching_source(tmp_path, image_path, monkeypatch):
+    import json
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+    from nimloth.rollout.transitions import TransitionSample
+    from nimloth.util.cache import build, schema
+    from nimloth.util.cache.image_reuse import file_sha256
+
+    processor = _processor("right")
+    messages = _messages(image_path, two_images=False)
+    paths = [str(image_path.resolve())]
+    unbound = [{"role": "user", "content": "<image>observe"}, messages[-1]]
+    sample = TransitionSample("record", 0, unbound, paths, 0, paths[0], paths[0])
+    data = tmp_path / "data.jsonl"
+    data.write_text('{}\n')
+    source, destination = tmp_path / "old", tmp_path / "new"
+    (source / "images").mkdir(parents=True)
+    (source / "transitions").mkdir()
+    with Image.open(image_path) as picture:
+        pixels = processor.image_processor(images=[picture.convert("RGB")], return_tensors="pt")
+    grids = pixels["image_grid_thw"].long()
+    image_file = source / "images" / "shard_00000.pt"
+    torch.save(dict(pixel_values=pixels["pixel_values"].bfloat16(), image_grid_thw=grids,
+                    offsets=torch.tensor([0, pixels["pixel_values"].shape[0]])), image_file)
+    old_text = source / "transitions" / "shard_00000.pt"
+    torch.save({"old_label_sentinel": True}, old_text)
+    index = dict(format=schema.COMPACT_CACHE_FORMAT,
+                 images=[dict(path=paths[0], shard=0, index=0, grid_thw=grids[0].tolist())])
+    (source / "image_index.json").write_text(json.dumps(index))
+    old_base = schema.cache_fingerprint(data, max_length=128, max_pixels=3136,
+        min_pixels=3136, vocab_size=len(processor.tokenizer), image_dtype="bfloat16",
+        processor_source=str(tmp_path.resolve()), ce_mask_version="last_assistant_span_v1")
+    manifest = dict(format=schema.COMPACT_CACHE_FORMAT, base_fingerprint=old_base,
+        image_source_fingerprint=build._compact_image_source_fingerprint(paths), image_dtype="bfloat16",
+        max_pixels=3136, min_pixels=3136, max_length=128, image_shard_size=128,
+        image_shards=1, unique_images=1, ce_mask_version="last_assistant_span_v1",
+        transition_expansion_version=schema.TRANSITION_EXPANSION_VERSION)
+    (source / "manifest.json").write_text(json.dumps(manifest))
+    before = {path: file_sha256(path) for path in source.rglob("*") if path.is_file()}
+    monkeypatch.setattr(build, "TransitionJsonlDataset", lambda *args, **kwargs: SimpleNamespace(samples=[sample]))
+
+    def initialize(_model, _min, _max, max_length, latent_count, mask_queries):
+        monkeypatch.setattr(build, "_CACHE_PROCESSOR", processor)
+        monkeypatch.setattr(build, "_CACHE_MAX_LENGTH", max_length)
+        monkeypatch.setattr(build, "_CACHE_LATENT_TOKEN_COUNT", latent_count)
+        monkeypatch.setattr(build, "_CACHE_MASK_LATENT_QUERY_LABELS", mask_queries)
+
+    class DirectExecutor:
+        def __init__(self, *, initializer, initargs, **kwargs):
+            initializer(*initargs)
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def submit(self, function, task):
+            future = Future()
+            future.set_result(function(task))
+            return future
+
+    def no_image_reencode(*args):
+        raise AssertionError("verified image shard must be reused")
+
+    monkeypatch.setattr(build, "_init_cache_worker", initialize)
+    monkeypatch.setattr(build, "ProcessPoolExecutor", DirectExecutor)
+    monkeypatch.setattr(build, "_cache_one_image_shard", no_image_reencode)
+    build.build_compact_transition_preprocess_cache(jsonl_path=data, cache_dir=destination,
+        model_path=tmp_path, processor=processor, max_length=512, max_pixels=3136,
+        min_pixels=3136, reuse_image_cache=source)
+    assert (destination / "images" / image_file.name).samefile(image_file)
+    generated = destination / "transitions" / old_text.name
+    assert not generated.samefile(old_text)
+    fresh = torch.load(generated, weights_only=True)["entries"][0]["current_enc"]
+    expected = encode_qwen_item(messages, processor, 512)
+    torch.testing.assert_close(fresh["labels"], expected["labels"])
+    assert int((fresh["labels"] != -100).sum()) == 6
+    assert all(file_sha256(path) == digest for path, digest in before.items())
+    result = json.loads((destination / "manifest.json").read_text())
+    assert result["ce_mask_version"] == schema.CE_MASK_VERSION and result["max_length"] == 512
+    assert not (destination / "build_state.json").exists()
