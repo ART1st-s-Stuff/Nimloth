@@ -35,7 +35,7 @@ def command(args, arm, phase, port):
         'lr-qwen-start': 2e-6, 'lr-qwen-peak': 2e-6, 'state-proj-lr': 8e-5,
         'wm-predictor-lr': 3e-4, 'value-head-lr': 1e-4, 'outcome-head-lr': 1e-4,
         'lambda-outcome': int(arm == 'treatment'), 'max-length': args.max_length,
-        'checkpoint-interval-steps': 10, 'checkpoint-keep-last': 2,
+        'checkpoint-interval-steps': 10, 'checkpoint-keep-last': 1,
         'checkpoint-interval-minutes': 0, 'step-timing-interval': 1,
         'step-timing-sample-interval': getattr(args, 'step_timing_sample_interval', 10) if phase == 'formal' else 1,
         'wandb-run-name': f'{args.run_root.name}_{arm}_{phase}',
@@ -235,7 +235,7 @@ def execute(args):
     environment = dict(os.environ, CUDA_VISIBLE_DEVICES='0,1,2,3,4,5,6,7', TOKENIZERS_PARALLELISM='false')
     environment['PYTHONPATH'] = str(args.worktree / 'src')
     record = {'commit': commit, 'status': 'running', 'phases': [], 'hard_seconds_per_arm': ARM_SECONDS,
-              'retention': {'rolling_keep_last':2, 'cleanup_validated_canaries':args.cleanup_validated_canaries, 'cleanup_validated_intermediates':args.cleanup_validated_intermediates, 'deduplicate_epoch_checkpoints':True},
+              'retention': {'rolling_keep_last':1, 'cleanup_validated_canaries':args.cleanup_validated_canaries, 'cleanup_validated_intermediates':args.cleanup_validated_intermediates, 'deduplicate_epoch_checkpoints':True},
               'dataset_sha256': {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in [('train', args.train), ('val', args.val)]}}
     consumed_seconds = {}
     measured_checkpoint_gib = None

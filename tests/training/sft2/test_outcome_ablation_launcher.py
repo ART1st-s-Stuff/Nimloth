@@ -23,6 +23,10 @@ def test_arm_commands_match_and_canary_resumes_explicitly(tmp_path):
     control = launcher.command(config, 'control', 'formal', 29501)
     treatment = launcher.command(config, 'treatment', 'formal', 29502)
     assert '--nproc_per_node=8' in control
+    for arm in ('control', 'treatment'):
+        for phase in ('canary', 'resume', 'formal'):
+            generated = launcher.command(config, arm, phase, 29501)
+            assert generated[generated.index('--checkpoint-keep-last') + 1] == '1'
     for option in ('--model','--batch-size','--grad-accum','--seed','--query-lr','--protocol-lr','--lr-qwen-peak'):
         assert control[control.index(option)+1] == treatment[treatment.index(option)+1]
     assert control[control.index('--lambda-outcome')+1] == '0'
@@ -62,7 +66,7 @@ def test_generated_training_arguments_parse_in_production(tmp_path):
         parsed = parse_sft2_args(argv[argv.index('nimloth.training.sft.stage3')+1:])
         assert parsed.query_tune == 'selected_rows'
         assert parsed.lambda_outcome == 1
-        assert parsed.checkpoint_keep_last == 2
+        assert parsed.checkpoint_keep_last == 1
 
 
 def test_resolved_launch_contract_matches_reviewed_configuration(tmp_path):
@@ -83,7 +87,7 @@ def test_resolved_launch_contract_matches_reviewed_configuration(tmp_path):
         'max_length':12000, 'max_pixels':100352, 'emb_dim':1024,
         'attn_implementation':'flash_attention_2', 'gradient_checkpointing':True,
         'checkpoint_interval_steps':10, 'checkpoint_interval_minutes':0,
-        'checkpoint_keep_last':2, 'require_prebuilt_cache':True,
+        'checkpoint_keep_last':1, 'require_prebuilt_cache':True,
         'preprocess_cache_image_dtype':'bfloat16', 'success_only':False,
         'grid_wm_depth':6, 'grid_wm_heads':16, 'grid_wm_dim_head':64,
         'grid_wm_mlp_dim':2048, 'grid_wm_dropout':.1,
