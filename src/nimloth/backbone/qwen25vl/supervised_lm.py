@@ -58,6 +58,9 @@ def window_lm_projection(head: nn.Module, labels: torch.Tensor, weights: torch.T
     positions = [(row[1:] != -100).nonzero(as_tuple=True)[0] for row in labels]
     if any(position.numel() == 0 for position in positions):
         raise ValueError("LM window has no supervised answer tokens")
+    # Resolve the binary mask once, before any full-vocabulary CE projection.
+    # All rows still pass label validation, including failure/padding rows.
+    active_rows = weights.nonzero(as_tuple=True)[0].tolist()
     leaf = _linear_leaf(head)
     captured = {}
 
@@ -69,11 +72,18 @@ def window_lm_projection(head: nn.Module, labels: torch.Tensor, weights: torch.T
         hidden = captured.pop("hidden")
         if hidden.shape[:2] != labels.shape:
             raise ValueError("weighted LM hidden and label sequence shapes disagree")
+        if not active_rows:
+            # Keep the ordinary one-token head output connected. This gives
+            # dense/selected head rows and hidden states explicit zero gradients
+            # and retains the FSDP wrapper backward hook on ranks with no LM.
+            # No CE or checkpointed projection is needed on these ranks.
+            return _output.float().sum() * 0.0
         row_losses = []
         # The closure captures the module, not any transient parameter tensors.
         def token_loss(chunk_hidden, chunk_targets):
             return _token_loss(module, chunk_hidden, chunk_targets)
-        for row, position in enumerate(positions):
+        for row in active_rows:
+            position = positions[row]
             total = hidden.new_zeros((), dtype=torch.float32)
             for chunk in position.split(128):
                 chunk_hidden = hidden[row, chunk]
@@ -83,7 +93,7 @@ def window_lm_projection(head: nn.Module, labels: torch.Tensor, weights: torch.T
                     if torch.is_grad_enabled() else token_loss(chunk_hidden, targets)
                 )
             row_losses.append(total / position.numel())
-        return (torch.stack(row_losses) * weights).sum() / weights.sum().clamp_min(1)
+        return torch.stack(row_losses).sum() / weights.sum().clamp_min(1)
 
     pre = leaf.register_forward_pre_hook(trim_projection)
     post = leaf.register_forward_hook(compute_loss)

@@ -272,3 +272,40 @@ def test_control_resume_rejects_unmatched_or_incomplete_source(tmp_path, monkeyp
     (config.resume_control_from.parent.parent/'controller/progress.json').write_text(json.dumps(record))
     with pytest.raises((RuntimeError, TimeoutError)):
         launcher.validate_control_resume(config)
+
+
+@pytest.mark.parametrize('mutation', [None, 'source_record', 'hash', 'budget', 'source_path'])
+def test_repeated_control_resume_validates_provenance_and_budget(tmp_path, monkeypatch, mutation):
+    import json
+    config, _ = resume_fixture(tmp_path, monkeypatch)
+    inherited = launcher.validate_control_resume(config)
+    old_source = config.resume_control_from
+    next_root = tmp_path/'next'
+    resumed_config = SimpleNamespace(**vars(config))
+    resumed_config.run_root = next_root
+    argv = launcher.command(resumed_config, 'control', 'formal', 29501)
+    checkpoint = next_root/'control'/'step_000020'
+    make_intermediate(checkpoint)
+    for name in ('selected_token_rows.pt', 'model.safetensors', 'vision_ema.pt'):
+        (checkpoint/name).write_bytes(b'fixture')
+    record = dict(dataset_sha256=inherited['original_progress']['dataset_sha256'],
+                  resume_control=inherited,
+                  phases=[dict(arm='control', phase='formal', status='failed', started_at=1010, argv=argv)])
+    if mutation == 'source_record':
+        inherited['original_progress']['phases'][0]['status'] = 'failed'
+    elif mutation == 'hash':
+        (old_source/'training_state.pt').write_bytes(b'changed')
+    elif mutation == 'budget':
+        inherited['consumed_seconds']['control'] = launcher.ARM_SECONDS
+    elif mutation == 'source_path':
+        inherited['source'] = str(checkpoint)
+    (next_root/'controller').mkdir()
+    (next_root/'controller/progress.json').write_text(json.dumps(record))
+    config.resume_control_from = checkpoint
+    monkeypatch.setattr(launcher.time, 'time', lambda: 1100)
+    if mutation is None:
+        result = launcher.validate_control_resume(config)
+        assert result['consumed_seconds'] == {'control': 250, 'treatment': 100}
+    else:
+        with pytest.raises((RuntimeError, TimeoutError)):
+            launcher.validate_control_resume(config)

@@ -256,20 +256,48 @@ def validate_control_resume(args):
                for token in tokens for value in [token.split('=', 1)[-1]]):
             raise RuntimeError('old run still has a live process')
     record = json.loads((old_root / 'controller/progress.json').read_text())
-    completed = {(p['arm'], p['phase']) for p in record['phases'] if p['status'] == 'complete'}
-    if not {(a, p) for a in ('control', 'treatment') for p in ('canary', 'resume')} <= completed:
-        raise RuntimeError('all four original canary/resume gates must be complete')
-    if any(p['arm'] == 'treatment' and p['phase'] == 'formal' for p in record['phases']):
-        raise RuntimeError('treatment formal phase has already started')
-    formal = [p for p in record['phases'] if p['arm'] == 'control' and p['phase'] == 'formal']
-    if len(formal) != 1 or formal[0]['status'] == 'complete':
-        raise RuntimeError('expected one interrupted control formal phase')
     expected_hashes = {name: hashlib.sha256(path.read_bytes()).hexdigest()
                        for name, path in [('train', args.train), ('val', args.val)]}
-    if record.get('dataset_sha256') != expected_hashes:
-        raise RuntimeError('resume dataset hashes differ')
-    if semantic_command(formal[0]['argv']) != semantic_command(command(args, 'control', 'formal', 29500)):
-        raise RuntimeError('resume changes semantic training arguments')
+    expected_command = semantic_command(command(args, 'control', 'formal', 29500))
+    chain = []
+    seen = set()
+    current, root = record, old_root
+    while True:
+        identity = str(root.resolve())
+        if identity in seen:
+            raise RuntimeError('cyclic resume provenance')
+        seen.add(identity)
+        if current.get('dataset_sha256') != expected_hashes:
+            raise RuntimeError('resume dataset hashes differ')
+        if any(p['arm'] == 'treatment' and p['phase'] == 'formal' for p in current['phases']):
+            raise RuntimeError('treatment formal phase has already started')
+        formal = [p for p in current['phases'] if p['arm'] == 'control' and p['phase'] == 'formal']
+        if len(formal) != 1 or formal[0]['status'] == 'complete':
+            raise RuntimeError('expected one interrupted control formal phase')
+        if semantic_command(formal[0]['argv']) != expected_command:
+            raise RuntimeError('resume changes semantic training arguments')
+        chain.append((current, formal[0]))
+        inherited = current.get('resume_control')
+        if not inherited:
+            completed = {(p['arm'], p['phase']) for p in current['phases'] if p['status'] == 'complete'}
+            if not {(a, p) for a in ('control', 'treatment') for p in ('canary', 'resume')} <= completed:
+                raise RuntimeError('all four original canary/resume gates must be complete')
+            break
+        source = Path(inherited['source'])
+        if source.parent.name != 'control' or not re.fullmatch(r'step_[0-9]{6,}', source.name):
+            raise RuntimeError('invalid inherited control source')
+        argv = formal[0]['argv']
+        if '--resume-from' not in argv or Path(argv[argv.index('--resume-from') + 1]) != source:
+            raise RuntimeError('inherited checkpoint differs from actual command')
+        root = source.parent.parent
+        original = json.loads((root / 'controller/progress.json').read_text())
+        if original != inherited['original_progress']:
+            raise RuntimeError('inherited progress differs from source record')
+        if checkpoint_metadata(args, source) != inherited['metadata']:
+            raise RuntimeError('inherited checkpoint metadata changed')
+        if inherited.get('training_state_sha256') and file_sha256(source / 'training_state.pt') != inherited['training_state_sha256']:
+            raise RuntimeError('inherited checkpoint hash changed')
+        current = original
     required = ['training_state.pt', 'state_proj.pt', 'selected_token_rows.pt', 'outcome_head.pt', 'vision_ema.pt',
                 'wm_predictor/predictor.pt', 'value_head/value_head.pt',
                 *[f'history_cache_rank_{r:03d}.pt' for r in range(8)]]
@@ -288,16 +316,33 @@ def validate_control_resume(args):
             or not metadata.get('has_optimizer') or not metadata.get('training_invariants')
             or not metadata.get('micro_step_in_epoch')):
         raise RuntimeError('invalid control optimizer/recovery metadata')
-    consumed = {}
-    for arm in ('control', 'treatment'):
-        done = [p.get('arm_consumed_seconds', 0) for p in record['phases']
-                if p['arm'] == arm and p['status'] == 'complete']
-        consumed[arm] = max(done, default=0)
-    consumed['control'] += max(0, time.time() - formal[0]['started_at'])
+    # Reconstruct the original budget from the root. Charge all wall time since
+    # its formal start, including interruptions; inherited counters can only
+    # increase this conservative amount, never reset it.
+    original, first_formal = chain[-1]
+    consumed = {arm: max((p.get('arm_consumed_seconds', 0) for p in original['phases']
+                         if p['arm'] == arm and p['status'] == 'complete'), default=0)
+                for arm in ('control', 'treatment')}
+    consumed['control'] += max(0, time.time() - first_formal['started_at'])
+    for item, _ in chain:
+        inherited = item.get('resume_control') or {}
+        for arm, value in inherited.get('consumed_seconds', {}).items():
+            if arm not in consumed or not math.isfinite(value) or value < 0:
+                raise RuntimeError('invalid inherited budget')
+            consumed[arm] = max(consumed[arm], value)
     if any(value >= ARM_SECONDS for value in consumed.values()):
         raise TimeoutError('original arm budget exhausted')
     return {'source': str(checkpoint), 'metadata': metadata, 'consumed_seconds': consumed,
+            'training_state_sha256': file_sha256(checkpoint / 'training_state.pt'),
             'original_progress': record}
+
+
+def file_sha256(path):
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for block in iter(lambda: stream.read(4 * 1024**2), b''):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def execute(args):

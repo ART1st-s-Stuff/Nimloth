@@ -13,7 +13,7 @@ from nimloth.backbone.selected_token_rows import _install_leaf
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
-@pytest.mark.parametrize("weights", [[1., 1.], [1., 0.], [0., 0.]])
+@pytest.mark.parametrize("weights", [[1., 1.], [1., 0.], [0., 1.], [0., 0.]])
 @pytest.mark.parametrize("hidden_grad", [False, True])
 def test_joint_checkpoint_chunks_equal_full_projection(dtype, weights, hidden_grad, monkeypatch):
     torch.manual_seed(62)
@@ -43,8 +43,9 @@ def test_joint_checkpoint_chunks_equal_full_projection(dtype, weights, hidden_gr
             loss = head(hidden)
     assert loss.ndim == 0
     calls_after_forward = len(chunk_calls)
-    assert calls_after_forward == 5
-    assert max(chunk_calls) == 128
+    assert calls_after_forward == int(weights[0]) * 3 + int(weights[1]) * 2
+    if calls_after_forward:
+        assert max(chunk_calls) == 128
     # Neither full-prefix nor per-chunk vocabulary scores survive for backward.
     assert not any(len(shape) >= 2 and shape[-1] == 257 and shape[-2] > 1 for shape in shapes)
     # Independent non-checkpointed chunk reference preserves GEMM ordering;
@@ -100,3 +101,47 @@ def test_unknown_head_forward_cannot_be_replaced_silently():
         with supervised_lm.window_lm_projection(CustomHead(4, 12, bias=False),
                                                 torch.tensor([[-100, 2]]), torch.ones(1)):
             pass
+
+
+@pytest.mark.parametrize("weights", [[1., 0.], [0., 0.]])
+@pytest.mark.parametrize("grad_enabled", [True, False])
+def test_dense_head_skips_zero_rows_before_ce(weights, grad_enabled, monkeypatch):
+    torch.manual_seed(19)
+    head = nn.Linear(8, 31, bias=False)
+    reference = copy.deepcopy(head)
+    hidden = torch.randn(2, 5, 8, requires_grad=True)
+    other_hidden = hidden.detach().clone().requires_grad_(True)
+    labels = torch.tensor([[-100, 2, 3, -100, 4], [-100, 5, 6, 7, 8]])
+    weights = torch.tensor(weights)
+    target_calls = []
+    original = supervised_lm._token_loss
+    def record(module, chunk, targets):
+        target_calls.append(targets.detach().tolist())
+        return original(module, chunk, targets)
+    monkeypatch.setattr(supervised_lm, "_token_loss", record)
+    with torch.set_grad_enabled(grad_enabled):
+        with supervised_lm.window_lm_projection(head, labels, weights):
+            loss = head(hidden)
+        scores = reference(other_hidden)[:, :-1]
+        per_token = F.cross_entropy(scores.reshape(-1, 31), labels[:, 1:].reshape(-1),
+                                    ignore_index=-100, reduction="none").reshape(2, -1)
+        per_row = per_token.sum(-1) / (labels[:, 1:] != -100).sum(-1)
+        expected = (per_row * weights).sum() / weights.sum().clamp_min(1)
+    assert target_calls == ([[2, 3, 4]] if weights[0] else [])
+    torch.testing.assert_close(loss, expected)
+    if grad_enabled:
+        loss.backward()
+        expected.backward()
+        torch.testing.assert_close(hidden.grad, other_hidden.grad)
+        torch.testing.assert_close(head.weight.grad, reference.weight.grad)
+        assert hidden.grad[1].count_nonzero() == 0
+
+
+@pytest.mark.parametrize("weight", [0., 1.])
+def test_empty_supervision_still_rejected_on_zero_weight_rows(weight):
+    head = nn.Linear(4, 12, bias=False)
+    with pytest.raises(ValueError, match="no supervised answer tokens"):
+        with supervised_lm.window_lm_projection(
+                head, torch.full((1, 3), -100), torch.tensor([weight])):
+            pass
+    assert not head._forward_pre_hooks and not head._forward_hooks

@@ -108,7 +108,7 @@ For weighted Stage3 LM windows, one FSDP-owned head invocation jointly checkpoin
 and CE in chunks of 128 positions whose next-token label is not `-100`. Keep the full vocabulary,
 per-window token mean, binary row weights and complete query hidden states. Its private scalar
 head result keeps backward unsharding ahead of recomputation; read current parameter views.
-Zero-weight rows retain a differentiable head path. Validate the mathematical objective against
+Zero-weight rows skip answer-token projection and CE, but retain a differentiable single-token head path when all rows have zero weight. Preserve one FSDP-owned head invocation on every rank and explicit zero gradients for trainable head/selected rows. Validate labels for excluded rows too; do not silently accept an empty answer. Validate the mathematical objective against
 dense FP32 gradients and validate checkpoint/FSDP behavior against independent chunk references;
 report BF16 accumulation-order rounding separately. Do not retain token-by-vocabulary activations,
 truncate labels, sample vocabulary or use per-rank varying head-call counts.
