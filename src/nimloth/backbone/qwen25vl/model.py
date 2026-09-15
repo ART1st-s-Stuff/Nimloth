@@ -11,7 +11,7 @@ from torch import nn
 
 from nimloth.backbone.base import Backbone, BackboneBatch, BackboneOutput
 from nimloth.backbone.qwen25vl.checkpoint import save_full_vision_state
-from nimloth.backbone.qwen25vl.latent import extract_qwen_latents
+from nimloth.backbone.qwen25vl.latent import extract_qwen_latents, extract_qwen_trajectory_latents
 from nimloth.latent import materialize_query_embedding_adapter
 
 
@@ -48,6 +48,11 @@ class Qwen25VLBackbone(Backbone):
     ) -> BackboneOutput:
         model_inputs = dict(batch.tensors)
         lm_row_weights = model_inputs.pop("lm_row_weights", None)
+        state_positions = model_inputs.pop("state_positions", None)
+        lm_source_rows = model_inputs.pop("lm_source_rows", None)
+        lm_labels = model_inputs.pop("lm_labels", None)
+        if state_positions is None and (lm_labels is not None or lm_source_rows is not None):
+            raise ValueError("virtual LM metadata requires explicit state positions")
         if not include_lm_loss:
             model_inputs.pop("labels", None)
         raw_model = self.model.module if hasattr(self.model, "module") else self.model
@@ -57,6 +62,17 @@ class Qwen25VLBackbone(Backbone):
             if mixed and self.device.type == "cuda" else nullcontext()
         )
         with context:
+            if state_positions is not None:
+                hidden, losses = extract_qwen_trajectory_latents(
+                    self.model, model_inputs, self.token_id_map, self.device,
+                    state_positions=state_positions, latent_token_count=self.latent_token_count,
+                    lm_labels=lm_labels if include_lm_loss else None,
+                    lm_source_rows=lm_source_rows if include_lm_loss else None,
+                    lm_row_weights=lm_row_weights if include_lm_loss else None,
+                )
+                mean = (losses.sum() / lm_row_weights.to(losses.device).sum().clamp_min(1)
+                        if losses is not None else None)
+                return BackboneOutput(hidden=hidden, lm_loss=mean, lm_losses=losses)
             hidden, lm_loss = extract_qwen_latents(
                 self.model,
                 model_inputs,

@@ -69,6 +69,8 @@ def _capture_last_hidden(
     logit_mask: torch.Tensor | None = None,
     supervised_labels: torch.Tensor | None = None,
     lm_row_weights: torch.Tensor | None = None,
+    lm_source_rows: torch.Tensor | None = None,
+    return_lm_rows: bool = False,
 ):
     # These are complete-prefix feature/teacher-forcing forwards, never KV-cache
     # decoding. Explicitly disable the model default even under no_grad (EMA
@@ -114,7 +116,8 @@ def _capture_last_hidden(
         if supervised_labels is not None:
             from .supervised_lm import window_lm_projection
             projection_context = window_lm_projection(
-                _unwrap_model(model).get_output_embeddings(), supervised_labels, lm_row_weights)
+                _unwrap_model(model).get_output_embeddings(), supervised_labels, lm_row_weights,
+                source_rows=lm_source_rows, return_rows=return_lm_rows)
         with projection_context:
             output = model(**model_inputs, output_hidden_states=False, return_dict=True)
     finally:
@@ -228,3 +231,56 @@ def connect_unused_logits(hidden: torch.Tensor, logits: torch.Tensor) -> torch.T
     if not logits.requires_grad:
         return hidden
     return hidden + (logits.float().sum() * 0.0).to(hidden.dtype)
+
+
+def extract_qwen_trajectory_latents(
+    model, enc: dict[str, torch.Tensor], token_id_map: dict[str, int],
+    device: torch.device, *, state_positions: torch.Tensor, latent_token_count: int,
+    lm_labels: torch.Tensor | None = None, lm_source_rows: torch.Tensor | None = None,
+    lm_row_weights: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Extract explicit ordered query blocks and virtual-window CE in one forward.
+
+    Positions are ``[states, slots, (batch_row, token_position)]``. Returned
+    losses are per virtual window (zero for masked windows), with no averaging
+    over windows; the caller retains ownership of the original loss groups.
+    """
+    from nimloth.latent.extraction import latent_state_tokens
+
+    if "labels" in enc:
+        raise ValueError("shared trajectory encoding requires explicit virtual LM labels")
+    ids = enc["input_ids"]
+    positions = state_positions.to(device=ids.device)
+    if (positions.dtype != torch.long or positions.ndim != 3
+            or positions.shape[1:] != (latent_token_count, 2) or positions.shape[0] == 0):
+        raise ValueError("state positions must have shape [N,K,2] and integer dtype")
+    rows, columns = positions.unbind(-1)
+    if (torch.any(rows < 0) or torch.any(rows >= ids.shape[0])
+            or torch.any(columns < 0) or torch.any(columns >= ids.shape[1])):
+        raise ValueError("state position is outside the encoded input")
+    if torch.any(rows != rows[:, :1]) or torch.any(columns[:, 1:] != columns[:, :-1] + 1):
+        raise ValueError("state positions must identify contiguous query blocks in one row")
+    expected = torch.tensor([token_id_map[token] for token in latent_state_tokens(latent_token_count)],
+                            device=ids.device)
+    if not torch.all(ids[rows, columns] == expected):
+        raise ValueError("state positions do not match ordered query token IDs")
+    attention = enc.get("attention_mask")
+    if attention is not None and not torch.all(attention[rows, columns] == 1):
+        raise ValueError("state positions cannot select padding")
+    if lm_labels is not None and (lm_source_rows is None or lm_row_weights is None):
+        raise ValueError("virtual LM labels require source rows and window weights")
+    model_inputs = {key: value.to(device, non_blocking=True) for key, value in enc.items()}
+    hidden, output = _capture_last_hidden(
+        model, model_inputs,
+        supervised_labels=lm_labels.to(device) if lm_labels is not None else None,
+        lm_row_weights=lm_row_weights.to(device) if lm_labels is not None else None,
+        lm_source_rows=lm_source_rows.to(device) if lm_labels is not None else None,
+        return_lm_rows=True,
+    )
+    states = hidden[rows.to(device), columns.to(device)]
+    losses = output.logits if lm_labels is not None else None
+    if losses is not None and losses.shape != (lm_labels.shape[0],):
+        raise RuntimeError("shared LM projection did not return per-window losses")
+    if losses is None and torch.is_grad_enabled():
+        states = connect_unused_logits(states, output.logits)
+    return states, losses

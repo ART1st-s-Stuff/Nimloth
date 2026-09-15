@@ -274,3 +274,83 @@ def test_two_rank_cpu_linear_to_block_qwen_optimizer_vision_ema_restore(tmp_path
 def test_two_rank_cuda_linear_to_block_qwen_optimizer_vision_ema_restore(tmp_path):
     torch.multiprocessing.spawn(_portable_worker,
         args=(str(tmp_path / "portable-block-cuda"), True), nprocs=2, join=True)
+
+
+def _trajectory_worker(rank, rendezvous, cuda):
+    from nimloth.backbone.qwen25vl.latent import extract_qwen_trajectory_latents, reset_model_rope_state
+    device = torch.device("cuda", rank) if cuda else torch.device("cpu")
+    if cuda:
+        torch.cuda.set_device(device)
+    dist.init_process_group("nccl" if cuda else "gloo", init_method="file://" + rendezvous,
+                            rank=rank, world_size=2)
+    try:
+        torch.manual_seed(93)
+        raw = _model().to(device)
+        reference = copy.deepcopy(raw)
+        model = _wrap(raw, device, fp32=True, granularity="block")
+        baseline = _wrap(reference, device, fp32=True, granularity="block")
+        config = raw.config.vision_config
+        pixels = torch.randn(8, 3 * config.temporal_patch_size * config.patch_size**2, device=device)
+        ids = torch.tensor([[31, 29, 1, 10, 2, 31, 29, 3, 10, 4]], device=device)
+        labels = torch.full((2, 10), -100, device=device, dtype=torch.long)
+        labels[0, 4] = 2
+        labels[1, 9] = 4
+        positions = torch.tensor([[[0, 3]], [[0, 8]]], device=device)
+        weights = torch.tensor([float(rank), float(rank)], device=device)
+        mapping = {LatentActionTokens().latent_state: 10}
+        inputs = dict(input_ids=ids, pixel_values=pixels,
+                      image_grid_thw=torch.tensor([[1, 2, 2], [1, 2, 2]], device=device))
+        head_calls = []
+        hook = model.module.lm_head.register_forward_hook(lambda *args: head_calls.append(1))
+        reset_model_rope_state(model)
+        states, losses = extract_qwen_trajectory_latents(
+            model, inputs, mapping, device, state_positions=positions, latent_token_count=1,
+            lm_labels=labels, lm_source_rows=torch.zeros(2, dtype=torch.long, device=device),
+            lm_row_weights=weights)
+        probe = torch.linspace(-.2, .3, 16, device=device)
+        (losses.sum() + (states * probe).sum()).backward()
+        hook.remove()
+        assert len(head_calls) == 1
+        gradients = _full_grads(model)
+        expected_states, expected_losses = [], []
+        for index, length in enumerate([5, 10]):
+            prefix = dict(input_ids=ids[:, :length], pixel_values=pixels[:4*(index+1)],
+                          image_grid_thw=inputs["image_grid_thw"][:index+1])
+            reset_model_rope_state(baseline)
+            state, loss = extract_qwen_trajectory_latents(
+                baseline, prefix, mapping, device, state_positions=positions[index:index+1],
+                latent_token_count=1, lm_labels=labels[index:index+1, :length],
+                lm_source_rows=torch.zeros(1, dtype=torch.long, device=device),
+                lm_row_weights=weights[index:index+1])
+            expected_states.append(state.detach())
+            expected_losses.append(loss.detach())
+            (loss.sum() + (state * probe).sum()).backward()
+        torch.testing.assert_close(states, torch.cat(expected_states), atol=2e-5, rtol=2e-5)
+        torch.testing.assert_close(losses, torch.cat(expected_losses), atol=2e-5, rtol=2e-5)
+        other_gradients = _full_grads(baseline)
+        for name, value in gradients.items():
+            assert (value is None) == (other_gradients[name] is None), name
+            if value is not None:
+                torch.testing.assert_close(value, other_gradients[name], atol=5e-5, rtol=1e-4, msg=name)
+        # Alter the later observation pixels/text without changing the first state.
+        changed = {**inputs, "pixel_values": pixels.clone(), "input_ids": ids.clone()}
+        changed["pixel_values"][4:] *= -3
+        changed["input_ids"][0, 7] = 7
+        reset_model_rope_state(model)
+        with torch.no_grad():
+            early, _ = extract_qwen_trajectory_latents(
+                model, changed, mapping, device, state_positions=positions[:1], latent_token_count=1)
+        torch.testing.assert_close(early, states[:1], atol=2e-5, rtol=2e-5)
+    finally:
+        dist.destroy_process_group()
+
+
+def test_two_rank_cpu_trajectory_shared_multimodal_gradients(tmp_path):
+    torch.multiprocessing.spawn(_trajectory_worker,
+        args=(str(tmp_path / "trajectory-cpu"), False), nprocs=2, join=True)
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires two CUDA GPUs")
+def test_two_rank_cuda_trajectory_shared_multimodal_gradients(tmp_path):
+    torch.multiprocessing.spawn(_trajectory_worker,
+        args=(str(tmp_path / "trajectory-cuda"), True), nprocs=2, join=True)
