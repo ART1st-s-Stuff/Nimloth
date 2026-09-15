@@ -29,6 +29,8 @@ class Stage3TrajectoryBatch:
     next_image_paths: tuple[str, ...] = ()
     dino_grid_target: torch.Tensor | None = None
     current_dino_target: torch.Tensor | None = None
+    observed_image_paths: tuple[str, ...] = ()
+    observed_dino_target: torch.Tensor | None = None
 
     def __post_init__(self):
         windows = self.current_indices.numel()
@@ -100,6 +102,23 @@ class Stage3TrajectoryBatch:
         return not bool(self.sample_weights.any())
 
     @property
+    def observed_state_weights(self):
+        weights = []
+        seen = set()
+        for record, left, right, start, end in zip(
+                self.trajectory_ids, self.state_offsets[:-1], self.state_offsets[1:],
+                self.window_offsets[:-1], self.window_offsets[1:], strict=True):
+            group = self.sample_weights[start:end]
+            if not torch.all(group == group[0]):
+                raise ValueError("trajectory windows must share a padding weight")
+            if bool(group[0]) and record in seen:
+                raise ValueError("duplicate valid trajectory in observed-state batch")
+            if bool(group[0]):
+                seen.add(record)
+            weights.append(group[0].expand(right - left))
+        return torch.cat(weights)
+
+    @property
     def window_trajectory_indices(self):
         counts = torch.tensor([right - left for left, right in zip(self.window_offsets[:-1],
                               self.window_offsets[1:], strict=True)], device=self.current_indices.device)
@@ -114,6 +133,7 @@ class SFT2BatchBuilder(Protocol):
     def processor(self): ...
     def supervision_counts(self, raw_batch) -> tuple[int, int]: ...
     def outcome_count(self, raw_batch) -> int: ...
+    def observed_state_count(self, raw_batch) -> int: ...
     def prepare(self, raw_batch) -> Stage3TrajectoryBatch: ...
 
 
@@ -143,6 +163,9 @@ class Stage3BatchAssembler:
                    for start in range(len(item.lm_labels))
                    for sample in item.samples[start:start + self.prediction_horizon])
 
+    def observed_state_count(self, raw_batch: list[EncodedTrajectory]):
+        return sum(len(item.samples) + 1 for item in raw_batch if item.loss_weight)
+
     def prepare(self, raw_batch: list[EncodedTrajectory]) -> Stage3TrajectoryBatch:
         if not raw_batch:
             raise ValueError("trajectory batch must not be empty")
@@ -151,9 +174,11 @@ class Stage3BatchAssembler:
         state_keys, records, state_offsets, window_offsets = [], [], [0], [0]
         state_positions, current_indices, next_indices, actions, returns = [], [], [], [], []
         weights, lm_weights, outcomes, outcome_masks = [], [], [], []
-        labels, sources, current_images, next_images = [], [], [], []
+        labels, sources, current_images, next_images, observed_images = [], [], [], [], []
         for row, item in enumerate(raw_batch):
             samples = item.samples
+            observed_images.extend([sample.current_image_path for sample in samples])
+            observed_images.append(samples[-1].next_image_path)
             record = samples[0].record_id
             records.append(record)
             base = len(state_keys)
@@ -190,4 +215,4 @@ class Stage3BatchAssembler:
             tensor(next_indices, torch.long), tensor(actions, torch.long), tensor(returns, torch.float32),
             tensor(weights, torch.float32), tensor(lm_weights, torch.float32),
             tensor(outcomes, torch.float32), tensor(outcome_masks, torch.bool),
-            tuple(current_images), tuple(next_images))
+            tuple(current_images), tuple(next_images), observed_image_paths=tuple(observed_images))

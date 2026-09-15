@@ -69,6 +69,8 @@ def runtime_and_batch(weights=(1., 1., 1.), success=(1., 1., 0.)):
         sample_weights=torch.tensor(weights), lm_weights=torch.tensor(success) * torch.tensor(weights),
         outcome_targets=torch.zeros(3, 2), outcome_mask=torch.zeros(3, 2, dtype=torch.bool),
         dino_grid_target=torch.randn(3, 2, 4), current_dino_target=None,
+        observed_dino_target=torch.randn(7, 4),
+        observed_state_weights=torch.tensor([weights[0]] * 4 + [weights[2]] * 3),
         prediction_horizon=2, state_offsets=(0, 4, 7), window_offsets=(0, 2, 3),
         trajectory_ids=('first', 'second'), batch_size=3,
     )
@@ -123,10 +125,13 @@ def test_native_window_losses_and_parameter_gradients_match_individual_windows(p
         decisions = torch.cat([state[:, None], predictions[:, :-1]], 1)
         values = reference.wm.predict_action_values(decisions).gather(-1, actions[..., None]).squeeze(-1)
         loss = (.4 * (predictions[0]-target).square().mean()
-                + .5 * (predictions[0]-batch.dino_grid_target[row]).square().mean()
                 + .7 * (values[0]-batch.value_targets[row]).square().mean())
         manual = manual + loss * batch.sample_weights[row] / all_count
         manual = manual + .3 * hidden.square().mean() * batch.lm_weights[row] / lm_count
+    observed = reference.wm.project_state(reference.backbone.model(batch.inputs.tensors['hidden']))
+    manual = manual + .5 * (((observed - batch.observed_dino_target).square().mean(-1)
+                            * batch.observed_state_weights).sum()
+                           / batch.observed_state_weights.sum().clamp_min(1))
     torch.testing.assert_close(output.loss, manual)
     manual.backward()
     for (name, actual), (_, expected) in zip(runtime.agent.named_parameters(), reference.named_parameters()):
@@ -183,3 +188,40 @@ def test_native_rejects_historical_context_and_warms_weight():
     instance = algorithm()
     assert instance.wm_weight(0, 100) == pytest.approx(.1)
     assert instance.wm_weight(30, 100) == pytest.approx(1.)
+
+
+def test_observed_dino_only_reaches_encoder_projector_and_all_real_states():
+    runtime, batch = runtime_and_batch(weights=(1., 1., 0.))
+    batch.observed_dino_target.requires_grad_()
+    output = algorithm().training_primary_step(runtime, batch, wm_weight=.4)
+    output.online_states.retain_grad()
+    output.losses['dino'].backward()
+    assert runtime.agent.backbone.model.weight.grad.abs().sum() > 0
+    assert runtime.agent.wm.state_proj.weight.grad.abs().sum() > 0
+    assert runtime.agent.wm.wm_predictor.net.weight.grad is None
+    assert runtime.agent.wm.value_head.weight.grad is None
+    assert batch.observed_dino_target.grad is None
+    assert output.online_states.grad[:4].abs().sum(-1).gt(0).all()  # Includes terminal.
+    assert output.online_states.grad[4:].count_nonzero() == 0
+
+
+def test_wm_explicitly_detaches_future_encoder_target():
+    runtime, batch = runtime_and_batch()
+    teacher = torch.randn(7, 4, requires_grad=True)
+    runtime = SimpleNamespace(agent=runtime.agent, encode_next_state=lambda inputs: teacher)
+    output = algorithm().training_primary_step(runtime, batch, wm_weight=1.)
+    output.losses['wm'].backward()
+    assert teacher.grad is None
+    assert runtime.agent.wm.wm_predictor.net.weight.grad.abs().sum() > 0
+
+
+def test_window_overlap_does_not_reweight_observed_dino():
+    runtime, batch = runtime_and_batch()
+    original = algorithm().evaluation_step(runtime, batch)
+    for name in ('current_indices', 'next_indices', 'action_sequences', 'value_targets',
+                 'sample_weights', 'lm_weights', 'outcome_targets', 'outcome_mask', 'dino_grid_target'):
+        value = getattr(batch, name)
+        setattr(batch, name, torch.cat((value, value[:1]), dim=0))
+    batch.inputs.tensors['starts'] = batch.current_indices
+    duplicated = algorithm().evaluation_step(runtime, batch)
+    torch.testing.assert_close(original.losses['dino'], duplicated.losses['dino'])

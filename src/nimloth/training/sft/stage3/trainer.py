@@ -736,11 +736,8 @@ def _train_sft2_impl(args=None) -> int:
                 "dino_cache_fingerprint": args.dino_cache_fingerprint,
                 "dino_weight": float(args.lambda_dino),
                 "grid_state_format": "trainable_sft1_projector_v2",
-                "dino_supervision": (
-                    "autoregressive_predicted_state_sequence_mse_v1"
-                    if args.prediction_horizon > 1
-                    else "direct_predicted_state_mse"
-                ),
+                "dino_supervision": "unique_observed_online_state_mse_v1",
+                "dino_normalization": "global_optimizer_group_observed_states_v1",
             }
         )
     checkpoint_manager = SFT2CheckpointManager(
@@ -777,6 +774,7 @@ def _train_sft2_impl(args=None) -> int:
             "total_loss",
             "wm_mse",
             "dino_grid_mse",
+            "predicted_dino_grid_mse",
             "sigreg_loss",
             "sigreg_global_batch_size",
             "value_total",

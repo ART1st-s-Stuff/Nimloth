@@ -148,7 +148,8 @@ def test_evaluate_total_uses_component_populations():
 
         def evaluation_step(self, runtime, batch):
             return SimpleNamespace(sample_count=batch.windows, metrics={
-                "wm_mse": 1.0, "value_total": 2.0, "dino_grid_mse": 3.0,
+                "wm_mse": 1.0, "value_total": 2.0, "dino_grid_mse": batch.dino,
+                "predicted_dino_grid_mse": batch.dino,
                 "lm_ce": batch.lm, "outcome_bce": batch.outcome,
                 "total_loss": 9.0 + 3.0 * batch.lm + 4.0 * batch.outcome,
             })
@@ -160,13 +161,15 @@ def test_evaluate_total_uses_component_populations():
             return self
 
     batches = [
-        SimpleNamespace(windows=1, lm=2.0, outcome=1.0,
-                        lm_weights=torch.ones(1), outcome_mask=torch.ones(1, dtype=torch.bool)),
-        SimpleNamespace(windows=3, lm=0.0, outcome=3.0,
-                        lm_weights=torch.zeros(3), outcome_mask=torch.ones(3, dtype=torch.bool)),
+        SimpleNamespace(windows=1, lm=2.0, outcome=1.0, dino=3.,
+                        observed_state_weights=torch.ones(5), lm_weights=torch.ones(1), outcome_mask=torch.ones(1, dtype=torch.bool)),
+        SimpleNamespace(windows=3, lm=0.0, outcome=3.0, dino=9.,
+                        observed_state_weights=torch.ones(7), lm_weights=torch.zeros(3), outcome_mask=torch.ones(3, dtype=torch.bool)),
     ]
     result = evaluate(Algorithm(), Runtime(), batches,
                       batch_builder=SimpleNamespace(prepare=lambda item: item))
     assert result["lm_ce"] == pytest.approx(2.0)
     assert result["outcome_bce"] == pytest.approx(2.5)
-    assert result["total_loss"] == pytest.approx(25.0)
+    assert result['dino_grid_mse'] == pytest.approx(6.5)
+    assert result['predicted_dino_grid_mse'] == pytest.approx(7.5)
+    assert result["total_loss"] == pytest.approx(32.0)

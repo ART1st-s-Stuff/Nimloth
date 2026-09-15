@@ -15,7 +15,7 @@ from nimloth.training.sft.stage3.batch import (
 
 
 class DINOGridBatchAssembler:
-    """为当前 step 读取 next image 的 cached DINO grid。"""
+    """Load every observed state once; index future grids for diagnostics only."""
 
     def __init__(
         self,
@@ -47,26 +47,18 @@ class DINOGridBatchAssembler:
     def outcome_count(self, raw_batch: Any) -> int:
         return self.base.outcome_count(raw_batch)
 
+    def observed_state_count(self, raw_batch: Any) -> int:
+        return self.base.observed_state_count(raw_batch)
+
     def prepare(self, raw_batch: Any) -> Stage3TrajectoryBatch:
         base = self.base.prepare(raw_batch)
-        target_count = base.batch_size * base.prediction_horizon
-        if len(base.next_image_paths) != target_count or any(
-            not path for path in base.next_image_paths
-        ):
-            raise ValueError(
-                "DINO grid supervision requires one next_image_path per predicted state"
-            )
-        targets = self.targets.load(
-            base.next_image_paths,
-            device=base.sample_weights.device,
-        )
-        targets = targets.reshape(base.batch_size, base.prediction_horizon, *targets.shape[1:])
-        current_target = None
-        if base.current_image_paths and all(base.current_image_paths):
-            current_target = self.targets.load(base.current_image_paths, device=base.sample_weights.device)
+        if len(base.observed_image_paths) != len(base.state_keys) or not all(base.observed_image_paths):
+            raise ValueError("DINO supervision requires every observed image including terminal")
+        observed = self.targets.load(base.observed_image_paths, device=base.sample_weights.device)
         return replace(
             base,
-            dino_grid_target=targets,
-            current_dino_target=current_target,
+            observed_dino_target=observed,
+            dino_grid_target=observed[base.next_indices],
+            current_dino_target=observed[base.current_indices],
         )
 __all__ = ["DINOGridBatchAssembler"]

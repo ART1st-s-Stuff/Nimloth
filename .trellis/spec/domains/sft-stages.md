@@ -44,7 +44,7 @@ stage2需要同观测的真实回答/CoT、完整有序的query slots和冻结DI
 `stage1.cli.parse_args(argv=None, *, stage="format")`负责入口参数校验；`stage1.checkpoint`负责保存及恢复阶段校验；`stage1.trainer`负责模型构建与训练生命周期，不再动态转发数据模块中的任意属性。数据调用者直接依赖`stage1.data`。
 
 ## 经审查的选择性 LM 监督
-Stage2 使用全部轨迹的回答对齐 DINO，只对成功轨迹的回答计算 LM；Stage3 使用全部窗口的 WM/value/DINO，只对成功轨迹起点回答计算 LM。success 必须来自完整轨迹的显式布尔字段，缺失拒绝。LM 分母为成功回答/窗口数，其他监督分母为全部有效回答/窗口数，跨累积组和 rank 分别归约；全失败组 LM 为图连接的零。恢复身份须拒绝旧全部轨迹 LM 目标的优化器状态。
+Stage2 使用全部轨迹的回答对齐 DINO，只对成功轨迹的回答计算 LM；Stage3 使用全部窗口的 WM/value，只对成功轨迹起点回答计算 LM；全部有效轨迹的真实在线 state 对齐 DINO，每个观测仅计一次（含终点，排除补齐）。success 必须来自完整轨迹的显式布尔字段，缺失拒绝。LM 分母为成功回答/窗口数；Stage3 DINO 分母为去重真实观测数，WM/value 分母为有效窗口数，跨累积组和 rank 分别归约；全失败组 LM 为图连接的零。恢复身份须拒绝旧全部轨迹 LM 目标的优化器状态。
 
 ## Stage3 outcome 与有限时域转换
 
@@ -228,3 +228,25 @@ periodic to epoch2, failed saves, and final alias integrity.
 The outcome A/B launcher accepts positive `--epochs`; only formal phases use it.
 Canaries remain one epoch with explicit step caps. Verify all requested epoch
 exports and require the final checkpoint to match the requested completed epoch.
+
+
+## Stage3 observed-state DINO objective
+
+- WM predicts future states and fits detached encoded successor targets. DINO
+  supervises projected online states of real observations, never WM predictions.
+  The frozen DINO teacher and EMA target branch receive no gradients.
+- Each real observation of an eligible trajectory contributes once, including
+  the initial and terminal observations. Window overlap does not repeat this
+  loss; distributed padding contributes zero. Normalize by observed-state counts
+  across the complete optimizer accumulation group and ranks, independently
+  from WM window counts and successful LM counts. Evaluation uses the same rule.
+- `dino_grid_mse` reports observed-state training alignment. Predicted-state DINO
+  remains a separately named diagnostic and does not enter the objective. Old
+  predictive-DINO loss histories are not comparable under the same metric name.
+- Resume must reject the old predicted-state DINO objective and normalization
+  identity before restoring optimizer state. Do not silently continue it.
+- Tests must verify online encoder/projector DINO gradients, absence of WM and
+  teacher DINO gradients, detached WM targets, unique observations, terminal
+  inclusion, padding exclusion and unequal global population normalization.
+- Wrong: fit WM predictions directly to DINO while real states receive no DINO
+  anchor. Correct: WM fits real successor states; real online states fit DINO.

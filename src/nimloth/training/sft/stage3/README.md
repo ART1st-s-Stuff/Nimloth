@@ -4,6 +4,15 @@
 checkpoint 标识保留历史名称，避免目录迁移改变恢复及下游加载合同。
 这里的 SFT3 不等于新 SFT2 的 query/DINO 对齐阶段。
 
+Stage3 的 WM 预测拟合停止梯度的真实后继编码 state；DINO MSE 只约束
+在线编码器经 projector 输出的真实观测 state。每条有效完整轨迹的所有
+观测（包括末观测）各计算一次，不按重叠窗口重复，不包含分布式 padding。
+`dino_grid_mse` 是此观测对齐训练损失，独立按整个 optimizer accumulation
+group、所有 rank 的有效观测数归一化。`predicted_dino_grid_mse` 是未来
+预测对冻结 DINO 的诊断，不进入训练损失；逐窗口导出的 `dino_mse` 仍是
+这个预测诊断，方便与 copy baseline 和可视化比较。新 checkpoint 使用
+`unique_observed_online_state_mse_v1`，拒绝恢复旧预测 DINO 目标的优化器状态。
+
 训练入口为 `python -m nimloth.training.sft.stage3 --config <原 WM/value 配置>`，
 调用 `trainer.main()` / `train_sft2()`，配置类型仍为 `nimloth.config.sft2`。
 当前入口要求 H=1；历史 H4 配置不属于原生轨迹训练入口，加载时明确拒绝，不能直接复用旧命令。

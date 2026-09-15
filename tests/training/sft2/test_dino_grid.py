@@ -105,6 +105,6 @@ def test_native_dino_targets_follow_all_window_successors(trajectory_factory):
     assert batch.dino_grid_target.shape == (3,4,4,1024)
     assert batch.dino_grid_target[:,:,0,0].tolist() == [[1,2,3,4], [2,3,4,5], [3,4,5,6]]
     assert batch.current_dino_target[:,0,0].tolist() == [0,1,2]
-    assert targets.calls[0] == ("a_1.png","a_2.png","a_3.png","a_4.png",
-                                "a_2.png","a_3.png","a_4.png","a_5.png",
-                                "a_3.png","a_4.png","a_5.png","a_6.png")
+    assert targets.calls == [tuple(f"a_{i}.png" for i in range(7))]
+    assert batch.observed_dino_target.shape == (7, 4, 1024)
+    assert batch.observed_state_weights.tolist() == [1.] * 7

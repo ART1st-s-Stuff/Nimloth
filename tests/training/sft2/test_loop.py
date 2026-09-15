@@ -185,18 +185,20 @@ def test_train_microbatch_combines_primary_and_sigreg_before_one_backward(monkey
     assert sample_count == 2
 
 
-@pytest.mark.parametrize("scales", [(0.2, 0.5, 0.2, .125), (0.2, 0.0, 0.2, .125)])
+@pytest.mark.parametrize("scales", [(0.2, 0.5, 0.2, .125, .3), (0.2, 0.0, 0.2, .125, .7)])
 def test_primary_components_use_separate_global_window_denominators(scales):
     wm = torch.tensor(2., requires_grad=True)
     lm = torch.tensor(7., requires_grad=True)
+    dino = torch.tensor(11., requires_grad=True)
     class Algorithm:
         has_sigreg_stage = False
         ce_weight = 3.
+        dino_grid_weight = .5
         def wm_weight(self, *args):
             return 1.
         def training_primary_step(self, *args, **kwargs):
             return SimpleNamespace(current_state=wm[None], metrics={}, sample_count=1,
-                                   loss=wm + 3 * lm, losses={"lm": lm})
+                                   loss=wm + 3 * lm + .5 * dino, losses={"lm": lm, "dino": dino})
         def merge_training_metrics(self, metrics, sigreg):
             return metrics
     class Optimization:
@@ -213,6 +215,7 @@ def test_primary_components_use_separate_global_window_denominators(scales):
     loop._train_microbatch(None, epoch=1, micro_step=1, loss_scales=scales)
     assert wm.grad.item() == pytest.approx(scales[0])
     assert lm.grad.item() == pytest.approx(3 * scales[1])
+    assert dino.grad.item() == pytest.approx(.5 * scales[4])
 
 
 def test_optional_export_routes_step_zero_and_each_epoch(tmp_path):
@@ -257,7 +260,8 @@ def test_native_resume_rejects_missing_or_legacy_unit(tmp_path, invariants):
                             optimizer=_optimizer(), training_invariants={'training_unit': 'complete_trajectory_v1'})
 
 
-def test_batch_size_metrics_average_microbatches_including_padding(monkeypatch):
+@pytest.mark.parametrize('world_size', [1, 2])
+def test_batch_size_metrics_average_microbatches_including_padding(monkeypatch, world_size):
     from contextlib import nullcontext
     import nimloth.training.sft.stage3.loop as module
 
@@ -277,7 +281,8 @@ def test_batch_size_metrics_average_microbatches_including_padding(monkeypatch):
     loop.algorithm = SimpleNamespace(outcome_weight=0.)
     loop.batch_builder = SimpleNamespace(device="cpu",
         supervision_counts=lambda items: (sum(int(x.windows * x.loss_weight) for x in items), 0),
-        outcome_count=lambda items: 0)
+        outcome_count=lambda items: 0,
+        observed_state_count=lambda items: sum(int((x.windows + 4) * x.loss_weight) for x in items))
     loop.step_timer = SimpleNamespace(start=lambda *a: None, stop=lambda *a: None,
                                       on_optimizer_step=lambda **kw: None)
     loop.checkpoint_runtime = SimpleNamespace(save_periodic=lambda **kw: None)
@@ -286,10 +291,19 @@ def test_batch_size_metrics_average_microbatches_including_padding(monkeypatch):
     loop._barrier = lambda: None
     loop._validate_and_checkpoint = lambda epoch: None
     monkeypatch.setattr(module, "seed_training_micro_step", lambda *a: None)
+    monkeypatch.setattr(module.dist, 'is_available', lambda: world_size > 1)
+    monkeypatch.setattr(module.dist, 'is_initialized', lambda: world_size > 1)
+    monkeypatch.setattr(module.dist, 'get_world_size', lambda: world_size)
+    # Other rank owns 4 windows and 8 observed states, a different population.
+    monkeypatch.setattr(module.dist, 'all_reduce',
+                        lambda totals: totals.add_(torch.tensor([4, 0, 0, 8])))
+    scales = []
 
     def train_microbatch(items, **kwargs):
+        scales.append(kwargs['loss_scales'])
         count = int(items[0].windows * items[0].loss_weight)
-        return 1., {"current_batch_size": float(count), "wm_mse": float(items[0].windows)}, count
+        return 1., {"current_batch_size": float(count), "wm_mse": float(items[0].windows),
+                    "dino_grid_mse": float(items[0].windows)}, count
 
     loop._train_microbatch = train_microbatch
     captured = []
@@ -299,3 +313,22 @@ def test_batch_size_metrics_average_microbatches_including_padding(monkeypatch):
     assert captured[0]["current_batch_size"] == pytest.approx(8 / 3)
     assert captured[0]["trajectory_batch_size"] == pytest.approx(2 / 3)
     assert captured[0]["wm_mse"] == pytest.approx((2 * 2 + 6 * 6) / 8)
+    assert captured[0]['dino_grid_mse'] == pytest.approx((2 * 6 + 6 * 10) / 16)
+    global_states = 16 if world_size == 1 else 24
+    assert [value[4] for value in scales] == pytest.approx(
+        [world_size * 6 / global_states, world_size * 10 / global_states, 0])
+
+
+@pytest.mark.parametrize('old', [None, 'autoregressive_predicted_state_sequence_mse_v1',
+                               'direct_predicted_state_mse'])
+def test_resume_rejects_wrong_dino_objective(tmp_path, old):
+    path = tmp_path / 'training_state.pt'
+    invariants = {'training_unit': 'complete_trajectory_v1'}
+    if old is not None:
+        invariants['dino_supervision'] = old
+    torch.save({'training_invariants': invariants}, path)
+    with pytest.raises(ValueError, match='dino_supervision'):
+        load_sft2_loop_state(resume=True, resume_state_path=path, resume_checkpoint_dir=tmp_path,
+                            optimizer=_optimizer(), training_invariants={
+                                'training_unit': 'complete_trajectory_v1',
+                                'dino_supervision': 'unique_observed_online_state_mse_v1'})

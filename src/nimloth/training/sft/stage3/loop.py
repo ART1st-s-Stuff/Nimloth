@@ -184,17 +184,18 @@ class SFT2TrainingLoop:
                 counts = [self.batch_builder.supervision_counts(item) for item in group]
                 outcome_counts = ([self.batch_builder.outcome_count(item) for item in group]
                                   if getattr(self.algorithm, "outcome_weight", 0) > 0 else [0] * len(group))
-                totals = torch.tensor([sum(n for n, _ in counts), sum(n for _, n in counts), sum(outcome_counts)],
+                state_counts = [self.batch_builder.observed_state_count(item) for item in group]
+                totals = torch.tensor([sum(n for n, _ in counts), sum(n for _, n in counts), sum(outcome_counts), sum(state_counts)],
                                       device=self.batch_builder.device)
                 world = 1
                 if dist.is_available() and dist.is_initialized():
                     world = dist.get_world_size()
                     dist.all_reduce(totals)
-                for item, (all_count, lm_count), outcome_count in zip(group, counts, outcome_counts, strict=True):
+                for item, (all_count, lm_count), outcome_count, state_count in zip(group, counts, outcome_counts, state_counts, strict=True):
                     yield item, (world * all_count / max(1, int(totals[0])),
                                  world * lm_count / max(1, int(totals[1])), lm_count,
                                  world * outcome_count / max(1, int(totals[2])), outcome_count,
-                                 1. / len(group))
+                                 1. / len(group), world * state_count / max(1, int(totals[3])), state_count)
 
         normalized_iterator = iter(normalized_batches())
         while True:
@@ -218,7 +219,7 @@ class SFT2TrainingLoop:
                     batch_samples,
                     epoch=epoch,
                     micro_step=micro_index,
-                    loss_scales=(loss_scales[0], loss_scales[1], loss_scales[3], loss_scales[5]),
+                    loss_scales=(loss_scales[0], loss_scales[1], loss_scales[3], loss_scales[5], loss_scales[6]),
                 )
             # Batch sizes describe a rank-local microbatch, including padding.
             # Weighting these counts by windows would report sum(W**2)/sum(W).
@@ -233,6 +234,9 @@ class SFT2TrainingLoop:
             if regularizer_metrics:
                 accumulator.update(regularizer_metrics, count=1)
             if sample_count > 0:
+                dino_metric = metrics.pop("dino_grid_mse", None)
+                if dino_metric is not None:
+                    accumulator.update({"dino_grid_mse": dino_metric}, count=loss_scales[7])
                 lm_metric = metrics.pop("lm_ce", None)
                 if lm_metric is not None and loss_scales[2] > 0:
                     accumulator.update({"lm_ce": lm_metric}, count=loss_scales[2])
@@ -344,9 +348,12 @@ class SFT2TrainingLoop:
                 lm_term = self.algorithm.ce_weight * lm if lm is not None else 0
                 outcome = primary.losses.get("outcome")
                 outcome_term = self.algorithm.outcome_weight * outcome if outcome is not None else 0
-                loss = ((loss - lm_term - outcome_term) * loss_scales[0]
+                dino = primary.losses.get("dino")
+                dino_term = self.algorithm.dino_grid_weight * dino if dino is not None else 0
+                loss = ((loss - lm_term - outcome_term - dino_term) * loss_scales[0]
                         + lm_term * loss_scales[1]
-                        + outcome_term * loss_scales[2])
+                        + outcome_term * loss_scales[2]
+                        + dino_term * loss_scales[4])
                 divisor = 1
             if sigreg is not None:
                 loss = loss + sigreg.loss * (loss_scales[3] if loss_scales is not None else 1.)

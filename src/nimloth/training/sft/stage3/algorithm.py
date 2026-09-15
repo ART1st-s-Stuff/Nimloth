@@ -167,7 +167,7 @@ class SFT2Algorithm:
         current = AgentStateOutput(hidden=encoded.hidden[batch.current_indices],
                                    state=online_states[batch.current_indices], lm_loss=lm_loss)
         rollout = runtime.agent.forward_action_rollout(batch.action_sequences, encoded_current=current)
-        expected = target_states[batch.next_indices]
+        expected = target_states[batch.next_indices].detach()
         predicted = rollout.predicted_states
         if predicted.shape != expected.shape:
             raise ValueError("WM predictions must exactly match future target states")
@@ -178,10 +178,12 @@ class SFT2Algorithm:
             raise ValueError("outgoing action values and MC targets must have identical shapes")
         value = _window_mean((selected_values - batch.value_targets.to(selected_values)).square(), weights)
         dino = None
-        if batch.dino_grid_target is not None:
-            if predicted.shape != batch.dino_grid_target.shape:
-                raise ValueError("DINO target shape must exactly match predicted states")
-            dino = _window_mean((predicted.float() - batch.dino_grid_target.detach().float()).square(), weights)
+        if batch.observed_dino_target is not None:
+            if online_states.shape != batch.observed_dino_target.shape:
+                raise ValueError("DINO target shape must exactly match all observed online states")
+            dino = _window_mean(
+                (online_states.float() - batch.observed_dino_target.detach().float()).square(),
+                batch.observed_state_weights)
         elif self.dino_grid_weight:
             raise ValueError("positive DINO-grid weight requires a DINO-grid target")
         head = getattr(runtime.agent.wm, "outcome_head", None)
@@ -203,6 +205,12 @@ class SFT2Algorithm:
                    "current_batch_size": float(count), "total_loss": float(total.detach())}
         if dino is not None:
             metrics["dino_grid_mse"] = float(dino.detach())
+        if batch.dino_grid_target is not None:
+            if predicted.shape != batch.dino_grid_target.shape:
+                raise ValueError("future DINO diagnostic target shape mismatch")
+            with torch.no_grad():
+                metrics["predicted_dino_grid_mse"] = float(_window_mean(
+                    (predicted.float() - batch.dino_grid_target.float()).square(), weights))
         if outcome is not None:
             metrics["outcome_bce"] = float(outcome.detach())
             metrics["outcome_count"] = float((batch.outcome_mask & (weights[:, None] > 0)).sum())

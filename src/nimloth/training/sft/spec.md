@@ -129,6 +129,7 @@ def sft3_update(model, target_model, config, trajectory_batches, proj,
     counts = global_supervision_counts(trajectory_batches)
     for trajectories in trajectory_batches:
         windows = all_valid_windows(trajectories, config.prediction_horizon)
+        observed = unique_valid_observations(trajectories)
         with no_grad():
             # 先完成EMA/eval目标前向，再构建在线图。
             target_states = proj(target_model.get_all_query_embeddings(trajectories, queries))
@@ -139,16 +140,18 @@ def sft3_update(model, target_model, config, trajectory_batches, proj,
             config.prediction_horizon, outcome_head
         )
         # 各窗口独立递推，后续输入为预测state；LM仅监督成功轨迹的有效窗口起点。
-        loss_wm = mse(predictions, target_states[windows.future])
+        loss_wm = mse(predictions, stop_gradient(target_states[windows.future]))
         loss_value = mse(values, windows.mc_returns)
-        loss_dino = (mse(predictions, dino_features[windows.future])
+        # 真实在线state对齐DINO，每个真实观测一次（含终点，排除补齐），不随窗口重复。
+        loss_dino = (mse(states[observed], dino_features[observed])
                      if dino_features is not None else 0)
         loss_lm = successful_window_losses(answer_losses, windows.success)
         # Outcome是动作执行结果，普通BCE；缺失标签及分布式补齐不参与监督。
         loss_outcome = (binary_cross_entropy_with_logits(outcome_logits, windows.action_successes)
                         if config.weight_outcome > 0 else 0)
         loss = globally_normalized_losses(
-            loss_lm, loss_wm, loss_value, loss_dino, loss_outcome, windows, counts, config
+            loss_lm, loss_wm, loss_value, loss_dino, loss_outcome,
+            windows, observed, counts, config
         )
         if config.weight_sigreg > 0:
             # 全部真实相邻transition按(轨迹,时间)去重，排除补齐样本。

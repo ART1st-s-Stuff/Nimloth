@@ -80,6 +80,10 @@ def evaluate(
                 if on_batch is not None:
                     on_batch(agent_batch, output)
                 metrics = dict(output.metrics)
+                dino = metrics.pop("dino_grid_mse", None)
+                if dino is not None:
+                    accumulator.update({"dino_grid_mse": dino},
+                                       count=int(agent_batch.observed_state_weights.sum().item()))
                 lm = metrics.pop("lm_ce", None)
                 if lm is not None:
                     lm_count = int(agent_batch.lm_weights.sum().item())
@@ -92,7 +96,8 @@ def evaluate(
     averages = distributed_metric_averages(accumulator)
     if "total_loss" in averages:
         # Components have different populations: successful windows for LM,
-        # labeled transitions for outcome, and all windows for WM/value/DINO.
+        # labeled transitions for outcome, unique observed states for DINO,
+        # and all windows for WM/value and predictive DINO diagnostics.
         averages["total_loss"] = (
             averages.get("wm_mse", 0.0)
             + algorithm.value_weight * averages.get("value_total", 0.0)
