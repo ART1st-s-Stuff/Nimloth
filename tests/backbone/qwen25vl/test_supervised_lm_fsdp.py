@@ -240,11 +240,16 @@ def _portable_worker(rank, rendezvous, cuda):
         new_ema.load_full_checkpoint(ema_path)
         actual_model, actual_optimizer = full_state(new_agent, new_optimizer)
         torch.testing.assert_close(actual_model, saved_model, rtol=0, atol=0)
-        torch.testing.assert_close(actual_optimizer, saved_optimizer, rtol=0, atol=0)
+        assert actual_optimizer.keys() == saved_optimizer.keys()
+        assert actual_optimizer["param_groups"] == saved_optimizer["param_groups"]
+        torch.testing.assert_close(actual_optimizer["state"], saved_optimizer["state"], rtol=0, atol=0)
         expected_ema = ema.collect_checkpoint_state()
         actual_ema = new_ema.collect_checkpoint_state()
         if rank == 0:
-            torch.testing.assert_close(actual_ema, expected_ema, rtol=0, atol=0)
+            assert actual_ema.keys() == expected_ema.keys()
+            assert actual_ema["schema"] == expected_ema["schema"]
+            assert actual_ema["decay"] == expected_ema["decay"]
+            torch.testing.assert_close(actual_ema["shadow"], expected_ema["shadow"], rtol=0, atol=0)
         # The first restored update must traverse both complete models, including vision.
         for current, current_optimizer in ((model, optimizer), (restored, new_optimizer)):
             current(**inputs).logits.float().square().mean().backward()
