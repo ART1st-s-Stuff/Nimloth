@@ -40,10 +40,19 @@ class DINOFeatureWriter:
         predicted = diagnostic["predicted_states"].detach().float().cpu()
         dino = diagnostic["dino_targets"].detach().float().cpu()
         direct = diagnostic["target_states"].detach().float().cpu()
-        if predicted.shape != dino.shape or direct.shape != dino.shape:
+        online_direct = output.online_states[batch.next_indices].detach().float().cpu()
+        if predicted.shape != dino.shape or direct.shape != dino.shape or online_direct.shape != dino.shape:
             raise ValueError("predicted, direct, and DINO grids must have identical shapes")
         shape = (batch.batch_size, horizon, *predicted.shape[-2:])
+        if predicted.numel() != int(np.prod(shape)):
+            raise ValueError("feature grids do not match the window/horizon dimensions")
         valid = batch.sample_weights.detach().bool().cpu()
+        current_dino = diagnostic["current_dino_targets"].detach().float().cpu()
+        if current_dino.shape != (batch.batch_size, *predicted.shape[-2:]):
+            raise ValueError("current DINO grids do not match the window dimensions")
+        if any(not torch.isfinite(value).all() for value in
+               (predicted, dino, direct, online_direct, current_dino)):
+            raise ValueError("non-finite feature grids")
         payload = {
             "schema": self.schema,
             "rank": self.rank,
@@ -52,10 +61,13 @@ class DINOFeatureWriter:
             "actions": batch.action_sequences.detach().cpu()[valid],
             "predicted": predicted.reshape(shape)[valid],
             "direct": direct.reshape(shape)[valid],
+            "online_direct": online_direct.reshape(shape)[valid],
             "dino": dino.reshape(shape)[valid],
-            "current_dino": diagnostic["current_dino_targets"].detach().float().cpu()[valid],
+            "current_dino": current_dino[valid],
         }
         path = self.directory / f"rank_{self.rank:03d}_batch_{self.batch_index:04d}.pt"
+        if path.exists():
+            raise FileExistsError(path)
         torch.save(payload, path)
         self.paths.append(path)
         self.batch_index += 1

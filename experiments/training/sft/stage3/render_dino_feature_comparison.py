@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -22,7 +23,7 @@ def load_export(directory: Path) -> dict[tuple[str, int], dict[str, torch.Tensor
                 raise ValueError(f"duplicate feature identity: {identity}")
             rows[identity] = {
                 name: payload[name][index].float()
-                for name in ("actions", "predicted", "direct", "dino", "current_dino")
+                for name in ("actions", "predicted", "direct", "online_direct", "dino", "current_dino")
             }
     if not rows:
         raise ValueError(f"no feature exports found in {directory}")
@@ -54,6 +55,8 @@ def matched_rows(stage2: dict, control: dict, treatment: dict) -> list[dict]:
                 "copy": s2["current_dino"],
                 "control": left["predicted"][step],
                 "treatment": right["predicted"][step],
+                "control_online_direct": left["online_direct"][step],
+                "treatment_online_direct": right["online_direct"][step],
             })
     return rows
 
@@ -65,7 +68,7 @@ def cosine(prediction: torch.Tensor, target: torch.Tensor) -> float:
 def summarize(rows: list[dict]) -> dict:
     result = {"count": len(rows), "models": {}, "by_horizon": {}}
     target = torch.stack([row["target"] for row in rows])
-    for name in ("stage2_direct", "copy", "control", "treatment"):
+    for name in ("stage2_direct", "copy", "control", "treatment", "control_online_direct", "treatment_online_direct"):
         prediction = torch.stack([row[name] for row in rows])
         centered_prediction = prediction - prediction.mean(dim=0, keepdim=True)
         centered_target = target - target.mean(dim=0, keepdim=True)
@@ -77,7 +80,9 @@ def summarize(rows: list[dict]) -> dict:
             "prediction_std": float(prediction.std()),
             "target_mean": float(target.mean()),
             "target_std": float(target.std()),
-            "observation_variance_ratio": float(centered_prediction.square().mean()) / target_var,
+            "observation_variance_ratio": (
+                float(centered_prediction.square().mean()) / target_var if target_var > 0 else None
+            ),
             "centered_cosine": cosine(centered_prediction, centered_target),
         }
     for horizon in sorted({row["horizon_step"] for row in rows}):
@@ -93,7 +98,7 @@ def summarize_without_horizons(rows: list[dict]) -> dict:
             "mse": float((torch.stack([row[name] for row in rows]) - target).square().mean()),
             "cosine": cosine(torch.stack([row[name] for row in rows]), target),
         }
-        for name in ("stage2_direct", "copy", "control", "treatment")
+        for name in ("stage2_direct", "copy", "control", "treatment", "control_online_direct", "treatment_online_direct")
     }
 
 
@@ -112,18 +117,22 @@ def pca_basis(
     target = torch.stack([row["target"] for row in rows]).numpy()
     flat = target.reshape(-1, target.shape[-1]).astype(np.float64)
     mean = flat.mean(axis=0)
-    _, singular, vectors = np.linalg.svd(flat - mean, full_matrices=False)
-    basis = vectors[:3].T
+    centered = flat - mean
+    eigenvalues, vectors = np.linalg.eigh(centered.T @ centered)
+    order = np.argsort(eigenvalues)[::-1]
+    eigenvalues = np.maximum(eigenvalues[order], 0)
+    basis = vectors[:, order[:3]]
     projected = (flat - mean) @ basis
     low, high = np.percentile(projected, [1, 99], axis=0)
-    explained = singular[:3] ** 2 / np.square(singular).sum()
+    explained = eigenvalues[:3] / max(eigenvalues.sum(), 1e-12)
     return mean, basis, low, high, explained
 
 
 def feature_image(grid: torch.Tensor, mean, basis, low, high, size=128) -> Image.Image:
     projected = (grid.numpy() - mean) @ basis
     rgb = np.clip((projected - low) / np.maximum(high - low, 1e-12), 0, 1)
-    image = Image.fromarray(np.uint8(rgb.reshape(8, 8, 3) * 255), "RGB")
+    side = grid_side(grid)
+    image = Image.fromarray(np.uint8(rgb.reshape(side, side, 3) * 255), "RGB")
     return image.resize((size, size), Image.Resampling.NEAREST)
 
 
@@ -131,9 +140,33 @@ def error_image(prediction: torch.Tensor, target: torch.Tensor, high: float, siz
     value = (prediction - target).square().mean(dim=-1).numpy()
     normalized = np.clip(value / max(high, 1e-12), 0, 1)
     rgb = np.stack((normalized, np.sqrt(normalized) * 0.35, 1 - normalized), axis=-1)
-    return Image.fromarray(np.uint8(rgb.reshape(8, 8, 3) * 255), "RGB").resize(
+    side = grid_side(target)
+    return Image.fromarray(np.uint8(rgb.reshape(side, side, 3) * 255), "RGB").resize(
         (size, size), Image.Resampling.NEAREST
     )
+
+
+def grid_side(grid: torch.Tensor) -> int:
+    if grid.ndim != 2 or math.isqrt(grid.shape[0]) ** 2 != grid.shape[0]:
+        raise ValueError("feature grid must have shape [square slots, channels]")
+    return math.isqrt(grid.shape[0])
+
+
+def select_page_rows(rows: list[dict], horizon: int, limit: int = 8) -> list[dict]:
+    """Round-robin trajectories before showing additional windows of one trajectory."""
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        if row["horizon_step"] == horizon:
+            grouped.setdefault(row["trajectory"], []).append(row)
+    selected = []
+    for offset in range(max((len(group) for group in grouped.values()), default=0)):
+        for trajectory in sorted(grouped):
+            group = grouped[trajectory]
+            if offset < len(group):
+                selected.append(group[offset])
+                if len(selected) >= limit:
+                    return selected
+    return selected
 
 
 def render(rows: list[dict], images: dict[str, list[str]], output: Path) -> list[str]:
@@ -147,7 +180,7 @@ def render(rows: list[dict], images: dict[str, list[str]], output: Path) -> list
     columns = ("image", "target", "stage2_direct", "copy", "control", "treatment", "control_error", "treatment_error")
     files = []
     for horizon in sorted({row["horizon_step"] for row in rows}):
-        page_rows = [row for row in rows if row["horizon_step"] == horizon][:8]
+        page_rows = select_page_rows(rows, horizon)
         cell, label_h, row_h = 128, 38, 158
         canvas = Image.new("RGB", (len(columns) * cell, label_h + len(page_rows) * row_h), "white")
         draw = ImageDraw.Draw(canvas)
@@ -172,6 +205,9 @@ def render(rows: list[dict], images: dict[str, list[str]], output: Path) -> list
         "pca_explained_variance_ratio": explained.tolist(),
         "feature_scale": {"percentiles": [1, 99], "low": low.tolist(), "high": high.tolist()},
         "error_scale": {"percentile": 99, "high": error_high},
+        "error_scale_population": "per-row maximum per-position full-channel MSE",
+        "row_selection": "round-robin trajectories, then additional windows; up to 8 per horizon",
+        "stage2_direct_semantics": "direct encoding sees the target observation; WM predicts it",
         "interpolation": "nearest",
         "files": files,
     }, indent=2), encoding="utf-8")
