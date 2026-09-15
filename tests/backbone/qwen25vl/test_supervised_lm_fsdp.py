@@ -37,10 +37,10 @@ def _model():
     return model
 
 
-def _wrap(model, device, fp32=False):
+def _wrap(model, device, fp32=False, granularity="linear"):
     if fp32:
         model.float()
-    policy, ignored, precision = qwen_wrap_policy(model)
+    policy, ignored, precision = qwen_wrap_policy(model, granularity)
     if fp32:
         from torch.distributed.fsdp.wrap import CustomPolicy
         original_policy = policy._lambda_fn
@@ -57,7 +57,7 @@ def _full_grads(model):
                 for name, parameter in model.named_parameters() if parameter.requires_grad}
 
 
-def _worker(rank, rendezvous, cuda, packed_reference=False, fp32=False, offload=False):
+def _worker(rank, rendezvous, cuda, packed_reference=False, fp32=False, offload=False, granularity="linear"):
     device = torch.device("cuda", rank) if cuda else torch.device("cpu")
     if cuda:
         torch.cuda.set_device(device)
@@ -67,7 +67,7 @@ def _worker(rank, rendezvous, cuda, packed_reference=False, fp32=False, offload=
         torch.manual_seed(27)
         unwrapped = _model().to(device)
         reference = copy.deepcopy(unwrapped)
-        model, baseline = _wrap(unwrapped, device, fp32), _wrap(reference, device, fp32)
+        model, baseline = _wrap(unwrapped, device, fp32, granularity), _wrap(reference, device, fp32, granularity)
         assert isinstance(model.module.lm_head, FSDP)
         assert all(p.dtype == torch.float32 for p in model.parameters() if p.requires_grad)
         ids = torch.tensor([[1, 10, 2, 3, 4] + ([5, 6] if rank else [])], device=device)
@@ -159,3 +159,113 @@ def test_two_rank_cuda_activation_offload_primary_and_sigreg(tmp_path):
 def test_two_rank_cpu_activation_offload_primary_and_sigreg_interface(tmp_path):
     torch.multiprocessing.spawn(_worker, args=(str(tmp_path / "lm-offload-cpu"), False, True, False, True),
                                nprocs=2, join=True)
+
+
+@pytest.mark.parametrize("fp32", [False, True])
+def test_two_rank_cpu_block_supervised_lm_nonreentrant_checkpoint(tmp_path, fp32):
+    torch.multiprocessing.spawn(_worker,
+        args=(str(tmp_path / "block-lm"), False, True, fp32, True, "block"), nprocs=2, join=True)
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires two CUDA GPUs")
+def test_two_rank_cuda_block_supervised_lm_nonreentrant_checkpoint(tmp_path):
+    torch.multiprocessing.spawn(_worker,
+        args=(str(tmp_path / "block-lm-cuda"), True, True, False, True, "block"), nprocs=2, join=True)
+
+
+def _portable_worker(rank, rendezvous, cuda):
+    """Actual tiny multimodal Qwen: linear checkpoint -> block model/Adam/EMA."""
+    from torch import nn
+    from torch.distributed.fsdp import FullStateDictConfig, FullOptimStateDictConfig, StateDictType
+    from nimloth.training.sft.stage3.fsdp_checkpoint import optimizer_state_to_load
+    from nimloth.training.sft.stage3.vision_ema_fsdp import FSDPVisionEncoderEMA
+
+    device = torch.device("cuda", rank) if cuda else torch.device("cpu")
+    if cuda:
+        torch.cuda.set_device(device)
+    dist.init_process_group("nccl" if cuda else "gloo", init_method="file://" + rendezvous,
+                            rank=rank, world_size=2)
+    # PyTorch's CPU-handle offload path is not supported by this CPU runtime;
+    # retain production offload unchanged for the separately gated CUDA test.
+    original_context = FSDP.state_dict_type
+    if not cuda:
+        from contextlib import contextmanager
+
+        @contextmanager
+        def cpu_context(root, kind, model_config, optim_config):
+            model_config.offload_to_cpu = False
+            with original_context(root, kind, model_config, optim_config):
+                yield
+
+        FSDP.state_dict_type = cpu_context
+    try:
+        def agent_for(model):
+            agent = nn.Module()
+            agent.backbone = nn.Module()
+            agent.backbone.model = model
+            return agent
+
+        def full_state(agent, optimizer):
+            with FSDP.state_dict_type(agent, StateDictType.FULL_STATE_DICT,
+                    FullStateDictConfig(offload_to_cpu=False, rank0_only=False),
+                    FullOptimStateDictConfig(offload_to_cpu=False, rank0_only=False)):
+                return (copy.deepcopy(agent.backbone.model.state_dict()),
+                        copy.deepcopy(FSDP.optim_state_dict(agent, optimizer)))
+
+        torch.manual_seed(82)
+        model = _wrap(_model().to(device), device)
+        agent = agent_for(model)
+        optimizer = torch.optim.AdamW([p for p in agent.parameters() if p.requires_grad], lr=1e-4)
+        ema = FSDPVisionEncoderEMA(model)
+        config = model.module.config.vision_config
+        pixels = torch.randn(4, 3 * config.temporal_patch_size * config.patch_size**2, device=device)
+        inputs = dict(input_ids=torch.tensor([[31, 29, 1, 10, 2, 3]], device=device),
+                      pixel_values=pixels, image_grid_thw=torch.tensor([[1, 2, 2]], device=device))
+        # Root-mediated multimodal forward exercises visual and decoder checkpoint hooks.
+        model(**inputs).logits.float().square().mean().backward()
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        ema.update(model)
+        saved_model, saved_optimizer = full_state(agent, optimizer)
+        ema_path = rendezvous + ".ema.pt"
+        ema.save_checkpoint(ema_path)
+        dist.barrier()
+        raw = _model().to(device)
+        raw.load_state_dict(saved_model, strict=True)
+        restored = _wrap(raw, device, granularity="block")
+        new_agent = agent_for(restored)
+        new_optimizer = torch.optim.AdamW([p for p in new_agent.parameters() if p.requires_grad], lr=1e-4)
+        new_optimizer.load_state_dict(optimizer_state_to_load(new_agent, new_optimizer, saved_optimizer))
+        new_ema = FSDPVisionEncoderEMA(restored)
+        new_ema.load_full_checkpoint(ema_path)
+        actual_model, actual_optimizer = full_state(new_agent, new_optimizer)
+        torch.testing.assert_close(actual_model, saved_model, rtol=0, atol=0)
+        torch.testing.assert_close(actual_optimizer, saved_optimizer, rtol=0, atol=0)
+        expected_ema = ema.collect_checkpoint_state()
+        actual_ema = new_ema.collect_checkpoint_state()
+        if rank == 0:
+            torch.testing.assert_close(actual_ema, expected_ema, rtol=0, atol=0)
+        # The first restored update must traverse both complete models, including vision.
+        for current, current_optimizer in ((model, optimizer), (restored, new_optimizer)):
+            current(**inputs).logits.float().square().mean().backward()
+            assert all(p.dtype == torch.float32 and (p.grad is None or p.grad.dtype == torch.float32)
+                       for p in current.parameters() if p.requires_grad)
+            current_optimizer.step()
+        expected_after, _ = full_state(agent, optimizer)
+        actual_after, _ = full_state(new_agent, new_optimizer)
+        # Grouping reductions may change BF16 roundoff; restore itself above is exact.
+        torch.testing.assert_close(actual_after, expected_after, rtol=1e-3, atol=2e-5)
+    finally:
+        FSDP.state_dict_type = original_context
+        dist.destroy_process_group()
+
+
+def test_two_rank_cpu_linear_to_block_qwen_optimizer_vision_ema_restore(tmp_path):
+    torch.multiprocessing.spawn(_portable_worker,
+        args=(str(tmp_path / "portable-block"), False), nprocs=2, join=True)
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="requires two CUDA GPUs")
+def test_two_rank_cuda_linear_to_block_qwen_optimizer_vision_ema_restore(tmp_path):
+    torch.multiprocessing.spawn(_portable_worker,
+        args=(str(tmp_path / "portable-block-cuda"), True), nprocs=2, join=True)

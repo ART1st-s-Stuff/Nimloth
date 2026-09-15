@@ -309,3 +309,16 @@ def test_repeated_control_resume_validates_provenance_and_budget(tmp_path, monke
     else:
         with pytest.raises((RuntimeError, TimeoutError)):
             launcher.validate_control_resume(config)
+
+
+def test_block_layout_is_explicit_operational_override(tmp_path):
+    config = args(tmp_path)
+    original = launcher.command(config, 'control', 'formal', 29501)
+    config.fsdp_wrap_granularity = 'block'
+    updated = launcher.command(config, 'control', 'formal', 29501)
+    assert updated[updated.index('--fsdp-wrap-granularity') + 1] == 'block'
+    assert launcher.semantic_command(original) == launcher.semantic_command(updated)
+    # Only the wrapping layout may differ; loss/LR/source arguments remain bound.
+    changed = list(updated)
+    changed[changed.index('--lambda-outcome') + 1] = '1'
+    assert launcher.semantic_command(original) != launcher.semantic_command(changed)

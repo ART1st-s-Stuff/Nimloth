@@ -84,6 +84,14 @@ static DDP须有真实多rank交替反传测试，CPU测试不放行未经验证
 ### Scope and entrypoints
 `--distributed-strategy fsdp` shards the full joint Qwen branch; WM/projector/value/outcome
 remain replicated DDP. Default DDP remains available for existing compatible scopes.
+Stage3 `--fsdp-wrap-granularity linear|block` defaults to linear. Block removes inner linear
+handles only inside decoder/vision blocks; vocabulary handles and the complete visual owner
+remain explicit. Record the layout in launch arguments. Both layouts use the same FULL_SHARD,
+master/reduction/forward dtypes and losses. Layout conversion is permitted only with canonical
+full named model/optimizer/vision-EMA state, not raw local shards. Verify exact restored state,
+asymmetric-rank supervised/zero-LM backward, nonreentrant checkpoint recomputation and real
+image forward before resuming with another layout. Invalid granularity is rejected. Floating
+point reduction grouping may change next-update rounding; do not promise bitwise trajectories.
 `python -m nimloth.rollout.split_by_eval_keys --source ... --eval-keys-manifest ... --output-root ...`
 partitions immutable converted trajectories using explicitly verified original evaluation keys.
 

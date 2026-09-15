@@ -255,6 +255,7 @@ def _wrap_sft2_agent(
     world_size: int,
     train_wm_predictor: bool,
     distributed_strategy: str = "ddp",
+    fsdp_wrap_granularity: str = "linear",
 ) -> tuple[Agent, bool]:
     """按现有多卡语义包装模型，再组成唯一的神经网络 Agent。"""
 
@@ -269,7 +270,7 @@ def _wrap_sft2_agent(
     if world_size > 1:
         if distributed_strategy == "fsdp":
             from nimloth.training.sft.stage3.fsdp import wrap_qwen_fsdp
-            model = wrap_qwen_fsdp(model, device)
+            model = wrap_qwen_fsdp(model, device, granularity=fsdp_wrap_granularity)
         elif loaded.pair_parallel:
             model = DDP(
                 model,
@@ -543,6 +544,7 @@ def _train_sft2_impl(args=None) -> int:
         world_size=world,
         train_wm_predictor=train_wm_predictor,
         distributed_strategy=getattr(args, "distributed_strategy", "ddp"),
+        fsdp_wrap_granularity=getattr(args, "fsdp_wrap_granularity", "linear"),
     )
     if getattr(args, "distributed_strategy", "ddp") == "fsdp" and vision_ema_enabled:
         from nimloth.training.sft.stage3.vision_ema_fsdp import build_fsdp_vision_ema

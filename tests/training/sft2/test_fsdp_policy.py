@@ -55,3 +55,44 @@ def test_combined_norm_reduces_shards_but_not_replicated_branch(monkeypatch):
 def test_fsdp_rejects_cpu_before_constructing_wrapper():
     with pytest.raises(ValueError, match='multi-rank CUDA'):
         fsdp.wrap_qwen_fsdp(TinyQwen(), torch.device('cpu'))
+
+
+class Qwen2_5_VLDecoderLayer(nn.Sequential):
+    pass
+
+
+class Qwen2_5_VLVisionBlock(nn.Sequential):
+    pass
+
+
+def test_block_policy_groups_only_block_internals_and_preserves_vocab_owners():
+    model = TinyQwen()
+    model.decoder = Qwen2_5_VLDecoderLayer(nn.Linear(3, 3), nn.LayerNorm(3), nn.Linear(3, 3))
+    model.visual = nn.Sequential(Qwen2_5_VLVisionBlock(nn.Linear(3, 3), nn.LayerNorm(3)), nn.Linear(3, 3))
+    model.lm_head = nn.Linear(3, 8)
+    linear, ignored_linear, _ = fsdp.qwen_wrap_policy(model)
+    block, ignored_block, _ = fsdp.qwen_wrap_policy(model, "block")
+    linear = linear._run_policy(model, ignored_modules=set(), root_kwargs={})
+    block = block._run_policy(model, ignored_modules=set(), root_kwargs={})
+    assert ignored_linear == ignored_block == {model.embedding.weight}
+    assert set(block) == {model.visual, model.visual[0], model.visual[1],
+                          model.decoder, model.embedding, model.lm_head}
+    assert set(linear) - set(block) == {model.decoder[0], model.decoder[2], model.visual[0][0]}
+    assert block[model.visual[0]]["mixed_precision"].cast_forward_inputs is False
+    # Every trainable parameter has exactly one nearest target/root owner.
+    owners = {}
+    for name, module in model.named_modules():
+        for parameter in module.parameters(recurse=False):
+            if parameter.requires_grad:
+                candidates = [(prefix, ancestor) for prefix, ancestor in model.named_modules()
+                              if ancestor in block and (name == prefix or name.startswith(prefix + "."))]
+                owner = max(candidates, key=lambda item: len(item[0]))[1] if candidates else model
+                owners[id(parameter)] = owner
+    assert len(owners) == sum(p.requires_grad for p in model.parameters())
+    assert owners[id(model.visual[0][0].weight)] is model.visual[0]
+    assert owners[id(model.embedding.selected_rows)] is model.embedding
+
+
+def test_unknown_wrap_granularity_rejected():
+    with pytest.raises(ValueError, match="granularity"):
+        fsdp.qwen_wrap_policy(TinyQwen(), "automatic")

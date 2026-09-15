@@ -20,8 +20,10 @@ def is_fsdp(model: nn.Module) -> bool:
     return isinstance(model, FSDP)
 
 
-def qwen_wrap_policy(model: nn.Module):
+def qwen_wrap_policy(model: nn.Module, granularity: str = "linear"):
     """Return the exact handle policy and replicated frozen parameters."""
+    if granularity not in {"linear", "block"}:
+        raise ValueError("FSDP wrap granularity must be linear or block")
     visual = getattr(model, "visual", None)
     if visual is None:
         raise ValueError("Stage3 FSDP requires Qwen's complete visual module")
@@ -42,8 +44,14 @@ def qwen_wrap_policy(model: nn.Module):
         raise ValueError("shared trainable parameters need an explicit FSDP ownership policy")
     block_names = {"Qwen2_5_VLDecoderLayer", "Qwen2_5_VLVisionBlock"}
     block_names.update(getattr(model, "_no_split_modules", ()) or ())
-    targets = {module for module in model.modules()
-               if module.__class__.__name__ in block_names or isinstance(module, (nn.Linear, nn.Embedding))}
+    blocks = {module for module in model.modules() if module.__class__.__name__ in block_names}
+    block_descendants = {child for block in blocks for child in block.modules() if child is not block}
+    # Keep the vocabulary handles explicit: selected rows have FP32 masters and
+    # frozen BF16 tables, and the LM projection has its own forward hooks.
+    targets = blocks | {module for module in model.modules()
+                        if isinstance(module, (nn.Linear, nn.Embedding))
+                        and (granularity == "linear" or module not in block_descendants
+                             or getattr(module, "_nimloth_selected_token_rows", False))}
     targets.add(visual)
     visual_modules = set(visual.modules())
     common = dict(param_dtype=torch.bfloat16, reduce_dtype=torch.float32,
@@ -59,10 +67,10 @@ def qwen_wrap_policy(model: nn.Module):
     return CustomPolicy(policy), ignored, language_precision
 
 
-def wrap_qwen_fsdp(model: nn.Module, device: torch.device) -> FSDP:
+def wrap_qwen_fsdp(model: nn.Module, device: torch.device, *, granularity: str = "linear") -> FSDP:
     if device.type != "cuda" or not dist.is_initialized() or dist.get_world_size() < 2:
         raise ValueError("Stage3 FSDP requires initialized multi-rank CUDA")
-    policy, ignored, precision = qwen_wrap_policy(model)
+    policy, ignored, precision = qwen_wrap_policy(model, granularity)
     wrapped = FSDP(model, auto_wrap_policy=policy, ignored_states=ignored,
                 mixed_precision=precision, sharding_strategy=ShardingStrategy.FULL_SHARD,
                 use_orig_params=True, device_id=device, sync_module_states=True,
