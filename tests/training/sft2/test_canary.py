@@ -20,6 +20,7 @@ from nimloth.training.sft.stage3.runtime import SFT2ModelRuntime
 
 class ToyLoop(SFT2TrainingLoop):
     def _train_microbatch(self, samples, *, epoch, micro_step, loss_scales=None):
+        assert self.model_runtime.agent.training
         value = self.model_runtime.agent(torch.tensor([[float(samples)]]))
         self.model_runtime.history_cache.store([("trajectory", micro_step)], value.detach())
         (value.square().mean() / self.config.grad_accum).backward()
@@ -39,6 +40,9 @@ def make_loop(root, cap, *, resume=None, rank=0, distributed=False):
     model = nn.Linear(1, 1)
     if distributed:
         model = nn.parallel.DistributedDataParallel(model)
+    # Exercise the production loop's explicit return to training mode after eval
+    # or checkpoint reconstruction, including through the DDP wrapper.
+    model.eval()
     base = model.module if distributed else model
     optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
     cache = OnlineHistoryStateCache()
@@ -72,7 +76,8 @@ def make_loop(root, cap, *, resume=None, rank=0, distributed=False):
     return ToyLoop(config=config, rank=rank, train_loader=list(range(1, 25)), val_loader=[],
                    train_batch_sampler=SimpleNamespace(set_epoch=lambda epoch: None),
                    algorithm=SimpleNamespace(outcome_weight=0),
-                   model_runtime=SimpleNamespace(agent=model, history_cache=cache),
+                   model_runtime=SimpleNamespace(agent=model, history_cache=cache,
+                                                 set_training_mode=model.train),
                    optimization_runtime=optimization,
                    batch_builder=SimpleNamespace(supervision_counts=lambda item: (1, 1), device="cpu"),
                    checkpoint_runtime=checkpoint, reporter=None, state=state, total_steps=3)
