@@ -121,6 +121,7 @@ class SFT2TrainingLoop:
     total_steps: int
     outcome_eval_dir: Path | None = None
     outcome_export_identity: dict | None = None
+    feature_export_dir: Path | None = None
     step_timer: StepTimer = field(init=False)
 
     def __post_init__(self) -> None:
@@ -149,6 +150,25 @@ class SFT2TrainingLoop:
             best_val_wm_mse=self.state.best_val_wm_mse,
         )
         return self.state
+
+    def evaluate_only(self) -> dict[str, float]:
+        """Run the production validation forward without updating or saving weights."""
+        writer = None
+        if self.feature_export_dir is not None:
+            from nimloth.training.sft.stage3.diagnostics import DINOFeatureWriter
+
+            writer = DINOFeatureWriter(self.feature_export_dir, rank=self.rank)
+        metrics = evaluate(
+            self.algorithm,
+            self.model_runtime,
+            self.val_loader,
+            batch_builder=self.batch_builder,
+            max_batches=self.config.max_val_batches,
+            on_batch=writer,
+        )
+        if is_main():
+            print(json.dumps({"eval_only": True, "metrics": metrics}), flush=True)
+        return metrics
 
     def _run_epoch(self, epoch: int) -> None:
         """执行一个 epoch，并在全部 rank 完成后统一验证。"""

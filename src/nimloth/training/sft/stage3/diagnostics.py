@@ -4,12 +4,61 @@ from __future__ import annotations
 import hashlib
 import random
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import torch
 
 from nimloth.agent import Agent
 from nimloth.backbone import Backbone
+
+
+class DINOFeatureWriter:
+    """Save complete spatial grids from production evaluation batches."""
+
+    schema = "stage3_dino_feature_batch_v1"
+
+    def __init__(self, directory: Path, *, rank: int) -> None:
+        self.directory = Path(directory)
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.rank = int(rank)
+        self.batch_index = 0
+        self.paths: list[Path] = []
+
+    def __call__(self, batch, output) -> None:
+        diagnostic = output.diagnostics or {}
+        required = {
+            "predicted_states",
+            "target_states",
+            "dino_targets",
+            "current_dino_targets",
+        }
+        missing = sorted(required - diagnostic.keys())
+        if missing:
+            raise ValueError(f"DINO feature export missing diagnostics: {missing}")
+        horizon = int(batch.prediction_horizon)
+        predicted = diagnostic["predicted_states"].detach().float().cpu()
+        dino = diagnostic["dino_targets"].detach().float().cpu()
+        direct = diagnostic["target_states"].detach().float().cpu()
+        if predicted.shape != dino.shape or direct.shape != dino.shape:
+            raise ValueError("predicted, direct, and DINO grids must have identical shapes")
+        shape = (batch.batch_size, horizon, *predicted.shape[-2:])
+        valid = batch.sample_weights.detach().bool().cpu()
+        payload = {
+            "schema": self.schema,
+            "rank": self.rank,
+            "batch_index": self.batch_index,
+            "keys": [tuple(key) for index, key in enumerate(batch.current_keys) if valid[index]],
+            "actions": batch.action_sequences.detach().cpu()[valid],
+            "predicted": predicted.reshape(shape)[valid],
+            "direct": direct.reshape(shape)[valid],
+            "dino": dino.reshape(shape)[valid],
+            "current_dino": diagnostic["current_dino_targets"].detach().float().cpu()[valid],
+        }
+        path = self.directory / f"rank_{self.rank:03d}_batch_{self.batch_index:04d}.pt"
+        torch.save(payload, path)
+        self.paths.append(path)
+        self.batch_index += 1
 
 
 class _PredictorDiagnosticBackbone(Backbone):

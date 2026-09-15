@@ -98,6 +98,17 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--max-train-records", type=int, default=-1)
     ap.add_argument("--max-val-records", type=int, default=-1)
     ap.add_argument("--max-val-batches", type=int, default=-1)
+    ap.add_argument(
+        "--eval-only",
+        action="store_true",
+        help="Load the configured model/checkpoint and evaluate without updates or checkpoint writes.",
+    )
+    ap.add_argument(
+        "--feature-export-dir",
+        type=Path,
+        default=None,
+        help="With --eval-only, export full Stage3 DINO diagnostic grids for offline rendering.",
+    )
     ap.add_argument("--success-only", action="store_true", help="Train on successful rollouts only")
     ap.add_argument("--lambda-ce", type=float, default=1.0)
     ap.add_argument("--lambda-dino", type=float, default=0.5)
@@ -255,6 +266,8 @@ def parse_sft2_args(argv: list[str] | None = None) -> argparse.Namespace:
         ap.error("lambda_outcome > 0 requires --outcome-head")
     if args.outcome_head and args.objective != "dino_grid":
         ap.error("outcome head requires dino_grid objective")
+    if args.feature_export_dir is not None and not args.eval_only:
+        ap.error("feature_export_dir requires --eval-only")
     if not 0 < args.outcome_head_lr < float("inf"):
         ap.error("outcome_head_lr must be finite and positive")
     if args.step_timing_sample_interval < 1:

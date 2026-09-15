@@ -851,6 +851,7 @@ def _train_sft2_impl(args=None) -> int:
         config=SFT2LoopConfig.from_namespace(args),
         outcome_eval_dir=getattr(args, "outcome_eval_dir", None),
         outcome_export_identity=outcome_export_identity,
+        feature_export_dir=getattr(args, "feature_export_dir", None),
         rank=rank,
         train_loader=train_loader,
         val_loader=val_loader,
@@ -864,7 +865,10 @@ def _train_sft2_impl(args=None) -> int:
         state=loop_state,
         total_steps=total_steps,
     )
-    training_loop.run()
+    if getattr(args, "eval_only", False):
+        training_loop.evaluate_only()
+    else:
+        training_loop.run()
     if wandb_run is not None:
         wandb_run.finish()
     return 0
