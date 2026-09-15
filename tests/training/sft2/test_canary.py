@@ -20,7 +20,7 @@ from nimloth.training.sft.stage3.runtime import SFT2ModelRuntime
 class ToyLoop(SFT2TrainingLoop):
     def _train_microbatch(self, samples, *, epoch, micro_step, loss_scales=None):
         assert self.model_runtime.agent.training
-        value = self.model_runtime.agent(torch.tensor([[float(samples)]]))
+        value = self.model_runtime.agent(torch.tensor([[float(samples[0].value)]]))
         (value.square().mean() / self.config.grad_accum).backward()
         return 1.0, {}, 0
 
@@ -69,7 +69,9 @@ def make_loop(root, cap, *, resume=None, rank=0, distributed=False):
     config = SFT2LoopConfig(epochs=1, grad_accum=8, seed=42, max_val_batches=-1,
                            lambda_sigreg=0, checkpoint_metric="val_wm_mse",
                            step_timing=False, step_timing_interval=1, stop_after_steps=cap)
-    return ToyLoop(config=config, rank=rank, train_loader=list(range(1, 25)), val_loader=[],
+    return ToyLoop(config=config, rank=rank,
+                   train_loader=[[SimpleNamespace(value=i, loss_weight=1)] for i in range(1, 25)],
+                   val_loader=[],
                    train_batch_sampler=SimpleNamespace(set_epoch=lambda epoch: None),
                    algorithm=SimpleNamespace(outcome_weight=0),
                    model_runtime=SimpleNamespace(agent=model,
