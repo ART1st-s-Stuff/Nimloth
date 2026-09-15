@@ -31,6 +31,10 @@ class DINOGridBatchAssembler:
         self.targets = targets
 
     @property
+    def input_builder(self):
+        return self.base.input_builder
+
+    @property
     def processor(self) -> Any:
         return self.base.processor
 

@@ -179,6 +179,12 @@ class SFT2TrainingLoop:
                 if dist.is_available() and dist.is_initialized():
                     world = dist.get_world_size()
                     dist.all_reduce(totals)
+                if getattr(self.config, "trajectory_shared_forward", False):
+                    from nimloth.training.sft.stage3.trajectory import SharedMicrobatch, SharedTrajectoryExecution
+                    prepared = [self.batch_builder.prepare(item) for item in group]
+                    shared = SharedTrajectoryExecution(prepared, self.model_runtime, self.batch_builder,
+                        self.step_timer, activation_offload=self.config.activation_offload)
+                    group = [SharedMicrobatch(batch, shared, index) for index, batch in enumerate(prepared)]
                 for item, (all_count, lm_count), outcome_count in zip(group, counts, outcome_counts, strict=True):
                     yield item, (world * all_count / max(1, int(totals[0])),
                                  world * lm_count / max(1, int(totals[1])), lm_count,
@@ -294,12 +300,13 @@ class SFT2TrainingLoop:
     ) -> tuple[float, dict[str, float], int]:
         """先反传单次 CE/WM/value，再构建并反传单向 SIGReg 图。"""
 
-        timer_start = self.step_timer.start("forward_primary")
+        from nimloth.training.sft.stage3.trajectory import SharedMicrobatch
+        shared = batch_samples if isinstance(batch_samples, SharedMicrobatch) else None
         lambda_wm = self.algorithm.wm_weight(
             self.state.global_step,
             self.total_steps,
         )
-        batch = self.batch_builder.prepare(batch_samples)
+        batch = shared.batch if shared is not None else self.batch_builder.prepare(batch_samples)
         if (getattr(self.config, "diagnose_outcome_gradients", False)
                 and self.state.global_step == 0 and micro_step == 1):
             from nimloth.training.sft.stage3.diagnostics import outcome_gradient_diagnostic
@@ -311,11 +318,17 @@ class SFT2TrainingLoop:
             with path.open("x") as stream:
                 json.dump(diagnostic, stream, indent=2, allow_nan=False)
             print(json.dumps(diagnostic, allow_nan=False), flush=True)
+        if shared is not None:
+            shared.group.initialize()
+        timer_start = self.step_timer.start("forward_primary")
         with saved_activation_context(self.config.activation_offload):
             primary = self.algorithm.training_primary_step(
                 self.model_runtime,
                 batch,
                 wm_weight=lambda_wm,
+                **(dict(zip(("encoded_current", "target_states"),
+                            shared.group.primary_inputs(shared.index), strict=True))
+                   if shared is not None else {}),
             )
         self.step_timer.stop("forward_primary", timer_start)
 
@@ -356,6 +369,7 @@ class SFT2TrainingLoop:
                         epoch,
                         micro_step,
                     ),
+                    **({"online_next_state": shared.group.tail(shared.index)} if shared is not None else {}),
                 )
             self.step_timer.stop("forward_sigreg", timer_start)
             timer_start = self.step_timer.start("backward_sigreg")
@@ -366,6 +380,10 @@ class SFT2TrainingLoop:
             self.step_timer.stop("backward_sigreg", timer_start)
 
         metrics = self.algorithm.merge_training_metrics(primary_metrics, sigreg)
+        if shared is not None:
+            metrics.update(shared.group.stats)
+            if shared.index == len(shared.group.batches) - 1:
+                shared.group.finish()
         return lambda_wm, metrics, sample_count
 
     def _optimizer_step(

@@ -170,3 +170,32 @@ Correct: collective gathering with explicit complete export and synchronized wra
 - Cases: N=1 preserves full profiling; N=10/M=1 reports updates1,11,21. A short run may contain only its first profiled update.
 - Tests: count synchronization calls across accumulated microbatches, check unsampled silence, mean denominators, defaults and CLI/config validation.
 - Wrong versus correct: sampled phase means are not end-to-end throughput. Measure wall time over matched batches separately and account for save/evaluation stalls. Equal effective batch alone does not preserve nonlinear SIGReg microbatch statistics or sampler/resume identity.
+
+### Trajectory-shared Stage3 encoding
+
+- Scope: opt-in `--trajectory-shared-forward` / `train.trajectory_shared_forward`
+  for H=1, multi-step WM supervision. Default remains the window encoder.
+- Interface: the Qwen backbone accepts explicit ordered query positions
+  `[N,K,2]` (input row, token position) and virtual LM window labels/source rows.
+  It returns all requested states and one CE mean per window from one head call.
+- Contract: merge only exact nested causal prefixes within the original optimizer
+  accumulation group; preserve images, positions, true CoT, sampler order,
+  successful-window LM means, masks and distributed denominators. Target encoding
+  is separately eval/no-grad with EMA, completed before the live online graph.
+  Accumulate original window/SIGReg gradients on detached leaves, then propagate
+  their sum through the shared online graph once. SIGReg retains original global
+  microbatch grouping, RNG seed and stop-gradient on current state. No learned
+  state may survive an optimizer/EMA update. WM continues predicted-state rollout.
+- Validation errors: reject incompatible prefix/image/position input, invalid
+  query positions, nonzero stochastic encoder/projector dropout, unsupported
+  history/horizon, and malformed virtual LM mappings; no approximate fallback.
+- Cases: ordinary overlap shares a trajectory; a group crossing a trajectory
+  boundary batches separate trajectories; failed/padded windows retain connected
+  zero LM gradients without creating supervised token loss.
+- Tests: causal prefix states/CE and future perturbation; original-versus-shared
+  parameter gradients and loss normalization; asymmetric distributed masks,
+  FSDP backward and canonical checkpoint resume; production memory/throughput.
+- Wrong: replace EMA targets with detached online states, average all answer
+  tokens together, or regroup SIGReg merely because effective batch is unchanged.
+  Correct: share encoder computation while retaining each original objective and
+  optimizer boundary. Fewer forwards alone are not measured speed evidence.

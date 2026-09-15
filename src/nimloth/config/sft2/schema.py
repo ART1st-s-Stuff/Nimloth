@@ -29,6 +29,7 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("tuning", "lora_dropout"): "lora_dropout",
     ("train", "epochs"): "epochs",
     ("train", "distributed_strategy"): "distributed_strategy",
+    ("train", "trajectory_shared_forward"): "trajectory_shared_forward",
     ("train", "activation_offload"): "activation_offload",
     ("train", "stop_after_steps"): "stop_after_steps",
     ("train", "diagnose_outcome_gradients"): "diagnose_outcome_gradients",
@@ -114,11 +115,13 @@ class SFT2LoopConfig:
     stop_after_steps: int = 0
     diagnose_outcome_gradients: bool = False
     activation_offload: bool = False
+    trajectory_shared_forward: bool = False
 
     @classmethod
     def from_namespace(cls, args: argparse.Namespace) -> "SFT2LoopConfig":
         return cls(
             epochs=int(args.epochs),
+            trajectory_shared_forward=bool(getattr(args, "trajectory_shared_forward", False)),
             activation_offload=bool(getattr(args, "activation_offload", False)),
             stop_after_steps=int(getattr(args, "stop_after_steps", 0)),
             diagnose_outcome_gradients=bool(getattr(args, "diagnose_outcome_gradients", False)),

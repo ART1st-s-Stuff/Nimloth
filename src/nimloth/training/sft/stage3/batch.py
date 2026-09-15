@@ -294,6 +294,7 @@ class SFT2BatchBuilder(Protocol):
     """DataLoader 输出到 SFT2 连续窗口 batch 的阶段契约。"""
 
     processor: Any
+    input_builder: BackboneInputBuilder
 
     def collate_transition_samples(self, batch: list[Any]) -> Any: ...
 

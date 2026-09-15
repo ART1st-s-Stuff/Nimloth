@@ -322,3 +322,16 @@ def test_block_layout_is_explicit_operational_override(tmp_path):
     changed = list(updated)
     changed[changed.index('--lambda-outcome') + 1] = '1'
     assert launcher.semantic_command(original) != launcher.semantic_command(changed)
+
+
+def test_trajectory_shared_forward_wired_to_both_arms_and_resume_comparison(tmp_path):
+    config = args(tmp_path)
+    original = launcher.command(config, 'control', 'formal', 29501)
+    assert '--trajectory-shared-forward' not in original
+    config.trajectory_shared_forward = True
+    for arm in ('control', 'treatment'):
+        for phase in ('canary', 'resume', 'formal'):
+            command = launcher.command(config, arm, phase, 29501)
+            assert command.count('--trajectory-shared-forward') == 1
+    shared = launcher.command(config, 'control', 'formal', 29501)
+    assert launcher.semantic_command(shared) == launcher.semantic_command(original)

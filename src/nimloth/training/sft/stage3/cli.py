@@ -40,6 +40,8 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
                     help="Stop at this absolute optimizer step with a partial resumable checkpoint; 0 disables.")
     ap.add_argument("--diagnose-outcome-gradients", action="store_true",
                     help="Measure first-batch outcome versus WM+DINO predictor gradients without an update.")
+    ap.add_argument("--trajectory-shared-forward", action="store_true",
+                    help="Share exact trajectory prefixes within each optimizer update.")
     ap.add_argument("--batch-size", type=int, default=2)
     ap.add_argument("--grad-accum", type=int, default=4)
     ap.add_argument("--lr-qwen-start", type=float, default=1e-8)
@@ -258,6 +260,9 @@ def parse_sft2_args(argv: list[str] | None = None) -> argparse.Namespace:
         ap.error("outcome_head_lr must be finite and positive")
     if args.step_timing_sample_interval < 1:
         ap.error("step_timing_sample_interval must be positive")
+    if args.trajectory_shared_forward and (args.history_size != 1 or args.prediction_horizon <= 1
+                                           or args.latent_token_count <= 1):
+        ap.error("trajectory-shared-forward requires H=1, prediction_horizon>1 and multiple Query slots")
     if args.stop_after_steps < 0:
         ap.error("stop_after_steps must be nonnegative")
     if args.diagnose_outcome_gradients and args.lambda_outcome <= 0:

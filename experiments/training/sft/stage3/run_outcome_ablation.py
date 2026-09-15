@@ -46,6 +46,8 @@ def command(args, arm, phase, port):
     for key, value in values.items():
         result.extend(['--' + key, str(value)])
     result.extend(['--outcome-head', '--require-prebuilt-cache', '--step-timing', '--deduplicate-epoch-checkpoints'])
+    if getattr(args, 'trajectory_shared_forward', False):
+        result.append('--trajectory-shared-forward')
     if phase == 'formal':
         if arm == 'control' and getattr(args, 'resume_control_from', None):
             result.extend(['--resume', '--resume-from', str(args.resume_control_from)])
@@ -227,7 +229,7 @@ def semantic_command(argv):
         if value in ignored:
             index += 2
             continue
-        if value in {'--resume', '--step-timing'} or value.startswith('--master_port='):
+        if value in {'--resume', '--step-timing', '--trajectory-shared-forward'} or value.startswith('--master_port='):
             index += 1
             continue
         result.append(value)
@@ -437,6 +439,8 @@ def main(argv=None):
     parser.add_argument('--cleanup-validated-intermediates', action='store_true')
     parser.add_argument('--max-length', type=int, default=12000)
     parser.add_argument('--resume-control-from', type=Path)
+    parser.add_argument('--trajectory-shared-forward', action='store_true',
+                        help='Share causal trajectory encoding within each original optimizer update.')
     parser.add_argument('--fsdp-wrap-granularity', choices=('linear', 'block'), default='linear')
     parser.add_argument('--step-timing-sample-interval', type=int, default=10)
     parser.add_argument('--execute', action='store_true')

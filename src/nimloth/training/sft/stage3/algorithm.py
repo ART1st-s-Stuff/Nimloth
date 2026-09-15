@@ -8,6 +8,7 @@ from pathlib import Path
 
 import torch
 
+from nimloth.agent.model import AgentStateOutput
 from nimloth.training.common import action_value_loss, world_model_loss
 from nimloth.training.common.value_semantics import SFT2_VALUE_OBJECTIVE
 from nimloth.training.sft.stage3.batch import SFT2Batch, SFT2RolloutBatch
@@ -135,7 +136,14 @@ class SFT2Algorithm:
         batch: SFT2Batch | SFT2RolloutBatch,
         *,
         wm_weight: float,
+        encoded_current: AgentStateOutput | None = None,
+        target_states: torch.Tensor | None = None,
     ) -> SFT2StepOutput:
+        if encoded_current is not None or target_states is not None:
+            if not isinstance(batch, SFT2RolloutBatch) or encoded_current is None or target_states is None:
+                raise ValueError("shared states require a complete rollout encoding")
+            return self._rollout_step(runtime, batch, wm_weight=wm_weight, include_lm_loss=True,
+                                      encoded_current=encoded_current, target_states=target_states)
         return self._step(
             runtime,
             batch,
@@ -150,6 +158,7 @@ class SFT2Algorithm:
         *,
         detached_current_state: torch.Tensor,
         sigreg_seed: int,
+        online_next_state: torch.Tensor | None = None,
     ) -> SFT2SIGRegStepOutput:
         """只让在线 ``s_{t+1}`` 接收 SIGReg 梯度。
 
@@ -159,10 +168,10 @@ class SFT2Algorithm:
 
         if not self.has_sigreg_stage:
             raise RuntimeError("SFT2 SIGReg stage is disabled")
-        next_state = runtime.agent.encode_state(
+        next_state = (runtime.agent.encode_state(
             batch.online_tail,
             include_lm_loss=False,
-        ).state
+        ).state if online_next_state is None else online_next_state)
         sigreg_current = runtime.agent.wm.sigreg_state(detached_current_state)
         sigreg_next = runtime.agent.wm.sigreg_state(next_state)
         global_current, global_next, global_batch_size = gather_global_sigreg_states(
@@ -339,6 +348,8 @@ class SFT2Algorithm:
         *,
         wm_weight: float,
         include_lm_loss: bool,
+        encoded_current: AgentStateOutput | None = None,
+        target_states: torch.Tensor | None = None,
     ) -> SFT2StepOutput:
         """从真实起点递推 T 步，分别监督后继状态和动作前的 outgoing Q。
 
@@ -352,10 +363,10 @@ class SFT2Algorithm:
                 f"algorithm=({self.history_size},{self.prediction_horizon}), "
                 f"batch=(1,{batch.prediction_horizon})"
             )
-        current_encoded = runtime.agent.encode_state(
+        current_encoded = (runtime.agent.encode_state(
             batch.current,
             include_lm_loss=include_lm_loss,
-        )
+        ) if encoded_current is None else encoded_current)
         model_output = runtime.agent.forward_action_rollout(
             batch.action_sequences,
             encoded_current=current_encoded,
@@ -366,7 +377,7 @@ class SFT2Algorithm:
             enabled=not batch.is_padding,
         )
 
-        next_states = runtime.encode_next_state(batch.next)
+        next_states = runtime.encode_next_state(batch.next) if target_states is None else target_states
         expected_next_states = next_states[batch.next_indices.flatten()].reshape(
             batch.batch_size,
             batch.prediction_horizon,
