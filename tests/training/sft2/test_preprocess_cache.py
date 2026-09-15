@@ -38,7 +38,7 @@ class FakeTokenizer:
       for ch in text:
           offsets.append((pos, pos + 1))
           pos += 1
-      return {"offset_mapping": offsets}
+      return {"offset_mapping": offsets, "input_ids": [ord(ch) for ch in text]}
 
 
 class FakeProcessor:
@@ -376,3 +376,31 @@ def test_v1_cache_is_rejected_and_must_be_rebuilt(tmp_path) -> None:
     )
     with pytest.raises(ValueError, match="Rebuild the cache"):
         CachedTransitionDataset(cache_dir, [])
+
+
+def test_cached_input_rejects_per_row_image_mismatch_even_if_batch_totals_match():
+    from types import SimpleNamespace
+    from nimloth.backbone.qwen25vl.input import Qwen25VLInputBuilder
+    processor = SimpleNamespace(
+        image_token="<image_pad>", image_processor=SimpleNamespace(merge_size=2),
+        tokenizer=SimpleNamespace(pad_token_id=0, unk_token_id=-1, convert_tokens_to_ids=lambda _: 9))
+    builder = Qwen25VLInputBuilder(processor=processor, max_length=32)
+    rows = [
+        {"input_ids": torch.tensor([9]), "image_grid_thw": torch.tensor([[1, 2, 4]])},
+        {"input_ids": torch.tensor([9, 9]), "image_grid_thw": torch.tensor([[1, 2, 2]])},
+    ]
+    # Three total image tokens and three total features would pass a batch sum.
+    with pytest.raises(ValueError, match="tokens=1, features=2"):
+        builder.collate_encoded(rows, include_labels=False)
+
+
+def test_cached_input_rejects_pixel_grid_mismatch():
+    from types import SimpleNamespace
+    from nimloth.backbone.qwen25vl.input import Qwen25VLInputBuilder
+    processor = SimpleNamespace(
+        image_token="<image_pad>", image_processor=SimpleNamespace(merge_size=2),
+        tokenizer=SimpleNamespace(pad_token_id=0, unk_token_id=-1, convert_tokens_to_ids=lambda _: 9))
+    row = {"input_ids": torch.tensor([9]), "image_grid_thw": torch.tensor([[1, 2, 2]]),
+           "pixel_values": torch.zeros(3, 12)}
+    with pytest.raises(ValueError, match="pixel/grid mismatch"):
+        Qwen25VLInputBuilder(processor, 32).collate_encoded([row], include_labels=False)

@@ -6,6 +6,7 @@
 | `factory.py` | 阶段无关的模型加载、tuning 与独立能力构造 |
 | `input.py` | Agent 消息/图片到 `BackboneBatch` 的通用输入适配 |
 | `batch.py` | chat rendering、图片处理、CE label 与 tensor collate |
+| `image_text.py` | 图像占位符展开、assistant span 坐标映射与完整编码校验 |
 | `policy.py` | Qwen direct policy score 与 masked-token PPO replay 适配器 |
 | `vllm_policy.py` | 独立 vLLM 单请求 CoT/action behavior backend；不承担训练 |
 | `turn_generation.py` | turn continuation 的可测试 token 状态机与 logits mask |
@@ -39,3 +40,8 @@ FSDP head 调用内按每 128 个监督位置联合重算投影和 CE，保持�
 token 均值和完整 hidden。该私有模式用 head 的标量输出传递窗口 loss，使
 FSDP 反向解分片先于重算；不递归调用 head，不缓存旧参数视图。
 前向完成或异常后均移除 hook；目标和梯度须通过独立参考与分布式对比验证。
+
+图像展开后的文本和 assistant span 共同生成 CE 标签，并逐 token 核对真实输入；
+只监督最后 assistant，屏蔽 query tokens。编码不截断：完整 prefix 超出 max_length
+则明确报错。读取缓存时逐行验证图像 tokens、grid 与 pixels 数量，旧标签缓存须按
+新的 CE_MASK_VERSION 重建，不能仅改 manifest 继续使用。

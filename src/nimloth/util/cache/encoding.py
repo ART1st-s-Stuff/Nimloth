@@ -6,6 +6,7 @@ from typing import Any
 
 import torch
 from transformers import AutoProcessor
+from nimloth.backbone.qwen25vl.image_text import expand_image_text, require_complete_length, validate_image_encoding
 
 from nimloth.backbone.qwen25vl.batch import (
     assistant_char_spans,
@@ -60,17 +61,7 @@ def _expand_qwen_image_tokens(
 ) -> str:
     """Expand Qwen image placeholders exactly as Qwen2_5_VLProcessor.__call__."""
 
-    image_token = str(processor.image_token)
-    merge_length = int(processor.image_processor.merge_size) ** 2
-    expanded = text
-    for grid in image_grid_thw:
-        if image_token not in expanded:
-            raise ValueError("fewer image placeholders than cached image grids")
-        token_count = int(grid.prod().item()) // merge_length
-        expanded = expanded.replace(image_token, "<|placeholder|>" * token_count, 1)
-    if image_token in expanded:
-        raise ValueError("more image placeholders than cached image grids")
-    return expanded.replace("<|placeholder|>", image_token)
+    return expand_image_text(text, image_grid_thw, processor)[0]
 
 
 def encode_qwen_item_from_image_grids(
@@ -96,14 +87,16 @@ def encode_qwen_item_from_image_grids(
         latent_token_count=latent_token_count,
     )
     grids = image_grid_thw.to(dtype=torch.long, device="cpu").reshape(-1, 3).contiguous()
-    expanded_text = _expand_qwen_image_tokens(text, grids, processor)
+    spans = assistant_char_spans(messages, processor, latent_token_count=latent_token_count) if include_labels else []
+    expanded_text, expanded_spans = expand_image_text(text, grids, processor, spans)
     enc = processor.tokenizer(
         [expanded_text],
         padding=False,
-        truncation=True,
+        truncation=False,
         max_length=max_length,
         return_tensors="pt",
     )
+    require_complete_length(enc, max_length)
     out: dict[str, torch.Tensor] = {
         key: value.squeeze(0).contiguous()
         for key, value in enc.items()
@@ -111,15 +104,17 @@ def encode_qwen_item_from_image_grids(
     }
     if grids.numel():
         out["image_grid_thw"] = grids
+    validate_image_encoding(out, processor)
     if include_labels:
         labels = labels_for_text_rows(
             processor,
             enc["input_ids"],
-            [text],
-            [assistant_char_spans(messages, processor, latent_token_count=latent_token_count)],
+            [expanded_text],
+            [expanded_spans],
             max_length,
             latent_token_count=latent_token_count,
             mask_latent_query_labels=mask_latent_query_labels,
+            attention_mask=enc.get("attention_mask"),
         )
         out["labels"] = labels.squeeze(0).contiguous()
     return out

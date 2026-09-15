@@ -11,6 +11,8 @@
 - Python评估入口：`eval_direct(config: EvaluationConfig) -> int`及`eval_wm(config: EvaluationConfig) -> int`；返回执行退出码，指标保存在配置指定输出目录。
 
 ## 3. 数据和兼容合同
+Qwen 多模态编码必须保留完整 prefix。先按 image grids 展开图像占位符，再在同一展开后的字符坐标中定位回答监督 span；在线和缓存路径必须产生相同 input IDs 与 labels。图像 token 数须与对应 grid 的特征数一致，图像 token 不得成为回答 LM 监督。超过显式 max_length 时在预处理阶段报错，不允许截断文本后仍保留全部图像、补造 token 或静默删样本。改变该编码/标签合同必须更新缓存版本并重建文本缓存，旧版本不得视作兼容输入。
+
 新stage2不是历史`sft2`。旧`training.sft1`、`training.sft2` Python 包已移除，活动调用使用`training.sft.stage1`或`stage3`。历史checkpoint字段仍指WM/value阶段；不改写已保存的历史产物。stage3迁移保持旧目标、类型与恢复协议。
 
 stage2需要同观测的真实回答/CoT、完整有序的query slots和冻结DINO grid；projector输出形状必须精确匹配teacher目标。空间grid、teacher身份和projector参数随checkpoint保存，供stage3校验读取。

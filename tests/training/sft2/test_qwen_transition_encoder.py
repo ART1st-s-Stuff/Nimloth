@@ -14,6 +14,7 @@ from nimloth.training.sft.stage3.batch import SFT2BatchAssembler, SFT2RolloutBat
 def _assembler() -> SFT2BatchAssembler:
     processor = MagicMock()
     processor.tokenizer.pad_token_id = 0
+    processor.image_token = None
     return SFT2BatchAssembler(
         input_builder=Qwen25VLInputBuilder(
             processor=processor,
@@ -27,6 +28,7 @@ def _assembler() -> SFT2BatchAssembler:
 def _rollout_assembler() -> SFT2BatchAssembler:
     processor = MagicMock()
     processor.tokenizer.pad_token_id = 0
+    processor.image_token = None
     return SFT2BatchAssembler(
         input_builder=Qwen25VLInputBuilder(
             processor=processor,
@@ -205,6 +207,7 @@ def test_prepare_cached_t4_accepts_unlabelled_terminal_next_state() -> None:
 def test_supervised_cached_rows_require_labels_on_every_row() -> None:
     processor = MagicMock()
     processor.tokenizer.pad_token_id = 0
+    processor.image_token = None
     builder = Qwen25VLInputBuilder(processor=processor, max_length=32)
 
     with pytest.raises(ValueError, match="must all contain labels"):

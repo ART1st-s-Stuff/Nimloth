@@ -10,6 +10,7 @@ import torch
 from PIL import Image
 from torch.nn.utils.rnn import pad_sequence
 from transformers import AutoProcessor
+from .image_text import expand_image_rows, require_complete_length, validate_image_encoding
 
 from nimloth.latent import (
     LatentActionTokens,
@@ -56,16 +57,19 @@ class _OffsetCache:
         self.tokenizer = tokenizer
 
     @lru_cache(maxsize=131072)
-    def offsets(self, text: str, max_length: int) -> tuple[tuple[int, int], ...]:
+    def offsets(self, text: str, max_length: int) -> tuple[tuple[int, ...], tuple[tuple[int, int], ...]]:
         mapping = self.tokenizer(
             text,
             padding=False,
-            truncation=True,
+            truncation=False,
             max_length=max_length,
             return_offsets_mapping=True,
             add_special_tokens=False,
-        )["offset_mapping"]
-        return tuple((int(start), int(end)) for start, end in mapping)
+        )
+        ids = tuple(int(token) for token in mapping["input_ids"])
+        if len(ids) > max_length:
+            raise ValueError(f"complete label text exceeds max_length: required={len(ids)}, max_length={max_length}")
+        return ids, tuple((int(start), int(end)) for start, end in mapping["offset_mapping"])
 
 
 _TEMPLATE_CACHES: dict[int, _TemplateCache] = {}
@@ -185,19 +189,22 @@ def labels_for_text_rows(
     *,
     latent_token_count: int = 1,
     mask_latent_query_labels: bool = True,
+    attention_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
     offset_cache = _offset_cache(processor)
     offset_rows = [offset_cache.offsets(text, max_length) for text in texts]
     labels = enc_input_ids.clone()
     labels[:] = -100
     for row, spans in enumerate(spans_per_item):
-        usable = min(labels.shape[1], len(offset_rows[row]))
-        for tok_idx in range(usable):
-            start, end = offset_rows[row][tok_idx]
-            if end <= start:
-                continue
-            if any(start < span_end and end > span_start for span_start, span_end in spans):
-                labels[row, tok_idx] = enc_input_ids[row, tok_idx]
+        expected_ids, offsets = offset_rows[row]
+        positions = ((attention_mask[row] != 0).nonzero(as_tuple=True)[0]
+                     if attention_mask is not None else torch.arange(enc_input_ids.shape[1], device=enc_input_ids.device))
+        actual = enc_input_ids[row, positions].tolist()
+        if actual != list(expected_ids):
+            raise ValueError("label text token IDs do not match complete encoded Qwen input")
+        for position, (start, end) in zip(positions, offsets, strict=True):
+            if end > start and any(start < span_end and end > span_start for span_start, span_end in spans):
+                labels[row, position] = enc_input_ids[row, position]
     if mask_latent_query_labels:
         labels = _mask_latent_query_labels(
             labels,
@@ -230,10 +237,12 @@ def encode_qwen_item(
         text=[text],
         images=[images] if images else None,
         padding=False,
-        truncation=True,
+        truncation=False,
         max_length=max_length,
         return_tensors="pt",
     )
+    require_complete_length(enc, max_length)
+    validate_image_encoding(enc, processor)
     out: dict[str, Any] = {}
     for key, value in enc.items():
         if hasattr(value, "squeeze"):
@@ -247,14 +256,18 @@ def encode_qwen_item(
         else:
             out[key] = value
     if include_labels:
+        expanded, spans = expand_image_rows(
+            [text], [assistant_char_spans(messages, processor, latent_token_count=latent_token_count)],
+            enc.get("image_grid_thw"), processor)
         labels = labels_for_text_rows(
             processor,
             enc["input_ids"],
-            [text],
-            [assistant_char_spans(messages, processor, latent_token_count=latent_token_count)],
+            expanded,
+            spans,
             max_length,
             latent_token_count=latent_token_count,
             mask_latent_query_labels=mask_latent_query_labels,
+            attention_mask=enc.get("attention_mask"),
         )
         out["labels"] = labels.squeeze(0).contiguous()
     return out
@@ -347,13 +360,18 @@ def build_qwen_batch(
         all_images.append(_collect_message_images(item["messages"]))
 
     enc = processor(
-        text=texts,
+        # Qwen's processor expands image placeholders in this list in place.
+        # Keep the original rendered strings for assistant-span remapping.
+        text=list(texts),
         images=all_images,
         padding=True,
-        truncation=True,
+        truncation=False,
         max_length=max_length,
         return_tensors="pt",
     )
+    require_complete_length(enc, max_length)
+    validate_image_encoding(enc, processor)
+    texts, spans_per_item = expand_image_rows(texts, spans_per_item, enc.get("image_grid_thw"), processor)
     enc["labels"] = labels_for_text_rows(
         processor,
         enc["input_ids"],
@@ -362,5 +380,6 @@ def build_qwen_batch(
         max_length,
         latent_token_count=latent_token_count,
         mask_latent_query_labels=mask_latent_query_labels,
+        attention_mask=enc.get("attention_mask"),
     )
     return enc
