@@ -15,7 +15,7 @@ spec.loader.exec_module(launcher)
 def args(tmp_path):
     return SimpleNamespace(python=Path(sys.executable), worktree=PATH.parents[4], model=tmp_path/'model',
         train=tmp_path/'train', val=tmp_path/'val', preprocess=tmp_path/'cache', dino=tmp_path/'dino',
-        run_root=tmp_path/'run', max_length=12000)
+        run_root=tmp_path/'run', max_length=12000, epochs=1)
 
 
 def test_arm_commands_match_and_canary_resumes_explicitly(tmp_path):
@@ -269,3 +269,50 @@ def test_retired_window_launcher_flags_are_rejected(tmp_path, retired):
         launcher.main(argv + ['--commit', 'deadbeef'] + retired)
     assert error.value.code == 2
     assert not config.run_root.exists()
+
+
+def test_two_epochs_only_apply_to_formal_arms(tmp_path):
+    config = args(tmp_path)
+    config.epochs = 2
+    for arm, phase in launcher.phases(config):
+        argv = launcher.command(config, arm, phase, 29501)
+        assert argv[argv.index('--epochs') + 1] == ('2' if phase == 'formal' else '1')
+        assert ('--checkpoint-latest-only' in argv) == (phase == 'formal')
+
+
+@pytest.mark.parametrize('epochs', ['0', '-1'])
+def test_nonpositive_epochs_rejected(tmp_path, epochs):
+    config = args(tmp_path)
+    argv = []
+    for key in ('python', 'worktree', 'model', 'train', 'val', 'preprocess', 'dino', 'run_root'):
+        argv += ['--' + key.replace('_', '-'), str(getattr(config, key))]
+    with pytest.raises(SystemExit) as error:
+        launcher.main(argv + ['--commit', 'deadbeef', '--epochs', epochs])
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize('mutation', [None, 'wrong_epoch', 'missing_first_export', 'incomplete_final_export'])
+def test_two_epoch_formal_checks_final_resume_state_and_all_exports(tmp_path, monkeypatch, mutation):
+    import json
+    config = args(tmp_path)
+    config.epochs = 2
+    checkpoint = config.run_root/'control'/'epoch_002'
+    make_intermediate(checkpoint)
+    (checkpoint/'selected_token_rows.pt').write_bytes(b'fixture')
+    (checkpoint.parent/'train_step_log.csv').write_text('total_loss,wm_mse,dino_grid_mse,value_mc_mse\n1,1,1,1\n')
+    evaluation = config.run_root/'control_evaluation'
+    evaluation.mkdir()
+    for epoch in (1, 2):
+        for split in ('train', 'eval'):
+            if mutation == 'missing_first_export' and epoch == 1 and split == 'eval':
+                continue
+            count = 7 if mutation == 'incomplete_final_export' and epoch == 2 else 8
+            (evaluation/f'epoch_{epoch:03d}_{split}.complete.json').write_text(json.dumps(dict(status='complete', files=list(range(count)))))
+    monkeypatch.setattr(launcher, 'checkpoint_metadata', lambda *_: dict(
+        step=46, epoch=1 if mutation == 'wrong_epoch' else 2, epoch_complete=True, has_optimizer=True,
+        training_invariants={'training_unit': 'complete_trajectory_v1'}))
+    if mutation is None:
+        assert launcher.verify_phase(config, 'control', 'formal') == str(checkpoint)
+    else:
+        with pytest.raises((RuntimeError, FileNotFoundError)):
+            launcher.verify_phase(config, 'control', 'formal')

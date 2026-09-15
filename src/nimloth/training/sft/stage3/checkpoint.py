@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import pickle
 import tempfile
 import re
 import shutil
@@ -251,6 +252,7 @@ class SFT2CheckpointRuntime:
     last_periodic_time: float = field(default_factory=time.monotonic)
 
     deduplicate_epoch_checkpoints: bool = False
+    checkpoint_latest_only: bool = False
     _last_epoch: tuple[str, int, int, float] | None = field(default=None, init=False)
     _owned_aliases: dict[str, tuple[int, int]] = field(default_factory=dict, init=False)
 
@@ -273,6 +275,8 @@ class SFT2CheckpointRuntime:
             temporary.rename(target)
             print(json.dumps({"status": "stopped", "checkpoint": str(target), **metadata}), flush=True)
         self._barrier()
+        if self.checkpoint_latest_only:
+            self._retain_latest(target)
         return target
 
     def save_final(
@@ -283,13 +287,17 @@ class SFT2CheckpointRuntime:
         best_val_wm_mse: float,
     ) -> None:
         identity = (f"epoch_{epoch:03d}", step, epoch, best_val_wm_mse)
-        if self.deduplicate_epoch_checkpoints and self._last_epoch == identity:
+        if (self.deduplicate_epoch_checkpoints or self.checkpoint_latest_only) and self._last_epoch == identity:
             self._clone_epoch("final", identity)
         else:
             if self.deduplicate_epoch_checkpoints and (self.manager.output_dir / "final").exists():
                 raise FileExistsError("refusing to overwrite an existing final checkpoint")
             self._save("final", step=step, epoch=epoch,
                        best_val_wm_mse=best_val_wm_mse)
+            if self.checkpoint_latest_only:
+                self._retain_latest(self.manager.output_dir / "final")
+            if self.checkpoint_latest_only:
+                self._retain_latest(self.manager.output_dir / "final")
 
     def save_periodic(
         self,
@@ -308,6 +316,17 @@ class SFT2CheckpointRuntime:
                 elapsed = time.monotonic() - self.last_periodic_time
                 save_latest = elapsed >= self.interval_minutes * 60.0
             save_latest = self._broadcast_bool(save_latest)
+
+        if self.checkpoint_latest_only:
+            if save_step or save_latest:
+                name = f"step_{step:06d}"
+                self._save(name, step=step, epoch=epoch,
+                           best_val_wm_mse=best_val_wm_mse, epoch_complete=False,
+                           micro_step_in_epoch=micro_step)
+                self._retain_latest(self.manager.output_dir / name)
+                if is_main():
+                    self.last_periodic_time = time.monotonic()
+            return
 
         if save_latest:
             self._save(
@@ -349,7 +368,9 @@ class SFT2CheckpointRuntime:
             best_val_wm_mse=best_val_wm_mse,
         )
         self._last_epoch = (f"epoch_{epoch:03d}", step, epoch, best_val_wm_mse)
-        if improved:
+        if self.checkpoint_latest_only:
+            self._retain_latest(self.manager.output_dir / self._last_epoch[0])
+        elif improved:
             if self.deduplicate_epoch_checkpoints:
                 self._clone_epoch("best", self._last_epoch)
             else:
@@ -419,7 +440,7 @@ class SFT2CheckpointRuntime:
         self._last_epoch = None
         self._barrier()
         target = self.manager.output_dir / name
-        if self.deduplicate_epoch_checkpoints and name.startswith("epoch_") and (target.exists() or target.is_symlink()):
+        if (self.checkpoint_latest_only or (self.deduplicate_epoch_checkpoints and name.startswith("epoch_"))) and (target.exists() or target.is_symlink()):
             raise FileExistsError(f"refusing to overwrite immutable epoch checkpoint: {target}")
         if is_main() or is_fsdp_agent(getattr(self.manager, "agent", None)):
             self.manager.save(
@@ -437,10 +458,17 @@ class SFT2CheckpointRuntime:
         """Keep incomplete/foreign directories out of rolling retention accounting."""
         if path.is_symlink() or re.fullmatch(r"step_[0-9]{6,}", path.name) is None:
             return False
-        if not is_trainable_checkpoint_dir(path):
+        return SFT2CheckpointRuntime._complete_checkpoint(path)
+
+    @staticmethod
+    def _complete_checkpoint(path: Path) -> bool:
+        if path.is_symlink() or not is_trainable_checkpoint_dir(path):
             return False
         state = torch.load(path / "training_state.pt", map_location="cpu", weights_only=False)
-        if state.get("optimizer") is None or state.get("step") != int(path.name.removeprefix("step_")):
+        if state.get("optimizer") is None:
+            return False
+        match = re.fullmatch(r"(?:stop_)?step_([0-9]{6,})", path.name)
+        if match and state.get("step") != int(match[1]):
             return False
         invariants = state.get("training_invariants") or {}
         if invariants.get("training_unit") != "complete_trajectory_v1":
@@ -461,6 +489,36 @@ class SFT2CheckpointRuntime:
                     for name in weight_map.values()
                 )
         return any((path / name).is_file() for name in ("model.safetensors", "pytorch_model.bin"))
+
+    def _retain_latest(self, latest: Path) -> None:
+        """Prune only complete run-local artifacts after validating their replacement."""
+        if is_main():
+            if not self._complete_checkpoint(latest):
+                raise ValueError(f"new checkpoint is incomplete; retaining prior checkpoints: {latest}")
+            latest_step = read_checkpoint_step(latest)
+            latest_state = torch.load(latest / "training_state.pt", map_location="cpu", weights_only=False)
+            latest_invariants = latest_state.get("training_invariants")
+            del latest_state
+            for path in self.manager.output_dir.iterdir():
+                if path == latest or path.is_symlink():
+                    continue
+                if re.fullmatch(r"(?:epoch_[0-9]{3,}|(?:stop_)?step_[0-9]{6,}|latest|best|final)", path.name) is None:
+                    continue
+                try:
+                    if not self._complete_checkpoint(path):
+                        continue
+                    candidate_state = torch.load(path / "training_state.pt", map_location="cpu", weights_only=False)
+                    eligible = (
+                        candidate_state.get("training_invariants") == latest_invariants
+                        and int(candidate_state.get("step", -1)) <= latest_step
+                    )
+                    del candidate_state
+                except (OSError, ValueError, TypeError, AttributeError, EOFError, RuntimeError, pickle.UnpicklingError):
+                    # Malformed prior artifacts are not evidence of a deletable checkpoint.
+                    continue
+                if eligible:
+                    shutil.rmtree(path)
+        self._barrier()
 
     def _prune_step_checkpoints(self) -> None:
         if self.keep_last <= 0:

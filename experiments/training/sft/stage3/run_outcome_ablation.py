@@ -28,7 +28,7 @@ def command(args, arm, phase, port):
     values = {
         'model': args.model, 'train-jsonl': args.train, 'val-jsonl': args.val,
         'preprocess-cache-dir': args.preprocess, 'preprocess-cache-processor-source': args.model,
-        'dino-grid-cache': args.dino, 'output-dir': output, 'epochs': 1,
+        'dino-grid-cache': args.dino, 'output-dir': output, 'epochs': args.epochs if phase == 'formal' else 1,
         'distributed-strategy': 'fsdp', 'fsdp-wrap-granularity': getattr(args, 'fsdp_wrap_granularity', 'linear'), 'batch-size': 1, 'grad-accum': 8, 'seed': 42, 'history-size': 1, 'prediction-horizon': 4,
         'grid-size': 8, 'latent-token-count': 64, 'llm-tune': 'full', 'vision-tune': 'full',
         'query-tune': 'selected_rows', 'query-lr': 1e-4, 'protocol-lr': 2e-5,
@@ -47,6 +47,7 @@ def command(args, arm, phase, port):
         result.extend(['--' + key, str(value)])
     result.extend(['--outcome-head', '--require-prebuilt-cache', '--step-timing', '--deduplicate-epoch-checkpoints'])
     if phase == 'formal':
+        result.append('--checkpoint-latest-only')
         result.extend(['--outcome-eval-dir', str(args.run_root / (arm + '_evaluation'))])
     else:
         result.extend(['--stop-after-steps', '1' if phase == 'canary' else '2'])
@@ -114,11 +115,12 @@ def verify_phase(args, arm, phase):
         if marker['step'] != step or marker['epoch_complete']:
             raise RuntimeError('canary stop marker is inconsistent')
     else:
-        checkpoint = root / 'epoch_001'
-        for split in ('train', 'eval'):
-            manifest = json.loads((args.run_root / (arm + '_evaluation') / f'epoch_001_{split}.complete.json').read_text())
-            if manifest.get('status') != 'complete' or len(manifest['files']) != 8:
-                raise RuntimeError('formal export is incomplete')
+        checkpoint = root / f'epoch_{args.epochs:03d}'
+        for epoch in range(1, args.epochs + 1):
+            for split in ('train', 'eval'):
+                manifest = json.loads((args.run_root / (arm + '_evaluation') / f'epoch_{epoch:03d}_{split}.complete.json').read_text())
+                if manifest.get('status') != 'complete' or len(manifest['files']) != 8:
+                    raise RuntimeError('formal export is incomplete')
     with (root / 'train_step_log.csv').open() as stream:
         rows = list(csv.DictReader(stream))
     if not rows:
@@ -140,7 +142,7 @@ def verify_phase(args, arm, phase):
     metadata = checkpoint_metadata(args, checkpoint)
     if (metadata.get('training_invariants') or {}).get('training_unit') != 'complete_trajectory_v1':
         raise RuntimeError('checkpoint is not a native complete-trajectory run')
-    if (metadata.get('epoch') != 1 or not metadata.get('has_optimizer')
+    if (metadata.get('epoch') != (args.epochs if phase == 'formal' else 1) or not metadata.get('has_optimizer')
             or metadata.get('epoch_complete') is not (phase == 'formal')
             or (phase != 'formal' and metadata.get('step') != step)):
         raise RuntimeError('checkpoint training state disagrees with completed phase')
@@ -234,8 +236,8 @@ def execute(args):
     controller.mkdir()
     environment = dict(os.environ, CUDA_VISIBLE_DEVICES='0,1,2,3,4,5,6,7', TOKENIZERS_PARALLELISM='false')
     environment['PYTHONPATH'] = str(args.worktree / 'src')
-    record = {'commit': commit, 'status': 'running', 'phases': [], 'hard_seconds_per_arm': ARM_SECONDS,
-              'retention': {'rolling_keep_last':1, 'cleanup_validated_canaries':args.cleanup_validated_canaries, 'cleanup_validated_intermediates':args.cleanup_validated_intermediates, 'deduplicate_epoch_checkpoints':True},
+    record = {'epochs_per_arm': args.epochs, 'commit': commit, 'status': 'running', 'phases': [], 'hard_seconds_per_arm': ARM_SECONDS,
+              'retention': {'rolling_keep_last':1, 'formal_latest_only':True, 'cleanup_validated_canaries':args.cleanup_validated_canaries, 'cleanup_validated_intermediates':args.cleanup_validated_intermediates, 'deduplicate_epoch_checkpoints':True},
               'dataset_sha256': {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in [('train', args.train), ('val', args.val)]}}
     consumed_seconds = {}
     measured_checkpoint_gib = None
@@ -304,14 +306,15 @@ def main(argv=None):
                         help='Initial free-space gate (at least160GiB). Later gates use measured checkpoint size.')
     parser.add_argument('--cleanup-validated-canaries', action='store_true')
     parser.add_argument('--cleanup-validated-intermediates', action='store_true')
+    parser.add_argument('--epochs', type=int, default=1, help='Complete training epochs per formal arm; canaries remain one epoch.')
     parser.add_argument('--max-length', type=int, default=12000)
     parser.add_argument('--fsdp-wrap-granularity', choices=('linear', 'block'), default='linear')
     parser.add_argument('--step-timing-sample-interval', type=int, default=10)
     parser.add_argument('--execute', action='store_true')
     parser.add_argument('--preflight', action='store_true')
     args = parser.parse_args(argv)
-    if args.min_free_gib < 160 or args.max_length < 1 or args.step_timing_sample_interval < 1:
-        parser.error('initial disk budget must be at least160GiB and max length positive')
+    if args.min_free_gib < 160 or args.max_length < 1 or args.step_timing_sample_interval < 1 or args.epochs < 1:
+        parser.error('initial disk budget must be at least160GiB and max length, timing interval, and epochs positive')
     if args.execute:
         def interrupted(_signum, _frame):
             raise KeyboardInterrupt("controller termination requested")

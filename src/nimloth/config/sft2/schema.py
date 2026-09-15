@@ -73,6 +73,7 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("train", "checkpoint_interval_minutes"): "checkpoint_interval_minutes",
     ("train", "checkpoint_interval_steps"): "checkpoint_interval_steps",
     ("train", "deduplicate_epoch_checkpoints"): "deduplicate_epoch_checkpoints",
+    ("train", "checkpoint_latest_only"): "checkpoint_latest_only",
     ("train", "checkpoint_keep_last"): "checkpoint_keep_last",
     ("latent", "token_count"): "latent_token_count",
     ("latent", "query_mode"): "latent_query_mode",

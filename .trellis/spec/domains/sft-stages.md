@@ -214,3 +214,17 @@ Correct: collective gathering with explicit complete export and synchronized wra
   updates, silently reinterpret batch units or reuse old optimizer histories.
   Correct: one trajectory path for train/eval, explicit masks/counts and a new
   training identity. Sharing representation does not remove WM supervision.
+
+### Latest resumable checkpoint retention
+
+`--checkpoint-latest-only` is opt-in and spans periodic, stopped, and epoch
+checkpoints within one run. Publish and verify a new complete resumable checkpoint
+before removing older complete checkpoints. Failed/incomplete saves must preserve
+the prior recovery point. Keep best scalar metrics, but do not retain older best
+weights in this mode. Final may hardlink the last epoch without duplicating tensors.
+Do not follow symlinks or delete data, logs, or evaluation exports. Test epoch1 to
+periodic to epoch2, failed saves, and final alias integrity.
+
+The outcome A/B launcher accepts positive `--epochs`; only formal phases use it.
+Canaries remain one epoch with explicit step caps. Verify all requested epoch
+exports and require the final checkpoint to match the requested completed epoch.
