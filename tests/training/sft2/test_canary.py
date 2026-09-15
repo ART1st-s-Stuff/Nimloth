@@ -75,7 +75,8 @@ def make_loop(root, cap, *, resume=None, rank=0, distributed=False):
                    model_runtime=SimpleNamespace(agent=model,
                                                  set_training_mode=model.train),
                    optimization_runtime=optimization,
-                   batch_builder=SimpleNamespace(supervision_counts=lambda item: (1, 1), device="cpu"),
+                   batch_builder=SimpleNamespace(supervision_counts=lambda item: (1, 1),
+                                                 observed_state_count=lambda item: 2, device="cpu"),
                    checkpoint_runtime=checkpoint, reporter=None, state=state, total_steps=3)
 
 
