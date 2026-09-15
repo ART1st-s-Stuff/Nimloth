@@ -152,3 +152,13 @@ at training, CUDA synchronization, cache release and process-group destruction r
 ### Wrong versus correct
 Wrong: rank0 saves its local shard as a full model/EMA, or evaluation unwraps a sharded model.
 Correct: collective gathering with explicit complete export and synchronized wrapped evaluation.
+
+## Stage3 sampled profiling
+
+- Scope: performance measurement without changing optimizer, sample ownership, RNG or losses.
+- Signature: `--step-timing --step-timing-sample-interval N --step-timing-interval M`; N defaults to1.
+- Contract: profile complete local optimizer updates1,1+N,... including every accumulated microbatch. Unsampled updates perform no timer CUDA synchronization. M counts sampled updates; report cumulative sampled means, sampled counts and total observed updates. Resume starts a new local profiling sequence.
+- Validation: N<1 is rejected; disabled profiling and unsampled updates emit no phase report. Per-section averages divide by the section sample count, not all optimizer updates.
+- Cases: N=1 preserves full profiling; N=10/M=1 reports updates1,11,21. A short run may contain only its first profiled update.
+- Tests: count synchronization calls across accumulated microbatches, check unsampled silence, mean denominators, defaults and CLI/config validation.
+- Wrong versus correct: sampled phase means are not end-to-end throughput. Measure wall time over matched batches separately and account for save/evaluation stalls. Equal effective batch alone does not preserve nonlinear SIGReg microbatch statistics or sampler/resume identity.

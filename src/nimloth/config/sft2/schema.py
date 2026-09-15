@@ -69,6 +69,7 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("train", "dataloader_prefetch_factor"): "dataloader_prefetch_factor",
     ("train", "step_timing"): "step_timing",
     ("train", "step_timing_interval"): "step_timing_interval",
+    ("train", "step_timing_sample_interval"): "step_timing_sample_interval",
     ("train", "checkpoint_interval_minutes"): "checkpoint_interval_minutes",
     ("train", "checkpoint_interval_steps"): "checkpoint_interval_steps",
     ("train", "deduplicate_epoch_checkpoints"): "deduplicate_epoch_checkpoints",
@@ -109,6 +110,7 @@ class SFT2LoopConfig:
     checkpoint_metric: str
     step_timing: bool
     step_timing_interval: int
+    step_timing_sample_interval: int = 1
     stop_after_steps: int = 0
     diagnose_outcome_gradients: bool = False
     activation_offload: bool = False
@@ -127,6 +129,7 @@ class SFT2LoopConfig:
             checkpoint_metric=str(args.checkpoint_metric),
             step_timing=bool(args.step_timing),
             step_timing_interval=int(args.step_timing_interval),
+            step_timing_sample_interval=int(getattr(args, "step_timing_sample_interval", 1)),
         )
 
 

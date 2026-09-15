@@ -37,6 +37,7 @@ def command(args, arm, phase, port):
         'lambda-outcome': int(arm == 'treatment'), 'max-length': args.max_length,
         'checkpoint-interval-steps': 10, 'checkpoint-keep-last': 2,
         'checkpoint-interval-minutes': 0, 'step-timing-interval': 1,
+        'step-timing-sample-interval': getattr(args, 'step_timing_sample_interval', 10) if phase == 'formal' else 1,
         'wandb-run-name': f'{args.run_root.name}_{arm}_{phase}',
     }
     result = [str(args.python), '-m', 'torch.distributed.run', '--nproc_per_node=8',
@@ -46,6 +47,8 @@ def command(args, arm, phase, port):
         result.extend(['--' + key, str(value)])
     result.extend(['--outcome-head', '--require-prebuilt-cache', '--step-timing', '--deduplicate-epoch-checkpoints'])
     if phase == 'formal':
+        if arm == 'control' and getattr(args, 'resume_control_from', None):
+            result.extend(['--resume', '--resume-from', str(args.resume_control_from)])
         result.extend(['--outcome-eval-dir', str(args.run_root / (arm + '_evaluation'))])
     else:
         result.extend(['--stop-after-steps', '1' if phase == 'canary' else '2'])
@@ -206,6 +209,97 @@ def cleanup_checkpoint(args, checkpoint, controller, *, expected_step, final_ste
     shutil.rmtree(checkpoint)
 
 
+def phases(args):
+    if getattr(args, 'resume_control_from', None):
+        return [('control', 'formal'), ('treatment', 'formal')]
+    return [('control', 'canary'), ('control', 'resume'), ('treatment', 'canary'),
+            ('treatment', 'resume'), ('control', 'formal'), ('treatment', 'formal')]
+
+
+def semantic_command(argv):
+    """Compare every recorded argument except explicit operational overrides."""
+    ignored = {'--output-dir', '--outcome-eval-dir', '--wandb-run-name', '--resume-from',
+               '--step-timing-interval', '--step-timing-sample-interval'}
+    result = []
+    index = 0
+    while index < len(argv):
+        value = argv[index]
+        if value in ignored:
+            index += 2
+            continue
+        if value in {'--resume', '--step-timing'} or value.startswith('--master_port='):
+            index += 1
+            continue
+        result.append(value)
+        index += 1
+    return result
+
+
+def validate_control_resume(args):
+    checkpoint = args.resume_control_from
+    if checkpoint.parent.name != 'control' or not re.fullmatch(r'step_[0-9]{6,}', checkpoint.name):
+        raise RuntimeError('resume source must be a control intermediate checkpoint')
+    checkpoint_bytes(checkpoint)
+    old_root = checkpoint.parent.parent
+    if old_root.resolve() == args.run_root.resolve():
+        raise RuntimeError('resume requires a new output root')
+    # Refuse a live old controller or trainer, including a controller interrupted
+    # before it could update progress.json. Do not rely on stale status alone.
+    for proc in Path('/proc').glob('[0-9]*/cmdline'):
+        try:
+            tokens = proc.read_bytes().decode().split('\0')
+        except (OSError, UnicodeDecodeError):
+            continue
+        if int(proc.parent.name) == os.getpid():
+            continue
+        if any(value == str(old_root) or value.startswith(str(old_root) + '/')
+               for token in tokens for value in [token.split('=', 1)[-1]]):
+            raise RuntimeError('old run still has a live process')
+    record = json.loads((old_root / 'controller/progress.json').read_text())
+    completed = {(p['arm'], p['phase']) for p in record['phases'] if p['status'] == 'complete'}
+    if not {(a, p) for a in ('control', 'treatment') for p in ('canary', 'resume')} <= completed:
+        raise RuntimeError('all four original canary/resume gates must be complete')
+    if any(p['arm'] == 'treatment' and p['phase'] == 'formal' for p in record['phases']):
+        raise RuntimeError('treatment formal phase has already started')
+    formal = [p for p in record['phases'] if p['arm'] == 'control' and p['phase'] == 'formal']
+    if len(formal) != 1 or formal[0]['status'] == 'complete':
+        raise RuntimeError('expected one interrupted control formal phase')
+    expected_hashes = {name: hashlib.sha256(path.read_bytes()).hexdigest()
+                       for name, path in [('train', args.train), ('val', args.val)]}
+    if record.get('dataset_sha256') != expected_hashes:
+        raise RuntimeError('resume dataset hashes differ')
+    if semantic_command(formal[0]['argv']) != semantic_command(command(args, 'control', 'formal', 29500)):
+        raise RuntimeError('resume changes semantic training arguments')
+    required = ['training_state.pt', 'state_proj.pt', 'selected_token_rows.pt', 'outcome_head.pt', 'vision_ema.pt',
+                'wm_predictor/predictor.pt', 'value_head/value_head.pt',
+                *[f'history_cache_rank_{r:03d}.pt' for r in range(8)]]
+    if any(not (checkpoint / name).is_file() for name in required):
+        raise RuntimeError('incomplete control recovery checkpoint')
+    index = checkpoint / 'model.safetensors.index.json'
+    if index.is_file():
+        shards = set(json.loads(index.read_text())['weight_map'].values())
+        if not shards or any(not (checkpoint / shard).is_file() for shard in shards):
+            raise RuntimeError('incomplete HF shards')
+    elif not (checkpoint / 'model.safetensors').is_file():
+        raise RuntimeError('missing HF model weights')
+    metadata = checkpoint_metadata(args, checkpoint)
+    if (metadata.get('epoch') != 1 or metadata.get('epoch_complete') is not False
+            or metadata.get('step') != int(checkpoint.name[5:])
+            or not metadata.get('has_optimizer') or not metadata.get('training_invariants')
+            or not metadata.get('micro_step_in_epoch')):
+        raise RuntimeError('invalid control optimizer/recovery metadata')
+    consumed = {}
+    for arm in ('control', 'treatment'):
+        done = [p.get('arm_consumed_seconds', 0) for p in record['phases']
+                if p['arm'] == arm and p['status'] == 'complete']
+        consumed[arm] = max(done, default=0)
+    consumed['control'] += max(0, time.time() - formal[0]['started_at'])
+    if any(value >= ARM_SECONDS for value in consumed.values()):
+        raise TimeoutError('original arm budget exhausted')
+    return {'source': str(checkpoint), 'metadata': metadata, 'consumed_seconds': consumed,
+            'original_progress': record}
+
+
 def execute(args):
     if args.run_root.exists():
         raise FileExistsError(args.run_root)
@@ -218,6 +312,7 @@ def execute(args):
     for path in (args.python, args.model, args.train, args.val, args.preprocess, args.dino):
         if not path.exists():
             raise FileNotFoundError(path)
+    resume = validate_control_resume(args) if getattr(args, 'resume_control_from', None) else None
     resources(args)
     args.run_root.mkdir()
     controller = args.run_root / 'controller'
@@ -227,10 +322,11 @@ def execute(args):
     record = {'commit': commit, 'status': 'running', 'phases': [], 'hard_seconds_per_arm': ARM_SECONDS,
               'retention': {'rolling_keep_last':2, 'cleanup_validated_canaries':args.cleanup_validated_canaries, 'cleanup_validated_intermediates':args.cleanup_validated_intermediates, 'deduplicate_epoch_checkpoints':True},
               'dataset_sha256': {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in [('train', args.train), ('val', args.val)]}}
-    consumed_seconds = {}
-    measured_checkpoint_gib = None
+    record['resume_control'] = resume
+    consumed_seconds = dict(resume['consumed_seconds']) if resume else {}
+    measured_checkpoint_gib = checkpoint_bytes(args.resume_control_from) / 1024**3 if resume else None
     try:
-        for arm, phase in [('control','canary'), ('control','resume'), ('treatment','canary'), ('treatment','resume'), ('control','formal'), ('treatment','formal')]:
+        for arm, phase in phases(args):
             phase_started = time.monotonic()
             remaining = ARM_SECONDS - consumed_seconds.get(arm, 0.0)
             if remaining <= 0:
@@ -295,10 +391,12 @@ def main(argv=None):
     parser.add_argument('--cleanup-validated-canaries', action='store_true')
     parser.add_argument('--cleanup-validated-intermediates', action='store_true')
     parser.add_argument('--max-length', type=int, default=12000)
+    parser.add_argument('--resume-control-from', type=Path)
+    parser.add_argument('--step-timing-sample-interval', type=int, default=10)
     parser.add_argument('--execute', action='store_true')
     parser.add_argument('--preflight', action='store_true')
     args = parser.parse_args(argv)
-    if args.min_free_gib < 160 or args.max_length < 1:
+    if args.min_free_gib < 160 or args.max_length < 1 or args.step_timing_sample_interval < 1:
         parser.error('initial disk budget must be at least160GiB and max length positive')
     if args.execute:
         def interrupted(_signum, _frame):
@@ -310,7 +408,7 @@ def main(argv=None):
             signal.signal(signal.SIGTERM, previous)
     else:
         plan = {'mode':'dry_run', 'commands':[command(args, arm, phase, 29500+index)
-                for index, (arm, phase) in enumerate([('control','canary'),('control','resume'),('treatment','canary'),('treatment','resume'),('control','formal'),('treatment','formal')])],
+                for index, (arm, phase) in enumerate(phases(args))],
                 'disk_warning':'Initial160GiB gate; each formal requires max(120GiB,3*measured checkpoint size). Without explicit validated-canary cleanup retained tests may exceed available disk.'}
         if args.preflight:
             plan['resources'] = resources(args)

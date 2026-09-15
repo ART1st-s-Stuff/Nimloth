@@ -186,13 +186,19 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument(
         "--step-timing",
         action="store_true",
-        help="Log rolling-average per-section step timings (profiling only).",
+        help="Log cumulative sampled per-section step timings (profiling only).",
     )
     ap.add_argument(
         "--step-timing-interval",
         type=int,
         default=50,
-        help="Log step timings every N optimizer steps when --step-timing is set.",
+        help="Log every N profiled optimizer updates when --step-timing is set.",
+    )
+    ap.add_argument(
+        "--step-timing-sample-interval",
+        type=int,
+        default=1,
+        help="Profile the first local update and every N updates thereafter; must be positive.",
     )
     ap.add_argument(
         "--checkpoint-interval-minutes",
@@ -248,6 +254,8 @@ def parse_sft2_args(argv: list[str] | None = None) -> argparse.Namespace:
         ap.error("outcome head requires dino_grid objective")
     if not 0 < args.outcome_head_lr < float("inf"):
         ap.error("outcome_head_lr must be finite and positive")
+    if args.step_timing_sample_interval < 1:
+        ap.error("step_timing_sample_interval must be positive")
     if args.stop_after_steps < 0:
         ap.error("stop_after_steps must be nonnegative")
     if args.diagnose_outcome_gradients and args.lambda_outcome <= 0:

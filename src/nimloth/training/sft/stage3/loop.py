@@ -127,6 +127,7 @@ class SFT2TrainingLoop:
         self.step_timer = StepTimer(
             enabled=self.config.step_timing,
             log_interval=self.config.step_timing_interval,
+            sample_interval=getattr(self.config, "step_timing_sample_interval", 1),
         )
 
     def run(self) -> SFT2LoopState:

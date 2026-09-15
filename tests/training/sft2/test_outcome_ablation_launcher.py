@@ -202,3 +202,73 @@ def test_failed_process_marks_only_current_phase_failed(tmp_path, monkeypatch, f
     assert [item['status'] for item in record['phases']] == ['complete']*(fail_phase-1)+['failed']
     assert record['phases'][-1]['error'] == 'RuntimeError: isolated phase failure'
     assert len(calls) == fail_phase
+
+
+def resume_fixture(tmp_path, monkeypatch):
+    import hashlib
+    import json
+    config = args(tmp_path)
+    config.step_timing_sample_interval = 10
+    old = tmp_path/'old'
+    config.resume_control_from = old/'control'/'step_000020'
+    for name in ('train', 'val'):
+        getattr(config, name).write_text(name)
+    make_intermediate(config.resume_control_from)
+    for name in ('selected_token_rows.pt', 'model.safetensors', 'vision_ema.pt'):
+        (config.resume_control_from/name).write_bytes(b'fixture')
+    old_config = SimpleNamespace(**vars(config))
+    old_config.run_root = old
+    old_config.resume_control_from = None
+    completed = [dict(arm=a, phase=p, status='complete', arm_consumed_seconds=100)
+                 for a in ('control', 'treatment') for p in ('canary', 'resume')]
+    completed.append(dict(arm='control', phase='formal', status='failed', started_at=950,
+                          argv=launcher.command(old_config, 'control', 'formal', 12345)))
+    record = dict(phases=completed, dataset_sha256={name: hashlib.sha256(getattr(config,name).read_bytes()).hexdigest()
+                                                  for name in ('train', 'val')})
+    (old/'controller').mkdir()
+    (old/'controller/progress.json').write_text(json.dumps(record))
+    monkeypatch.setattr(launcher.time, 'time', lambda: 1000)
+    monkeypatch.setattr(launcher, 'checkpoint_metadata', lambda *_: dict(
+        epoch=1, epoch_complete=False, step=20, micro_step_in_epoch=160,
+        has_optimizer=True, training_invariants={'lambda_outcome': 0}))
+    return config, record
+
+
+def test_control_resume_preserves_budget_and_treatment_initialization(tmp_path, monkeypatch):
+    config, _ = resume_fixture(tmp_path, monkeypatch)
+    result = launcher.validate_control_resume(config)
+    assert result['consumed_seconds'] == {'control': 150, 'treatment': 100}
+    assert launcher.phases(config) == [('control', 'formal'), ('treatment', 'formal')]
+    control = launcher.command(config, 'control', 'formal', 29501)
+    treatment = launcher.command(config, 'treatment', 'formal', 29502)
+    assert '--resume' in control and '--resume' not in treatment
+    assert control[control.index('--resume-from')+1] == str(config.resume_control_from)
+    assert control[control.index('--step-timing-sample-interval')+1] == '10'
+    canary = launcher.command(config, 'control', 'canary', 29503)
+    assert canary[canary.index('--step-timing-sample-interval')+1] == '1'
+
+
+@pytest.mark.parametrize('mutation', ['gate', 'treatment', 'dataset', 'lr', 'history', 'weights', 'missing_ema', 'budget'])
+def test_control_resume_rejects_unmatched_or_incomplete_source(tmp_path, monkeypatch, mutation):
+    import json
+    config, record = resume_fixture(tmp_path, monkeypatch)
+    if mutation == 'gate':
+        record['phases'][0]['status'] = 'failed'
+    elif mutation == 'treatment':
+        record['phases'].append(dict(arm='treatment', phase='formal', status='running'))
+    elif mutation == 'dataset':
+        config.train.write_text('changed')
+    elif mutation == 'lr':
+        argv = record['phases'][-1]['argv']
+        argv[argv.index('--query-lr')+1] = '0.5'
+    elif mutation == 'history':
+        (config.resume_control_from/'history_cache_rank_007.pt').unlink()
+    elif mutation == 'missing_ema':
+        (config.resume_control_from/'vision_ema.pt').unlink()
+    elif mutation == 'weights':
+        (config.resume_control_from/'model.safetensors').unlink()
+    else:
+        record['phases'][-1]['started_at'] = -100000
+    (config.resume_control_from.parent.parent/'controller/progress.json').write_text(json.dumps(record))
+    with pytest.raises((RuntimeError, TimeoutError)):
+        launcher.validate_control_resume(config)

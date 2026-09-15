@@ -63,3 +63,15 @@ def test_production_cli_rejects_packed_forward() -> None:
                 "--packed-forward",
             ]
         )
+
+
+def test_step_timing_sampling_cli_and_loop_config() -> None:
+    from nimloth.config.sft2.schema import SFT2LoopConfig
+
+    required = ["--model", "/tmp/model", "--train-jsonl", "/tmp/train.jsonl",
+                "--val-jsonl", "/tmp/val.jsonl", "--output-dir", "/tmp/out"]
+    args = parse_sft2_args(required + ["--step-timing-sample-interval", "10"])
+    assert SFT2LoopConfig.from_namespace(args).step_timing_sample_interval == 10
+    assert parse_sft2_args(required).step_timing_sample_interval == 1
+    with pytest.raises(SystemExit):
+        parse_sft2_args(required + ["--step-timing-sample-interval", "0"])
