@@ -200,6 +200,13 @@ class SFT2TrainingLoop:
                     micro_step=micro_index,
                     loss_scales=(loss_scales[0], loss_scales[1], loss_scales[3], loss_scales[5]),
                 )
+            # Batch sizes describe a rank-local microbatch, including padding.
+            # Weighting these counts by windows would report sum(W**2)/sum(W).
+            metrics.pop("current_batch_size", None)
+            accumulator.update({
+                "current_batch_size": float(sample_count),
+                "trajectory_batch_size": float(sum(item.loss_weight > 0 for item in batch_samples)),
+            }, count=1)
             # SIGReg is a microbatch statistic, not a window-weighted mean.
             regularizer_metrics = {key: metrics.pop(key) for key in tuple(metrics)
                                    if key.startswith("sigreg_")}

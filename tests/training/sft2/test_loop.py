@@ -255,3 +255,47 @@ def test_native_resume_rejects_missing_or_legacy_unit(tmp_path, invariants):
     with pytest.raises(ValueError, match='complete_trajectory_v1'):
         load_sft2_loop_state(resume=True, resume_state_path=path, resume_checkpoint_dir=tmp_path,
                             optimizer=_optimizer(), training_invariants={'training_unit': 'complete_trajectory_v1'})
+
+
+def test_batch_size_metrics_average_microbatches_including_padding(monkeypatch):
+    from contextlib import nullcontext
+    import nimloth.training.sft.stage3.loop as module
+
+    # Unequal windows and an all-padding microbatch must not weight batch-size
+    # statistics, while WM loss retains its valid-window denominator.
+    batches = [[SimpleNamespace(loss_weight=1., windows=2)],
+               [SimpleNamespace(loss_weight=1., windows=6)],
+               [SimpleNamespace(loss_weight=0., windows=2)]]
+    loop = object.__new__(SFT2TrainingLoop)
+    loop.config = SimpleNamespace(grad_accum=3, seed=42, stop_after_steps=0)
+    loop.rank = 0
+    loop.state = SFT2LoopState()
+    loop.model_runtime = SimpleNamespace(set_training_mode=lambda: None)
+    loop.optimization_runtime = SimpleNamespace(
+        zero_grad=lambda: None, accumulation_context=lambda **kw: nullcontext())
+    loop.train_loader = batches
+    loop.algorithm = SimpleNamespace(outcome_weight=0.)
+    loop.batch_builder = SimpleNamespace(device="cpu",
+        supervision_counts=lambda items: (sum(int(x.windows * x.loss_weight) for x in items), 0),
+        outcome_count=lambda items: 0)
+    loop.step_timer = SimpleNamespace(start=lambda *a: None, stop=lambda *a: None,
+                                      on_optimizer_step=lambda **kw: None)
+    loop.checkpoint_runtime = SimpleNamespace(save_periodic=lambda **kw: None)
+    loop._set_sampler_epoch = lambda epoch: None
+    loop._resume_train_iterator = lambda epoch: (iter(batches), 0)
+    loop._barrier = lambda: None
+    loop._validate_and_checkpoint = lambda epoch: None
+    monkeypatch.setattr(module, "seed_training_micro_step", lambda *a: None)
+
+    def train_microbatch(items, **kwargs):
+        count = int(items[0].windows * items[0].loss_weight)
+        return 1., {"current_batch_size": float(count), "wm_mse": float(items[0].windows)}, count
+
+    loop._train_microbatch = train_microbatch
+    captured = []
+    loop._optimizer_step = lambda epoch, accumulator, **kw: captured.append(accumulator.averages())
+    loop._run_epoch(1)
+    assert len(captured) == 1
+    assert captured[0]["current_batch_size"] == pytest.approx(8 / 3)
+    assert captured[0]["trajectory_batch_size"] == pytest.approx(2 / 3)
+    assert captured[0]["wm_mse"] == pytest.approx((2 * 2 + 6 * 6) / 8)

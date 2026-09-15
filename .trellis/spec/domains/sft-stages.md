@@ -208,6 +208,8 @@ Correct: collective gathering with explicit complete export and synchronized wra
 - Cases/tests: unequal trajectory lengths, globally padded ranks, no-success LM,
   zero-label outcome, complete window coverage, true terminal CoT, causal queries,
   direct gradient recipients, mixed FSDP/DDP and native checkpoint round trip.
+  Batch-size metrics are arithmetic per-microbatch means including zero-valid
+  padding batches; they must not be weighted again by window counts.
 - Wrong: retain both old window and native pipelines, carry learned states between
   updates, silently reinterpret batch units or reuse old optimizer histories.
   Correct: one trajectory path for train/eval, explicit masks/counts and a new
