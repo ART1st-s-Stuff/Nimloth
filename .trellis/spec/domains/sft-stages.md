@@ -253,3 +253,22 @@ exports and require the final checkpoint to match the requested completed epoch.
   inclusion, padding exclusion and unequal global population normalization.
 - Wrong: fit WM predictions directly to DINO while real states receive no DINO
   anchor. Correct: WM fits real successor states; real online states fit DINO.
+
+## Frozen-WM residual diagnostic
+
+1. Scope: run-owned fixed-feature experiments only; formal Stage3 defaults do not change.
+2. Entry: `frozen_wm_diagnostic.py train --predictor-kind direct|residual` supports
+   both `--mode stage2_state` and `--mode dino`; default remains direct.
+3. Contract: residual uses `ResidualTemporalSpatialGridPredictor`, a production
+   body plus zero-initialized linear delta head. Every autoregressive output is
+   the latest state plus its predicted delta. MSE compares reconstructed full
+   values to fixed future targets. Only WM parameters update.
+4. Validation: residual kind and module are part of run/resume identity; reject
+   mismatched kinds. Missing kind in historical direct metadata means direct,
+   and existing direct resume identities remain unchanged.
+5. Cases: fresh residual starts at exact copy for every horizon; historical direct
+   renders as direct; mixed-kind rendering or cross-kind resume is rejected.
+6. Tests: exact T4 copy initialization, delta update, deterministic resume for each
+   kind, mismatch rejection and renderer metadata dispatch.
+7. Wrong: label transformer internal skip connections as residual prediction.
+   Correct: explicitly reconstruct `next = current + delta` at every rollout step.

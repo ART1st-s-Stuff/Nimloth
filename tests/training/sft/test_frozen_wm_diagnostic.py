@@ -121,12 +121,16 @@ def test_seal_rejects_interrupted_export_without_rank_completion(tmp_path: Path)
         seal_cache(directory, expected_ranks=1)
 
 
-def test_wm_only_training_resume_is_deterministic_and_counts_updates(tmp_path: Path) -> None:
+@pytest.mark.parametrize("predictor_kind", ["direct", "residual"])
+def test_wm_only_training_resume_is_deterministic_and_counts_updates(
+    tmp_path: Path, predictor_kind: str
+) -> None:
     train_dir = _export(tmp_path, "train", ("train-a", "train-b", "train-c", "train-d"))
     eval_dir = _export(tmp_path, "eval", ("eval-a", "eval-b"), offset=10)
     train_cache, eval_cache = FrozenTrajectoryCache(train_dir), FrozenTrajectoryCache(eval_dir)
     config = DiagnosticConfig(
         mode="dino",
+        predictor_kind=predictor_kind,
         steps=4,
         effective_batch=2,
         trajectory_microbatch=1,
@@ -180,6 +184,17 @@ def test_wm_only_training_resume_is_deterministic_and_counts_updates(tmp_path: P
         resume=resumed / "step_000002",
         predictor_config=predictor_config,
     )
+    from dataclasses import replace
+
+    with pytest.raises(ValueError, match="resume output identity mismatch"):
+        train(
+            train_cache, eval_cache, resumed,
+            config=replace(config, predictor_kind=(
+                "residual" if predictor_kind == "direct" else "direct"
+            )),
+            device=torch.device("cpu"), resume=resumed / "step_000002",
+            predictor_config=predictor_config,
+        )
     left = torch.load(full / "step_000004" / "predictor.pt", weights_only=True)
     right = torch.load(resumed / "step_000004" / "predictor.pt", weights_only=True)
     assert left.keys() == right.keys()
@@ -247,3 +262,31 @@ def test_trajectory_microbatches_preserve_global_window_mean_update(tmp_path: Pa
     assert states[0].keys() == states[1].keys()
     assert all(torch.allclose(states[0][key], states[1][key], atol=1e-7, rtol=1e-6)
                for key in states[0])
+
+
+def test_residual_multistep_copy_initialization_and_delta_update() -> None:
+    from nimloth.wm.grid import ResidualTemporalSpatialGridPredictor
+
+    model = ResidualTemporalSpatialGridPredictor(GridPredictorConfig(
+        grid_tokens=4, emb_dim=8, action_dim=8, history_size=1,
+        depth=1, heads=2, dim_head=4, mlp_dim=16, dropout=0.0,
+    ))
+    current = torch.randn(2, 1, 4, 8)
+    empty = torch.empty(2, 0, dtype=torch.long)
+    actions = torch.tensor([[0, 1, 2, 3], [3, 2, 1, 0]])
+    prediction = model.rollout_from_history(current, empty, actions)
+    assert torch.equal(prediction, current.expand(-1, 4, -1, -1))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+    (prediction - (current + 0.25)).square().mean().backward()
+    assert model.delta_head.weight.grad.abs().sum() > 0
+    optimizer.step()
+    assert not model.is_zero_initialized()
+    assert not torch.equal(model.rollout_from_history(current, empty, actions), prediction)
+    # A constant delta must accumulate on the predicted state at every horizon,
+    # rather than being added repeatedly to the original observation.
+    with torch.no_grad():
+        model.delta_head.weight.zero_()
+        model.delta_head.bias.fill_(0.25)
+    prediction = model.rollout_from_history(current, empty, actions)
+    offsets = torch.arange(1, 5, dtype=current.dtype).reshape(1, 4, 1, 1) * 0.25
+    torch.testing.assert_close(prediction, current + offsets)

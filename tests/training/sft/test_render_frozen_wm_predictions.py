@@ -186,3 +186,35 @@ def test_render_contract_uses_two_raw_frames_nearest_grid_and_shared_error_scale
     for name in files:
         with Image.open(tmp_path / name) as image:
             assert image.size == (8 * 128, 42 + 160)
+
+
+@pytest.mark.parametrize("kind", [None, "direct", "residual"])
+def test_checkpoint_loader_dispatches_predictor_kind(tmp_path: Path, kind: str | None) -> None:
+    from dataclasses import asdict
+    from experiments.training.sft.stage3.frozen_wm_diagnostic import PREDICTOR_TYPES
+    from experiments.training.sft.stage3.render_frozen_wm_predictions import _load_predictor
+    from nimloth.wm.grid import GridPredictorConfig
+
+    config = GridPredictorConfig(
+        grid_tokens=4, emb_dim=8, action_dim=8, history_size=1,
+        depth=1, heads=2, dim_head=4, mlp_dim=16, dropout=0.0,
+    )
+    model_type = PREDICTOR_TYPES[kind or "direct"]
+    run = {
+        "schema": "frozen_wm_diagnostic_v1",
+        "config": {"mode": "dino", "steps": 46},
+        "predictor_config": asdict(config),
+        "trainable_modules": [model_type.__name__],
+    }
+    if kind is not None:
+        run["config"]["predictor_kind"] = kind
+    checkpoint = tmp_path / "step_000046"
+    checkpoint.mkdir()
+    (tmp_path / "run.json").write_text(json.dumps(run))
+    (tmp_path / "COMPLETE").write_text(checkpoint.name)
+    (checkpoint / "COMMITTED").write_text("complete")
+    torch.save(model_type(config).state_dict(), checkpoint / "predictor.pt")
+    torch.save({"schema": run["schema"], "step": 46, "run_identity": run},
+               checkpoint / "training_state.pt")
+    model, _, _ = _load_predictor(checkpoint, expected_mode="dino", device=torch.device("cpu"))
+    assert isinstance(model, model_type)

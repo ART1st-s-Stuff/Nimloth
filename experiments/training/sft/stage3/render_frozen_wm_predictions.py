@@ -18,14 +18,16 @@ from PIL import Image, ImageDraw
 
 from experiments.training.sft.stage3.frozen_wm_diagnostic import (
     FrozenTrajectoryCache,
+    Predictor,
     file_sha256,
+    predictor_type_from_run,
 )
 from experiments.training.sft.stage3.render_dino_feature_comparison import (
     error_image,
     feature_image,
     pca_basis,
 )
-from nimloth.wm.grid import GridPredictorConfig, TemporalSpatialGridPredictor
+from nimloth.wm.grid import GridPredictorConfig
 
 SCHEMA = "frozen_wm_visualization_v1"
 
@@ -191,7 +193,7 @@ def _load_predictor(checkpoint: Path, *, expected_mode: str, device: torch.devic
             f"checkpoint is not the completed 46-update frozen-WM run: {checkpoint}"
         )
     config = GridPredictorConfig(**run["predictor_config"])
-    predictor = TemporalSpatialGridPredictor(config).to(device=device, dtype=torch.float32)
+    predictor = predictor_type_from_run(run)(config).to(device=device, dtype=torch.float32)
     predictor.load_state_dict(torch.load(predictor_path, map_location=device, weights_only=True))
     predictor.eval()
     return predictor, config, run
@@ -219,8 +221,8 @@ def predict_selected(
     cache: FrozenTrajectoryCache,
     selected: list[dict],
     *,
-    stage2_predictor: TemporalSpatialGridPredictor,
-    dino_predictor: TemporalSpatialGridPredictor,
+    stage2_predictor: Predictor,
+    dino_predictor: Predictor,
     device: torch.device,
 ) -> list[dict]:
     output = []
@@ -360,6 +362,8 @@ def render(
     dino_predictor, dino_config, dino_run = _load_predictor(
         dino_checkpoint, expected_mode="dino", device=device
     )
+    if predictor_type_from_run(stage2_run) != predictor_type_from_run(dino_run):
+        raise ValueError("frozen-WM checkpoints use different predictor kinds")
     if stage2_config != dino_config:
         raise ValueError("frozen-WM checkpoints use different predictor architectures")
     expected_predictor_config = GridPredictorConfig(

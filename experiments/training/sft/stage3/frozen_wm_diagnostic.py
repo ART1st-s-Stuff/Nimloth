@@ -2,7 +2,7 @@
 
 The production eval-only path writes one ordered Stage2/DINO sequence per
 trajectory.  This module seals those shards, then trains the production
-``TemporalSpatialGridPredictor`` without loading or updating Qwen, Query,
+direct or zero-initialized residual temporal-spatial predictor without updating Qwen, Query,
 projector, ValueHead, or language-model parameters.
 """
 from __future__ import annotations
@@ -19,12 +19,32 @@ from typing import Iterable
 import torch
 import torch.nn.functional as F
 
-from nimloth.wm.grid import GridPredictorConfig, TemporalSpatialGridPredictor
+from nimloth.wm.grid import (
+    GridPredictorConfig,
+    ResidualTemporalSpatialGridPredictor,
+    TemporalSpatialGridPredictor,
+)
 
 CACHE_SCHEMA = "frozen_wm_cache_v1"
 SHARD_SCHEMA = "frozen_wm_trajectory_shard_v1"
 RUN_SCHEMA = "frozen_wm_diagnostic_v1"
 MODES = ("stage2_state", "dino")
+PREDICTOR_TYPES = {
+    "direct": TemporalSpatialGridPredictor,
+    "residual": ResidualTemporalSpatialGridPredictor,
+}
+Predictor = TemporalSpatialGridPredictor | ResidualTemporalSpatialGridPredictor
+
+
+def predictor_type_from_run(run: dict) -> type:
+    """Old identities without a kind describe direct prediction only."""
+    kind = run["config"].get("predictor_kind", "direct")
+    if kind not in PREDICTOR_TYPES:
+        raise ValueError(f"unknown diagnostic predictor kind: {kind}")
+    predictor_type = PREDICTOR_TYPES[kind]
+    if run.get("trainable_modules") != [predictor_type.__name__]:
+        raise ValueError("diagnostic predictor kind/module identity mismatch")
+    return predictor_type
 
 
 def file_sha256(path: Path) -> str:
@@ -372,7 +392,7 @@ def _bootstrap_ci(
 
 @torch.no_grad()
 def evaluate_predictor(
-    predictor: TemporalSpatialGridPredictor,
+    predictor: Predictor,
     cache: FrozenTrajectoryCache,
     *,
     mode: str,
@@ -510,6 +530,7 @@ def evaluate_predictor(
 @dataclass(frozen=True)
 class DiagnosticConfig:
     mode: str
+    predictor_kind: str = "direct"
     steps: int = 46
     effective_batch: int = 64
     trajectory_microbatch: int = 8
@@ -539,7 +560,7 @@ def _checkpoint(
     output: Path,
     *,
     step: int,
-    predictor: TemporalSpatialGridPredictor,
+    predictor: Predictor,
     optimizer: torch.optim.Optimizer,
     run_identity: dict,
 ) -> Path:
@@ -570,7 +591,7 @@ def _checkpoint(
 def _load_checkpoint(
     checkpoint: Path,
     *,
-    predictor: TemporalSpatialGridPredictor,
+    predictor: Predictor,
     optimizer: torch.optim.Optimizer,
     run_identity: dict,
 ) -> int:
@@ -597,7 +618,8 @@ def train(
     resume: Path | None = None,
     predictor_config: GridPredictorConfig | None = None,
 ) -> dict:
-    if (config.mode not in MODES or config.steps < 1 or config.effective_batch < 2
+    if (config.mode not in MODES or config.predictor_kind not in PREDICTOR_TYPES
+            or config.steps < 1 or config.effective_batch < 2
             or not 1 <= config.trajectory_microbatch <= config.effective_batch
             or not math.isfinite(config.learning_rate) or config.learning_rate <= 0
             or not math.isfinite(config.max_grad_norm) or config.max_grad_norm <= 0
@@ -661,13 +683,18 @@ def train(
             or int(eval_cache.manifest["action_min"]) < 0
             or int(eval_cache.manifest["action_max"]) >= predictor_config.action_dim):
         raise ValueError("cached action index is outside the production predictor action space")
+    config_identity = json.loads(json.dumps(asdict(config)))
+    # Preserve exact identities of existing direct runs for faithful resume.
+    if config.predictor_kind == "direct":
+        config_identity.pop("predictor_kind")
+    predictor_type = PREDICTOR_TYPES[config.predictor_kind]
     run_identity = {
         "schema": RUN_SCHEMA,
-        "config": json.loads(json.dumps(asdict(config))),
+        "config": config_identity,
         "predictor_config": asdict(predictor_config),
         "train_manifest_sha256": train_cache.manifest_sha256,
         "eval_manifest_sha256": eval_cache.manifest_sha256,
-        "trainable_modules": ["TemporalSpatialGridPredictor"],
+        "trainable_modules": [predictor_type.__name__],
         "target_is_fixed": True,
         "dtype": "float32",
         "schedule": "production_python_shuffle_effective_batch_v1",
@@ -684,7 +711,7 @@ def train(
             raise ValueError("resume output identity mismatch")
         if (output / "COMPLETE").exists():
             raise ValueError("cannot resume a completed frozen-WM diagnostic")
-    predictor = TemporalSpatialGridPredictor(predictor_config).to(
+    predictor = predictor_type(predictor_config).to(
         device=device, dtype=torch.float32
     )
     optimizer = torch.optim.AdamW(predictor.parameters(), lr=config.learning_rate)
@@ -815,6 +842,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--eval-cache", type=Path, required=True)
     run.add_argument("--output", type=Path, required=True)
     run.add_argument("--mode", choices=MODES, required=True)
+    run.add_argument("--predictor-kind", choices=tuple(PREDICTOR_TYPES), default="direct")
     run.add_argument("--steps", type=int, default=46)
     run.add_argument("--effective-batch", type=int, default=64)
     run.add_argument("--trajectory-microbatch", type=int, default=8)
@@ -837,6 +865,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     config = DiagnosticConfig(
         mode=args.mode,
+        predictor_kind=args.predictor_kind,
         steps=args.steps,
         effective_batch=args.effective_batch,
         trajectory_microbatch=args.trajectory_microbatch,
