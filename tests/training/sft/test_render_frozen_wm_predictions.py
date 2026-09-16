@@ -33,15 +33,19 @@ def test_image_join_requires_unique_identity_exact_state_count_and_existing_file
     paths = _images(tmp_path, "trajectory", 5)
     jsonl = tmp_path / "eval.jsonl"
     jsonl.write_text(
-        json.dumps({"id": "trajectory", "image_paths": [str(path) for path in paths]})
+        json.dumps({
+            "id": "trajectory",
+            "image_paths": [str(path) for path in paths],
+            "action_indices": [0, 1, 2, 3],
+        })
         + "\n",
         encoding="utf-8",
     )
     images, count = load_image_index(jsonl)
     cache = SimpleNamespace(
-        records=({"trajectory_id": "trajectory", "state_count": 5},)
+        records=({"trajectory_id": "trajectory", "state_count": 5, "action_count": 4},)
     )
-    joined = join_cache_images(cache, images)
+    joined = join_cache_images(cache, images, prediction_horizon=4)
     assert count == 1
     assert joined[0]["image_paths"][4] == paths[4]
 
@@ -50,19 +54,35 @@ def test_image_join_requires_unique_identity_exact_state_count_and_existing_file
     with pytest.raises(ValueError, match="duplicate eval trajectory"):
         load_image_index(duplicate)
 
-    cache.records = ({"trajectory_id": "trajectory", "state_count": 4},)
+    cache.records = ({"trajectory_id": "trajectory", "state_count": 4, "action_count": 4},)
     with pytest.raises(ValueError, match="image/state count mismatch"):
-        join_cache_images(cache, images)
+        join_cache_images(cache, images, prediction_horizon=4)
 
     extra = dict(images)
-    extra["other"] = paths
-    with pytest.raises(ValueError, match="identities differ"):
-        join_cache_images(cache, extra)
+    extra["other"] = {"image_paths": paths, "action_count": 4}
+    with pytest.raises(ValueError, match="eligible eval JSONL/cache"):
+        join_cache_images(cache, extra, prediction_horizon=4)
+
+    extra["other"]["action_count"] = 3
+    cache.records = ({"trajectory_id": "trajectory", "state_count": 5, "action_count": 4},)
+    assert len(join_cache_images(cache, extra, prediction_horizon=4)) == 1
 
     paths[-1].unlink()
-    cache.records = ({"trajectory_id": "trajectory", "state_count": 5},)
+    cache.records = ({"trajectory_id": "trajectory", "state_count": 5, "action_count": 4},)
     with pytest.raises(FileNotFoundError, match="missing observation images"):
-        join_cache_images(cache, images)
+        join_cache_images(cache, images, prediction_horizon=4)
+
+
+def test_image_join_rejects_cached_action_count_mismatch(tmp_path: Path) -> None:
+    paths = _images(tmp_path, "trajectory", 5)
+    images = {
+        "trajectory": {"image_paths": paths, "action_count": 4},
+    }
+    cache = SimpleNamespace(
+        records=({"trajectory_id": "trajectory", "state_count": 5, "action_count": 5},)
+    )
+    with pytest.raises(ValueError, match="state or action count mismatch"):
+        join_cache_images(cache, images, prediction_horizon=4)
 
 
 def test_selection_is_deterministic_trajectory_diverse_and_step_valid(tmp_path: Path) -> None:

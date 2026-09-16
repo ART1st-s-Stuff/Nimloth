@@ -30,9 +30,9 @@ from nimloth.wm.grid import GridPredictorConfig, TemporalSpatialGridPredictor
 SCHEMA = "frozen_wm_visualization_v1"
 
 
-def load_image_index(jsonl: Path) -> tuple[dict[str, tuple[Path, ...]], int]:
+def load_image_index(jsonl: Path) -> tuple[dict[str, dict], int]:
     """Load unique trajectory/image identities without accepting ambiguous joins."""
-    records: dict[str, tuple[Path, ...]] = {}
+    records: dict[str, dict] = {}
     with jsonl.open(encoding="utf-8") as stream:
         for line_number, line in enumerate(stream, 1):
             if not line.strip():
@@ -40,7 +40,13 @@ def load_image_index(jsonl: Path) -> tuple[dict[str, tuple[Path, ...]], int]:
             record = json.loads(line)
             identity = str(record.get("id", ""))
             paths = record.get("image_paths")
-            if not identity or not isinstance(paths, list) or not paths:
+            actions = record.get("action_indices")
+            if (
+                not identity
+                or not isinstance(paths, list)
+                or not paths
+                or not isinstance(actions, list)
+            ):
                 raise ValueError(f"invalid image identity at {jsonl}:{line_number}")
             if identity in records:
                 raise ValueError(f"duplicate eval trajectory identity: {identity}")
@@ -51,7 +57,10 @@ def load_image_index(jsonl: Path) -> tuple[dict[str, tuple[Path, ...]], int]:
             )
             if len(resolved) != len(paths):
                 raise ValueError(f"invalid image path at {jsonl}:{line_number}")
-            records[identity] = resolved
+            records[identity] = {
+                "image_paths": resolved,
+                "action_count": len(actions),
+            }
     if not records:
         raise ValueError(f"no eval records found: {jsonl}")
     return records, len(records)
@@ -59,29 +68,40 @@ def load_image_index(jsonl: Path) -> tuple[dict[str, tuple[Path, ...]], int]:
 
 def join_cache_images(
     cache: FrozenTrajectoryCache,
-    images: dict[str, tuple[Path, ...]],
+    images: dict[str, dict],
+    *,
+    prediction_horizon: int,
 ) -> list[dict]:
-    """Join every cached state to exactly one source image and validate all files."""
+    """Join the exact horizon-eligible JSONL subset to cached states and images."""
+    if prediction_horizon < 1:
+        raise ValueError("prediction horizon must be positive")
     joined = []
     cache_identities = [str(entry["trajectory_id"]) for entry in cache.records]
     if len(set(cache_identities)) != len(cache_identities):
         raise ValueError("sealed cache contains duplicate trajectory identities")
-    if set(cache_identities) != set(images):
-        missing = sorted(set(cache_identities) - set(images))
-        extra = sorted(set(images) - set(cache_identities))
+    eligible_identities = {
+        identity
+        for identity, record in images.items()
+        if int(record["action_count"]) >= prediction_horizon
+    }
+    if set(cache_identities) != eligible_identities:
+        missing = sorted(eligible_identities - set(cache_identities))
+        extra = sorted(set(cache_identities) - eligible_identities)
         raise ValueError(
-            "eval JSONL/cache trajectory identities differ: "
-            f"missing={missing[:3]}, extra={extra[:3]}"
+            "eligible eval JSONL/cache trajectory identities differ: "
+            f"missing_from_cache={missing[:3]}, unexpected_in_cache={extra[:3]}"
         )
     for cache_index, entry in enumerate(cache.records):
         identity = str(entry["trajectory_id"])
-        if identity not in images:
-            raise ValueError(f"cache trajectory has no eval image record: {identity}")
         state_count = int(entry["state_count"])
-        paths = images[identity]
-        if len(paths) != state_count:
+        action_count = int(entry["action_count"])
+        source = images[identity]
+        paths = source["image_paths"]
+        if len(paths) != state_count or int(source["action_count"]) != action_count:
             raise ValueError(
-                f"image/state count mismatch for {identity}: {len(paths)} != {state_count}"
+                f"JSONL/cache state or action count mismatch for {identity}: "
+                f"images={len(paths)}, states={state_count}, "
+                f"JSONL actions={source['action_count']}, cache actions={action_count}"
             )
         missing = [str(path) for path in paths if not path.is_file()]
         if missing:
@@ -320,7 +340,16 @@ def render(
             "requested JSONL/cache do not match the sealed eval T4/K64/D1024 contract"
         )
     images, jsonl_record_count = load_image_index(eval_jsonl)
-    joined = join_cache_images(cache, images)
+    ineligible_jsonl_identities = sorted(
+        identity
+        for identity, record in images.items()
+        if int(record["action_count"]) < int(cache.manifest["prediction_horizon"])
+    )
+    joined = join_cache_images(
+        cache,
+        images,
+        prediction_horizon=int(cache.manifest["prediction_horizon"]),
+    )
     stage2_predictor, stage2_config, stage2_run = _load_predictor(
         stage2_checkpoint, expected_mode="stage2_state", device=device
     )
@@ -401,6 +430,9 @@ def render(
         "eval_jsonl_sha256": file_sha256(eval_jsonl),
         "eval_jsonl_record_count": jsonl_record_count,
         "joined_cache_trajectory_count": len(joined),
+        "ineligible_jsonl_trajectory_count": len(ineligible_jsonl_identities),
+        "ineligible_jsonl_trajectory_ids": ineligible_jsonl_identities,
+        "cache_eligibility_rule": "len(action_indices) >= prediction_horizon",
         "stage2_state_checkpoint": _checkpoint_identity(stage2_checkpoint),
         "dino_checkpoint": _checkpoint_identity(dino_checkpoint),
         "predictor_config": stage2_run["predictor_config"],
