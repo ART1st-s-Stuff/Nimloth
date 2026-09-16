@@ -6,6 +6,18 @@
 
 Reconstruction must not silently enter SFT2/RL optimization, alter the state source, or substitute a service/decoder object for the real model graph. Record the exact source checkpoint/state representation and whether inputs are oracle, predicted, copied, shuffled-action, cached, or re-encoded.
 
+For paired spatial CFM probes, train independent state-conditioned and DINO-conditioned
+decoders on the same unique training-observation keys with matched model and optimizer
+budgets. Preserve the native spatial grid; do not flatten spatial conditions into one
+token. Validate sealed cache provenance and resolve RGB targets from the same observation
+keys. Validation images never enter decoder fitting.
+
+Compare GT and predicted conditions with identical pure-noise tensors and sampler
+settings. Label frozen Stage2 GT, online Stage3 GT and WM predictions separately.
+Feeding a projected WM state to a DINO-trained decoder is a cross-distribution readout,
+not proof that the WM predicts teacher DINO directly. Report repeated-window weighting
+and unique-observation counts; image quality alone does not establish dynamics quality.
+
 ## Evaluation evidence
 
 Every report names:

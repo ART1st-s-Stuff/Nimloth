@@ -6,11 +6,12 @@ from .flow import (
     sample_euler,
     sample_euler_cfg,
 )
-from .model import CFMConfig, TokenConditionedFlowUNet
+from .model import CFMConfig, SpatialConditionedFlowUNet, TokenConditionedFlowUNet
 
 __all__ = [
     "CFMConfig",
     "TokenConditionedFlowUNet",
+    "SpatialConditionedFlowUNet",
     "conditional_flow_matching_loss",
     "condition_sensitivity",
     "sample_euler",
