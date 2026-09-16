@@ -2,15 +2,17 @@ from types import SimpleNamespace
 import json
 
 import torch
+import pytest
 
 from nimloth.training.common import world_model_loss
 from nimloth.training.sft.stage3.batch import Stage3BatchAssembler
 from nimloth.training.sft.stage3.dino_grid import DINOGridBatchAssembler
 from nimloth.training.sft.stage3.trainer import _build_world_model
-from nimloth.wm.grid import SharedSlotProjector
+from nimloth.wm.grid import SharedSlotProjector, ResidualTemporalSpatialGridPredictor, TemporalSpatialGridPredictor
 
 
-def test_grid_world_model_keeps_trainable_grid_modules_in_fp32(tmp_path) -> None:
+@pytest.mark.parametrize("kind", ["direct", "residual"])
+def test_grid_world_model_keeps_trainable_grid_modules_in_fp32(tmp_path, kind) -> None:
     slot_projector = SharedSlotProjector(
         input_dim=6,
         output_dim=4,
@@ -44,6 +46,7 @@ def test_grid_world_model_keeps_trainable_grid_modules_in_fp32(tmp_path) -> None
         grid_wm_dim_head=4,
         grid_wm_mlp_dim=8,
         grid_wm_dropout=0.0,
+        grid_predictor_kind=kind,
         resume=False,
     )
 
@@ -57,6 +60,14 @@ def test_grid_world_model_keeps_trainable_grid_modules_in_fp32(tmp_path) -> None
     )
 
     assert world_model_device == torch.device("cpu")
+    expected_type = ResidualTemporalSpatialGridPredictor if kind == "residual" else TemporalSpatialGridPredictor
+    assert type(world_model.wm_predictor) is expected_type
+    if kind == "residual":
+        state = torch.randn(2, 2, 4, requires_grad=True)
+        prediction = world_model.wm_predictor(state, torch.tensor([0, 1]))
+        assert torch.equal(prediction, state)
+        prediction.sum().backward()
+        torch.testing.assert_close(state.grad, torch.ones_like(state))
     assert next(world_model.state_proj.parameters()).dtype == torch.float32
     assert all(
         parameter.requires_grad

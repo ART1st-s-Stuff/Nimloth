@@ -82,6 +82,26 @@ def test_contract_rejects_non_h1_checkpoint(tmp_path) -> None:
         )
 
 
+@pytest.mark.parametrize("action_count", [8, 7])
+def test_contract_reads_residual_predictor_metadata(tmp_path, action_count) -> None:
+    checkpoint = _checkpoint(tmp_path)
+    config_path = checkpoint / "wm_predictor" / "config.json"
+    config = json.loads(config_path.read_text())
+    config["action_dim"] = action_count
+    config_path.write_text(json.dumps({
+        "schema": "nimloth_residual_temporal_spatial_grid_v1",
+        "predictor": config,
+    }))
+    if action_count != 8:
+        with pytest.raises(ValueError, match="action counts disagree"):
+            load_sft2_mcts_evaluation_contract(checkpoint)
+    else:
+        contract = load_sft2_mcts_evaluation_contract(checkpoint)
+        assert contract.history_size == 1
+        assert contract.action_count == 8
+        assert contract.prediction_horizon == 4
+
+
 def test_contract_rejects_value_head_action_count_mismatch(tmp_path) -> None:
     with pytest.raises(ValueError, match="action counts disagree"):
         load_sft2_mcts_evaluation_contract(

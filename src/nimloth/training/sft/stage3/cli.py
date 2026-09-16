@@ -53,6 +53,7 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--max-pixels", type=int, default=602112)
     ap.add_argument("--emb-dim", type=int, default=1024)
     ap.add_argument("--grid-size", type=int, default=4)
+    ap.add_argument("--grid-predictor-kind", choices=("direct", "residual"), default="direct")
     ap.add_argument("--grid-wm-depth", type=int, default=6)
     ap.add_argument("--grid-wm-heads", type=int, default=16)
     ap.add_argument("--grid-wm-dim-head", type=int, default=64)
@@ -98,6 +99,8 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--max-train-records", type=int, default=-1)
     ap.add_argument("--max-val-records", type=int, default=-1)
     ap.add_argument("--max-val-batches", type=int, default=-1)
+    ap.add_argument("--diagnostic-steps", type=int, nargs="+", default=[])
+    ap.add_argument("--diagnostic-dir", type=Path, default=None)
     ap.add_argument(
         "--eval-only",
         action="store_true",
@@ -283,6 +286,21 @@ def parse_sft2_args(argv: list[str] | None = None) -> argparse.Namespace:
         ap.error("lambda_outcome > 0 requires --outcome-head")
     if args.outcome_head and args.objective != "dino_grid":
         ap.error("outcome head requires dino_grid objective")
+    if args.grid_predictor_kind == "residual" and args.objective != "dino_grid":
+        ap.error("residual grid predictor requires dino_grid objective")
+    if bool(args.diagnostic_steps) != (args.diagnostic_dir is not None):
+        ap.error("diagnostic-steps and diagnostic-dir must be supplied together")
+    if args.diagnostic_steps:
+        if args.objective != "dino_grid" or args.eval_only:
+            ap.error("fixed-step diagnostics require dino_grid training")
+        if min(args.diagnostic_steps) < 0 or len(set(args.diagnostic_steps)) != len(args.diagnostic_steps):
+            ap.error("diagnostic steps must be distinct nonnegative updates")
+        if args.diagnostic_dir.is_symlink():
+            ap.error("diagnostic-dir must not be a symlink")
+        if args.diagnostic_dir.exists() and not args.resume:
+            ap.error("fresh diagnostic-dir must not already exist")
+        if args.diagnostic_dir.resolve() == args.output_dir.resolve() or args.diagnostic_dir.resolve() in args.output_dir.resolve().parents:
+            ap.error("diagnostic-dir must not contain the training output")
     if args.feature_export_dir is not None and not args.eval_only:
         ap.error("feature_export_dir requires --eval-only")
     if args.frozen_wm_cache_dir is not None and not args.eval_only:

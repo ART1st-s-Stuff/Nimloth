@@ -18,6 +18,7 @@ from nimloth.wm.grid import (
     GridWorldModel,
     SharedSlotProjector,
     TemporalSpatialGridPredictor,
+    ResidualTemporalSpatialGridPredictor,
 )
 from nimloth.wm.value_head import ValueHead
 
@@ -83,14 +84,15 @@ def test_rl_loads_self_contained_grid_state_without_sft1_sidecars(tmp_path) -> N
     assert all(not parameter.requires_grad for parameter in loaded.state_proj.parameters())
 
 
-def test_planning_loader_preserves_grid_rollout_and_value_contract(tmp_path) -> None:
+@pytest.mark.parametrize("predictor_type", [TemporalSpatialGridPredictor, ResidualTemporalSpatialGridPredictor])
+def test_planning_loader_preserves_grid_rollout_and_value_contract(tmp_path, predictor_type) -> None:
     state_proj = SharedSlotProjector(
         input_dim=3,
         output_dim=2,
         hidden_dim=5,
         grid_tokens=2,
     )
-    predictor = TemporalSpatialGridPredictor(
+    predictor = predictor_type(
         GridPredictorConfig(
             grid_tokens=2,
             emb_dim=2,

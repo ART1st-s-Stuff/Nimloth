@@ -254,6 +254,18 @@ exports and require the final checkpoint to match the requested completed epoch.
 - Wrong: fit WM predictions directly to DINO while real states receive no DINO
   anchor. Correct: WM fits real successor states; real online states fit DINO.
 
+## Stage3 optional residual predictor
+
+Stage3 may explicitly select the existing residual grid predictor for joint training.
+The direct predictor remains the default. Every autoregressive step predicts
+`next_state = current_state + delta_head(body(current_state, action))`; the delta
+head starts at zero, but the copy branch remains differentiable with respect to
+the input state. Zero delta initialization therefore does not freeze the encoder.
+Training, evaluation and checkpoint restore must agree on predictor kind and full
+grid configuration; cross-kind restore fails closed. Residual identity is explicit
+without changing historical direct checkpoint identity. DINO continues to supervise
+real observed states, and WM fits detached encoded future states.
+
 ## Frozen-WM residual diagnostic
 
 1. Scope: run-owned fixed-feature experiments only; formal Stage3 defaults do not change.

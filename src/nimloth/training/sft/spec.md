@@ -67,7 +67,13 @@ def get_state_and_output(model, input, queries):
     model_output = model(input)
     return state, model_output
 
+def residual_wm_step(wm_body, delta_head, state, action):
+    # 可选残差预测器：delta_head权重和偏置初始化为0，初始输出精确复制state。
+    # 联合训练不detach复制分支；该分支仍向编码器传递梯度。
+    return state + delta_head(wm_body(state, action))
+
 def wm_predict(wm, value_head, state, actions, num_steps, outcome_head=None):
+    # wm按配置选用直接预测或上述残差预测；保存和恢复必须保持同一种结构。
     predicted_states, predicted_values, outcome_logits = [], [], []
     for i in range(num_steps):
         # 先评价当前状态下的执行动作，再预测下一状态。

@@ -122,6 +122,9 @@ class SFT2TrainingLoop:
     outcome_eval_dir: Path | None = None
     outcome_export_identity: dict | None = None
     feature_export_dir: Path | None = None
+    diagnostic_steps: tuple[int, ...] = ()
+    diagnostic_dir: Path | None = None
+    diagnostic_identity: dict | None = None
     frozen_wm_cache_dir: Path | None = None
     frozen_wm_cache_split: str | None = None
     frozen_wm_cache_identity: dict | None = None
@@ -140,6 +143,7 @@ class SFT2TrainingLoop:
         cap = getattr(self.config, "stop_after_steps", 0)
         if cap and self.state.global_step >= cap:
             raise ValueError("stop_after_steps must exceed the restored global step")
+        self._run_fixed_diagnostic()
         if self.outcome_eval_dir is not None and self.state.global_step == 0:
             self._evaluate_export(self.val_loader, epoch=0, split="eval")
         for epoch in range(self.state.start_epoch, self.config.epochs + 1):
@@ -416,6 +420,13 @@ class SFT2TrainingLoop:
             sigreg_weight=self.config.lambda_sigreg,
             qwen_lr=qwen_lr,
         )
+        self._run_fixed_diagnostic()
+
+    def _run_fixed_diagnostic(self) -> None:
+        if self.state.global_step not in self.diagnostic_steps:
+            return
+        from nimloth.training.sft.stage3.fixed_diagnostics import run_fixed_diagnostic
+        run_fixed_diagnostic(self)
 
     def _validate_and_checkpoint(self, epoch: int) -> None:
         """验证当前模型，并根据 WM MSE 更新 epoch/best checkpoint。"""

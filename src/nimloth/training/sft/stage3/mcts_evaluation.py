@@ -109,6 +109,10 @@ def load_sft2_mcts_evaluation_contract(
         ),
         name="wm_predictor config",
     )
+    if predictor_config.get("schema") == "nimloth_residual_temporal_spatial_grid_v1":
+        predictor_config = _require_mapping(
+            predictor_config.get("predictor"), name="residual WM predictor config"
+        )
     predictor_history = int(predictor_config.get("history_size", 0))
     if predictor_history != history_size:
         raise ValueError(

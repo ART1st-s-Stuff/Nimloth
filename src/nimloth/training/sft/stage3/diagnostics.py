@@ -33,6 +33,7 @@ class DINOFeatureWriter:
         self.rank = int(rank)
         self.batch_index = 0
         self.paths: list[Path] = []
+        self.batch_identities: list[dict] = []
 
     def __call__(self, batch, output) -> None:
         diagnostic = output.diagnostics or {}
@@ -50,6 +51,7 @@ class DINOFeatureWriter:
         dino = diagnostic["dino_targets"].detach().float().cpu()
         direct = diagnostic["target_states"].detach().float().cpu()
         online_direct = output.online_states[batch.next_indices].detach().float().cpu()
+        online_current = output.online_states[batch.current_indices].detach().float().cpu()
         if predicted.shape != dino.shape or direct.shape != dino.shape or online_direct.shape != dino.shape:
             raise ValueError("predicted, direct, and DINO grids must have identical shapes")
         shape = (batch.batch_size, horizon, *predicted.shape[-2:])
@@ -60,7 +62,7 @@ class DINOFeatureWriter:
         if current_dino.shape != (batch.batch_size, *predicted.shape[-2:]):
             raise ValueError("current DINO grids do not match the window dimensions")
         if any(not torch.isfinite(value).all() for value in
-               (predicted, dino, direct, online_direct, current_dino)):
+               (predicted, dino, direct, online_direct, online_current, current_dino)):
             raise ValueError("non-finite feature grids")
         payload = {
             "schema": self.schema,
@@ -71,6 +73,7 @@ class DINOFeatureWriter:
             "predicted": predicted.reshape(shape)[valid],
             "direct": direct.reshape(shape)[valid],
             "online_direct": online_direct.reshape(shape)[valid],
+            "online_current": online_current[valid],
             "dino": dino.reshape(shape)[valid],
             "current_dino": current_dino[valid],
         }
@@ -78,6 +81,7 @@ class DINOFeatureWriter:
         if path.exists():
             raise FileExistsError(path)
         torch.save(payload, path)
+        self.batch_identities.append({"keys": payload["keys"], "actions": payload["actions"].tolist()})
         self.paths.append(path)
         self.batch_index += 1
 

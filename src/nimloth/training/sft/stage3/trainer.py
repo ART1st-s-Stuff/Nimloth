@@ -72,6 +72,7 @@ from nimloth.wm.grid import (
     GridPredictorConfig,
     GridWorldModel,
     TemporalSpatialGridPredictor,
+    ResidualTemporalSpatialGridPredictor,
     load_sft1_slot_projector,
 )
 
@@ -176,7 +177,14 @@ def _build_world_model(
             map_location=world_model_device,
             dtype=grid_dtype,
         ).to(world_model_device)
-        wm_predictor = TemporalSpatialGridPredictor(
+        predictor_kind = getattr(args, "grid_predictor_kind", "direct")
+        predictor_types = {
+            "direct": TemporalSpatialGridPredictor,
+            "residual": ResidualTemporalSpatialGridPredictor,
+        }
+        if predictor_kind not in predictor_types:
+            raise ValueError(f"unsupported grid predictor kind: {predictor_kind}")
+        wm_predictor = predictor_types[predictor_kind](
             GridPredictorConfig(
                 grid_tokens=args.latent_token_count,
                 emb_dim=args.emb_dim,
@@ -709,6 +717,9 @@ def _train_sft2_impl(args=None) -> int:
         "training_mode_contract": "online_train_teacher_eval_v1",
         "evaluation_state_contract": "online_policy_eval_target_visual_ema_v1",
     }
+    # Preserve historical direct identities; residual resumes require explicit identity.
+    if getattr(args, "grid_predictor_kind", "direct") != "direct":
+        checkpoint_invariants["grid_predictor_kind"] = args.grid_predictor_kind
     if getattr(args, "activation_offload", False):
         checkpoint_invariants["activation_offload"] = True
     if getattr(args, "distributed_strategy", "ddp") == "fsdp":
@@ -890,6 +901,12 @@ def _train_sft2_impl(args=None) -> int:
         outcome_eval_dir=getattr(args, "outcome_eval_dir", None),
         outcome_export_identity=outcome_export_identity,
         feature_export_dir=getattr(args, "feature_export_dir", None),
+        diagnostic_steps=tuple(getattr(args, "diagnostic_steps", ())),
+        diagnostic_dir=getattr(args, "diagnostic_dir", None),
+        diagnostic_identity={"run_output": str(Path(args.output_dir).resolve()),
+                             "initialization": str(args.model),
+                             "validation": str(args.val_jsonl),
+                             "invariants": checkpoint_invariants},
         frozen_wm_cache_dir=getattr(args, "frozen_wm_cache_dir", None),
         frozen_wm_cache_split=getattr(args, "frozen_wm_cache_split", None),
         frozen_wm_cache_identity=frozen_wm_cache_identity,

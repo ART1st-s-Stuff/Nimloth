@@ -14,6 +14,7 @@ def test_dino_feature_writer_keeps_full_spatial_grids(tmp_path: Path) -> None:
         current_keys=[("kept", 3), ("padding", 0)],
         action_sequences=torch.tensor([[1, 2], [3, 4]]),
         next_indices=torch.arange(4),
+        current_indices=torch.tensor([0, 2]),
     )
     grids = torch.arange(2 * 2 * 4 * 3, dtype=torch.float32).reshape(4, 4, 3)
     output = SimpleNamespace(
@@ -33,6 +34,7 @@ def test_dino_feature_writer_keeps_full_spatial_grids(tmp_path: Path) -> None:
     assert payload["predicted"].shape == (1, 2, 4, 3)
     assert payload["direct"].shape == payload["dino"].shape
     assert torch.equal(payload["online_direct"], (grids + 3).reshape(2, 2, 4, 3)[:1])
+    assert torch.equal(payload["online_current"], (grids + 3)[:1])
 
 
 def test_visualization_selection_covers_trajectories() -> None:

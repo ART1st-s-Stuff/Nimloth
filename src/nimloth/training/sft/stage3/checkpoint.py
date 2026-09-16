@@ -618,10 +618,10 @@ def load_world_model_checkpoint(
     pred_path = ckpt_dir / "wm_predictor"
     pred = wm_predictor.module if hasattr(wm_predictor, "module") else wm_predictor
     loaded = type(pred).load_checkpoint(pred_path, map_location=device)
-    if loaded.config.history_size != pred.config.history_size:
+    if loaded.config != pred.config:
         raise ValueError(
-            "checkpoint WM history_size mismatch: "
-            f"checkpoint={loaded.config.history_size}, current={pred.config.history_size}"
+            "checkpoint WM configuration mismatch: "
+            f"checkpoint={loaded.config}, current={pred.config}"
         )
     pred.load_state_dict(loaded.state_dict())
 
