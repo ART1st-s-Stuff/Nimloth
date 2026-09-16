@@ -359,3 +359,24 @@ def test_completed_continuation_preserves_rng_optimizer_schedule_and_resumes(
     with pytest.raises(ValueError, match="already converged|completed"):
         train(train_cache, eval_cache, resumed, continue_from=source_checkpoint,
               resume=resumed / "step_000006", **kwargs)
+
+
+def test_mutable_run_progress_does_not_relax_immutable_json(tmp_path: Path):
+    from experiments.training.sft.stage3.frozen_wm_diagnostic import (
+        atomic_json,
+        replace_run_progress_json,
+    )
+
+    atomic_json(tmp_path / "run.json", {"identity": "fixed"})
+    progress = tmp_path / "status.json"
+    replace_run_progress_json(progress, {"status": "running"})
+    replace_run_progress_json(progress, {"status": "converged"})
+    assert json.loads(progress.read_text()) == {"status": "converged"}
+    with pytest.raises(FileExistsError):
+        atomic_json(progress, {"status": "overwritten"})
+    with pytest.raises(ValueError, match="not a mutable"):
+        replace_run_progress_json(tmp_path / "run.json", {})
+    checkpoint = tmp_path / "step_000069"
+    checkpoint.mkdir()
+    with pytest.raises(ValueError, match="run root"):
+        replace_run_progress_json(checkpoint / "convergence.json", {})

@@ -70,6 +70,19 @@ def atomic_json(path: Path, value: object) -> None:
     temporary.replace(path)
 
 
+def replace_run_progress_json(path: Path, value: object) -> None:
+    """Atomically replace mutable run progress, never immutable checkpoint artifacts."""
+    if path.name not in {"status.json", "convergence.json", "pointers.json"}:
+        raise ValueError(f"not a mutable run progress file: {path}")
+    if not (path.parent / "run.json").is_file():
+        raise ValueError(f"mutable progress must belong to a run root: {path}")
+    temporary = path.with_name(path.name + ".tmp")
+    payload = _json_bytes(value)
+    with temporary.open("xb") as stream:
+        stream.write(payload)
+    temporary.replace(path)
+
+
 def _load_shard(path: Path) -> dict:
     payload = torch.load(path, map_location="cpu", weights_only=True)
     if payload.get("schema") != SHARD_SCHEMA:
@@ -832,7 +845,7 @@ def train(
     checkpoints = set(config.checkpoint_steps) | {config.steps}
     started_at = time.monotonic()
     if continue_from is not None:
-        atomic_json(output / "status.json", {
+        replace_run_progress_json(output / "status.json", {
             "status": "running", "last_step": start_step, "converged": False,
         })
     step_indices = (itertools.count(start_step) if continue_from is not None
@@ -911,21 +924,21 @@ def train(
             if continue_from is not None:
                 convergence = convergence_update(convergence, step=completed, metrics=metrics)
                 atomic_json(checkpoint / "convergence.json", convergence)
-                atomic_json(output / "convergence.json", convergence)
-                atomic_json(output / "pointers.json", {
+                replace_run_progress_json(output / "convergence.json", convergence)
+                replace_run_progress_json(output / "pointers.json", {
                     "last": str(checkpoint.resolve()),
                     "best": str((continue_from if convergence["best_step"] == source_step
                                  else output / f"step_{convergence['best_step']:06d}").resolve()),
                 })
                 if convergence["status"] == "converged":
-                    atomic_json(output / "status.json", {
+                    replace_run_progress_json(output / "status.json", {
                         "status": "converged", "last_step": completed, "converged": True,
                     })
                     (output / "COMPLETE").write_text(checkpoint.name + "\n")
                     return metrics
                 low_disk = shutil.disk_usage(output).free < 10 * 1024 ** 3
                 if low_disk or time.monotonic() - started_at >= walltime_seconds:
-                    atomic_json(output / "status.json", {
+                    replace_run_progress_json(output / "status.json", {
                         "status": "disk_paused" if low_disk else "walltime_paused",
                         "last_step": completed,
                         "converged": False,
