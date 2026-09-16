@@ -96,6 +96,63 @@ class ResidualBLauncherTest(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 launcher.execute(self.args)
 
+    def continuation_argv(self):
+        argv = []
+        for key in ("python", "worktree", "model", "train", "val", "preprocess", "dino", "run-root"):
+            argv.extend(["--" + key, "/tmp/" + key])
+        return argv + ["--commit", "approved", "--variant", "dino2_backbone_stopgrad",
+                       "--continue-from", str(launcher.CONTINUE_SOURCE), "--additional-epochs", "10",
+                       "--early-stop-metric", "wm_mse", "--early-stop-baseline", "0.235"]
+
+    def test_continuation_is_single_resume_preserving_schedule(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            launcher.main(self.continuation_argv())
+        plan = json.loads(output.getvalue())
+        self.assertEqual(plan["min_free_gib"], 120)
+        self.assertEqual(len(plan["commands"]), 1)
+        command = plan["commands"][0]
+        for key, value in (("epochs", "12"), ("resume-from", str(launcher.CONTINUE_SOURCE)),
+                           ("schedule-total-steps", "46"), ("early-stop-patience", "2")):
+            self.assertEqual(command[command.index("--" + key) + 1], value)
+        self.assertIn("--resume", command)
+        self.assertNotIn("--eval-only", command)
+        self.assertNotIn("--stop-after-steps", command)
+        index = command.index("--diagnostic-steps") + 1
+        self.assertEqual(command[index:index+11], list(map(str, range(46, 277, 23))))
+
+    def test_continuation_requires_explicit_approved_scope(self):
+        for extra in (["--additional-epochs", "11"], ["--variant", "b"], ["--min-free-gib", "119"]):
+            with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                launcher.main(self.continuation_argv() + extra)
+
+    def test_verify_early_stop_uses_actual_epoch_not_epoch12(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.args.run_root = Path(directory)
+            self.args.continue_from = launcher.CONTINUE_SOURCE
+            self.args.early_stop_metric = "wm_mse"
+            self.args.early_stop_baseline = .24
+            root = self.args.run_root / "formal"
+            checkpoint = root / "epoch_004"
+            checkpoint.mkdir(parents=True)
+            for name in ("training_state.pt", "state_proj.pt", "selected_token_rows.pt",
+                         "wm_predictor/predictor.pt", "value_head/value_head.pt"):
+                target = checkpoint / name
+                target.parent.mkdir(exist_ok=True)
+                target.touch()
+            complete = {"epoch": 4, "step": 92, "checkpoint": "epoch_004", "schedule_total_steps": 46, "reason": "early_stop",
+                        "early_stop_state": {"metric": "wm_mse", "patience": 2,
+                                             "relative_improvement": .01, "bad_epochs": 2, "previous": .24,
+                                             "history": [{"epoch": e, "value": .24, "relative_improvement": 0.} for e in (3, 4)]}}
+            (root / "training_complete.json").write_text(json.dumps(complete))
+            log = root / "formal.log"
+            log.write_text("\n".join(json.dumps({"epoch": e, "global_step": e*23, "val_metrics": {"wm_mse": .24}}) for e in (3, 4)))
+            self.assertEqual(launcher.verify(self.args, "formal", log)["checkpoint"], str(checkpoint))
+            complete["early_stop_state"]["bad_epochs"] = 1
+            (root / "training_complete.json").write_text(json.dumps(complete))
+            with self.assertRaisesRegex(RuntimeError, "premature convergence"):
+                launcher.verify(self.args, "formal", log)
+
 
 if __name__ == "__main__":
     unittest.main()

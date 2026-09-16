@@ -245,6 +245,7 @@ def test_optional_export_routes_step_zero_and_each_epoch(tmp_path):
     loop._evaluate_export = lambda loader, **kw: calls.append((loader, kw))
     loop._run_epoch = lambda epoch: calls.append(('epoch', epoch))
     loop.checkpoint_runtime = SimpleNamespace(save_final=lambda **kw: None)
+    loop._write_completion = lambda *args: None
     loop.run()
     assert calls == [('validation', {'epoch': 0, 'split': 'eval'}), ('epoch', 1)]
 

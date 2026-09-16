@@ -115,6 +115,7 @@ def save_checkpoint(
     micro_step_in_epoch: int = 0,
     training_invariants: dict[str, Any] | None = None,
     collected_state: dict[str, Any] | None = None,
+    early_stop_state: dict[str, Any] | None = None,
 ) -> None:
     if is_fsdp_agent(agent) and collected_state is None:
         raise ValueError("FSDP save requires all-rank collected state")
@@ -175,6 +176,10 @@ def save_checkpoint(
     }
     if training_invariants is not None:
         state["training_invariants"] = dict(training_invariants)
+    if early_stop_state is not None:
+        state["early_stop_state"] = early_stop_state
+        state["early_stop_contract"] = {key: early_stop_state[key]
+            for key in ("metric", "relative_improvement", "patience")}
     if base_model_path is not None:
         state["base_model_path"] = str(base_model_path)
     if optimizer is not None:
@@ -199,6 +204,7 @@ class SFT2CheckpointManager:
     vision_tune: str
     latent_query_mode: str
     query_tune: str
+    early_stop_state: dict[str, Any] | None = None
 
     def save(
         self,
@@ -236,6 +242,7 @@ class SFT2CheckpointManager:
             micro_step_in_epoch=micro_step_in_epoch,
             training_invariants=self.training_invariants,
             collected_state=collected_state,
+            early_stop_state=self.early_stop_state,
         )
 
 

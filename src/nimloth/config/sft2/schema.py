@@ -28,6 +28,11 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("tuning", "lora_alpha"): "lora_alpha",
     ("tuning", "lora_dropout"): "lora_dropout",
     ("train", "epochs"): "epochs",
+    ("train", "schedule_total_steps"): "schedule_total_steps",
+    ("train", "early_stop_metric"): "early_stop_metric",
+    ("train", "early_stop_relative_improvement"): "early_stop_relative_improvement",
+    ("train", "early_stop_patience"): "early_stop_patience",
+    ("train", "early_stop_baseline"): "early_stop_baseline",
     ("train", "distributed_strategy"): "distributed_strategy",
     ("train", "activation_offload"): "activation_offload",
     ("train", "stop_after_steps"): "stop_after_steps",
@@ -119,11 +124,19 @@ class SFT2LoopConfig:
     stop_after_steps: int = 0
     diagnose_outcome_gradients: bool = False
     activation_offload: bool = False
+    early_stop_metric: str | None = None
+    early_stop_relative_improvement: float = .01
+    early_stop_patience: int = 2
+    early_stop_baseline: float | None = None
 
     @classmethod
     def from_namespace(cls, args: argparse.Namespace) -> "SFT2LoopConfig":
         return cls(
             epochs=int(args.epochs),
+            early_stop_metric=getattr(args, "early_stop_metric", None),
+            early_stop_relative_improvement=getattr(args, "early_stop_relative_improvement", .01),
+            early_stop_patience=getattr(args, "early_stop_patience", 2),
+            early_stop_baseline=getattr(args, "early_stop_baseline", None),
             activation_offload=bool(getattr(args, "activation_offload", False)),
             stop_after_steps=int(getattr(args, "stop_after_steps", 0)),
             diagnose_outcome_gradients=bool(getattr(args, "diagnose_outcome_gradients", False)),

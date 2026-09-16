@@ -31,6 +31,12 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--val-jsonl", type=Path, required=True)
     ap.add_argument("--output-dir", type=Path, required=True)
     ap.add_argument("--epochs", type=int, default=10)
+    ap.add_argument("--schedule-total-steps", type=int, default=0,
+                    help="Fixed original LR/WM schedule length; zero derives it from epochs.")
+    ap.add_argument("--early-stop-metric", choices=("wm_mse", "predicted_dino_grid_mse"))
+    ap.add_argument("--early-stop-relative-improvement", type=float, default=.01)
+    ap.add_argument("--early-stop-patience", type=int, default=2)
+    ap.add_argument("--early-stop-baseline", type=float)
     ap.add_argument("--distributed-strategy", choices=("ddp", "fsdp"), default="ddp")
     ap.add_argument("--fsdp-wrap-granularity", choices=("linear", "block"), default="linear",
                     help="FSDP handle grouping; block groups decoder/vision block internals.")
@@ -276,6 +282,12 @@ def parse_sft2_args(argv: list[str] | None = None) -> argparse.Namespace:
     pre_args, remaining = pre.parse_known_args(argv)
     ap = build_sft2_arg_parser(pre_args.config)
     args = ap.parse_args(remaining)
+    if args.schedule_total_steps < 0 or args.early_stop_patience < 1:
+        ap.error("schedule_total_steps must be nonnegative and early_stop_patience positive")
+    if not 0 <= args.early_stop_relative_improvement < 1:
+        ap.error("early_stop_relative_improvement must be finite and in [0,1)")
+    if args.early_stop_baseline is not None and not 0 <= args.early_stop_baseline < float("inf"):
+        ap.error("early_stop_baseline must be finite and nonnegative")
     args.latent_query_mode = resolve_latent_query_mode(
         args.latent_query_mode,
         default="inject",

@@ -670,7 +670,7 @@ def _train_sft2_impl(args=None) -> int:
         )
 
     steps_per_epoch = max(1, math.ceil(len(train_loader) / args.grad_accum))
-    total_steps = steps_per_epoch * args.epochs
+    total_steps = args.schedule_total_steps or steps_per_epoch * args.epochs
     qwen_warmup_steps = max(1, int(total_steps * args.qwen_lr_warmup_ratio))
 
     def after_optimizer_step() -> None:
@@ -695,6 +695,7 @@ def _train_sft2_impl(args=None) -> int:
         qwen_peak_lr=args.lr_qwen_peak,
     )
     checkpoint_invariants = {
+        "schedule_total_steps": total_steps,
         "objective": args.objective,
         "seed": int(args.seed),
         "world_size": int(world),
@@ -839,6 +840,7 @@ def _train_sft2_impl(args=None) -> int:
     algorithm = SFT2Algorithm(**algorithm_kwargs)
 
     loop_state = load_sft2_loop_state(
+        legacy_schedule_total_steps=args.schedule_total_steps or None,
         resume=args.resume,
         agent=agent,
         resume_state_path=resume_state_path,

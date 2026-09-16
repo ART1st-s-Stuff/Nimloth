@@ -235,6 +235,26 @@ exports and require the final checkpoint to match the requested completed epoch.
 
 ## Stage3 observed-state DINO objective
 
+### Continuation and optional convergence stopping
+
+Epoch cap and optimization schedule horizon are separate. Explicit continuation
+may extend the epoch cap while retaining the original Qwen LR and WM weight
+schedule horizon; never silently restart warmup or raise a decayed LR. Persist
+the schedule identity for subsequent resumes; legacy checkpoints require an
+explicit, documented original horizon when extending their budget.
+
+Optional epoch-validation early stopping compares consecutive values of the
+configured metric. Relative improvement below the configured threshold, including
+regression, increments patience; adequate improvement resets it. Initialize a new
+continuation from its source epoch metric with zero patience, and persist metric,
+threshold, patience, previous value and history through periodic/epoch checkpoints.
+Resume may not reset this state or silently change the metric. Save the completed
+epoch before stopping and identify the actual stop epoch/step in final artifacts.
+WM encoded targets can move: numerical convergence is not proof of fixed-target
+prediction quality. Keep fixed DINO and LM diagnostics alongside it.
+
+### Supervision contract
+
 - WM predicts future states and fits detached encoded successor targets. DINO
   supervises projected online states of real observations, never WM predictions.
   The frozen DINO teacher and EMA target branch receive no gradients.

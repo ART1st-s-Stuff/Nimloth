@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import json
+from nimloth.training.sft.stage3.early_stop import initialize_early_stop, update_early_stop
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,8 @@ class SFT2LoopState:
     start_epoch: int = 1
     resume_micro_step: int = 0
     stopped: bool = False
+    early_stop_state: dict | None = None
+    converged: bool = False
 
 
 def load_sft2_loop_state(
@@ -50,6 +53,7 @@ def load_sft2_loop_state(
     optimizer: torch.optim.Optimizer,
     training_invariants: dict[str, Any],
     agent=None,
+    legacy_schedule_total_steps: int | None = None,
 ) -> SFT2LoopState:
     """读取训练位置并校验影响数据顺序和梯度语义的不变量。"""
 
@@ -59,6 +63,12 @@ def load_sft2_loop_state(
 
     saved_state = torch.load(resume_state_path, map_location="cpu", weights_only=False)
     loop_state.global_step = int(saved_state.get("step", 0))
+    loop_state.early_stop_state = saved_state.get("early_stop_state")
+    if "early_stop_contract" in saved_state:
+        if not isinstance(loop_state.early_stop_state, dict) or any(
+                loop_state.early_stop_state.get(key) != value
+                for key, value in saved_state["early_stop_contract"].items()):
+            raise ValueError("checkpoint early stopping state missing or inconsistent")
     loop_state.best_val_wm_mse = float(
         saved_state.get("best_val_wm_mse", saved_state.get("best_val", float("inf")))
     )
@@ -70,6 +80,10 @@ def load_sft2_loop_state(
         # Before this switch existed all WM/value inputs were connected. Preserve
         # those resumes while rejecting either direction of a changed boundary.
         saved_invariants = {"wm_value_backbone_grad": True, **saved_invariants}
+        if "schedule_total_steps" not in saved_invariants and "schedule_total_steps" in training_invariants:
+            if legacy_schedule_total_steps is None:
+                raise ValueError("legacy checkpoint requires explicit --schedule-total-steps for resume")
+            saved_invariants["schedule_total_steps"] = legacy_schedule_total_steps
         mismatches = {
             key: (saved_invariants.get(key), current_value)
             for key, current_value in training_invariants.items()
@@ -143,6 +157,12 @@ class SFT2TrainingLoop:
     def run(self) -> SFT2LoopState:
         """执行剩余 epoch，并返回最终可保存状态。"""
 
+        self.state.early_stop_state = initialize_early_stop(self.config, self.state.early_stop_state)
+        if self.state.early_stop_state is not None:
+            self.checkpoint_runtime.manager.early_stop_state = self.state.early_stop_state
+        if (self.state.early_stop_state is not None and
+                self.state.early_stop_state["bad_epochs"] >= self.config.early_stop_patience):
+            raise ValueError("checkpoint has already converged; no further updates authorized by this stopping rule")
         cap = getattr(self.config, "stop_after_steps", 0)
         if cap and self.state.global_step >= cap:
             raise ValueError("stop_after_steps must exceed the restored global step")
@@ -153,13 +173,30 @@ class SFT2TrainingLoop:
             self._run_epoch(epoch)
             if self.state.stopped:
                 return self.state
+            if self.state.converged:
+                self.checkpoint_runtime.save_final(step=self.state.global_step, epoch=epoch,
+                    best_val_wm_mse=self.state.best_val_wm_mse)
+                self._write_completion(epoch, "early_stop")
+                return self.state
 
         self.checkpoint_runtime.save_final(
             step=self.state.global_step,
             epoch=self.config.epochs,
             best_val_wm_mse=self.state.best_val_wm_mse,
         )
+        self._write_completion(self.config.epochs, "epoch_limit")
         return self.state
+
+    def _write_completion(self, epoch: int, reason: str) -> None:
+        if not is_main():
+            return
+        root = self.checkpoint_runtime.manager.output_dir
+        pending = root / "training_complete.json.tmp"
+        pending.write_text(json.dumps({"epoch": epoch, "step": self.state.global_step,
+            "checkpoint": f"epoch_{epoch:03d}", "reason": reason,
+            "early_stop_state": self.state.early_stop_state,
+            "schedule_total_steps": self.total_steps}, indent=2) + "\n", encoding="utf-8")
+        pending.replace(root / "training_complete.json")
 
     def evaluate_only(self) -> dict[str, float]:
         """Run the production validation forward without updating or saving weights."""
@@ -441,6 +478,10 @@ class SFT2TrainingLoop:
         improved = val_wm_mse < self.state.best_val_wm_mse
         if improved:
             self.state.best_val_wm_mse = val_wm_mse
+        if self.state.early_stop_state is not None:
+            self.state.converged = update_early_stop(self.state.early_stop_state, val_metrics, epoch)
+            val_metrics["early_stop_bad_epochs"] = self.state.early_stop_state["bad_epochs"]
+            val_metrics["early_stop_converged"] = float(self.state.converged)
         self.checkpoint_runtime.save_epoch(
             step=self.state.global_step,
             epoch=epoch,
