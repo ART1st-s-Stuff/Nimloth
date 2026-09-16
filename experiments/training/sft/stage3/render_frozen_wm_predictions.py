@@ -180,18 +180,33 @@ def _load_predictor(checkpoint: Path, *, expected_mode: str, device: torch.devic
             f"checkpoint mode is not {expected_mode}: {run.get('config', {}).get('mode')}"
         )
     expected_step = int(run.get("config", {}).get("steps", -1))
+    terminal_name = complete_path.read_text().strip() if complete_path.is_file() else ""
+    if "continuation" in run:
+        history = json.loads((checkpoint.parent / "convergence.json").read_text())
+        pointers = json.loads((checkpoint.parent / "pointers.json").read_text())
+        terminal_step = history["evaluations"][-1]["step"]
+        expected_step = int(training_state.get("step", -1))
+        valid_terminal = (
+            history["status"] == "converged" and history["insufficient"] >= 2
+            and len(history["evaluations"]) >= 3
+            and terminal_name == f"step_{terminal_step:06d}"
+            and checkpoint.resolve() in {
+                Path(pointers["last"]).resolve(), Path(pointers["best"]).resolve()
+            }
+            and expected_step in {terminal_step, history["best_step"]}
+            and Path(pointers["last"]).resolve()
+            == (checkpoint.parent / terminal_name).resolve()
+        )
+    else:
+        valid_terminal = expected_step == 46 and terminal_name == checkpoint.name
     if (
-        expected_step != 46
+        not valid_terminal
         or checkpoint.name != f"step_{expected_step:06d}"
-        or not complete_path.is_file()
-        or complete_path.read_text(encoding="utf-8").strip() != checkpoint.name
         or training_state.get("schema") != "frozen_wm_diagnostic_v1"
         or int(training_state.get("step", -1)) != expected_step
         or training_state.get("run_identity") != run
     ):
-        raise ValueError(
-            f"checkpoint is not the completed 46-update frozen-WM run: {checkpoint}"
-        )
+        raise ValueError(f"checkpoint is not a verified completed frozen-WM run: {checkpoint}")
     config = GridPredictorConfig(**run["predictor_config"])
     predictor = predictor_type_from_run(run)(config).to(device=device, dtype=torch.float32)
     predictor.load_state_dict(torch.load(predictor_path, map_location=device, weights_only=True))

@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import math
 import random
+import shutil
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
@@ -608,6 +611,43 @@ def _load_checkpoint(
     return int(state["step"])
 
 
+def convergence_update(history: dict, *, step: int, metrics: dict) -> dict:
+    """Adjacent epoch improvement, including regressions as insufficient progress."""
+    values = [row["model"]["target_space"]["mse"]
+              for row in metrics["by_horizon"].values()]
+    if not values or any(not math.isfinite(value) or value < 0 for value in values):
+        raise ValueError("non-finite/negative or empty convergence metrics")
+    metric = sum(values) / len(values)
+    if not math.isfinite(metric) or metric < 0:
+        raise ValueError("non-finite/negative convergence metric")
+    previous = history["evaluations"][-1]["metric"] if history["evaluations"] else None
+    improvement = ((previous - metric) / previous if previous else 0.0)
+    insufficient = history["insufficient"] + 1 if previous is not None and improvement < .01 else 0
+    evaluations = history["evaluations"] + [
+        {"step": step, "metric": metric, "relative_improvement": improvement}
+    ]
+    best = min(evaluations, key=lambda row: row["metric"])
+    return {"evaluations": evaluations, "insufficient": insufficient,
+            "best_step": best["step"], "status": "converged" if insufficient >= 2 else "running"}
+
+
+def continuation_source(checkpoint: Path, identity: dict) -> dict:
+    """Verify completed source and pin every consumed restoration artifact."""
+    run = json.loads((checkpoint.parent / "run.json").read_text())
+    if run != identity or not (checkpoint / "COMMITTED").is_file():
+        raise ValueError("continuation source identity mismatch")
+    if (checkpoint.parent / "COMPLETE").read_text().strip() != checkpoint.name:
+        raise ValueError("continuation requires the completed source checkpoint")
+    metrics = json.loads((checkpoint / "metrics.json").read_text())
+    if (metrics.get("cache_manifest_sha256") != identity["eval_manifest_sha256"]
+            or metrics.get("mode") != identity["config"]["mode"]):
+        raise ValueError("continuation source metrics identity mismatch")
+    return {"checkpoint": str(checkpoint.resolve()), "sha256": {
+        name: file_sha256(checkpoint / name)
+        for name in ("predictor.pt", "training_state.pt", "metrics.json", "COMMITTED")
+    }, "run_sha256": file_sha256(checkpoint.parent / "run.json")}
+
+
 def train(
     train_cache: FrozenTrajectoryCache,
     eval_cache: FrozenTrajectoryCache,
@@ -617,6 +657,8 @@ def train(
     device: torch.device,
     resume: Path | None = None,
     predictor_config: GridPredictorConfig | None = None,
+    continue_from: Path | None = None,
+    walltime_seconds: float = 3600,
 ) -> dict:
     if (config.mode not in MODES or config.predictor_kind not in PREDICTOR_TYPES
             or config.steps < 1 or config.effective_batch < 2
@@ -700,6 +742,27 @@ def train(
         "schedule": "production_python_shuffle_effective_batch_v1",
     }
 
+    source_identity = run_identity
+    convergence = None
+    source_step = 0
+    if continue_from is not None:
+        if not math.isfinite(walltime_seconds) or walltime_seconds <= 0:
+            raise ValueError("walltime must be positive and finite")
+        provenance = continuation_source(continue_from, source_identity)
+        source_step = int(config.steps)
+        epoch_steps = math.ceil(len(train_cache.records) / config.effective_batch)
+        if source_step % epoch_steps:
+            raise ValueError("continuation source must end on an epoch boundary")
+        run_identity = {**run_identity, "continuation": {
+            "source": provenance, "epoch_steps": epoch_steps,
+            "metric": "mean_horizon_model_target_space_mse",
+            "relative_threshold": .01, "patience": 2,
+            "warmup_steps": max(1, int(config.steps * config.wm_warmup_fraction)),
+        }}
+        convergence = convergence_update(
+            {"evaluations": [], "insufficient": 0}, step=source_step,
+            metrics=json.loads((continue_from / "metrics.json").read_text()),
+        )
     if resume is None:
         output.mkdir(parents=True, exist_ok=False)
         atomic_json(output / "run.json", run_identity)
@@ -718,10 +781,21 @@ def train(
     optimized = {id(parameter) for group in optimizer.param_groups for parameter in group["params"]}
     if optimized != {id(parameter) for parameter in predictor.parameters()}:
         raise AssertionError("only and all WM predictor parameters must be optimized")
-    start_step = 0 if resume is None else _load_checkpoint(
-        resume, predictor=predictor, optimizer=optimizer, run_identity=run_identity
+    restore = resume or continue_from
+    start_step = 0 if restore is None else _load_checkpoint(
+        restore, predictor=predictor, optimizer=optimizer,
+        run_identity=run_identity if resume is not None else source_identity,
     )
-    if start_step >= config.steps:
+    if continue_from is not None:
+        if resume is None and start_step != source_step:
+            raise ValueError("source step does not match original budget")
+        if resume is not None:
+            convergence = json.loads((resume / "convergence.json").read_text())
+            if convergence["evaluations"][-1]["step"] != start_step:
+                raise ValueError("convergence history/checkpoint mismatch")
+            if convergence["status"] == "converged":
+                raise ValueError("checkpoint already converged")
+    if continue_from is None and start_step >= config.steps:
         raise ValueError("resume checkpoint already reached the requested update budget")
     means = train_means(train_cache)
     atomic_json(
@@ -744,7 +818,7 @@ def train(
             for line in log_path.read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
-        if logged_steps != list(range(1, start_step + 1)):
+        if logged_steps != list(range(source_step + 1, start_step + 1)):
             raise ValueError(
                 "resume train-step log must end exactly at the checkpoint step"
             )
@@ -756,7 +830,14 @@ def train(
         if later_checkpoints:
             raise ValueError("resume output contains checkpoints newer than the selected boundary")
     checkpoints = set(config.checkpoint_steps) | {config.steps}
-    for step_index in range(start_step, config.steps):
+    started_at = time.monotonic()
+    if continue_from is not None:
+        atomic_json(output / "status.json", {
+            "status": "running", "last_step": start_step, "converged": False,
+        })
+    step_indices = (itertools.count(start_step) if continue_from is not None
+                    else range(start_step, config.steps))
+    for step_index in step_indices:
         predictor.train()
         selected = _schedule(train_cache, config, step_index)
         optimizer.zero_grad(set_to_none=True)
@@ -809,7 +890,8 @@ def train(
                 "gradient_norm_before_clip": float(gradient_norm),
                 "learning_rate": config.learning_rate,
             }, allow_nan=False) + "\n")
-        if completed in checkpoints:
+        at_epoch = continue_from is not None and completed % epoch_steps == 0
+        if at_epoch or (continue_from is None and completed in checkpoints):
             checkpoint = _checkpoint(
                 output,
                 step=completed,
@@ -826,6 +908,29 @@ def train(
                 seed=config.seed,
             )
             atomic_json(checkpoint / "metrics.json", metrics)
+            if continue_from is not None:
+                convergence = convergence_update(convergence, step=completed, metrics=metrics)
+                atomic_json(checkpoint / "convergence.json", convergence)
+                atomic_json(output / "convergence.json", convergence)
+                atomic_json(output / "pointers.json", {
+                    "last": str(checkpoint.resolve()),
+                    "best": str((continue_from if convergence["best_step"] == source_step
+                                 else output / f"step_{convergence['best_step']:06d}").resolve()),
+                })
+                if convergence["status"] == "converged":
+                    atomic_json(output / "status.json", {
+                        "status": "converged", "last_step": completed, "converged": True,
+                    })
+                    (output / "COMPLETE").write_text(checkpoint.name + "\n")
+                    return metrics
+                low_disk = shutil.disk_usage(output).free < 10 * 1024 ** 3
+                if low_disk or time.monotonic() - started_at >= walltime_seconds:
+                    atomic_json(output / "status.json", {
+                        "status": "disk_paused" if low_disk else "walltime_paused",
+                        "last_step": completed,
+                        "converged": False,
+                    })
+                    return metrics
     final = output / f"step_{config.steps:06d}"
     (output / "COMPLETE").write_text(final.name + "\n", encoding="utf-8")
     return json.loads((final / "metrics.json").read_text())
@@ -855,6 +960,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--checkpoint-steps", type=int, nargs="+", default=[1, 5, 10, 46])
     run.add_argument("--device", default="cuda")
     run.add_argument("--resume", type=Path)
+    run.add_argument("--continue-from", type=Path)
+    run.add_argument("--walltime-seconds", type=float, default=3600)
     return parser
 
 
@@ -884,6 +991,8 @@ def main(argv: list[str] | None = None) -> int:
         config=config,
         device=torch.device(args.device),
         resume=args.resume,
+        continue_from=args.continue_from,
+        walltime_seconds=args.walltime_seconds,
     )
     print(json.dumps(metrics, indent=2))
     return 0

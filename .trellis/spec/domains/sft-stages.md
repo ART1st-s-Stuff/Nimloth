@@ -272,3 +272,20 @@ exports and require the final checkpoint to match the requested completed epoch.
    kind, mismatch rejection and renderer metadata dispatch.
 7. Wrong: label transformer internal skip connections as residual prediction.
    Correct: explicitly reconstruct `next = current + delta` at every rollout step.
+
+### Convergence continuation
+
+- `train --continue-from <completed checkpoint> --output <new directory>` preserves
+  source weights, optimizer, RNG and global data position. Original `--steps` and
+  configuration identify the source and warmup; they do not cap continuation.
+- Source files are hashed and pinned in continuation identity. Same-run `--resume`
+  also supplies the original `--continue-from`; incompatible identity is rejected.
+- Evaluate every complete trajectory epoch. Stop when adjacent-epoch relative
+  improvement in mean horizon target-space model MSE is below 1% twice in a row.
+  Regressions count as insufficient improvement; source evaluation is the baseline.
+- Save metric history and best/last checkpoint pointers. Runtime or disk pauses
+  are resumable and must not set convergence completion. Existing sources stay intact.
+- Tests cover source identity, optimizer/RNG/global schedule continuity, original
+  warmup, patience reset, two insufficient epochs, resumable pause and render guards.
+- Wrong: increase the old step budget and restart its warmup or call timeout
+  convergence. Correct: continue the same optimization and record the actual stop reason.

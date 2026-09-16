@@ -290,3 +290,72 @@ def test_residual_multistep_copy_initialization_and_delta_update() -> None:
     prediction = model.rollout_from_history(current, empty, actions)
     offsets = torch.arange(1, 5, dtype=current.dtype).reshape(1, 4, 1, 1) * 0.25
     torch.testing.assert_close(prediction, current + offsets)
+
+
+def test_convergence_requires_two_adjacent_insufficient_epochs():
+    from experiments.training.sft.stage3.frozen_wm_diagnostic import convergence_update
+
+    history = {"evaluations": [], "insufficient": 0}
+    for step, metric, expected in [(46, 1., 0), (69, .98, 0), (92, .975, 1),
+                                   (115, .95, 0), (138, .96, 1), (161, .96, 2)]:
+        history = convergence_update(history, step=step, metrics={
+            "by_horizon": {str(h): {"model": {"target_space": {"mse": metric}}}
+                           for h in range(1, 5)}
+        })
+        assert history["insufficient"] == expected
+        assert (history["status"] == "converged") == (expected == 2)
+    assert history["best_step"] == 115
+
+
+def test_completed_continuation_preserves_rng_optimizer_schedule_and_resumes(
+    tmp_path: Path, monkeypatch
+):
+    import experiments.training.sft.stage3.frozen_wm_diagnostic as diagnostic
+
+    train_cache = FrozenTrajectoryCache(_export(tmp_path, "train", ("t1", "t2", "t3", "t4")))
+    eval_cache = FrozenTrajectoryCache(_export(tmp_path, "eval", ("e1", "e2")))
+    config = DiagnosticConfig(mode="dino", predictor_kind="residual", steps=2,
+                              effective_batch=2, trajectory_microbatch=1,
+                              checkpoint_steps=(2,), wm_warmup_fraction=.5)
+    pc = GridPredictorConfig(grid_tokens=4, emb_dim=8, action_dim=8, history_size=1,
+                             depth=1, heads=2, dim_head=4, mlp_dim=16, dropout=.1)
+    # Fixed evaluator makes the stopping boundary deterministic without altering updates.
+    def evaluate(*args, **kwargs):
+        return {"mode": "dino", "cache_manifest_sha256": eval_cache.manifest_sha256,
+                "by_horizon": {str(h): {"model": {"target_space": {"mse": 1.}}}
+                               for h in (1, 2)}}
+    monkeypatch.setattr(diagnostic, "evaluate_predictor", evaluate)
+    kwargs = dict(config=config, device=torch.device("cpu"), predictor_config=pc)
+    source = tmp_path / "source"
+    train(train_cache, eval_cache, source, **kwargs)
+    source_checkpoint = source / "step_000002"
+    original_hash = diagnostic.file_sha256(source_checkpoint / "training_state.pt")
+    full = tmp_path / "full"
+    train(train_cache, eval_cache, full, continue_from=source_checkpoint, **kwargs)
+    assert (full / "COMPLETE").read_text().strip() == "step_000006"
+    log = [json.loads(line) for line in (full / "train_steps.jsonl").read_text().splitlines()]
+    assert [row["step"] for row in log] == [3, 4, 5, 6]
+    assert all(row["lambda_wm"] == 1. for row in log)
+    resumed = tmp_path / "resumed"
+    train(train_cache, eval_cache, resumed, continue_from=source_checkpoint,
+          walltime_seconds=1e-9, **kwargs)
+    assert not (resumed / "COMPLETE").exists()
+    assert json.loads((resumed / "status.json").read_text())["converged"] is False
+    train(train_cache, eval_cache, resumed, continue_from=source_checkpoint,
+          resume=resumed / "step_000004", **kwargs)
+    assert json.loads((resumed / "status.json").read_text())["status"] == "converged"
+    for filename in ("predictor.pt", "training_state.pt"):
+        left = torch.load(full / "step_000006" / filename, weights_only=False)
+        right = torch.load(resumed / "step_000006" / filename, weights_only=False)
+        if filename == "predictor.pt":
+            assert all(torch.equal(left[key], right[key]) for key in left)
+        else:
+            assert torch.equal(left["torch_rng_state"], right["torch_rng_state"])
+            assert left["optimizer"]["param_groups"] == right["optimizer"]["param_groups"]
+            for key, state in left["optimizer"]["state"].items():
+                assert all(torch.equal(value, right["optimizer"]["state"][key][name])
+                           for name, value in state.items())
+    assert diagnostic.file_sha256(source_checkpoint / "training_state.pt") == original_hash
+    with pytest.raises(ValueError, match="already converged|completed"):
+        train(train_cache, eval_cache, resumed, continue_from=source_checkpoint,
+              resume=resumed / "step_000006", **kwargs)
