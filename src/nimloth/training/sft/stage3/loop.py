@@ -5,7 +5,7 @@ from __future__ import annotations
 import itertools
 import json
 from nimloth.training.sft.stage3.early_stop import initialize_early_stop, update_early_stop
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -159,7 +159,8 @@ class SFT2TrainingLoop:
 
         self.state.early_stop_state = initialize_early_stop(self.config, self.state.early_stop_state)
         if self.state.early_stop_state is not None:
-            self.checkpoint_runtime.manager.early_stop_state = self.state.early_stop_state
+            self.checkpoint_runtime.manager = replace(
+                self.checkpoint_runtime.manager, early_stop_state=self.state.early_stop_state)
         if (self.state.early_stop_state is not None and
                 self.state.early_stop_state["bad_epochs"] >= self.config.early_stop_patience):
             raise ValueError("checkpoint has already converged; no further updates authorized by this stopping rule")

@@ -54,7 +54,10 @@ def test_history_and_schedule_resume(tmp_path):
         load_sft2_loop_state(**args)
 
 
-def test_epoch_convergence_saves_before_final_alias_at_actual_epoch(tmp_path):
+def test_epoch_convergence_saves_before_final_alias_at_actual_epoch(tmp_path, monkeypatch):
+    import json
+    import nimloth.training.sft.stage3.checkpoint as checkpoint_module
+    from nimloth.training.sft.stage3.checkpoint import SFT2CheckpointManager
     loop = object.__new__(SFT2TrainingLoop)
     loop.state = SFT2LoopState(global_step=46, start_epoch=3)
     loop.config = config()
@@ -62,7 +65,16 @@ def test_epoch_convergence_saves_before_final_alias_at_actual_epoch(tmp_path):
     loop.val_loader = None
     saved = []
     loop.total_steps = 46
-    loop.checkpoint_runtime = SimpleNamespace(manager=SimpleNamespace(output_dir=tmp_path),
+    manager = SFT2CheckpointManager(output_dir=tmp_path, agent=None, processor=None,
+        vision_ema=None, optimizer=None, training_invariants={}, lora=False,
+        base_model_path=tmp_path, llm_tune="full", vision_tune="full",
+        latent_query_mode="inject", query_tune="selected_rows")
+    written = []
+    monkeypatch.setattr(checkpoint_module, 'is_fsdp_agent', lambda agent: False)
+    def capture_save(agent, path, **kwargs):
+        written.append((path.name, kwargs['early_stop_state']['bad_epochs']))
+    monkeypatch.setattr(checkpoint_module, 'save_checkpoint', capture_save)
+    loop.checkpoint_runtime = SimpleNamespace(manager=manager,
         save_epoch=lambda **kw: saved.append(('epoch', kw['epoch'], loop.state.early_stop_state['bad_epochs'])),
         save_final=lambda **kw: saved.append(('final', kw['epoch'], kw['step'])))
     loop.reporter = SimpleNamespace(log_validation=lambda **kw: None)
@@ -71,10 +83,18 @@ def test_epoch_convergence_saves_before_final_alias_at_actual_epoch(tmp_path):
     def epoch(number):
         loop.state.global_step += 23
         loop._validate_and_checkpoint(number)
+        loop.checkpoint_runtime.manager.save(f'epoch_{number:03d}',
+            step=loop.state.global_step, epoch=number, best_val_wm_mse=1.)
     loop._run_epoch = epoch
     loop.run()
     assert saved == [('epoch', 3, 1), ('epoch', 4, 2), ('final', 4, 92)]
     assert loop.state.converged and not loop.state.stopped
+    assert manager.early_stop_state is None  # Frozen original was not mutated.
+    assert loop.checkpoint_runtime.manager.early_stop_state is loop.state.early_stop_state
+    assert written == [('epoch_003', 1), ('epoch_004', 2)]
+    complete = json.loads((tmp_path / 'training_complete.json').read_text())
+    assert complete['epoch'] == 4 and complete['step'] == 92
+    assert complete['early_stop_state']['bad_epochs'] == 2
 
 
 def test_legacy_schedule_requires_explicit_budget_and_missing_history_rejected(tmp_path):
