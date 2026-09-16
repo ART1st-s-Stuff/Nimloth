@@ -97,10 +97,14 @@ def join_cache_images(
         action_count = int(entry["action_count"])
         source = images[identity]
         paths = source["image_paths"]
-        if len(paths) != state_count or int(source["action_count"]) != action_count:
+        if len(paths) != state_count:
             raise ValueError(
-                f"JSONL/cache state or action count mismatch for {identity}: "
-                f"images={len(paths)}, states={state_count}, "
+                f"image/state count mismatch for {identity}: "
+                f"images={len(paths)}, states={state_count}"
+            )
+        if int(source["action_count"]) != action_count:
+            raise ValueError(
+                f"JSONL/cache action count mismatch for {identity}: "
                 f"JSONL actions={source['action_count']}, cache actions={action_count}"
             )
         missing = [str(path) for path in paths if not path.is_file()]

@@ -81,7 +81,7 @@ def test_image_join_rejects_cached_action_count_mismatch(tmp_path: Path) -> None
     cache = SimpleNamespace(
         records=({"trajectory_id": "trajectory", "state_count": 5, "action_count": 5},)
     )
-    with pytest.raises(ValueError, match="state or action count mismatch"):
+    with pytest.raises(ValueError, match="action count mismatch"):
         join_cache_images(cache, images, prediction_horizon=4)
 
 
