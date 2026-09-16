@@ -1,4 +1,4 @@
-"""Dry-run-first, single-attempt controller for the approved residual Stage3 B.
+"""Dry-run-first, single-attempt controller for approved residual Stage3 variants.
 
 Execute on a100-1 only. The two-update save/reload gate shares 900 seconds;
 baseline evaluation and fresh two-epoch training share a separate 12 hours.
@@ -18,6 +18,10 @@ import time
 from experiments.training.sft.stage3 import run_outcome_ablation as common
 
 PHASES = ("canary", "resume", "baseline", "formal")
+VARIANTS = {
+    "b": {"dino_weight": .5, "wm_value_backbone_grad": True},
+    "dino2_backbone_stopgrad": {"dino_weight": 2., "wm_value_backbone_grad": False},
+}
 MODEL = Path("/mnt/nimloth/outputs/experiments/sft2-deepsight-full/20260914_epoch15_projector_lr8e5_continue/train/epoch_016")
 EXPECTED_HASHES = {
     "train": "362fafd8f846eabadbd35928f82e302cd01ea2a418718815610af62e18abc56c",
@@ -29,6 +33,8 @@ def command(args, phase, port):
     if phase not in PHASES:
         raise ValueError(phase)
     output = args.run_root / ("control_canary" if phase in {"canary", "resume"} else phase)
+    variant_name = getattr(args, "variant", "b")
+    variant = VARIANTS[variant_name]
     values = {
         "model": args.model, "train-jsonl": args.train, "val-jsonl": args.val,
         "preprocess-cache-dir": args.preprocess, "preprocess-cache-processor-source": args.model,
@@ -41,12 +47,12 @@ def command(args, phase, port):
         "query-lr": 1e-5, "protocol-lr": 2e-6, "lr-qwen-start": 2e-7,
         "lr-qwen-peak": 2e-7, "state-proj-lr": 8e-6,
         "wm-predictor-lr": 3e-4, "value-head-lr": 1e-4, "outcome-head-lr": 1e-4,
-        "lambda-outcome": 0, "lambda-sigreg": 0, "lambda-dino": .5,
+        "lambda-outcome": 0, "lambda-sigreg": 0, "lambda-dino": variant["dino_weight"],
         "lambda-ce": 1, "lambda-value": 1, "lambda-wm-start": .1, "lambda-wm-end": 1,
         "max-length": 16384, "checkpoint-interval-steps": 10,
         "checkpoint-keep-last": 1, "checkpoint-interval-minutes": 0,
         "step-timing-interval": 1, "step-timing-sample-interval": 10,
-        "wandb-run-name": f"{args.run_root.name}_B_{phase}",
+        "wandb-run-name": f"{args.run_root.name}_{variant_name}_{phase}",
     }
     argv = [str(args.python), "-m", "torch.distributed.run", "--nproc_per_node=8",
             f"--master_port={port}", "-m", "nimloth.training.sft.stage3", "--config",
@@ -55,6 +61,7 @@ def command(args, phase, port):
         argv.extend(["--" + key, str(value)])
     argv.extend(["--outcome-head", "--require-prebuilt-cache", "--step-timing",
                  "--deduplicate-epoch-checkpoints"])
+    argv.append("--wm-value-backbone-grad" if variant["wm_value_backbone_grad"] else "--no-wm-value-backbone-grad")
     if phase == "formal":
         argv.append("--checkpoint-latest-only")
     if phase in {"canary", "resume"}:
@@ -104,6 +111,9 @@ def verify(args, phase, log):
     invariants = metadata.get("training_invariants") or {}
     if invariants.get("grid_predictor_kind") != "residual" or invariants.get("lambda_sigreg") != 0:
         raise RuntimeError("wrong predictor/loss checkpoint identity")
+    variant = VARIANTS[getattr(args, "variant", "b")]
+    if any(invariants.get(key) != value for key, value in variant.items()):
+        raise RuntimeError("wrong DINO/gradient-routing variant checkpoint identity")
     if not metadata.get("has_optimizer") or (phase == "formal" and
             (metadata.get("step") != 46 or metadata.get("epoch_complete") is not True)):
         raise RuntimeError("checkpoint is not the expected resumable boundary")
@@ -139,7 +149,9 @@ def execute(args):
     controller.mkdir()
     environment = dict(os.environ, CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7", TOKENIZERS_PARALLELISM="false")
     environment["PYTHONPATH"] = str(args.worktree / "src") + os.pathsep + str(args.worktree)
+    variant_name = getattr(args, "variant", "b")
     record = {"status": "running", "commit": commit, "dataset_sha256": hashes, "source_identity": source_identity,
+              "variant": variant_name, "variant_invariants": VARIANTS[variant_name],
               "inputs": {key: str(getattr(args, key)) for key in ("model", "train", "val", "preprocess", "dino")},
               "phases": [], "wm_weight_schedule": {"total_steps": 46, "warmup_steps": 13,
               "rule": "0.1 + 0.9*(1-cos(pi*global_step/13))/2 until global_step13, then1"},
@@ -183,6 +195,8 @@ def main(argv=None):
     for key in ("python", "worktree", "model", "train", "val", "preprocess", "dino", "run-root"):
         parser.add_argument("--" + key, type=Path, required=True)
     parser.add_argument("--commit", required=True)
+    parser.add_argument("--variant", choices=tuple(VARIANTS), default="b",
+                        help="One approved experiment only; the default preserves original B.")
     parser.add_argument("--min-free-gib", type=float, default=160)
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
@@ -198,7 +212,9 @@ def main(argv=None):
         finally:
             signal.signal(signal.SIGTERM, previous)
     else:
-        print(json.dumps({"mode": "dry_run", "commands": [command(args, phase, 29500+i) for i, phase in enumerate(PHASES)]}, indent=2))
+        print(json.dumps({"mode": "dry_run", "variant": args.variant,
+                          "variant_invariants": VARIANTS[args.variant],
+                          "commands": [command(args, phase, 29500+i) for i, phase in enumerate(PHASES)]}, indent=2))
     return 0
 
 

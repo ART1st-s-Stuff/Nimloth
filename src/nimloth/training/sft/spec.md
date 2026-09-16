@@ -140,11 +140,19 @@ def sft3_update(model, target_model, config, trajectory_batches, proj,
             # 先完成EMA/eval目标前向，再构建在线图。
             target_states = proj(target_model.get_all_query_embeddings(trajectories, queries))
             dino_features = dino_model(trajectories.images) if config.weight_dino > 0 else None
-        states, answer_losses = encode_trajectory_states_and_lm(model, proj, trajectories, queries)
+        hidden, answer_losses = encode_trajectory_hidden_and_lm(model, trajectories, queries)
+        if not config.wm_value_backbone_grad:
+            # 一次projector前向同时保留DINO路径和隔离后的WM/value路径。
+            joined = proj(concat(hidden, stop_gradient(hidden[windows.current])))
+            states, rollout_states = split(joined, len(hidden))
+        else:
+            states = proj(hidden)
+            rollout_states = states[windows.current]
         predictions, values, outcome_logits = wm_predict(
-            wm, value_head, states[windows.current], windows.actions,
+            wm, value_head, rollout_states, windows.actions,
             config.prediction_horizon, outcome_head
         )
+        # 隔离模式下WM/value仍更新projector和预测器，但不更新编码器；LM/DINO不受阻断。
         # 各窗口独立递推，后续输入为预测state；LM仅监督成功轨迹的有效窗口起点。
         loss_wm = mse(predictions, stop_gradient(target_states[windows.future]))
         loss_value = mse(values, windows.mc_returns)

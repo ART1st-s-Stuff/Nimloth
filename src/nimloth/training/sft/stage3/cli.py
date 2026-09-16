@@ -137,6 +137,8 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--outcome-head-lr", type=float, default=1e-4)
     ap.add_argument("--value-gamma", type=float, default=1.0)
     ap.add_argument("--lambda-sigreg", type=float, default=0.1)
+    ap.add_argument("--wm-value-backbone-grad", action=argparse.BooleanOptionalAction,
+                    default=True, help="Allow WM/value gradients through projector inputs into the backbone.")
     ap.add_argument("--sigreg-num-proj", type=int, default=1024)
     ap.add_argument("--sigreg-knots", type=int, default=17)
     ap.add_argument("--lambda-wm-start", type=float, default=0.1)

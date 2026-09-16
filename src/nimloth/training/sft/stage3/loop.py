@@ -67,6 +67,9 @@ def load_sft2_loop_state(
     if not isinstance(saved_invariants, dict) or saved_invariants.get("training_unit") != "complete_trajectory_v1":
         raise ValueError("trajectory-native resume requires complete_trajectory_v1 training invariants")
     if saved_invariants is not None:
+        # Before this switch existed all WM/value inputs were connected. Preserve
+        # those resumes while rejecting either direction of a changed boundary.
+        saved_invariants = {"wm_value_backbone_grad": True, **saved_invariants}
         mismatches = {
             key: (saved_invariants.get(key), current_value)
             for key, current_value in training_invariants.items()

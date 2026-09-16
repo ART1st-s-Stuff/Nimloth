@@ -83,6 +83,97 @@ def algorithm(**kwargs):
     return SFT2Algorithm(**(config | kwargs))
 
 
+@pytest.mark.parametrize("loss_name", ["wm", "value", "dino", "lm"])
+def test_backbone_stop_preserves_projector_and_supervised_paths(loss_name):
+    runtime, batch = runtime_and_batch()
+    output = algorithm(wm_value_backbone_grad=False).evaluation_step(runtime, batch)
+    output.losses[loss_name].backward()
+    def nonzero(module):
+        return any(p.grad is not None and bool(p.grad.count_nonzero()) for p in module.parameters())
+    assert nonzero(runtime.agent.backbone) == (loss_name in {"dino", "lm"})
+    assert nonzero(runtime.agent.wm.state_proj) == (loss_name != "lm")
+    assert nonzero(runtime.agent.wm.wm_predictor) == (loss_name in {"wm", "value"})
+    assert nonzero(runtime.agent.wm.value_head) == (loss_name == "value")
+
+
+def test_backbone_stop_changes_gradients_only():
+    runtime, batch = runtime_and_batch()
+    connected = algorithm().evaluation_step(runtime, batch)
+    stopped = algorithm(wm_value_backbone_grad=False).evaluation_step(runtime, batch)
+    torch.testing.assert_close(connected.online_states, stopped.online_states)
+    torch.testing.assert_close(connected.current_state, stopped.current_state)
+    for key, value in connected.losses.items():
+        if value is not None:
+            torch.testing.assert_close(value, stopped.losses[key])
+
+
+class GridTensorBackbone(TensorBackbone):
+    def forward(self, batch, *, include_lm_loss=False):
+        result = super().forward(batch, include_lm_loss=include_lm_loss)
+        return BackboneOutput(result.hidden, lm_losses=(
+            result.lm_losses.mean(-1) if result.lm_losses is not None else None))
+
+
+def residual_runtime_and_batch():
+    from nimloth.wm.grid import (GridPredictorConfig, GridWorldModel,
+                                ResidualTemporalSpatialGridPredictor, SharedSlotProjector)
+    runtime, batch = runtime_and_batch()
+    runtime.agent.backbone = GridTensorBackbone()
+    runtime.agent.wm = GridWorldModel(
+        state_proj=SharedSlotProjector(4, 4, hidden_dim=8, grid_tokens=2),
+        wm_predictor=ResidualTemporalSpatialGridPredictor(GridPredictorConfig(
+            grid_tokens=2, emb_dim=4, action_dim=3, history_size=1,
+            depth=1, heads=1, dim_head=4, mlp_dim=8, dropout=0.)),
+        value_head=nn.Linear(4, 3, bias=False))
+    batch.inputs.tensors['hidden'] = batch.inputs.tensors['hidden'][:, None].repeat(1, 2, 1)
+    batch.observed_dino_target = batch.observed_dino_target[:, None].repeat(1, 2, 1)
+    batch.dino_grid_target = batch.dino_grid_target[:, :, None].repeat(1, 1, 2, 1)
+    return runtime, batch
+
+
+@pytest.mark.parametrize("loss_name", ["wm", "value"])
+def test_residual_copy_and_later_value_cannot_bypass_stop(loss_name):
+    runtime, batch = residual_runtime_and_batch()
+    output = algorithm(wm_value_backbone_grad=False).evaluation_step(runtime, batch)
+    output.losses[loss_name].backward()
+    assert all(p.grad is None or not p.grad.count_nonzero()
+               for p in runtime.agent.backbone.parameters())
+    for module in (runtime.agent.wm.state_proj, runtime.agent.wm.wm_predictor):
+        assert any(p.grad is not None and p.grad.count_nonzero() for p in module.parameters())
+
+
+def _stopped_projector_ddp_worker(rank, path):
+    import torch.distributed as dist
+    from torch.nn.parallel import DistributedDataParallel as DDP
+    torch.set_num_threads(1)
+    dist.init_process_group('gloo', init_method='file://' + path, rank=rank, world_size=2)
+    try:
+        runtime, batch = residual_runtime_and_batch()
+        batch.inputs.tensors['hidden'].add_(rank)
+        projector = DDP(runtime.agent.wm.state_proj)
+        runtime.agent.wm.state_proj = projector
+        optimizer = torch.optim.SGD(projector.parameters(), lr=.01)
+        for _ in range(2):
+            optimizer.zero_grad(set_to_none=True)
+            for accumulation in range(2):
+                with (projector.no_sync() if accumulation == 0 else contextlib.nullcontext()):
+                    output = algorithm(wm_value_backbone_grad=False).evaluation_step(runtime, batch)
+                    (output.loss / 2).backward()
+            for parameter in projector.parameters():
+                assert parameter.grad is not None and torch.isfinite(parameter.grad).all()
+                reference = parameter.grad.clone()
+                dist.broadcast(reference, 0)
+                torch.testing.assert_close(reference, parameter.grad)
+            optimizer.step()
+    finally:
+        dist.destroy_process_group()
+
+
+def test_stopped_projector_single_ddp_forward_accumulates_and_synchronizes(tmp_path):
+    torch.multiprocessing.spawn(_stopped_projector_ddp_worker,
+        args=(str(tmp_path / 'projector-gloo'),), nprocs=2, join=True)
+
+
 def test_native_targets_first_then_one_online_and_one_batched_rollout():
     runtime, batch = runtime_and_batch()
     events = []

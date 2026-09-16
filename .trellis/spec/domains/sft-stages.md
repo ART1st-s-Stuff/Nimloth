@@ -266,6 +266,20 @@ grid configuration; cross-kind restore fails closed. Residual identity is explic
 without changing historical direct checkpoint identity. DINO continues to supervise
 real observed states, and WM fits detached encoded future states.
 
+## Stage3 backbone gradient boundary
+
+An explicit opt-in mode blocks WM/value gradients at the backbone hidden output,
+before the projector. Projector parameters remain trainable by WM/value; backbone
+language/vision and selected vocabulary rows still receive LM/DINO gradients.
+Project attached observed hidden and detached current-window hidden in a single
+wrapped projector forward, then split the results. This preserves projector DDP
+ownership without re-encoding Qwen or bypassing the wrapper. Both initial value
+and autoregressive residual-copy paths must use the isolated current states;
+do not detach future predictions, which must retain WM/value parameter gradients.
+Default connected behavior stays unchanged. Gradient boundary is a strict resume
+invariant. Validate isolated loss gradients, identical forward values, and multiple
+distributed optimizer updates before GPU deployment.
+
 ## Frozen-WM residual diagnostic
 
 1. Scope: run-owned fixed-feature experiments only; formal Stage3 defaults do not change.

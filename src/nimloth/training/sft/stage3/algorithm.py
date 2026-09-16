@@ -60,7 +60,8 @@ class SFT2Algorithm:
                  sigreg_weight: float, value_weight: float, ce_weight: float,
                  wm_weight_start: float = .1, wm_weight_end: float = 1.,
                  wm_warmup_fraction: float = .3, dino_grid_weight: float = 0.,
-                 prediction_horizon: int = 1, outcome_weight: float = 0.) -> None:
+                 prediction_horizon: int = 1, outcome_weight: float = 0.,
+                 wm_value_backbone_grad: bool = True) -> None:
         if int(history_size) != 1:
             raise ValueError("trajectory-native Stage3 requires history_size=1")
         if int(prediction_horizon) < 1:
@@ -78,6 +79,7 @@ class SFT2Algorithm:
         self.wm_warmup_fraction = float(wm_warmup_fraction)
         self.dino_grid_weight = float(dino_grid_weight)
         self.outcome_weight = float(outcome_weight)
+        self.wm_value_backbone_grad = bool(wm_value_backbone_grad)
 
     def wm_weight(self, global_step: int, total_steps: int) -> float:
         """在训练前段用 cosine ramp 增加 WM loss 权重。"""
@@ -158,14 +160,26 @@ class SFT2Algorithm:
         # EMA swaps must complete before creating any online autograd graph.
         target_states = runtime.encode_next_state(batch.inputs)
         encoded = runtime.agent.backbone(batch.inputs, include_lm_loss=True)
-        online_states = runtime.agent.wm.project_state(encoded.hidden)
+        if self.wm_value_backbone_grad:
+            online_states = runtime.agent.wm.project_state(encoded.hidden)
+            current_hidden = encoded.hidden[batch.current_indices]
+            current_states = online_states[batch.current_indices]
+        else:
+            # One grad-enabled wrapped projector call: both branches update its
+            # weights, but only the observed/DINO branch reaches the backbone.
+            # Keep DDP reducer ownership; never call through projector.module.
+            current_hidden = encoded.hidden[batch.current_indices].detach()
+            combined = runtime.agent.wm.project_state(torch.cat(
+                (encoded.hidden, current_hidden), dim=0))
+            online_states, current_states = combined.split(
+                (encoded.hidden.shape[0], current_hidden.shape[0]), dim=0)
         if online_states.shape != target_states.shape:
             raise ValueError("online and EMA trajectory state shapes disagree")
         if encoded.lm_losses is None or encoded.lm_losses.shape != batch.lm_weights.shape:
             raise ValueError("trajectory forward requires one LM loss per eligible window")
         lm_loss = (encoded.lm_losses * batch.lm_weights).sum() / batch.lm_weights.sum().clamp_min(1)
-        current = AgentStateOutput(hidden=encoded.hidden[batch.current_indices],
-                                   state=online_states[batch.current_indices], lm_loss=lm_loss)
+        current = AgentStateOutput(hidden=current_hidden,
+                                   state=current_states, lm_loss=lm_loss)
         rollout = runtime.agent.forward_action_rollout(batch.action_sequences, encoded_current=current)
         expected = target_states[batch.next_indices].detach()
         predicted = rollout.predicted_states

@@ -30,6 +30,17 @@ REQUIRED = [
 ]
 
 
+def test_backbone_gradient_boundary_is_explicit_opt_in():
+    args = parse_sft2_args([*REQUIRED, "--history-size", "1"])
+    assert args.wm_value_backbone_grad is True
+    args = parse_sft2_args([*REQUIRED, "--history-size", "1", "--no-wm-value-backbone-grad"])
+    assert args.wm_value_backbone_grad is False
+    assert flatten_sft2_yaml_config({"loss": {"wm_value_backbone_grad": False}}) == {
+        "wm_value_backbone_grad": False}
+    with pytest.raises(ValueError, match="must be a boolean"):
+        flatten_sft2_yaml_config({"loss": {"wm_value_backbone_grad": "false"}})
+
+
 def test_yaml_defaults_apply_after_argument_registration() -> None:
     args = parse_sft2_args(["--config", str(K8_CONFIG), *REQUIRED, "--history-size", "1"])
 

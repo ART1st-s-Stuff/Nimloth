@@ -236,3 +236,35 @@ def test_native_resume_rejects_window_unit_before_loading_optimizer(tmp_path, sa
             resume_checkpoint_dir=tmp_path, optimizer=optimizer,
             training_invariants={"training_unit": "complete_trajectory_v1"})
     assert not optimizer.state
+
+
+@pytest.mark.parametrize("saved_mode,current_mode", [(None, False), (True, False), (False, True)])
+def test_resume_rejects_changed_or_missing_backbone_gradient_boundary(tmp_path, saved_mode, current_mode):
+    from nimloth.training.sft.stage3.loop import load_sft2_loop_state
+    model = torch.nn.Linear(2, 1)
+    optimizer = torch.optim.AdamW(model.parameters())
+    state = tmp_path / "training_state.pt"
+    invariants = {"training_unit": "complete_trajectory_v1"}
+    if saved_mode is not None:
+        invariants["wm_value_backbone_grad"] = saved_mode
+    torch.save({"step": 5, "epoch": 1, "optimizer": {"deliberately_invalid": True},
+                "training_invariants": invariants}, state)
+    with pytest.raises(ValueError, match="wm_value_backbone_grad"):
+        load_sft2_loop_state(resume=True, resume_state_path=state,
+            resume_checkpoint_dir=tmp_path, optimizer=optimizer,
+            training_invariants={"training_unit": "complete_trajectory_v1",
+                                 "wm_value_backbone_grad": current_mode})
+    assert not optimizer.state
+
+
+def test_historical_connected_resume_remains_compatible(tmp_path):
+    from nimloth.training.sft.stage3.loop import load_sft2_loop_state
+    optimizer = torch.optim.AdamW(torch.nn.Linear(2, 1).parameters())
+    state = tmp_path / "training_state.pt"
+    torch.save({"step": 46, "epoch": 2, "optimizer": optimizer.state_dict(),
+                "training_invariants": {"training_unit": "complete_trajectory_v1"}}, state)
+    restored = load_sft2_loop_state(resume=True, resume_state_path=state,
+        resume_checkpoint_dir=tmp_path, optimizer=optimizer,
+        training_invariants={"training_unit": "complete_trajectory_v1",
+                             "wm_value_backbone_grad": True})
+    assert restored.global_step == 46 and restored.start_epoch == 3

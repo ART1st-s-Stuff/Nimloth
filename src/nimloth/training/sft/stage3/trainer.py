@@ -708,6 +708,7 @@ def _train_sft2_impl(args=None) -> int:
         "batch_unit": "trajectory",
         "sigreg_batch_scope": "global_unique_trajectory_transitions_v1",
         "lambda_sigreg": float(args.lambda_sigreg),
+        "wm_value_backbone_grad": args.wm_value_backbone_grad,
         "sample_ownership_version": "trajectory_windows_once_v1",
         "value_objective": SFT2_VALUE_OBJECTIVE,
         "lm_supervision": "successful_trajectory_window_mean_v1",
@@ -826,6 +827,7 @@ def _train_sft2_impl(args=None) -> int:
             else None
         ),
         sigreg_weight=args.lambda_sigreg,
+        wm_value_backbone_grad=args.wm_value_backbone_grad,
         value_weight=args.lambda_value,
         ce_weight=args.lambda_ce,
         wm_weight_start=args.lambda_wm_start,

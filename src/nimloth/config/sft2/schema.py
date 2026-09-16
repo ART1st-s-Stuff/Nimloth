@@ -94,6 +94,7 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("monitor", "outcome_eval_dir"): "outcome_eval_dir",
     ("loss", "value_gamma"): "value_gamma",
     ("loss", "lambda_sigreg"): "lambda_sigreg",
+    ("loss", "wm_value_backbone_grad"): "wm_value_backbone_grad",
     ("loss", "sigreg_num_proj"): "sigreg_num_proj",
     ("loss", "sigreg_knots"): "sigreg_knots",
     ("monitor", "wandb"): "wandb_enabled",
@@ -156,6 +157,8 @@ def flatten_sft2_yaml_config(config: dict[str, Any]) -> dict[str, Any]:
 
     if "activation_offload" in flat and not isinstance(flat["activation_offload"], bool):
         raise ValueError("train.activation_offload must be a boolean")
+    if "wm_value_backbone_grad" in flat and not isinstance(flat["wm_value_backbone_grad"], bool):
+        raise ValueError("loss.wm_value_backbone_grad must be a boolean")
     if "include_failed_rollouts" in flat:
         flat["success_only"] = not bool(flat.pop("include_failed_rollouts"))
     if "wandb_enabled" in flat:
