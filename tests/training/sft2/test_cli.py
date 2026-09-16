@@ -75,3 +75,27 @@ def test_step_timing_sampling_cli_and_loop_config() -> None:
     assert parse_sft2_args(required).step_timing_sample_interval == 1
     with pytest.raises(SystemExit):
         parse_sft2_args(required + ["--step-timing-sample-interval", "0"])
+
+
+def test_frozen_wm_export_requires_explicit_complete_split() -> None:
+    required = [
+        "--model", "/tmp/model",
+        "--train-jsonl", "/tmp/train.jsonl",
+        "--val-jsonl", "/tmp/val.jsonl",
+        "--output-dir", "/tmp/out",
+        "--objective", "dino_grid",
+        "--eval-only",
+        "--frozen-wm-cache-dir", "/tmp/frozen",
+    ]
+    with pytest.raises(SystemExit):
+        parse_sft2_args(required)
+    train = parse_sft2_args([*required, "--frozen-wm-cache-split", "train"])
+    assert train.frozen_wm_cache_split == "train"
+    eval_args = parse_sft2_args([*required, "--frozen-wm-cache-split", "eval"])
+    assert eval_args.frozen_wm_cache_split == "eval"
+    with pytest.raises(SystemExit):
+        parse_sft2_args([
+            *required,
+            "--frozen-wm-cache-split", "train",
+            "--max-train-records", "1",
+        ])

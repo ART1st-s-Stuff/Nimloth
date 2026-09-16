@@ -847,11 +847,52 @@ def _train_sft2_impl(args=None) -> int:
             "evaluation_state_contract": "online_policy_eval_target_visual_ema_v1",
             "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
         }
+    frozen_wm_cache_identity = None
+    if getattr(args, "frozen_wm_cache_dir", None) is not None:
+        from nimloth.eval.stage3_outcome import file_sha256
+        from nimloth.rollout.fresh import policy_artifact_fingerprint
+        import subprocess
+
+        frozen_split = args.frozen_wm_cache_split
+        if frozen_split == "train":
+            split_jsonl = args.train_jsonl
+            split_sampler = data.train_batch_sampler
+        elif frozen_split == "eval":
+            split_jsonl = args.val_jsonl
+            split_sampler = data.val_batch_sampler
+        else:
+            raise ValueError("frozen-WM export split must be train or eval")
+        frozen_wm_cache_identity = {
+            "split": frozen_split,
+            "split_jsonl": str(split_jsonl),
+            "split_sha256": file_sha256(split_jsonl),
+            "trajectory_count": int(split_sampler.trajectory_count),
+            "window_count": int(split_sampler.window_count),
+            "stage2_checkpoint": str(args.model),
+            "stage2_policy_fingerprint": policy_artifact_fingerprint(Path(args.model)),
+            "stage2_config_sha256": file_sha256(Path(args.model) / "config.json"),
+            "stage2_commit_marker_sha256": file_sha256(Path(args.model) / "COMMITTED"),
+            "stage2_grid_config_sha256": file_sha256(
+                Path(args.model) / "grid_state_config.json"
+            ),
+            "stage2_projector_sha256": file_sha256(Path(args.model) / "slot_projector.pt"),
+            "dino_cache_fingerprint": args.dino_cache_fingerprint,
+            "prediction_horizon": args.prediction_horizon,
+            "grid_tokens": args.latent_token_count,
+            "state_dim": args.emb_dim,
+            "action_dim": 8,
+            "source_commit": subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], text=True
+            ).strip(),
+        }
     training_loop = SFT2TrainingLoop(
         config=SFT2LoopConfig.from_namespace(args),
         outcome_eval_dir=getattr(args, "outcome_eval_dir", None),
         outcome_export_identity=outcome_export_identity,
         feature_export_dir=getattr(args, "feature_export_dir", None),
+        frozen_wm_cache_dir=getattr(args, "frozen_wm_cache_dir", None),
+        frozen_wm_cache_split=getattr(args, "frozen_wm_cache_split", None),
+        frozen_wm_cache_identity=frozen_wm_cache_identity,
         rank=rank,
         train_loader=train_loader,
         val_loader=val_loader,

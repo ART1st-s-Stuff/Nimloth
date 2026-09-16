@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import random
 from dataclasses import replace
 from pathlib import Path
@@ -11,6 +12,14 @@ import torch
 
 from nimloth.agent import Agent
 from nimloth.backbone import Backbone
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class DINOFeatureWriter:
@@ -71,6 +80,136 @@ class DINOFeatureWriter:
         torch.save(payload, path)
         self.paths.append(path)
         self.batch_index += 1
+
+
+class FrozenWMTrajectoryWriter:
+    """Export one ordered state/DINO sequence per trajectory for WM-only diagnostics.
+
+    Unlike :class:`DINOFeatureWriter`, this format never materializes overlapping
+    windows.  The offline trainer derives every T-step window from the stored
+    observation and action sequences.
+    """
+
+    schema = "frozen_wm_trajectory_shard_v1"
+
+    def __init__(self, directory: Path, *, rank: int, identity: dict | None = None) -> None:
+        self.directory = Path(directory)
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.rank = int(rank)
+        self.identity = dict(identity or {})
+        self.batch_index = 0
+        self.paths: list[Path] = []
+        self.trajectory_count = 0
+        self.window_count = 0
+        self.complete_path = self.directory / f"rank_{self.rank:03d}_COMPLETE.json"
+        if any(self.directory.glob(f"rank_{self.rank:03d}_batch_*.pt")) or self.complete_path.exists():
+            raise FileExistsError(
+                f"frozen-WM export already contains rank {self.rank} shards: {self.directory}"
+            )
+
+    @staticmethod
+    def _trajectory_actions(batch, start: int, end: int, state_count: int) -> torch.Tensor:
+        windows = batch.action_sequences[start:end].detach().cpu().long()
+        horizon = int(batch.prediction_horizon)
+        if windows.shape != (state_count - horizon, horizon):
+            raise ValueError("trajectory windows do not cover the state/action sequence")
+        actions = torch.cat((windows[:, 0], windows[-1, 1:]), dim=0)
+        if actions.shape != (state_count - 1,):
+            raise ValueError("reconstructed actions do not align with trajectory states")
+        for offset, window in enumerate(windows):
+            if not torch.equal(window, actions[offset : offset + horizon]):
+                raise ValueError("overlapping action windows disagree")
+        return actions
+
+    def __call__(self, batch, output) -> None:
+        if batch.observed_dino_target is None:
+            raise ValueError("frozen-WM export requires DINO targets for every observation")
+        states = output.online_states.detach().float().cpu()
+        dino = batch.observed_dino_target.detach().float().cpu()
+        if states.shape != dino.shape or states.ndim != 3:
+            raise ValueError(
+                "frozen Stage2 states and DINO grids must have identical [N,K,D] shape"
+            )
+        if len(batch.state_keys) != states.shape[0]:
+            raise ValueError("state identities do not align with exported grids")
+        if not torch.isfinite(states).all() or not torch.isfinite(dino).all():
+            raise ValueError("frozen-WM export contains non-finite grids")
+
+        records = []
+        for trajectory, left, right, start, end in zip(
+            batch.trajectory_ids,
+            batch.state_offsets[:-1],
+            batch.state_offsets[1:],
+            batch.window_offsets[:-1],
+            batch.window_offsets[1:],
+            strict=True,
+        ):
+            weights = batch.sample_weights[start:end].detach().cpu()
+            if not torch.all(weights == weights[0]):
+                raise ValueError("trajectory windows disagree on padding identity")
+            if not bool(weights[0]):
+                continue
+            state_count = right - left
+            keys = tuple(batch.state_keys[left:right])
+            if keys != tuple((trajectory, step) for step in range(state_count)):
+                raise ValueError("trajectory state identities are not contiguous")
+            actions = self._trajectory_actions(batch, start, end, state_count)
+            records.append(
+                {
+                    "trajectory_id": str(trajectory),
+                    "states": states[left:right].contiguous(),
+                    "dino": dino[left:right].contiguous(),
+                    "actions": actions.contiguous(),
+                }
+            )
+        if not records:
+            return
+        payload = {
+            "schema": self.schema,
+            "rank": self.rank,
+            "batch_index": self.batch_index,
+            "dtype": "float32",
+            "identity_json": json.dumps(self.identity, sort_keys=True, separators=(",", ":")),
+            "prediction_horizon": int(batch.prediction_horizon),
+            "records": records,
+        }
+        path = self.directory / f"rank_{self.rank:03d}_batch_{self.batch_index:06d}.pt"
+        if path.exists():
+            raise FileExistsError(path)
+        torch.save(payload, path)
+        self.paths.append(path)
+        self.trajectory_count += len(records)
+        self.window_count += sum(len(record["states"]) - int(batch.prediction_horizon) for record in records)
+        self.batch_index += 1
+
+    def finalize(self) -> Path:
+        """Atomically mark this rank complete after the full loader returns."""
+        if self.complete_path.exists():
+            raise FileExistsError(self.complete_path)
+        payload = {
+            "schema": "frozen_wm_rank_complete_v1",
+            "rank": self.rank,
+            "identity_json": json.dumps(self.identity, sort_keys=True, separators=(",", ":")),
+            "batch_count": self.batch_index,
+            "trajectory_count": self.trajectory_count,
+            "window_count": self.window_count,
+            "shards": [
+                {
+                    "path": path.name,
+                    "sha256": _file_sha256(path),
+                }
+                for path in self.paths
+            ],
+        }
+        temporary = self.complete_path.with_name(self.complete_path.name + ".tmp")
+        if temporary.exists():
+            raise FileExistsError(temporary)
+        temporary.write_text(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(self.complete_path)
+        return self.complete_path
 
 
 class _PredictorDiagnosticBackbone(Backbone):

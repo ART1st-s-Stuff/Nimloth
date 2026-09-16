@@ -44,3 +44,46 @@ GPU/CPU transfers, which can slow each update. It complements gradient checkpoin
 it does not offload the optimizer or run backward on CPU. The enabled setting is
 recorded in checkpoint training invariants. GPU memory headroom and runtime still
 require validation on the actual training batch and distributed model.
+
+## Frozen-WM diagnostic
+
+`frozen_wm_diagnostic.py` isolates the production Stage3 world-model predictor
+from representation learning. It does not change formal Stage3 defaults.
+
+Run the production Stage3 entry point in `--eval-only` mode with
+`--frozen-wm-cache-dir` and explicit `--frozen-wm-cache-split train|eval`
+once for the official train split and once for the
+official eval split. The export stores each trajectory's ordered Stage2 state
+grids, real DINO grids, and actions once; overlapping T=4 windows are derived
+later by index. Seal each fresh directory before training:
+
+```bash
+python experiments/training/sft/stage3/frozen_wm_diagnostic.py seal-cache \
+  --directory /path/to/fresh/train-cache --expected-ranks 8
+```
+
+Run the two explicit diagnostics in separate fresh output directories:
+
+```bash
+python experiments/training/sft/stage3/frozen_wm_diagnostic.py train \
+  --train-cache /path/to/train-cache --eval-cache /path/to/eval-cache \
+  --output /path/to/fresh/output --mode stage2_state
+
+python experiments/training/sft/stage3/frozen_wm_diagnostic.py train \
+  --train-cache /path/to/train-cache --eval-cache /path/to/eval-cache \
+  --output /path/to/other/fresh/output --mode dino
+```
+
+Defaults preserve H=1/T=4, the production predictor architecture, WM learning
+rate `3e-4`, effective trajectory batch 64, gradient clipping at 1, and 46
+updates. The original WM-loss cosine ramp from 0.1 to 1 over the first 30% of
+updates is retained. A trajectory microbatch controls memory while window-count weighting
+keeps each optimizer update equal to the global mean over its 64-trajectory
+group. Only the predictor exists in the optimizer. Checkpoints at steps
+1/5/10/final contain predictor, optimizer, RNG, immutable cache identities, and
+resume position.
+
+Metrics are reported per horizon against the fixed mode target and real DINO.
+Baselines include the per-horizon train-window mean, current mode input copy,
+and current real-DINO copy. Donor perturbations use a different trajectory ID
+but are not task-matched because the frozen cache contains no task metadata.

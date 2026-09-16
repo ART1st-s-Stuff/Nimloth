@@ -109,6 +109,21 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         default=None,
         help="With --eval-only, export full Stage3 DINO diagnostic grids for offline rendering.",
     )
+    ap.add_argument(
+        "--frozen-wm-cache-dir",
+        type=Path,
+        default=None,
+        help=(
+            "With --eval-only, export each complete trajectory's fixed Stage2 and DINO grids "
+            "once for the standalone frozen-WM diagnostic."
+        ),
+    )
+    ap.add_argument(
+        "--frozen-wm-cache-split",
+        choices=("train", "eval"),
+        default=None,
+        help="Dataset loader exported by --frozen-wm-cache-dir; must be explicit.",
+    )
     ap.add_argument("--success-only", action="store_true", help="Train on successful rollouts only")
     ap.add_argument("--lambda-ce", type=float, default=1.0)
     ap.add_argument("--lambda-dino", type=float, default=0.5)
@@ -270,6 +285,30 @@ def parse_sft2_args(argv: list[str] | None = None) -> argparse.Namespace:
         ap.error("outcome head requires dino_grid objective")
     if args.feature_export_dir is not None and not args.eval_only:
         ap.error("feature_export_dir requires --eval-only")
+    if args.frozen_wm_cache_dir is not None and not args.eval_only:
+        ap.error("frozen_wm_cache_dir requires --eval-only")
+    if args.frozen_wm_cache_dir is not None and args.objective != "dino_grid":
+        ap.error("frozen_wm_cache_dir requires the dino_grid objective")
+    if args.frozen_wm_cache_dir is not None and args.frozen_wm_cache_split is None:
+        ap.error("frozen_wm_cache_dir requires --frozen-wm-cache-split")
+    if args.frozen_wm_cache_dir is None and args.frozen_wm_cache_split is not None:
+        ap.error("frozen_wm_cache_split requires --frozen-wm-cache-dir")
+    if args.frozen_wm_cache_dir is not None and args.max_val_batches > 0:
+        ap.error("frozen_wm_cache_dir requires complete evaluation with max_val_batches=-1")
+    if (
+        args.frozen_wm_cache_dir is not None
+        and args.frozen_wm_cache_split == "train"
+        and args.max_train_records != -1
+    ):
+        ap.error("train frozen-WM export requires max_train_records=-1")
+    if (
+        args.frozen_wm_cache_dir is not None
+        and args.frozen_wm_cache_split == "eval"
+        and args.max_val_records != -1
+    ):
+        ap.error("eval frozen-WM export requires max_val_records=-1")
+    if args.feature_export_dir is not None and args.frozen_wm_cache_dir is not None:
+        ap.error("feature_export_dir and frozen_wm_cache_dir are mutually exclusive")
     if not 0 < args.outcome_head_lr < float("inf"):
         ap.error("outcome_head_lr must be finite and positive")
     if args.step_timing_sample_interval < 1:

@@ -122,6 +122,9 @@ class SFT2TrainingLoop:
     outcome_eval_dir: Path | None = None
     outcome_export_identity: dict | None = None
     feature_export_dir: Path | None = None
+    frozen_wm_cache_dir: Path | None = None
+    frozen_wm_cache_split: str | None = None
+    frozen_wm_cache_identity: dict | None = None
     step_timer: StepTimer = field(init=False)
 
     def __post_init__(self) -> None:
@@ -153,19 +156,36 @@ class SFT2TrainingLoop:
 
     def evaluate_only(self) -> dict[str, float]:
         """Run the production validation forward without updating or saving weights."""
+        if self.feature_export_dir is not None and self.frozen_wm_cache_dir is not None:
+            raise ValueError("feature and frozen-WM exports must run separately")
         writer = None
         if self.feature_export_dir is not None:
             from nimloth.training.sft.stage3.diagnostics import DINOFeatureWriter
 
             writer = DINOFeatureWriter(self.feature_export_dir, rank=self.rank)
+        elif self.frozen_wm_cache_dir is not None:
+            from nimloth.training.sft.stage3.diagnostics import FrozenWMTrajectoryWriter
+
+            writer = FrozenWMTrajectoryWriter(
+                self.frozen_wm_cache_dir,
+                rank=self.rank,
+                identity=self.frozen_wm_cache_identity,
+            )
+        loader = self.val_loader
+        if self.frozen_wm_cache_dir is not None:
+            if self.frozen_wm_cache_split not in {"train", "eval"}:
+                raise ValueError("frozen-WM cache export requires an explicit train/eval split")
+            loader = self.train_loader if self.frozen_wm_cache_split == "train" else self.val_loader
         metrics = evaluate(
             self.algorithm,
             self.model_runtime,
-            self.val_loader,
+            loader,
             batch_builder=self.batch_builder,
             max_batches=self.config.max_val_batches,
             on_batch=writer,
         )
+        if writer is not None and hasattr(writer, "finalize"):
+            writer.finalize()
         if is_main():
             print(json.dumps({"eval_only": True, "metrics": metrics}), flush=True)
         return metrics
