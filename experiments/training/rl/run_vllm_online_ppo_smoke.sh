@@ -101,7 +101,6 @@ fi
   echo "RUN_INITIAL_GLOBAL_STEP must precede ITERATION" >&2
   exit 1
 }
-FIRST_ITERATION=$((RUN_INITIAL_GLOBAL_STEP + 1))
 [[ "${TOTAL_ITERATIONS}" == "${CONFIG_ITERATIONS}" ]] || {
   echo "TOTAL_ITERATIONS disagrees with rl.iterations" >&2
   exit 1
@@ -200,7 +199,7 @@ MANIFEST=${ROLLOUT_OUT}/fresh_policy_manifest.json
 LOG=${RUN_OUT}/pipeline.log
 REFERENCE_OUT=${RUN_OUT}/reference/${ITERATION_TAG}
 if [[ "${RUN_ROLLOUT}" == true ]]; then
-  if (( ITERATION == FIRST_ITERATION )); then
+  if (( ITERATION == 1 )); then
     if [[ -e "${RUN_OUT}" ]] && find "${RUN_OUT}" -mindepth 1 -print -quit | grep -q .; then
       echo "refusing to reuse non-empty output directory: ${RUN_OUT}" >&2
       exit 1
@@ -233,7 +232,7 @@ if [[ "${PREFLIGHT_ONLY}" == true ]]; then
 fi
 mkdir -p "${RUN_OUT}" "${ROLLOUT_OUT}" "${TRAIN_OUT}"
 
-if [[ "${RUN_ROLLOUT}" == true ]] && (( ITERATION == FIRST_ITERATION )); then
+if [[ "${RUN_ROLLOUT}" == true ]] && (( ITERATION == 1 )); then
   cat > "${RUN_OUT}/README.md" <<EOF
 # vLLM online RL ${RUN_MODE} run (${TRAIN_TOTAL_GPUS} GPUs)
 
