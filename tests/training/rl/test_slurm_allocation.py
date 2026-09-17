@@ -135,7 +135,7 @@ def test_online_pipeline_allows_explicit_cache_roots() -> None:
     pipeline = PIPELINE.read_text(encoding="utf-8")
 
     assert "HF_HOME=${HF_HOME:-/project/peilab/atst/.cache/huggingface}" in pipeline
-    assert "TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE:-${HF_HOME}}" in pipeline
+    assert "TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE:-${HF_HOME}/hub}" in pipeline
     assert "TORCH_HOME=${TORCH_HOME:-/project/peilab/atst/flower/.cache/torch}" in pipeline
 
 

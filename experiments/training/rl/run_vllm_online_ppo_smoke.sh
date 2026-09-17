@@ -266,7 +266,9 @@ elif [[ "${RUN_ROLLOUT}" == false ]]; then
 fi
 
 export HF_HOME=${HF_HOME:-/project/peilab/atst/.cache/huggingface}
-export TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE:-${HF_HOME}}
+# Hugging Face stores hub snapshots below HF_HOME/hub.  Pointing Transformers
+# at HF_HOME itself makes offline workers miss an otherwise complete cache.
+export TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE:-${HF_HOME}/hub}
 export TORCH_HOME=${TORCH_HOME:-/project/peilab/atst/flower/.cache/torch}
 export TOKENIZERS_PARALLELISM=true
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
