@@ -275,11 +275,14 @@ def test_planner_policy_gpu_gate_uses_every_gpu_in_4plus4_hold() -> None:
 def test_resumed_staged_pipeline_reuses_the_existing_run_output() -> None:
     pipeline = PIPELINE.read_text(encoding="utf-8")
 
-    assert "FIRST_ITERATION" not in pipeline
-    assert pipeline.count("ITERATION == 1") == 2
+    assert "RUN_FIRST_ITERATION=$((RUN_INITIAL_GLOBAL_STEP + 1))" in pipeline
+    assert pipeline.count("ITERATION == RUN_FIRST_ITERATION") == 2
     assert "missing formal-run README before iteration ${ITERATION}" in pipeline
     assert "missing resumable checkpoint before iteration ${ITERATION}" in pipeline
-    assert "expected_steps = list(range(1, ${ITERATION} + 1))" in pipeline
+    assert (
+        "expected_steps = list(range(${RUN_INITIAL_GLOBAL_STEP} + 1, "
+        "${ITERATION} + 1))" in pipeline
+    )
     assert 'actual_steps = [int(row["global_step"]) for row in rows]' in pipeline
 
 
