@@ -548,8 +548,8 @@ class RLTrainingLoop:
         """在训练前一次读取当前更新实际需要的 frozen DINO targets。"""
 
         if not (
-            self.algorithm.train_world_model
-            and self.algorithm.dino_grid_weight != 0.0
+            self.algorithm.config.predictor.train_wm
+            and self.algorithm.config.predictor.lambda_dino != 0.0
         ):
             return None
         source = self.model_runtime.dino_grid_targets

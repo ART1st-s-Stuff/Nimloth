@@ -93,8 +93,9 @@ class _Optimization:
 class _Algorithm:
     def __init__(self, *, fail_forward: bool = False) -> None:
         self.fail_forward = fail_forward
-        self.train_world_model = True
-        self.dino_grid_weight = 0.0
+        self.config = SimpleNamespace(
+            predictor=SimpleNamespace(train_wm=True, lambda_dino=0.0)
+        )
 
     def sequence_step(self, _runtime, _batch):  # type: ignore[no-untyped-def]
         if self.fail_forward:
@@ -119,10 +120,10 @@ class _DINOGridTargets:
 
 
 class _PlannerAlgorithm:
-    train_world_model = True
-    dino_grid_weight = 0.5
-
     def __init__(self) -> None:
+        self.config = SimpleNamespace(
+            predictor=SimpleNamespace(train_wm=True, lambda_dino=0.5)
+        )
         self.received_targets: list[torch.Tensor] = []
         self.old_value_calls = 0
         self.include_world_model: list[bool] = []
@@ -529,7 +530,7 @@ def test_sequence_dino_targets_are_loaded_and_reshaped_before_algorithm(
     )
     source = _DINOGridTargets()
     algorithm = _Algorithm()
-    algorithm.dino_grid_weight = 0.5
+    algorithm.config.predictor.lambda_dino = 0.5
     received: list[torch.Tensor] = []
 
     def sequence_step(_runtime, prepared):  # type: ignore[no-untyped-def]
