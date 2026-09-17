@@ -145,6 +145,7 @@ def test_ai2thor_setup_has_validated_system_vulkan_fallback() -> None:
     assert '[[ -f "${SYSTEM_VULKAN_LIB}" && -f "${SYSTEM_VULKAN_ICD}" ]]' in setup
     assert 'export VK_ICD_FILENAMES="${SYSTEM_VULKAN_ICD}"' in setup
     assert "VULKAN_SOURCE=system" in setup
+    assert '"${PYTHON:-python3}" -' in setup
 
 
 def test_planner_fsdp_ray_gate_is_batch_owned_one_node_eight_gpu() -> None:

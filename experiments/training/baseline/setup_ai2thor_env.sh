@@ -34,7 +34,7 @@ echo "[setup_ai2thor_env] HOME=${HOME}"
 echo "[setup_ai2thor_env] VULKAN_SOURCE=${VULKAN_SOURCE}"
 echo "[setup_ai2thor_env] LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
 echo "[setup_ai2thor_env] VK_ICD_FILENAMES=${VK_ICD_FILENAMES}"
-python - <<'PY'
+"${PYTHON:-python3}" - <<'PY'
 import ctypes.util
 print(f"[setup_ai2thor_env] ctypes.find_library('vulkan')={ctypes.util.find_library('vulkan')}")
 PY
