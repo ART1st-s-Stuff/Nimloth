@@ -32,7 +32,7 @@ export VK_DRIVER_FILES="${VK_ICD_FILENAMES}"
 
 echo "[setup_ai2thor_env] HOME=${HOME}"
 echo "[setup_ai2thor_env] VULKAN_SOURCE=${VULKAN_SOURCE}"
-echo "[setup_ai2thor_env] LD_LIBRARY_PATH=${LD_LIBRARY_PATH}"
+echo "[setup_ai2thor_env] LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
 echo "[setup_ai2thor_env] VK_ICD_FILENAMES=${VK_ICD_FILENAMES}"
 python - <<'PY'
 import ctypes.util
