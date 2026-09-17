@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any
 
 from nimloth.config.rl import load_rl_config, merge_rl_config_overrides
 
@@ -57,6 +56,12 @@ def build_rl_arg_parser() -> argparse.ArgumentParser:
                     help="Warm-start StateProjector checkpoint (.pt file)")
     ap.add_argument("--value-head-checkpoint", type=Path, default=None,
                     help="Warm-start ValueHead checkpoint dir")
+    ap.add_argument(
+        "--outcome-head-checkpoint",
+        type=Path,
+        default=None,
+        help="Warm-start Stage3 ActionOutcomeHead checkpoint file",
+    )
     ap.add_argument(
         "--planner-policy-head-checkpoint",
         type=Path,
@@ -158,18 +163,37 @@ def main(argv: list[str] | None = None) -> int:
             "--reference-model requires positive actor.reference_kl_loss_weight"
         )
     if config.agent.planning.enabled and args.fresh_rollout_manifest is not None:
+        required_components = [
+            ("--wm-checkpoint", args.wm_checkpoint),
+            ("--state-proj-checkpoint", args.state_proj_checkpoint),
+            ("--value-head-checkpoint", args.value_head_checkpoint),
+        ]
+        if config.outcome_head.enabled:
+            required_components.append(
+                ("--outcome-head-checkpoint", args.outcome_head_checkpoint)
+            )
         missing = [
             name
-            for name, value in (
-                ("--wm-checkpoint", args.wm_checkpoint),
-                ("--state-proj-checkpoint", args.state_proj_checkpoint),
-                ("--value-head-checkpoint", args.value_head_checkpoint),
-            )
+            for name, value in required_components
             if value is None
         ]
         if missing:
             raise ValueError(
                 "planner fresh rollout requires " + ", ".join(missing)
+            )
+        roots = {
+            Path(path).resolve().parent
+            for _name, path in required_components
+            if path is not None
+        }
+        # Component paths are respectively <root>/wm_predictor,
+        # <root>/state_proj.pt, <root>/value_head and <root>/outcome_head.pt.
+        if len(roots) != 1:
+            raise ValueError("planner warm-start components must share one checkpoint root")
+        component_root = next(iter(roots))
+        if Path(args.model).resolve() != component_root:
+            raise ValueError(
+                "planner Qwen and warm-start components must share one checkpoint root"
             )
         if (
             config.planner_policy.enabled
@@ -267,6 +291,11 @@ def main(argv: list[str] | None = None) -> int:
                             if args.planner_policy_head_checkpoint is not None
                             else {}
                         ),
+                        **(
+                            {"outcome_head": args.outcome_head_checkpoint}
+                            if args.outcome_head_checkpoint is not None
+                            else {}
+                        ),
                     }
                     if config.agent.planning.enabled
                     else None
@@ -312,5 +341,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    import sys
     raise SystemExit(main())

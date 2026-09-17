@@ -20,6 +20,7 @@ class SFT2MCTSEvaluationContract:
     action_count: int
     step: int
     epoch: int
+    outcome_enabled: bool = False
 
     @property
     def wm_checkpoint(self) -> Path:
@@ -32,6 +33,10 @@ class SFT2MCTSEvaluationContract:
     @property
     def value_head_checkpoint(self) -> Path:
         return self.checkpoint / "value_head"
+
+    @property
+    def outcome_head_checkpoint(self) -> Path | None:
+        return self.checkpoint / "outcome_head.pt" if self.outcome_enabled else None
 
 
 def _require_mapping(value: Any, *, name: str) -> dict[str, Any]:
@@ -86,6 +91,11 @@ def load_sft2_mcts_evaluation_contract(
             "MCTS evaluation requires the decision-state executed-action "
             f"value objective {SFT2_VALUE_OBJECTIVE!r}; "
             f"got {invariants.get('value_objective')!r}"
+        )
+    outcome_enabled = bool(invariants.get("outcome_schema"))
+    if outcome_enabled and not (checkpoint / "outcome_head.pt").is_file():
+        raise FileNotFoundError(
+            "Outcome-enabled Stage3 checkpoint is missing outcome_head.pt"
         )
 
     history_size = int(invariants.get("history_size", 0))
@@ -152,6 +162,7 @@ def load_sft2_mcts_evaluation_contract(
         action_count=action_count,
         step=int(training_state.get("step", -1)),
         epoch=int(training_state.get("epoch", -1)),
+        outcome_enabled=outcome_enabled,
     )
 
 

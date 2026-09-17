@@ -70,17 +70,23 @@ class _Optimization:
         self.fail_step = fail_step
         self.zero_grad_calls = 0
         self.step_calls = 0
+        self.parameter = torch.nn.Parameter(torch.tensor(0.0))
+        self.optimizer = torch.optim.SGD(
+            [{"params": [self.parameter], "name": "test"}], lr=0.1
+        )
 
     def zero_grad(self) -> None:
         self.zero_grad_calls += 1
+        self.optimizer.zero_grad(set_to_none=True)
 
     def backward(self, _loss: torch.Tensor) -> None:
-        pass
+        self.parameter.grad = torch.ones_like(self.parameter)
 
     def step(self) -> None:
         self.step_calls += 1
         if self.fail_step:
             raise RuntimeError("step failed")
+        self.optimizer.step()
 
 
 class _Algorithm:
@@ -377,10 +383,10 @@ def test_planner_dino_targets_are_loaded_once_and_aligned_across_episodes(
     loop.config.agent.planning.horizon = 2
     loop.config.training.planner_micro_batch_size = 2
     episode_a_transition = SimpleNamespace(
-        next_image_path="episode_a_step_1.png",
+        current_image_path="episode_a_step_0.png",
     )
     episode_b_transition = SimpleNamespace(
-        next_image_path="episode_b_step_1.png",
+        current_image_path="episode_b_step_0.png",
     )
     monkeypatch.setattr(
         loop_module,
@@ -412,7 +418,7 @@ def test_planner_dino_targets_are_loaded_once_and_aligned_across_episodes(
     loop._run_iteration(1)
 
     assert source.loaded_paths == [
-        ("episode_a_step_1.png", "episode_b_step_1.png")
+        ("episode_a_step_0.png", "episode_b_step_0.png")
     ]
     assert loop.optimization_runtime.zero_grad_calls == 1
     assert loop.optimization_runtime.step_calls == 1
@@ -459,8 +465,8 @@ def test_planner_dino_targets_load_only_the_rank_local_transition_shard(
 ) -> None:
     loop, _collector = _training_loop(tmp_path, monkeypatch)
     loop.config.agent.planning.enabled = True
-    episode_a_transition = SimpleNamespace(next_image_path="episode_a_step_1.png")
-    episode_b_transition = SimpleNamespace(next_image_path="episode_b_step_1.png")
+    episode_a_transition = SimpleNamespace(current_image_path="episode_a_step_0.png")
+    episode_b_transition = SimpleNamespace(current_image_path="episode_b_step_0.png")
     monkeypatch.setattr(
         loop_module,
         "build_episode_training_batches",
@@ -483,7 +489,7 @@ def test_planner_dino_targets_load_only_the_rank_local_transition_shard(
 
     loop._run_iteration(1)
 
-    assert source.loaded_paths == [("episode_b_step_1.png",)]
+    assert source.loaded_paths == [("episode_b_step_0.png",)]
     assert len(algorithm.received_targets) == 1
     assert algorithm.old_value_calls == 1
     assert algorithm.include_world_model == [True]

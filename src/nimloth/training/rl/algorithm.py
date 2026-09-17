@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import cast
 
 import torch
 import torch.nn.functional as F
@@ -309,6 +309,7 @@ class RLAlgorithm:
         old_policy_log_prob: torch.Tensor | None = None,
         policy_advantage: torch.Tensor | None = None,
         total_transitions: int,
+        total_outcomes: int | None = None,
         dino_grid_target: torch.Tensor | None = None,
         include_world_model: bool = True,
         precomputed_hidden: torch.Tensor | None = None,
@@ -317,23 +318,51 @@ class RLAlgorithm:
 
         顺序固定为：完整 Qwen prefix 得到当前 state；WM/DINO 预测真实 successor；
         ValueHead 监督 executed action；可选 PlannerPolicyHead 对同一 action 做 PPO。
-        所有 objective 按完整 batch 的真实 transition 数归一化。
+        除masked Outcome BCE按有效标签数归一化外，其余objective按完整batch的
+        真实transition数归一化。
         """
 
-        if runtime.state_source != "recompute" or not runtime.representation_to_backbone:
-            raise RuntimeError(
-                "planner transition training requires differentiable full-prefix "
-                "Qwen recomputation"
-            )
+        if runtime.state_source != "recompute":
+            raise RuntimeError("planner transition training requires full-prefix Qwen recomputation")
 
-        # 1. 完整 Qwen prefix：历史 token 是固定输入，但本次 forward 仍可回传。
+        # 1. 完整 Qwen prefix只执行一次。DINO需要时保留Qwen图；WM/value/outcome
+        # 是否回传Qwen由representation_to_backbone显式控制。
         hidden = (
-            runtime.encode_state_prompts((transition.state_prompt,))
+            runtime.encode_state_prompts(
+                (transition.state_prompt,),
+                retain_backbone_graph=self.config.predictor.lambda_dino > 0.0,
+            )
             if precomputed_hidden is None
             else precomputed_hidden
         )
         hidden = move_to_device(hidden, runtime.agent.wm.state_proj)
-        current_state = runtime.agent.wm.project_state(hidden)
+        downstream_hidden = (
+            hidden if runtime.representation_to_backbone else hidden.detach()
+        )
+        current_state = runtime.agent.wm.project_state(downstream_hidden)
+
+        # Stage3的DINO锚定作用于真实current observation state，而不是WM预测。
+        dino_mse = None
+        if dino_grid_target is not None:
+            observed_state = (
+                current_state
+                if runtime.representation_to_backbone
+                else runtime.agent.wm.project_state(hidden)
+            )
+            current_dino_target = dino_grid_target.to(
+                device=observed_state.device,
+                dtype=torch.float32,
+                non_blocking=True,
+            ).detach()
+            if observed_state.shape != current_dino_target.shape:
+                raise ValueError(
+                    "current-state DINO target shape mismatch: "
+                    f"state={tuple(observed_state.shape)}, "
+                    f"target={tuple(current_dino_target.shape)}"
+                )
+            dino_mse = F.mse_loss(observed_state.float(), current_dino_target)
+        elif self.config.predictor.lambda_dino != 0.0:
+            raise ValueError("positive DINO-grid weight requires a current-state target")
 
         # 2. WM context：只有 current_state 可微，持久化历史和 successor target 都固定。
         stored_history = move_to_device(
@@ -370,21 +399,10 @@ class RLAlgorithm:
                 transition.actual_next_state(),
                 predicted_next_state,
             ).unsqueeze(0).detach()
-            current_dino_target = (
-                dino_grid_target.to(
-                    device=predicted_next_state.device,
-                    dtype=torch.float32,
-                    non_blocking=True,
-                )
-                if dino_grid_target is not None
-                else None
-            )
             wm_objective = world_model_loss(
                 predicted_next_state,
                 expected_next_state,
                 state_weight=self.config.predictor.lambda_wm,
-                dino_grid_target=current_dino_target,
-                dino_grid_weight=self.config.predictor.lambda_dino,
             )
             weighted_wm_loss = wm_objective.loss
             wm_mse = wm_objective.state_mse
@@ -392,7 +410,35 @@ class RLAlgorithm:
             weighted_wm_loss = current_state.new_zeros(())
             wm_mse = weighted_wm_loss
 
-        # 4. Value/Policy：两者均只读取 current_state 和实际执行 action。
+        # 4. Outcome读取同一个WM successor。标签缺失时保留同步forward但mask loss。
+        outcome_loss = current_state.new_zeros(())
+        outcome_count = 0
+        outcome_correct = 0
+        if self.config.outcome_head.enabled:
+            outcome_head = runtime.agent.wm.outcome_head
+            if outcome_head is None:
+                raise RuntimeError("OutcomeHead objective is enabled but the runtime has no head")
+            if wm_objective is None:
+                raise RuntimeError("OutcomeHead requires an enabled WM successor prediction")
+            outcome_logits = outcome_head(predicted_next_state)
+            if transition.action_success is not None:
+                outcome_target = torch.tensor(
+                    [float(transition.action_success)],
+                    device=outcome_logits.device,
+                    dtype=outcome_logits.dtype,
+                )
+                outcome_loss = F.binary_cross_entropy_with_logits(
+                    outcome_logits.reshape(1), outcome_target
+                )
+                outcome_count = 1
+                outcome_correct = int(
+                    (outcome_logits.detach().reshape(1) >= 0).item()
+                    == transition.action_success
+                )
+            else:
+                outcome_loss = outcome_logits.sum() * 0.0
+
+        # 5. Value/Policy：两者均只读取 current_state 和实际执行 action。
         action_values = runtime.agent.wm.predict_action_values(current_state)
         executed_action = torch.tensor(
             [transition.action_index],
@@ -439,14 +485,16 @@ class RLAlgorithm:
             )
             value_loss = value_objective.loss
 
-        # 5. 合并 objective
+        # 6. 合并 objective
         normalized_wm_loss = weighted_wm_loss / total_transitions
         normalized_wm_mse = wm_mse / total_transitions
         normalized_dino_mse = (
-            wm_objective.dino_grid_mse / total_transitions
-            if wm_objective is not None and wm_objective.dino_grid_mse is not None
-            else None
+            dino_mse / total_transitions if dino_mse is not None else None
         )
+        outcome_denominator = (
+            total_transitions if total_outcomes is None else max(total_outcomes, 1)
+        )
+        normalized_outcome_loss = outcome_loss / outcome_denominator
         normalized_value_loss = value_loss / total_transitions
         normalized_policy_loss = 0
         normalized_policy_entropy = 0
@@ -458,13 +506,19 @@ class RLAlgorithm:
         total = normalized_wm_loss + normalized_value_loss.to(
             device=normalized_wm_loss.device
         )
+        if normalized_dino_mse is not None:
+            total = total + self.config.predictor.lambda_dino * normalized_dino_mse
+        total = total + self.config.outcome_head.lambda_bce * normalized_outcome_loss
         total = total + normalized_policy_loss
         total = total - (
             self.config.planner_policy.entropy_coeff * normalized_policy_entropy
         )
+        if not torch.isfinite(total):
+            raise FloatingPointError("planner transition produced a non-finite total loss")
         losses = {
             "wm": normalized_wm_mse,
             "dino": normalized_dino_mse,
+            "outcome": normalized_outcome_loss,
             "sigreg": None,
             "value": normalized_value_loss,
             "policy": (
@@ -493,6 +547,9 @@ class RLAlgorithm:
                 total_transitions=total_transitions,
                 world_model_weight=self.config.predictor.lambda_wm,
                 dino_grid_weight=self.config.predictor.lambda_dino,
+                outcome_weight=self.config.outcome_head.lambda_bce,
+                outcome_count=outcome_count,
+                outcome_correct=outcome_correct,
             ),
         )
 
@@ -506,6 +563,7 @@ class RLAlgorithm:
         old_policy_log_probs: tuple[torch.Tensor | None, ...] | None = None,
         policy_advantages: tuple[torch.Tensor | None, ...] | None = None,
         total_transitions: int,
+        total_outcomes: int | None = None,
         dino_grid_targets: tuple[torch.Tensor | None, ...] | None = None,
         loss_weights: tuple[float, ...] | None = None,
         include_world_model: bool = True,
@@ -550,7 +608,8 @@ class RLAlgorithm:
                 )
 
         hidden_batch = runtime.encode_state_prompts(
-            tuple(transition.state_prompt for transition in transitions)
+            tuple(transition.state_prompt for transition in transitions),
+            retain_backbone_graph=self.config.predictor.lambda_dino > 0.0,
         )
         if hidden_batch.ndim not in (2, 3) or hidden_batch.shape[0] != batch_size:
             raise ValueError(
@@ -566,6 +625,7 @@ class RLAlgorithm:
                 old_policy_log_prob=old_policy_log_prob,
                 policy_advantage=policy_advantage,
                 total_transitions=total_transitions,
+                total_outcomes=total_outcomes,
                 dino_grid_target=dino_grid_target,
                 include_world_model=include_world_model,
                 precomputed_hidden=hidden_batch[index : index + 1],

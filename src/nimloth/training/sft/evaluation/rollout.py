@@ -128,6 +128,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap.add_argument("--state-proj-checkpoint", type=Path, default=None)
     ap.add_argument("--value-head-checkpoint", type=Path, default=None)
     ap.add_argument("--planner-policy-head-checkpoint", type=Path, default=None)
+    ap.add_argument(
+        "--outcome-head-checkpoint",
+        type=Path,
+        default=None,
+        help="Auxiliary Stage3 OutcomeHead identity to bind into a fresh manifest",
+    )
     ap.add_argument("--planner-policy-temperature", type=float, default=None)
     ap.add_argument(
         "--fresh-manifest",
@@ -276,6 +282,7 @@ def write_rollout_browser_for_evaluation(
         "state_projector": args.state_proj_checkpoint,
         "value_head": args.value_head_checkpoint,
         "planner_policy_head": args.planner_policy_head_checkpoint,
+        "outcome_head": args.outcome_head_checkpoint,
     }
     planner_fingerprints = {
         name: auxiliary_artifact_fingerprint(path)
@@ -357,6 +364,19 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError(
                 "planner rollout requires explicit arguments: " + ", ".join(missing)
             )
+        component_paths = (
+            args.wm_checkpoint,
+            args.state_proj_checkpoint,
+            args.value_head_checkpoint,
+            args.outcome_head_checkpoint,
+        )
+        component_roots = {
+            path.resolve().parent for path in component_paths if path is not None
+        }
+        if component_roots != {args.model.resolve()}:
+            raise ValueError(
+                "planner policy and all supplied component artifacts must share one checkpoint root"
+            )
         if args.backend != "vllm":
             raise ValueError("planner rollout requires --backend vllm")
         if args.credit_assignment != "action":
@@ -419,6 +439,7 @@ def main(argv: list[str] | None = None) -> int:
             args.state_proj_checkpoint,
             args.value_head_checkpoint,
             args.planner_policy_head_checkpoint,
+            args.outcome_head_checkpoint,
             args.planner_policy_temperature,
             args.mcts_num_simulations,
             args.mcts_exploration_constant,
@@ -590,6 +611,18 @@ def main(argv: list[str] | None = None) -> int:
         output_dir=args.output_dir,
         resume_existing=args.resume_existing_rollouts,
     )
+    if args.outcome_head_checkpoint is not None:
+        missing_outcomes = [
+            trajectory.record_id
+            for trajectory in trajectories
+            if trajectory.action_successes is None
+            or len(trajectory.action_successes) != trajectory.num_steps
+        ]
+        if missing_outcomes:
+            raise ValueError(
+                "OutcomeHead-bound rollout requires one real action-success label "
+                f"per transition; missing records={missing_outcomes[:8]}"
+            )
     validate_trajectories(trajectories, expected_count=args.num_episodes)
     rollout_browser_path = write_rollout_browser_for_evaluation(
         args,
@@ -615,6 +648,11 @@ def main(argv: list[str] | None = None) -> int:
                             )
                         }
                         if args.planner_policy_head_checkpoint is not None
+                        else {}
+                    ),
+                    **(
+                        {"outcome_head": args.outcome_head_checkpoint}
+                        if args.outcome_head_checkpoint is not None
                         else {}
                     ),
                 }

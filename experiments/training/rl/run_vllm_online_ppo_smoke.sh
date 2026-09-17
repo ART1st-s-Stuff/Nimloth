@@ -10,6 +10,7 @@ MODEL=${MODEL:?set MODEL to a complete positive-k inject HF checkpoint}
 REFERENCE_MODEL=${REFERENCE_MODEL:-${MODEL}}
 WM_CKPT=${WM_CKPT:-${MODEL}}
 PLANNER_POLICY_HEAD_CKPT=${PLANNER_POLICY_HEAD_CKPT:-${WM_CKPT}/planner_policy_head}
+OUTCOME_HEAD_CKPT=${OUTCOME_HEAD_CKPT:-${WM_CKPT}/outcome_head.pt}
 RL_CONFIG=${RL_CONFIG:-${REPO}/configs/training/rl/planner_greedy_h2_state_cache_t20_gate.yaml}
 RUN_OUT=${RUN_OUT:?set a new exclusive output directory}
 WANDB_PROJECT_REQUESTED=${WANDB_PROJECT:-nimloth-rl}
@@ -38,7 +39,7 @@ esac
 [[ -x "${PYTHON}" ]] || { echo "missing Python: ${PYTHON}" >&2; exit 1; }
 [[ -f "${MODEL}/config.json" ]] || { echo "missing model: ${MODEL}" >&2; exit 1; }
 [[ -f "${RL_CONFIG}" ]] || { echo "missing RL config: ${RL_CONFIG}" >&2; exit 1; }
-read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS CONFIG_TP_SIZE ACTOR_ENABLED CREDIT_ASSIGNMENT MAX_RESPONSE_TOKENS MAX_STATE_TOKENS REFERENCE_KL_WEIGHT CONFIG_ITERATIONS CONFIG_NUM_EPISODES CONFIG_MAX_STEPS MAX_EPISODE_ATTEMPTS ROLLOUT_TEMPERATURE ROLLOUT_TOP_P PLANNING_ENABLED PLANNING_HORIZON PLANNING_SEARCH_MODE PLANNING_BEAM_WIDTH PLANNER_DEVICE PLANNER_POLICY_ENABLED PLANNER_POLICY_TEMPERATURE TRAIN_DATASETS_CSV < <(
+read -r CONFIG_NODES CONFIG_WORLD_SIZE CONFIG_GPUS_PER_RANK CONFIG_TOTAL_GPUS CONFIG_TP_SIZE ACTOR_ENABLED CREDIT_ASSIGNMENT MAX_RESPONSE_TOKENS MAX_STATE_TOKENS REFERENCE_KL_WEIGHT CONFIG_ITERATIONS CONFIG_NUM_EPISODES CONFIG_MAX_STEPS MAX_EPISODE_ATTEMPTS ROLLOUT_TEMPERATURE ROLLOUT_TOP_P PLANNING_ENABLED PLANNING_HORIZON PLANNING_SEARCH_MODE PLANNING_BEAM_WIDTH PLANNER_DEVICE PLANNER_POLICY_ENABLED PLANNER_POLICY_TEMPERATURE OUTCOME_ENABLED TRAIN_DATASETS_CSV < <(
   PYTHONPATH="${REPO}/src" "${PYTHON}" -c '
 import sys
 from pathlib import Path
@@ -68,6 +69,7 @@ print(
     config.agent.planning.device,
     str(config.planner_policy.enabled).lower(),
     config.planner_policy.temperature,
+    str(config.outcome_head.enabled).lower(),
     ",".join(config.rollout.train_datasets),
 )
 ' "${RL_CONFIG}"
@@ -177,6 +179,9 @@ TRAIN_TOTAL_GPUS=${TRAIN_TOTAL_GPUS:-${CONFIG_TOTAL_GPUS}}
 for path in "${WM_CKPT}/state_proj.pt" "${WM_CKPT}/wm_predictor/predictor.pt" "${WM_CKPT}/value_head/value_head.pt"; do
   [[ -f "${path}" ]] || { echo "missing checkpoint file: ${path}" >&2; exit 1; }
 done
+if [[ "${OUTCOME_ENABLED}" == true ]]; then
+  [[ -f "${OUTCOME_HEAD_CKPT}" ]] || { echo "missing OutcomeHead checkpoint: ${OUTCOME_HEAD_CKPT}" >&2; exit 1; }
+fi
 for dataset in "${TRAIN_DATASETS[@]}"; do
   [[ "${dataset}" == *_train ]] || {
     echo "training rollout dataset must end in _train: ${dataset}" >&2
@@ -247,8 +252,8 @@ if [[ "${RUN_ROLLOUT}" == true ]] && (( ITERATION == FIRST_ITERATION )); then
 - reference model: ${REFERENCE_MODEL}
 - freshness: policy/planner/trajectory content fingerprints; consumption commits only after a post-update checkpoint
 - update: ${TRAIN_NNODES} nodes, ${TRAIN_WORLD_SIZE} ranks × ${TRAIN_GPUS_PER_RANK} GPUs/rank; differentiable full-prefix Qwen→WM/ValueHead and optional PlannerPolicyHead PPO backward per real transition, then one optimizer step
-- frozen: vision tower and the configured grid StateProjector
-- trainable: Qwen language body, WM predictor, ValueHead and PlannerPolicyHead when enabled
+- frozen: vision tower
+- trainable: Qwen language body, StateProjector, WM predictor, ValueHead, OutcomeHead and PlannerPolicyHead when enabled
 - W&B: ${WANDB_PROJECT_REQUESTED}/${WANDB_RUN_NAME_REQUESTED}
 - output: ${RUN_OUT}
 EOF
@@ -400,6 +405,9 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
       --state-proj-checkpoint "${WM_CKPT}/state_proj.pt"
       --value-head-checkpoint "${WM_CKPT}/value_head"
     )
+    if [[ "${OUTCOME_ENABLED}" == true ]]; then
+      PLANNER_ARGS+=(--outcome-head-checkpoint "${OUTCOME_HEAD_CKPT}")
+    fi
     if [[ "${PLANNER_POLICY_ENABLED}" == true ]]; then
       [[ -s "${PLANNER_POLICY_HEAD_CKPT}/planner_policy_head.pt" ]] || {
         echo "missing PlannerPolicyHead checkpoint: ${PLANNER_POLICY_HEAD_CKPT}" >&2
@@ -481,6 +489,9 @@ TRAIN_ARGS=(
   --experiment-name "${WANDB_RUN_NAME_REQUESTED}" \
   --output-dir "${TRAIN_OUT}"
 )
+if [[ "${OUTCOME_ENABLED}" == true ]]; then
+  TRAIN_ARGS+=(--outcome-head-checkpoint "${OUTCOME_HEAD_CKPT}")
+fi
 if [[ "${PLANNER_POLICY_ENABLED}" == true ]]; then
   TRAIN_ARGS+=(
     --planner-policy-head-checkpoint "${PLANNER_POLICY_HEAD_CKPT}"
@@ -636,6 +647,8 @@ if "${CREDIT_ASSIGNMENT}" == "token":
         checkpoint / "token_value_head" / "config.json",
         checkpoint / "token_value_head" / "token_value_head.pt",
     ]
+if "${OUTCOME_ENABLED}" == "true":
+    required.append(checkpoint / "outcome_head.pt")
 if ${TRAIN_GPUS_PER_RANK} == 1 and ${TRAIN_WORLD_SIZE} > 1:
     required += [
         checkpoint / f"optimizer_rank_{rank:05d}.pt"

@@ -31,6 +31,8 @@ class RLModelRuntime:
     def encode_state_prompts(
         self,
         prompts: tuple[AgentPrompt, ...],
+        *,
+        retain_backbone_graph: bool = False,
     ) -> torch.Tensor:
         """Recompute complete real prefixes while retaining the Qwen graph."""
 
@@ -53,7 +55,7 @@ class RLModelRuntime:
                     actual_tokens=actual_tokens,
                     max_tokens=self.max_state_tokens,
                 )
-        if self.representation_to_backbone:
+        if self.representation_to_backbone or retain_backbone_graph:
             hidden = self.agent.backbone(
                 backbone_batch,
                 include_lm_loss=False,

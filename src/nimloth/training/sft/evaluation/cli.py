@@ -126,6 +126,10 @@ def build_rollout_argv(
             "--value-head-checkpoint",
             str(contract.value_head_checkpoint),
         ])
+        if contract.outcome_head_checkpoint is not None:
+            rollout_args.extend(
+                ["--outcome-head-checkpoint", str(contract.outcome_head_checkpoint)]
+            )
     if args.max_pixels is not None:
         rollout_args.extend(("--max-pixels", str(args.max_pixels)))
     if args.vllm_enable_prefix_caching:
@@ -187,6 +191,11 @@ def run_evaluation(args: EvaluationConfig) -> int:
         "wm_predictor": contract.wm_checkpoint,
         "state_projector": contract.state_proj_checkpoint,
         "value_head": contract.value_head_checkpoint,
+        **(
+            {"outcome_head": contract.outcome_head_checkpoint}
+            if contract.outcome_head_checkpoint is not None
+            else {}
+        ),
     } if contract is not None else {})
     # Record every behavior/runtime argument: resume cannot silently change models,
     # rendering inputs, generation, episode seeds or search.

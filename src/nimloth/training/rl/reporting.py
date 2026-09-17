@@ -29,6 +29,9 @@ def planner_step_metrics(
     total_transitions: int,
     world_model_weight: float,
     dino_grid_weight: float,
+    outcome_weight: float = 0.0,
+    outcome_count: int = 0,
+    outcome_correct: int = 0,
 ) -> dict[str, float]:
     """从 planner objective 计算 CSV/W&B 指标，不参与训练计算图。"""
 
@@ -46,6 +49,12 @@ def planner_step_metrics(
         ),
         "lambda_wm": world_model_weight,
         "lambda_dino": dino_grid_weight,
+        "outcome_bce": scalar(
+            losses.get("outcome") if losses.get("outcome") is not None else 0
+        ),
+        "lambda_outcome": outcome_weight,
+        "outcome_count": float(outcome_count),
+        "outcome_correct": float(outcome_correct),
         "sigreg_loss": 0.0,
         "value_loss": scalar(value_loss),
         "value_mc_mse": scalar(value_loss),
@@ -113,6 +122,10 @@ _LOG_COLUMNS = (
     "dino_grid_mse",
     "lambda_wm",
     "lambda_dino",
+    "outcome_bce",
+    "lambda_outcome",
+    "outcome_count",
+    "outcome_correct",
     "sigreg_loss",
     "value_loss",
     "value_mc_mse",
@@ -145,6 +158,11 @@ _LOG_COLUMNS = (
     "reference_kl_loss",
     "mean_ratio",
     "policy_tokens",
+    "loss_finite",
+    "gradient_finite",
+    "gradient_parameter_count",
+    "gradient_l2",
+    "optimizer_updates",
 )
 
 

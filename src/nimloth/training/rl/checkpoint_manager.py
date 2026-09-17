@@ -102,6 +102,7 @@ class RLCheckpointManager:
                 "type": self._config.actor.reference_kl_loss_type,
             },
             train_world_model=self._config.predictor.train_wm,
+            outcome_config=asdict(self._config.outcome_head),
         )
 
     def link_snapshot(self, source: Path, path: Path) -> None:

@@ -92,6 +92,7 @@ class _FakeNavigationSession:
             reward=float(step_index),
             done=step_index == 2,
             success=step_index == 2,
+            action_success=step_index == 2,
         )
 
     def close(self) -> None:
@@ -128,6 +129,7 @@ def test_episode_runner_uses_environment_prompt_and_closes_session() -> None:
     assert episode.reward == 3.0
     assert episode.action_space_id == "navigation"
     assert episode.action_space_version == 1
+    assert episode.action_successes == (False, True)
     assert episode.transcript.observation_texts == (
         "instruction <image>",
         "feedback 1 <image>",
@@ -190,6 +192,7 @@ def test_agent_episode_is_the_only_input_needed_to_build_rollout() -> None:
     assert restored.prompt_template_spec == episode.prompt_template
     assert restored.instruction == "walk forward"
     assert restored.action_names == ["moveahead", "rotateright"]
+    assert restored.action_successes == [False, True]
     assert restored.state_latent_hiddens == [
         [[1.0, 0.0]],
         [[2.0, 4.0]],

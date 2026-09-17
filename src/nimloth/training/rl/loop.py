@@ -273,6 +273,10 @@ class RLTrainingLoop:
             step_metrics: dict[str, float] = {}
             if episode_batches is not None:
                 total_actor_transitions = len(actor_transitions)
+                total_outcomes = sum(
+                    transition.action_success is not None
+                    for transition in actor_transitions
+                )
                 _, training_world_size = self._distributed_rank_world()
                 if self.config.planner_policy.enabled:
                     local_old_statistics = tuple(
@@ -370,6 +374,7 @@ class RLTrainingLoop:
                                 old_policy_log_prob=old_policy_log_prob,
                                 policy_advantage=policy_advantage,
                                 total_transitions=total_actor_transitions,
+                                total_outcomes=total_outcomes,
                                 dino_grid_target=dino_grid_target,
                                 include_world_model=True,
                             )
@@ -399,6 +404,7 @@ class RLTrainingLoop:
                                     row[5] for row in micro_batch
                                 ),
                                 total_transitions=total_actor_transitions,
+                                total_outcomes=total_outcomes,
                                 dino_grid_targets=tuple(
                                     row[6] for row in micro_batch
                                 ),
@@ -417,8 +423,11 @@ class RLTrainingLoop:
                             )
                         self._synchronize_planner_backward()
                         del output
+                    current_metrics.update(self._optimizer_gradient_metrics())
+                    current_metrics["loss_finite"] = 1.0
                     optimizer_step_started = True
                     self.optimization_runtime.step()
+                    current_metrics["optimizer_updates"] = 1.0
                     epoch_metrics.append(
                         self._reduce_planner_step_metrics(current_metrics)
                     )
@@ -528,10 +537,10 @@ class RLTrainingLoop:
         self,
         transitions: tuple[ExecutedTransition, ...],
     ) -> tuple[torch.Tensor | None, ...]:
-        """按 transition 顺序装配 next-image target，再逐个搬上 GPU。"""
+        """按 transition 顺序装配current-image target，再逐个搬上 GPU。"""
 
         targets = self._load_dino_grid_target_batch(
-            tuple(transition.next_image_path for transition in transitions)
+            tuple(transition.current_image_path for transition in transitions)
         )
         if targets is None:
             return (None,) * len(transitions)
@@ -562,6 +571,30 @@ class RLTrainingLoop:
             else:
                 totals[name] = totals.get(name, 0.0) + (value if include else 0.0)
 
+    def _optimizer_gradient_metrics(self) -> dict[str, float]:
+        """Validate and summarize the gradients used by the imminent update."""
+
+        squared_norm = torch.zeros((), dtype=torch.float64, device=self.device)
+        parameter_count = 0
+        for group in self.optimization_runtime.optimizer.param_groups:
+            for parameter in group["params"]:
+                gradient = parameter.grad
+                if gradient is None:
+                    continue
+                if not torch.isfinite(gradient).all():
+                    raise FloatingPointError(
+                        f"non-finite gradient in optimizer group {group.get('name', '<unnamed>')}"
+                    )
+                squared_norm = squared_norm + gradient.detach().double().square().sum()
+                parameter_count += int(gradient.numel())
+        if parameter_count == 0:
+            raise RuntimeError("planner update produced no optimizer gradients")
+        return {
+            "gradient_finite": 1.0,
+            "gradient_parameter_count": float(parameter_count),
+            "gradient_l2": float(squared_norm.sqrt().item()),
+        }
+
     def _reduce_planner_step_metrics(
         self,
         metrics: dict[str, float],
@@ -586,10 +619,16 @@ class RLTrainingLoop:
         )
         dist.all_reduce(values, op=dist.ReduceOp.SUM)
         world_size = dist.get_world_size()
+        rank_mean_metrics = {
+            "loss_finite",
+            "gradient_finite",
+            "gradient_l2",
+            "optimizer_updates",
+        }
         return {
             name: (
                 float(values[index].item()) / world_size
-                if name.startswith("lambda_")
+                if name.startswith("lambda_") or name in rank_mean_metrics
                 else float(values[index].item())
             )
             for index, name in enumerate(names)

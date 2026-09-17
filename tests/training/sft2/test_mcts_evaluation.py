@@ -25,6 +25,7 @@ def _checkpoint(
     horizon: int = 4,
     value_action_count: int = 8,
     value_objective: str = SFT2_VALUE_OBJECTIVE,
+    outcome_enabled: bool = False,
 ):
     checkpoint = tmp_path / "final"
     (checkpoint / "wm_predictor").mkdir(parents=True)
@@ -48,17 +49,21 @@ def _checkpoint(
         {"net.2.weight": torch.empty(value_action_count, 8)},
         checkpoint / "value_head" / "value_head.pt",
     )
+    invariants = {
+        "objective": "dino_grid",
+        "history_size": history_size,
+        "prediction_horizon": horizon,
+        "value_objective": value_objective,
+    }
+    if outcome_enabled:
+        invariants["outcome_schema"] = "action_execution_success_bce_v1"
+        torch.save({}, checkpoint / "outcome_head.pt")
     torch.save(
         {
             "step": 17,
             "epoch": 2,
             "epoch_complete": True,
-            "training_invariants": {
-                "objective": "dino_grid",
-                "history_size": history_size,
-                "prediction_horizon": horizon,
-                "value_objective": value_objective,
-            },
+            "training_invariants": invariants,
         },
         checkpoint / "training_state.pt",
     )
@@ -73,6 +78,24 @@ def test_contract_reads_h1_and_prediction_horizon_from_checkpoint(tmp_path) -> N
     assert contract.action_count == 8
     assert contract.step == 17
     assert contract.epoch == 2
+    assert contract.outcome_head_checkpoint is None
+
+
+def test_contract_exposes_outcome_artifact_for_fresh_manifest(tmp_path) -> None:
+    checkpoint = _checkpoint(tmp_path, outcome_enabled=True)
+
+    contract = load_sft2_mcts_evaluation_contract(checkpoint)
+
+    assert contract.outcome_enabled is True
+    assert contract.outcome_head_checkpoint == checkpoint / "outcome_head.pt"
+
+
+def test_contract_rejects_missing_declared_outcome_artifact(tmp_path) -> None:
+    checkpoint = _checkpoint(tmp_path, outcome_enabled=True)
+    (checkpoint / "outcome_head.pt").unlink()
+
+    with pytest.raises(FileNotFoundError, match="outcome_head.pt"):
+        load_sft2_mcts_evaluation_contract(checkpoint)
 
 
 def test_contract_rejects_non_h1_checkpoint(tmp_path) -> None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -91,6 +91,7 @@ class GradientConfig:
 @dataclass(frozen=True)
 class PredictorConfig:
     lr: float = 1e-3
+    state_proj_lr: float | None = None
     emb_dim: int = 128
     history_size: int = 4
     lambda_wm: float = 1.0
@@ -108,6 +109,13 @@ class ValueHeadConfig:
     lambda_rank: float = 0.0
     ppo_clip_range: float | None = None
     ppo_epochs: int = 1
+
+
+@dataclass(frozen=True)
+class OutcomeHeadConfig:
+    enabled: bool = False
+    lr: float = 1e-4
+    lambda_bce: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -182,6 +190,7 @@ class RLConfig:
     validation: ValidationConfig
     training: TrainingConfig
     distributed: DistributedConfig
+    outcome_head: OutcomeHeadConfig = field(default_factory=OutcomeHeadConfig)
 
     def to_dict(self) -> dict[str, Any]:
         """生成适合日志与 W&B 序列化的普通字典。"""
@@ -200,6 +209,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         "gradient",
         "predictor",
         "value_head",
+        "outcome_head",
         "planner_policy",
         "rollout",
         "rl",
@@ -246,6 +256,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         "predictor",
         {
             "lr",
+            "state_proj_lr",
             "emb_dim",
             "history_size",
             "lambda_wm",
@@ -260,6 +271,11 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         raw,
         "value_head",
         {"lr", "rank_margin", "lambda_rank", "ppo_clip_range", "ppo_epochs"},
+    )
+    outcome_head = _section(
+        raw,
+        "outcome_head",
+        {"enabled", "lr", "lambda_bce"},
     )
     planner_policy = _section(
         raw,
@@ -450,6 +466,22 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         "predictor.lambda_wm",
         allow_zero=True,
     )
+    outcome_enabled = _boolean(
+        outcome_head.get("enabled", False), "outcome_head.enabled"
+    )
+    outcome_weight = _positive_float(
+        outcome_head.get("lambda_bce", 0.0),
+        "outcome_head.lambda_bce",
+        allow_zero=True,
+    )
+    if outcome_enabled != (outcome_weight > 0.0):
+        raise ValueError(
+            "outcome_head.enabled must match positive outcome_head.lambda_bce"
+        )
+    if outcome_enabled and not _boolean(
+        predictor.get("train_wm", True), "predictor.train_wm"
+    ):
+        raise ValueError("OutcomeHead training requires predictor.train_wm=true")
     dino_grid_weight = _positive_float(
         predictor.get("lambda_dino", 0.0),
         "predictor.lambda_dino",
@@ -691,12 +723,9 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             "gradient.representation_to_backbone=true requires "
             "gradient.state_source=recompute"
         )
-    if agent_config.planning.enabled and (
-        state_source != "recompute" or not representation_to_backbone
-    ):
+    if agent_config.planning.enabled and state_source != "recompute":
         raise ValueError(
-            "planner training requires gradient.state_source=recompute and "
-            "gradient.representation_to_backbone=true"
+            "planner training requires gradient.state_source=recompute"
         )
 
     return RLConfig(
@@ -724,6 +753,13 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         ),
         predictor=PredictorConfig(
             lr=_positive_float(predictor.get("lr", 1e-3), "predictor.lr"),
+            state_proj_lr=(
+                _positive_float(
+                    predictor["state_proj_lr"], "predictor.state_proj_lr"
+                )
+                if "state_proj_lr" in predictor
+                else None
+            ),
             emb_dim=_positive_int(predictor.get("emb_dim", 128), "predictor.emb_dim"),
             history_size=_positive_int(
                 predictor.get("history_size", 4),
@@ -795,6 +831,13 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             ),
         ),
         distributed=distributed_config,
+        outcome_head=OutcomeHeadConfig(
+            enabled=outcome_enabled,
+            lr=_positive_float(
+                outcome_head.get("lr", 1e-4), "outcome_head.lr"
+            ),
+            lambda_bce=outcome_weight,
+        ),
     )
 
 

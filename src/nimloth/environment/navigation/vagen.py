@@ -302,6 +302,10 @@ class VAGENNavigationSession:
             {self._episode_id: response}
         )[self._episode_id]
         info_dict = dict(info) if isinstance(info, dict) else {}
+        raw_action_success = info_dict.get("last_action_success")
+        action_success = (
+            raw_action_success if type(raw_action_success) is bool else None
+        )
         adjusted_reward = float(reward)
         if not info_dict.get("last_action_success", True):
             adjusted_reward -= self._failure_penalty
@@ -325,6 +329,7 @@ class VAGENNavigationSession:
             done=bool(done),
             success=success,
             info=info_dict,
+            action_success=action_success,
         )
 
     def close(self) -> None:

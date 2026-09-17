@@ -15,7 +15,6 @@ from nimloth.agent import (
     AgentPolicy,
     AgentRuntime,
     EpisodeRunner,
-    PolicyState,
     create_prompt_template,
 )
 from nimloth.config.agent import AgentConfig
@@ -340,6 +339,7 @@ class _BatchedEpisodeState:
     observations: list[EnvironmentObservation] = field(default_factory=list)
     actions: list[AgentAction] = field(default_factory=list)
     rewards: list[float] = field(default_factory=list)
+    action_successes: list[bool] = field(default_factory=list)
     success: bool = False
     done: bool = False
 
@@ -536,6 +536,11 @@ class VAGENBatchedNavigationRolloutCollector(VAGENNavigationRolloutCollector):
                 for state, action in zip(active, actions, strict=True):
                     raw_observation, reward, done, info = step_rows[state.episode_id]
                     info_dict = dict(info) if isinstance(info, dict) else {}
+                    raw_action_success = info_dict.get("last_action_success")
+                    if type(raw_action_success) is not bool:
+                        raise ValueError(
+                            "VAGEN navigation step lacks boolean last_action_success"
+                        )
                     adjusted_reward = float(reward)
                     if not info_dict.get("last_action_success", True):
                         adjusted_reward -= 0.1
@@ -549,6 +554,7 @@ class VAGENBatchedNavigationRolloutCollector(VAGENNavigationRolloutCollector):
                     )
                     state.actions.append(action)
                     state.rewards.append(adjusted_reward)
+                    state.action_successes.append(raw_action_success)
                     state.observations.append(observation)
                     state.success = state.success or success
                     state.done = bool(done)
@@ -596,6 +602,7 @@ class VAGENBatchedNavigationRolloutCollector(VAGENNavigationRolloutCollector):
                             prompt_template=state.runtime.prompt_template_spec,
                             action_space_id=NAVIGATION_ACTION_SPACE.identifier,
                             action_space_version=NAVIGATION_ACTION_SPACE.version,
+                            action_successes=tuple(state.action_successes),
                         )
                         image_paths = self._save_images(
                             state.episode_id,
