@@ -542,7 +542,9 @@ def main(argv: list[str] | None = None) -> int:
                 mcts_exploration_constant=args.mcts_exploration_constant,
                 planner_device=planner_device,
                 policy_temperature=args.planner_policy_temperature,
-                sample_policy=args.split == "train",
+                sample_policy=(
+                    args.planning_search_mode == "policy" and args.split == "train"
+                ),
                 policy_generator=(
                     torch.Generator(device="cpu").manual_seed(args.seed_offset)
                     if args.planning_search_mode == "policy"
