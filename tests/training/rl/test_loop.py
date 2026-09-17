@@ -11,6 +11,7 @@ from nimloth.training.rl.algorithm import RLBatch
 from nimloth.training.rl.loop import (
     RLLoopState,
     RLTrainingLoop,
+    _count_outcome_labels,
     _planner_transition_work,
 )
 
@@ -145,10 +146,12 @@ class _PlannerAlgorithm:
         old_policy_log_prob: torch.Tensor | None,
         policy_advantage: torch.Tensor | None,
         total_transitions: int,
+        total_outcomes: int | None,
         dino_grid_target: torch.Tensor,
         include_world_model: bool,
     ):  # type: ignore[no-untyped-def]
         assert total_transitions == 2
+        assert total_outcomes is None
         assert return_target.ndim == 0
         assert old_policy_log_prob is None
         assert policy_advantage is None
@@ -183,6 +186,7 @@ class _PlannerAlgorithm:
         old_policy_log_probs,
         policy_advantages,
         total_transitions,
+        total_outcomes,
         dino_grid_targets,
         loss_weights,
         include_world_model,
@@ -197,6 +201,7 @@ class _PlannerAlgorithm:
                 old_policy_log_prob=old_policy_log_prob,
                 policy_advantage=policy_advantage,
                 total_transitions=total_transitions,
+                total_outcomes=total_outcomes,
                 dino_grid_target=dino_grid_target,
                 include_world_model=include_world_model,
             )
@@ -613,6 +618,24 @@ def test_planner_transition_work_shards_each_real_item_once_and_pads() -> None:
     )
     assert real_indices == list(range(10))
     assert sum(item.is_padding for shard in shards for item in shard) == 2
+
+
+def test_outcome_label_count_is_optional_for_legacy_runs_but_fail_closed_when_enabled() -> (
+    None
+):
+    transitions = (SimpleNamespace(), SimpleNamespace(action_success=None))
+
+    assert _count_outcome_labels(transitions, enabled=False) is None
+    with pytest.raises(ValueError, match="at least one fresh action_success label"):
+        _count_outcome_labels(transitions, enabled=True)
+
+    assert (
+        _count_outcome_labels(
+            transitions + (SimpleNamespace(action_success=False),),
+            enabled=True,
+        )
+        == 1
+    )
 
 
 def test_planner_transition_work_pads_ranks_when_batch_is_smaller_than_world() -> None:

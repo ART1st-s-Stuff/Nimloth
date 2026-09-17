@@ -36,6 +36,7 @@ from nimloth.training.rl.algorithm import RLAlgorithm
 from nimloth.training.rl.episodes import build_episode_training_batches
 from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.wm import WorldModel
+from nimloth.wm.grid import GridWorldModel
 from nimloth.wm.outcome import ActionOutcomeHead
 
 
@@ -197,6 +198,18 @@ class _SequencePredictor(torch.nn.Module):
 
     def forward(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         return self.state(states) + self.action(actions)
+
+
+class _GridStateProjector(_StateProjector):
+    """Keep the latent-token axis used by the real Stage3 grid runtime."""
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.linear(hidden, self.weight)
+
+
+class _GridSequencePredictor(_SequencePredictor):
+    def forward(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        return self.state(states) + self.action(actions).unsqueeze(-2)
 
 
 class _RecordingValueHead(torch.nn.Linear):
@@ -603,13 +616,26 @@ def test_transition_adds_dino_loss_for_each_real_current_observation() -> None:
 
 
 def test_outcome_wm_and_value_stop_at_qwen_hidden_but_update_projector() -> None:
+    trajectory = replace(
+        _planner_trajectory(),
+        world_model_states=[
+            [state] for state in _planner_trajectory().world_model_states
+        ],
+    )
     episode = build_episode_training_batches(
-        [_planner_trajectory()],
+        [trajectory],
         gamma=1.0,
         truncated_bootstrap=0.0,
     )[0]
-    runtime, backbone, _builder, projector, predictor, _value_head = _runtime()
-    runtime.agent.wm.outcome_head = ActionOutcomeHead(2)
+    runtime, backbone, _builder, _projector, _predictor, value_head = _runtime()
+    projector = _GridStateProjector()
+    predictor = _GridSequencePredictor()
+    runtime.agent.wm = GridWorldModel(
+        state_proj=projector,
+        wm_predictor=predictor,
+        value_head=value_head,
+        outcome_head=ActionOutcomeHead(2),
+    )
     detached_runtime = replace(runtime, representation_to_backbone=False)
 
     output = _algorithm(

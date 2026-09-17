@@ -45,6 +45,26 @@ class RLLoopState:
     best_eval_metric: float
 
 
+def _count_outcome_labels(
+    transitions: tuple[ExecutedTransition, ...],
+    *,
+    enabled: bool,
+) -> int | None:
+    """Count masked BCE labels without imposing Outcome fields on legacy runs."""
+
+    if not enabled:
+        return None
+    count = sum(
+        getattr(transition, "action_success", None) is not None
+        for transition in transitions
+    )
+    if count == 0:
+        raise ValueError(
+            "OutcomeHead training requires at least one fresh action_success label"
+        )
+    return count
+
+
 @dataclass(frozen=True)
 class _PlannerTransitionWork:
     """One rank-local planner forward, including collective-safe padding."""
@@ -273,9 +293,16 @@ class RLTrainingLoop:
             step_metrics: dict[str, float] = {}
             if episode_batches is not None:
                 total_actor_transitions = len(actor_transitions)
-                total_outcomes = sum(
-                    transition.action_success is not None
-                    for transition in actor_transitions
+                outcome_enabled = bool(
+                    getattr(
+                        getattr(self.config, "outcome_head", None),
+                        "enabled",
+                        False,
+                    )
+                )
+                total_outcomes = _count_outcome_labels(
+                    actor_transitions,
+                    enabled=outcome_enabled,
                 )
                 _, training_world_size = self._distributed_rank_world()
                 if self.config.planner_policy.enabled:
