@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from dataclasses import dataclass
 from dataclasses import asdict
 from pathlib import Path
@@ -252,6 +253,21 @@ def _build_grid_world_model(
     if config.freeze.state_proj:
         world_model.state_proj.requires_grad_(False).eval()
     return world_model.to(device)
+
+
+def _build_dino_grid_targets(
+    world_model: GridWorldModel, *, device: torch.device
+) -> FrozenDINOGridTargets:
+    grid_tokens = world_model.unwrapped().state_proj.grid_tokens
+    grid_size = math.isqrt(grid_tokens)
+    if grid_size < 1 or grid_size**2 != grid_tokens:
+        raise ValueError("RL DINO target requires a positive square state grid")
+    return FrozenDINOGridTargets.from_pretrained(
+        DINOV2_LARGE_IDENTITY,
+        device=device,
+        dtype=torch.bfloat16,
+        grid_size=grid_size,
+    )
 
 
 def _build_world_model(
@@ -1103,11 +1119,7 @@ def train_rl(
         if config.predictor.train_wm and config.predictor.lambda_dino > 0.0:
             if not isinstance(agent.wm, GridWorldModel):
                 raise ValueError("RL DINO-grid loss requires a grid world model")
-            dino_grid_targets = FrozenDINOGridTargets.from_pretrained(
-                DINOV2_LARGE_IDENTITY,
-                device=device,
-                dtype=torch.bfloat16,
-            )
+            dino_grid_targets = _build_dino_grid_targets(agent.wm, device=device)
         model_runtime = RLModelRuntime(
             agent=agent,
             input_builder=input_builder,

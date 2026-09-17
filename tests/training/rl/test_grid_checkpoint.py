@@ -12,7 +12,7 @@ from nimloth.config.rl import parse_rl_config
 from nimloth.agent.planning import WorldModelPlanner
 from nimloth.training.rl.planning_loader import load_planning_world_model
 from nimloth.training.sft.stage3.algorithm import SFT2_VALUE_OBJECTIVE
-from nimloth.training.rl.trainer import _build_world_model
+from nimloth.training.rl.trainer import _build_world_model, _build_dino_grid_targets
 from nimloth.wm.grid import (
     GridPredictorConfig,
     GridWorldModel,
@@ -22,6 +22,42 @@ from nimloth.wm.grid import (
 )
 from nimloth.wm.value_head import ValueHead
 from nimloth.wm.outcome import ActionOutcomeHead
+
+
+@pytest.mark.parametrize("grid_tokens, grid_size", [(16, 4), (64, 8)])
+def test_rl_dino_target_uses_checkpoint_grid(monkeypatch, grid_tokens, grid_size):
+    from nimloth.training.rl import trainer
+
+    wm = GridWorldModel(
+        state_proj=SharedSlotProjector(
+            input_dim=3, output_dim=2, hidden_dim=5, grid_tokens=grid_tokens
+        ),
+        wm_predictor=torch.nn.Identity(),
+        value_head=ValueHead(emb_dim=2),
+    )
+    captured = {}
+    sentinel = object()
+
+    def load(identity, **kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(trainer.FrozenDINOGridTargets, "from_pretrained", load)
+    assert _build_dino_grid_targets(wm, device=torch.device("cpu")) is sentinel
+    assert captured["grid_size"] == grid_size
+    assert captured["dtype"] == torch.bfloat16
+
+
+def test_rl_dino_target_rejects_non_square_checkpoint():
+    wm = GridWorldModel(
+        state_proj=SharedSlotProjector(
+            input_dim=3, output_dim=2, hidden_dim=5, grid_tokens=6
+        ),
+        wm_predictor=torch.nn.Identity(),
+        value_head=ValueHead(emb_dim=2),
+    )
+    with pytest.raises(ValueError, match="positive square"):
+        _build_dino_grid_targets(wm, device=torch.device("cpu"))
 
 
 @pytest.mark.parametrize(

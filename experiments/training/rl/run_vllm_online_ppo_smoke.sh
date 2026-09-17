@@ -510,7 +510,7 @@ if [[ "${REFERENCE_KL_WEIGHT}" != 0.0 ]]; then
   TRAIN_ARGS+=(--reference-model "${REFERENCE_MODEL}")
 fi
 if (( TRAIN_NNODES == 1 )); then
-  "${PYTHON}" -m torch.distributed.run --nproc_per_node="${TRAIN_WORLD_SIZE}" -- \
+  "${PYTHON}" -m torch.distributed.run --master_port="${TRAIN_MASTER_PORT}" --nproc_per_node="${TRAIN_WORLD_SIZE}" -- \
     "${TRAIN_ARGS[@]}" 2>&1 | tee -a "${LOG}"
 else
   [[ -n "${SLURM_JOB_ID:-}" ]] || { echo "multi-node training requires SLURM_JOB_ID" >&2; exit 1; }
