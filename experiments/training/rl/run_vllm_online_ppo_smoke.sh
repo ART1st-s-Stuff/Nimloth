@@ -615,11 +615,11 @@ import csv, json, math
 from pathlib import Path
 root = Path("${TRAIN_OUT}")
 rows = list(csv.DictReader((root / "train_step_log.csv").open()))
-expected_rows = ${ITERATION} - ${RUN_INITIAL_GLOBAL_STEP}
-if len(rows) != expected_rows or int(rows[-1]["global_step"]) != ${ITERATION}:
+expected_steps = list(range(1, ${ITERATION} + 1))
+actual_steps = [int(row["global_step"]) for row in rows]
+if actual_steps != expected_steps:
     raise SystemExit(
-        f"expected {expected_rows} optimizer steps ending at "
-        f"global_step=${ITERATION}: {rows}"
+        f"expected cumulative optimizer steps {expected_steps}: {rows}"
     )
 keys = [
     "wm_mse",

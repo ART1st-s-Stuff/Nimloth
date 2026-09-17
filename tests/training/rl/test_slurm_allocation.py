@@ -279,6 +279,8 @@ def test_resumed_staged_pipeline_reuses_the_existing_run_output() -> None:
     assert pipeline.count("ITERATION == 1") == 2
     assert "missing formal-run README before iteration ${ITERATION}" in pipeline
     assert "missing resumable checkpoint before iteration ${ITERATION}" in pipeline
+    assert "expected_steps = list(range(1, ${ITERATION} + 1))" in pipeline
+    assert 'actual_steps = [int(row["global_step"]) for row in rows]' in pipeline
 
 
 def test_parallel_controller_can_gate_between_rollout_and_training() -> None:
