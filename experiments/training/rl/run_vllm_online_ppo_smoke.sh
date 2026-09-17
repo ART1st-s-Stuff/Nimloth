@@ -265,9 +265,9 @@ elif [[ "${RUN_ROLLOUT}" == false ]]; then
   }
 fi
 
-export HF_HOME=/project/peilab/atst/.cache/huggingface
-export TRANSFORMERS_CACHE=${HF_HOME}
-export TORCH_HOME=/project/peilab/atst/flower/.cache/torch
+export HF_HOME=${HF_HOME:-/project/peilab/atst/.cache/huggingface}
+export TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE:-${HF_HOME}}
+export TORCH_HOME=${TORCH_HOME:-/project/peilab/atst/flower/.cache/torch}
 export TOKENIZERS_PARALLELISM=true
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1

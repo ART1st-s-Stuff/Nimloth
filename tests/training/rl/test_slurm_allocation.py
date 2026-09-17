@@ -11,6 +11,9 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 HELPER = REPO_ROOT / "experiments/training/rl/slurm_allocation.sh"
 CONTROLLER = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_slurm.sh"
 PIPELINE = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_smoke.sh"
+AI2THOR_SETUP = (
+    REPO_ROOT / "experiments/training/baseline/setup_ai2thor_env.sh"
+)
 FULL_RUNNER = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_full.sh"
 WAIT_LAUNCHER = (
     REPO_ROOT / "experiments/training/rl/wait_for_1x8_hold_and_launch.sh"
@@ -126,6 +129,22 @@ done | sort
         text=True,
     )
     return result.stdout.splitlines()
+
+
+def test_online_pipeline_allows_explicit_cache_roots() -> None:
+    pipeline = PIPELINE.read_text(encoding="utf-8")
+
+    assert "HF_HOME=${HF_HOME:-/project/peilab/atst/.cache/huggingface}" in pipeline
+    assert "TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE:-${HF_HOME}}" in pipeline
+    assert "TORCH_HOME=${TORCH_HOME:-/project/peilab/atst/flower/.cache/torch}" in pipeline
+
+
+def test_ai2thor_setup_has_validated_system_vulkan_fallback() -> None:
+    setup = AI2THOR_SETUP.read_text(encoding="utf-8")
+
+    assert '[[ -f "${SYSTEM_VULKAN_LIB}" && -f "${SYSTEM_VULKAN_ICD}" ]]' in setup
+    assert 'export VK_ICD_FILENAMES="${SYSTEM_VULKAN_ICD}"' in setup
+    assert "VULKAN_SOURCE=system" in setup
 
 
 def test_planner_fsdp_ray_gate_is_batch_owned_one_node_eight_gpu() -> None:
