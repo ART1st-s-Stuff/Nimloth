@@ -266,6 +266,25 @@ for ((iteration=START_ITERATION; iteration<=TOTAL_ITERATIONS; iteration++)); do
     wm_checkpoint=${snapshot}
     planner_policy_head_checkpoint=${snapshot}/planner_policy_head
     resume_checkpoint=${snapshot}
+
+    # prepare-policy has already moved the last committed checkpoint into this
+    # iteration's immutable pre-update snapshot and relocated its consumption
+    # record.  The preceding snapshot is now older than the latest recoverable
+    # state, so remove it before the next atomic checkpoint save to bound peak
+    # disk usage to one pre-update snapshot plus one replacement checkpoint.
+    if (( iteration > INITIAL_GLOBAL_STEP + 2 )); then
+      prune_tag=$(printf 'iter_%04d' "$((iteration - 1))")
+      prune_path=${POLICY_INPUT_ROOT}/${prune_tag}
+      if [[ -d "${prune_path}" ]]; then
+        case "${prune_path}" in
+          "${POLICY_INPUT_ROOT}"/iter_*) ;;
+          *) echo "unsafe policy snapshot path: ${prune_path}" >&2; exit 1 ;;
+        esac
+        rm -rf -- "${prune_path}"
+        printf '%s iteration=%s status=pruned_superseded_policy_snapshot path=%s\n' \
+          "$(date -Iseconds)" "${iteration}" "${prune_path}" >> "${PROGRESS_LOG}"
+      fi
+    fi
   fi
 
   printf '%s iteration=%s status=starting model=%s seed_offset=%s\n' \
@@ -313,21 +332,6 @@ for ((iteration=START_ITERATION; iteration<=TOTAL_ITERATIONS; iteration++)); do
   printf '%s iteration=%s status=completed checkpoint=%s\n' \
     "$(date -Iseconds)" "${iteration}" "${TRAIN_OUT}/latest" >> "${PROGRESS_LOG}"
 
-  # Retain the latest pre-update policy for rollback. Older snapshots belong
-  # only to this run and are removed after their successor is durably complete.
-  if (( iteration > 2 )); then
-    prune_tag=$(printf 'iter_%04d' "$((iteration - 1))")
-    prune_path=${POLICY_INPUT_ROOT}/${prune_tag}
-    if [[ -d "${prune_path}" ]]; then
-      case "${prune_path}" in
-        "${POLICY_INPUT_ROOT}"/iter_*) ;;
-        *) echo "unsafe policy snapshot path: ${prune_path}" >&2; exit 1 ;;
-      esac
-      rm -rf -- "${prune_path}"
-      printf '%s iteration=%s status=pruned_policy_snapshot path=%s\n' \
-        "$(date -Iseconds)" "${iteration}" "${prune_path}" >> "${PROGRESS_LOG}"
-    fi
-  fi
 done
 
 trap - EXIT

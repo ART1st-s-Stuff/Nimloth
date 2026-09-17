@@ -319,6 +319,24 @@ def test_full_runner_can_continue_after_noncanonical_consumed_seeds(
     ) == "2:153\n"
 
 
+def test_full_runner_prunes_only_superseded_policy_snapshots(tmp_path: Path) -> None:
+    config_path = tmp_path / "four_iterations.yaml"
+    config_text = CONTINUATION_CONFIG.read_text(encoding="utf-8")
+    config_path.write_text(
+        config_text.replace("iterations: 2", "iterations: 4"),
+        encoding="utf-8",
+    )
+    environment = _runner_environment(tmp_path)
+    environment["RL_CONFIG"] = str(config_path)
+
+    subprocess.run([str(FULL_RUNNER)], check=True, env=environment)
+
+    policy_inputs = Path(environment["RUN_OUT"]) / "train/policy_inputs"
+    assert not (policy_inputs / "iter_0002").exists()
+    assert not (policy_inputs / "iter_0003").exists()
+    assert (policy_inputs / "iter_0004/rl_state.pt").is_file()
+
+
 def test_full_runner_runs_external_eval_once_at_iteration_ten(tmp_path: Path) -> None:
     config_path = tmp_path / "external_eval.yaml"
     config_text = CONTINUATION_CONFIG.read_text(encoding="utf-8")
