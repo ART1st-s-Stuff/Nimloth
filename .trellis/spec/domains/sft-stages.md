@@ -335,3 +335,20 @@ distributed optimizer updates before GPU deployment.
   warmup, patience reset, two insufficient epochs, resumable pause and render guards.
 - Wrong: increase the old step budget and restart its warmup or call timeout
   convergence. Correct: continue the same optimization and record the actual stop reason.
+
+### Outcome classification reporting
+
+When Stage3 outcome BCE is enabled, evaluate success logits at threshold zero
+(probability 0.5), treating failure as the positive class for failure precision,
+recall and F1. Aggregate confusion counts and BCE sums across ranks before
+computing ratios; report each prediction horizon and all window-horizon positions.
+Exclude missing labels and padding. Report unique incoming-transition support
+separately; overlapping windows are not independent observations. Undefined ratios
+are omitted with explicit `_defined=0`, never converted to a valid zero score.
+Always-success accuracy provides a class-frequency baseline. These metrics describe
+action execution outcomes, not episode success or RL readiness.
+
+With the projector-before-backbone stop-gradient branch, outcome loss follows the
+predicted-state path to OutcomeHead, WM and projector; it must not reach Qwen
+language/vision or selected vocabulary rows. LM and observed DINO retain their
+normal gradients. Enabling outcome BCE does not modify ValueHead rewards/returns.

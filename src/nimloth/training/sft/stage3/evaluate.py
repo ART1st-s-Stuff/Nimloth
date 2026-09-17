@@ -7,6 +7,7 @@ import torch.distributed as dist
 
 from nimloth.training.sft.stage3.algorithm import SFT2Algorithm
 from nimloth.training.sft.stage3.batch import SFT2BatchBuilder
+from nimloth.training.sft.stage3.outcome_metrics import OutcomeMetrics
 from nimloth.training.sft.stage3.runtime import SFT2ModelRuntime
 from nimloth.training.sft.stage3.utils import preserve_module_modes
 from nimloth.util.metrics import MetricAccumulator
@@ -65,6 +66,7 @@ def evaluate(
         if len(set(counts)) != 1:
             raise ValueError("FSDP evaluation requires equal padded forward counts on every rank")
     accumulator = MetricAccumulator()
+    outcomes = OutcomeMetrics()
     with (
         preserve_module_modes(
             validation_runtime.agent.trainable_modules,
@@ -76,6 +78,9 @@ def evaluate(
                 break
             agent_batch = batch_builder.prepare(batch)
             output = algorithm.evaluation_step(validation_runtime, agent_batch)
+            logits = (getattr(output, "diagnostics", None) or {}).get("outcome_logits")
+            if logits is not None:
+                outcomes.update(agent_batch, logits)
             if output.sample_count > 0:
                 if on_batch is not None:
                     on_batch(agent_batch, output)
@@ -91,9 +96,13 @@ def evaluate(
                         accumulator.update({"lm_ce": lm}, count=lm_count)
                 outcome = metrics.pop("outcome_bce", None)
                 if outcome is not None:
-                    accumulator.update({"outcome_bce": outcome}, count=int(agent_batch.outcome_mask.sum().item()))
+                    mask = agent_batch.outcome_mask
+                    if hasattr(agent_batch, "sample_weights"):
+                        mask = mask & (agent_batch.sample_weights[:, None] > 0)
+                    accumulator.update({"outcome_bce": outcome}, count=int(mask.sum().item()))
                 accumulator.update(metrics, count=output.sample_count)
     averages = distributed_metric_averages(accumulator)
+    averages.update(outcomes.metrics())
     if "total_loss" in averages:
         # Components have different populations: successful windows for LM,
         # labeled transitions for outcome, unique observed states for DINO,

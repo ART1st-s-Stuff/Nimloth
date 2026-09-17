@@ -10,15 +10,16 @@ import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import signal
 import subprocess
 import time
+from pathlib import Path
 
 from experiments.training.sft.stage3 import run_outcome_ablation as common
 
 PHASES = ("canary", "resume", "baseline", "formal")
 VARIANTS = {
+    "outcome": {"dino_weight": 2., "wm_value_backbone_grad": False},
     "b": {"dino_weight": .5, "wm_value_backbone_grad": True},
     "dino2_backbone_stopgrad": {"dino_weight": 2., "wm_value_backbone_grad": False},
 }
@@ -30,8 +31,17 @@ EXPECTED_HASHES = {
 }
 
 
+# Two measured 43.28 GiB checkpoints coexist while saving; six diagnostic
+# exports reserve 2 GiB, plus 20 GiB untouched margin. Original guards unchanged.
+OUTCOME_MIN_FREE_GIB = math.ceil(2 * 43.28 + 2 + 20)
+
+
+def is_outcome(args):
+    return getattr(args, "variant", "b") == "outcome"
+
+
 def phases(args):
-    return ("formal",) if getattr(args, "continue_from", None) else PHASES
+    return ("formal",) if getattr(args, "continue_from", None) or is_outcome(args) else PHASES
 
 
 def command(args, phase, port):
@@ -44,7 +54,7 @@ def command(args, phase, port):
     values = {
         "model": args.model, "train-jsonl": args.train, "val-jsonl": args.val,
         "preprocess-cache-dir": args.preprocess, "preprocess-cache-processor-source": args.model,
-        "dino-grid-cache": args.dino, "output-dir": output, "epochs": 12 if continuation else 2,
+        "dino-grid-cache": args.dino, "output-dir": output, "epochs": 12 if continuation else (5 if is_outcome(args) else 2),
         "distributed-strategy": "fsdp", "fsdp-wrap-granularity": "block",
         "batch-size": 1, "grad-accum": 8, "seed": 42,
         "history-size": 1, "prediction-horizon": 4, "grid-size": 8,
@@ -53,7 +63,7 @@ def command(args, phase, port):
         "query-lr": 1e-5, "protocol-lr": 2e-6, "lr-qwen-start": 2e-7,
         "lr-qwen-peak": 2e-7, "state-proj-lr": 8e-6,
         "wm-predictor-lr": 3e-4, "value-head-lr": 1e-4, "outcome-head-lr": 1e-4,
-        "lambda-outcome": 0, "lambda-sigreg": 0, "lambda-dino": variant["dino_weight"],
+        "lambda-outcome": 1 if is_outcome(args) else 0, "lambda-sigreg": 0, "lambda-dino": variant["dino_weight"],
         "lambda-ce": 1, "lambda-value": 1, "lambda-wm-start": .1, "lambda-wm-end": 1,
         "max-length": 16384, "checkpoint-interval-steps": 10,
         "checkpoint-keep-last": 1, "checkpoint-interval-minutes": 0,
@@ -77,9 +87,11 @@ def command(args, phase, port):
     if phase == "baseline":
         argv.extend(["--eval-only", "--feature-export-dir", str(args.run_root / "baseline_features")])
     if phase == "formal":
-        steps = list(range(46, 277, 23)) if continuation else [0, 1, 5, 10, 23, 46]
+        steps = list(range(46, 277, 23)) if continuation else (list(range(0, 116, 23)) if is_outcome(args) else [0, 1, 5, 10, 23, 46])
         argv.extend(["--diagnostic-dir", str(args.run_root / "diagnostics"),
                      "--diagnostic-steps", *map(str, steps)])
+    if is_outcome(args):
+        argv.extend(["--schedule-total-steps", "46"])
     if continuation:
         argv.extend(["--resume", "--resume-from", str(continuation), "--schedule-total-steps", "46",
                      "--early-stop-metric", args.early_stop_metric, "--early-stop-baseline", str(args.early_stop_baseline),
@@ -138,7 +150,51 @@ def verify_continuation(args, log):
     return {"checkpoint": str(checkpoint), "completion": completion}
 
 
+def verify_outcome(args, log):
+    """Verify lightweight production completion evidence without loading optimizer."""
+    root = args.run_root / "formal"
+    completion = json.loads((root / "training_complete.json").read_text())
+    expected = {"epoch": 5, "step": 115, "checkpoint": "epoch_005",
+                "schedule_total_steps": 46, "reason": "epoch_limit"}
+    if any(completion.get(key) != value for key, value in expected.items()) or completion.get("early_stop_state"):
+        raise RuntimeError("outcome completion does not match five-epoch fresh contract")
+    records = []
+    for line in log.read_text().splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict) and "val_metrics" in record:
+            records.append(record)
+    if [(r["epoch"], r["global_step"]) for r in records] != [(e, e * 23) for e in range(1, 6)]:
+        raise RuntimeError("missing full outcome epoch validation")
+    for record in records:
+        metrics = record["val_metrics"]
+        if any(not math.isfinite(float(value)) for value in metrics.values()):
+            raise RuntimeError("non-finite outcome validation")
+        for prefix in ("outcome_all", "outcome_h1", "outcome_h2", "outcome_h3", "outcome_h4"):
+            required = ("count", "success_count", "failure_count", "failure_tp", "failure_fp",
+                        "failure_fn", "failure_tn", "bce", "accuracy", "always_success_accuracy")
+            if any(f"{prefix}_{key}" not in metrics for key in required) or metrics[f"{prefix}_count"] <= 0:
+                raise RuntimeError("missing outcome labels or confusion metrics")
+            for key in ("failure_precision", "failure_recall", "failure_f1"):
+                name = f"{prefix}_{key}"
+                if metrics.get(name + "_defined") not in (0, 1) or ((name in metrics) != bool(metrics[name + "_defined"])):
+                    raise RuntimeError("invalid undefined outcome metric representation")
+        if metrics.get("outcome_unique_transition_count", 0) <= 0:
+            raise RuntimeError("missing unique outcome transition count")
+    checkpoint = root / "epoch_005"
+    for name in ("training_state.pt", "state_proj.pt", "selected_token_rows.pt", "vision_ema.pt",
+                 "wm_predictor/predictor.pt", "value_head/value_head.pt", "outcome_head.pt"):
+        target = checkpoint / name
+        if not target.is_file() or target.stat().st_size == 0:
+            raise RuntimeError(f"incomplete outcome checkpoint: {name}")
+    return {"checkpoint": str(checkpoint), "completion": completion, "metrics": records[-1]["val_metrics"]}
+
+
 def verify(args, phase, log):
+    if is_outcome(args):
+        return verify_outcome(args, log)
     if getattr(args, "continue_from", None):
         return verify_continuation(args, log)
     if phase == "baseline":
@@ -253,7 +309,7 @@ def execute(args):
               "rule": "0.1 + 0.9*(1-cos(pi*global_step/13))/2 until global_step13, then1"},
               "gate_seconds": 900, "formal_seconds": 43200,
               "retention": "latest formal checkpoint; delete owned canaries only after verified resume"}
-    deadline = time.monotonic() + (43200 if continuation else 900)
+    deadline = time.monotonic() + (43200 if continuation or is_outcome(args) else 900)
     try:
         for phase in phases(args):
             if phase == "baseline":
@@ -300,8 +356,8 @@ def main(argv=None):
     parser.add_argument("--early-stop-baseline", type=float)
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args(argv)
-    args.epochs = 12 if args.continue_from else 2
-    floor = 120 if args.continue_from else 160
+    args.epochs = 12 if args.continue_from else (5 if is_outcome(args) else 2)
+    floor = 120 if args.continue_from else (OUTCOME_MIN_FREE_GIB if is_outcome(args) else 160)
     if args.min_free_gib is None:
         args.min_free_gib = floor
     if args.continue_from:

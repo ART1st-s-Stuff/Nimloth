@@ -78,8 +78,8 @@ def runtime_and_batch(weights=(1., 1., 1.), success=(1., 1., 0.)):
 
 
 def algorithm(**kwargs):
-    config = dict(history_size=1, prediction_horizon=2, sigreg=None,
-                  sigreg_weight=0., value_weight=.7, ce_weight=.3, dino_grid_weight=.5)
+    config = {'history_size': 1, 'prediction_horizon': 2, 'sigreg': None,
+                  'sigreg_weight': 0., 'value_weight': .7, 'ce_weight': .3, 'dino_grid_weight': .5}
     return SFT2Algorithm(**(config | kwargs))
 
 
@@ -115,8 +115,12 @@ class GridTensorBackbone(TensorBackbone):
 
 
 def residual_runtime_and_batch():
-    from nimloth.wm.grid import (GridPredictorConfig, GridWorldModel,
-                                ResidualTemporalSpatialGridPredictor, SharedSlotProjector)
+    from nimloth.wm.grid import (
+        GridPredictorConfig,
+        GridWorldModel,
+        ResidualTemporalSpatialGridPredictor,
+        SharedSlotProjector,
+    )
     runtime, batch = runtime_and_batch()
     runtime.agent.backbone = GridTensorBackbone()
     runtime.agent.wm = GridWorldModel(
@@ -139,6 +143,23 @@ def test_residual_copy_and_later_value_cannot_bypass_stop(loss_name):
     assert all(p.grad is None or not p.grad.count_nonzero()
                for p in runtime.agent.backbone.parameters())
     for module in (runtime.agent.wm.state_proj, runtime.agent.wm.wm_predictor):
+        assert any(p.grad is not None and p.grad.count_nonzero() for p in module.parameters())
+
+
+def test_outcome_bce_reaches_residual_wm_projector_but_not_backbone():
+    from nimloth.wm.outcome import ActionOutcomeHead
+    runtime, batch = residual_runtime_and_batch()
+    runtime.agent.wm.outcome_head = ActionOutcomeHead(4)
+    batch.outcome_targets = torch.tensor([[0., 1.], [1., 0.], [0., 1.]])
+    batch.outcome_mask[:] = True
+    output = algorithm(wm_value_backbone_grad=False, outcome_weight=1.).evaluation_step(runtime, batch)
+    output.losses['outcome'].backward()
+    assert all(p.grad is None or not p.grad.count_nonzero()
+               for p in runtime.agent.backbone.parameters())
+    assert all(p.grad is None or not p.grad.count_nonzero()
+               for p in runtime.agent.wm.value_head.parameters())
+    for module in (runtime.agent.wm.state_proj, runtime.agent.wm.wm_predictor,
+                   runtime.agent.wm.outcome_head):
         assert any(p.grad is not None and p.grad.count_nonzero() for p in module.parameters())
 
 

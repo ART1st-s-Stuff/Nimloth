@@ -3,9 +3,9 @@ import argparse
 import contextlib
 import io
 import json
-from pathlib import Path
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from experiments.training.sft.stage3 import run_residual_joint_b as launcher
@@ -19,7 +19,7 @@ class ResidualBLauncherTest(unittest.TestCase):
     def test_exact_scope_and_same_schedule_for_gate(self):
         for phase in launcher.PHASES:
             command = launcher.command(self.args, phase, 29500)
-            def value(key):
+            def value(key, command=command):
                 return command[command.index("--" + key) + 1]
             for key, expected in {"epochs": "2", "grid-predictor-kind": "residual",
                 "lr-qwen-start": "2e-07", "lr-qwen-peak": "2e-07", "query-lr": "1e-05",
@@ -89,6 +89,56 @@ class ResidualBLauncherTest(unittest.TestCase):
         self.assertEqual(len(plan["commands"]), 4)
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             launcher.main(argv + ["--min-free-gib", "123"])
+
+    def test_outcome_fresh_budget_and_guard(self):
+        argv = self.continuation_argv()[:18] + ["--variant", "outcome"]
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            launcher.main(argv)
+        plan = json.loads(output.getvalue())
+        self.assertEqual(plan["min_free_gib"], 109)
+        self.assertEqual(len(plan["commands"]), 1)
+        command = plan["commands"][0]
+        for key, value in (("epochs", "5"), ("schedule-total-steps", "46"),
+                           ("lambda-outcome", "1"), ("lambda-dino", "2.0")):
+            self.assertEqual(command[command.index("--" + key) + 1], value)
+        for forbidden in ("--resume", "--eval-only", "--early-stop-metric", "--stop-after-steps"):
+            self.assertNotIn(forbidden, command)
+        self.assertIn("--no-wm-value-backbone-grad", command)
+        self.assertIn("--checkpoint-latest-only", command)
+        start = command.index("--diagnostic-steps") + 1
+        self.assertEqual(command[start:start+6], list(map(str, range(0, 116, 23))))
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            launcher.main(argv + ["--min-free-gib", "108"])
+
+    def test_outcome_completion_requires_head_and_full_metrics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.args.run_root = Path(directory)
+            self.args.variant = "outcome"
+            root = self.args.run_root / "formal"
+            checkpoint = root / "epoch_005"
+            checkpoint.mkdir(parents=True)
+            for name in ("training_state.pt", "state_proj.pt", "selected_token_rows.pt", "vision_ema.pt",
+                         "wm_predictor/predictor.pt", "value_head/value_head.pt", "outcome_head.pt"):
+                target = checkpoint / name
+                target.parent.mkdir(exist_ok=True)
+                target.write_bytes(b"fixture")
+            complete = {"epoch": 5, "step": 115, "checkpoint": "epoch_005",
+                        "schedule_total_steps": 46, "reason": "epoch_limit", "early_stop_state": None}
+            (root / "training_complete.json").write_text(json.dumps(complete))
+            metrics = {"outcome_unique_transition_count": 4}
+            for prefix in ("outcome_all", "outcome_h1", "outcome_h2", "outcome_h3", "outcome_h4"):
+                for key in ("count", "success_count", "failure_count", "failure_tp", "failure_fp",
+                            "failure_fn", "failure_tn", "bce", "accuracy", "always_success_accuracy"):
+                    metrics[f"{prefix}_{key}"] = 1
+                for key in ("failure_precision", "failure_recall", "failure_f1"):
+                    metrics[f"{prefix}_{key}_defined"] = 0
+            log = root / "formal.log"
+            log.write_text("\n".join(json.dumps({"epoch": e, "global_step": e*23, "val_metrics": metrics}) for e in range(1, 6)))
+            self.assertEqual(launcher.verify(self.args, "formal", log)["checkpoint"], str(checkpoint))
+            (checkpoint / "outcome_head.pt").unlink()
+            with self.assertRaisesRegex(RuntimeError, "incomplete outcome checkpoint"):
+                launcher.verify(self.args, "formal", log)
 
     def test_existing_run_cannot_be_reused(self):
         with tempfile.TemporaryDirectory() as directory:
