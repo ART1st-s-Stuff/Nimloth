@@ -10,11 +10,12 @@ import torch
 import torch.nn.functional as F
 from PIL import Image, ImageDraw
 
-from experiments.training.sft.stage3.render_continuation_features import validate_manifests
+from experiments.training.sft.stage3.render_continuation_features import (
+    column_layout, load_probe, probe_paths, validate_manifests,
+)
 from experiments.training.sft.stage3.render_dino_feature_comparison import select_page_rows
 from nimloth.recon.cfm.flow import sample_euler
 
-EPOCHS = (2, 4, 5)
 SEEDS = (20260931, 20260932, 20260933)
 
 
@@ -60,27 +61,10 @@ def image_metrics(prediction, target):
     return {"mse": mse, "psnr": psnr, "ssim": ssim}
 
 
-def load_probe(directory):
-    rows = {}
-    for path in sorted(directory.glob("rank_*_batch_*.pt")):
-        payload = torch.load(path, map_location="cpu", weights_only=True)
-        if payload.get("schema") != "stage3_dino_feature_batch_v1":
-            raise ValueError("unsupported Stage3 diagnostic schema")
-        for index, key in enumerate(payload["keys"]):
-            identity = (str(key[0]), int(key[1]))
-            if identity in rows:
-                raise ValueError("duplicate probe window")
-            rows[identity] = {name: payload[name][index].float() for name in
-                              ("actions", "dino", "current_dino", "predicted", "online_direct", "online_current")}
-    if not rows:
-        raise ValueError("empty diagnostic export")
-    return rows
-
-
 def aligned_rows(probes, cache_records):
-    reference = probes[2]
+    reference = next(iter(probes.values()))
     if any(set(probe) != set(reference) for probe in probes.values()):
-        raise ValueError("epoch probe identities differ")
+        raise ValueError("named probe identities differ")
     rows = []
     for key in sorted(reference):
         trajectory, start = key
@@ -88,10 +72,10 @@ def aligned_rows(probes, cache_records):
         item = reference[key]
         if not torch.equal(item["actions"].long(), cached["actions"][start:start+4].long()):
             raise ValueError("cache/probe action alignment differs")
-        for epoch in EPOCHS:
+        for label in probes:
             for field in ("actions", "dino", "current_dino"):
-                if not torch.equal(item[field], probes[epoch][key][field]):
-                    raise ValueError(f"epoch{epoch} {field} mismatch")
+                if not torch.equal(item[field], probes[label][key][field]):
+                    raise ValueError(f"probe {label} {field} mismatch")
         if not torch.equal(item["current_dino"], cached["dino"][start].float()):
             raise ValueError("cached current DINO differs from probe")
         for horizon in range(1, 5):
@@ -101,11 +85,11 @@ def aligned_rows(probes, cache_records):
                 raise ValueError("cached successor DINO differs from probe")
             row = {"trajectory": trajectory, "window_start": start, "horizon_step": horizon,
                    "observation": observation, "gt_state": cached["states"][observation].float(), "gt_dino": target_dino}
-            for epoch in EPOCHS:
-                source = probes[epoch][key]
-                row[f"e{epoch}_observed"] = source["online_direct"][horizon-1]
-                row[f"e{epoch}_predicted"] = source["predicted"][horizon-1]
-                row[f"e{epoch}_copy"] = source["online_current"]
+            for label, probe in probes.items():
+                source = probe[key]
+                row[f"{label}_observed"] = source["online_direct"][horizon-1]
+                row[f"{label}_predicted"] = source["predicted"][horizon-1]
+                row[f"{label}_copy"] = source["online_current"]
             rows.append(row)
     return rows
 
@@ -141,37 +125,41 @@ def pil_rgb(tensor):
     return Image.fromarray(value, "RGB")
 
 
-def render(rows, originals, outputs, output):
+def render(rows, originals, outputs, output, labels):
     """First fixed noise seed shown; numeric results average all three seeds."""
-    columns = ("raw", "state_oracle", "state_e2_observed", "state_e4_observed", "state_e5_observed",
-               "state_e2_predicted", "state_e4_predicted", "state_e5_predicted")
+    columns = ("raw", "state_oracle", *(f"state_{label}_observed" for label in labels),
+               *(f"state_{label}_predicted" for label in labels))
     identity_index = {(r["trajectory"], r["window_start"], r["horizon_step"]): i for i, r in enumerate(rows)}
     for horizon in range(1, 5):
         selected = select_page_rows(rows, horizon, limit=8)
-        canvas = Image.new("RGB", (len(columns)*144, 48+len(selected)*154), "white")
+        sizing_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+        offsets, width = column_layout(sizing_draw, columns)
+        canvas = Image.new("RGB", (width, 48+len(selected)*154), "white")
         draw = ImageDraw.Draw(canvas)
-        for col, label in enumerate(columns):
-            draw.text((col*144+3, 8), label, fill="black")
+        for offset, column_label in zip(offsets, columns):
+            draw.text((offset+3, 8), column_label, fill="black")
         draw.text((3, 28), f"H{horizon}; noise seed {SEEDS[0]}; RGB full-image bicubic128; State decoder", fill="black")
         for index, row in enumerate(selected):
             position = identity_index[(row["trajectory"], row["window_start"], horizon)]
             y = 48+index*154
-            for col, name in enumerate(columns):
+            for offset, name in zip(offsets, columns):
                 image = originals[position] if name == "raw" else outputs[name][position]
-                canvas.paste(pil_rgb(image), (col*144, y))
+                canvas.paste(pil_rgb(image), (offset, y))
             draw.text((3, y+130), f"{row['trajectory']} start={row['window_start']}", fill="black")
         canvas.save(output / f"state_horizon_{horizon}.png")
-        dino_columns = ("raw", "dino_oracle", "dino_e2_predicted", "dino_e4_predicted", "dino_e5_predicted")
-        canvas = Image.new("RGB", (len(dino_columns)*144, 48+len(selected)*154), "white")
+        dino_columns = ("raw", "dino_oracle", *(f"dino_{label}_predicted" for label in labels))
+        sizing_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+        offsets, width = column_layout(sizing_draw, dino_columns)
+        canvas = Image.new("RGB", (width, 48+len(selected)*154), "white")
         draw = ImageDraw.Draw(canvas)
-        for col, label in enumerate(dino_columns):
-            draw.text((col*144+3, 8), label, fill="black")
+        for offset, column_label in zip(offsets, dino_columns):
+            draw.text((offset+3, 8), column_label, fill="black")
         draw.text((3, 28), f"H{horizon}; DINO decoder; predicted inputs are cross-distribution readouts", fill="black")
         for index, row in enumerate(selected):
             position = identity_index[(row["trajectory"], row["window_start"], horizon)]
             y = 48+index*154
-            for col, name in enumerate(dino_columns):
-                canvas.paste(pil_rgb(originals[position] if name == "raw" else outputs[name][position]), (col*144, y))
+            for offset, name in zip(offsets, dino_columns):
+                canvas.paste(pil_rgb(originals[position] if name == "raw" else outputs[name][position]), (offset, y))
             draw.text((3, y+130), f"{row['trajectory']} start={row['window_start']}", fill="black")
         canvas.save(output / f"dino_horizon_{horizon}.png")
 
@@ -199,7 +187,10 @@ def decode_rows(model, rows, field, seed, *, device, batch_size):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("state-checkpoint", "dino-checkpoint", "eval-cache", "eval-jsonl", "epoch2", "epoch4", "epoch5", "output"):
+    parser.add_argument("--probe", action="append", default=[], metavar="LABEL=PATH")
+    for epoch in (2, 4, 5):
+        parser.add_argument(f"--epoch{epoch}", type=Path)
+    for name in ("state-checkpoint", "dino-checkpoint", "eval-cache", "eval-jsonl", "output"):
         parser.add_argument("--"+name, type=Path, required=True)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--batch-size", type=int, default=8)
@@ -210,17 +201,22 @@ def main(argv=None):
     from experiments.training.sft.stage3.frozen_wm_diagnostic import FrozenTrajectoryCache
 
     torch.set_num_threads(4)
-    paths = {epoch: getattr(args, f"epoch{epoch}") for epoch in EPOCHS}
+    paths = probe_paths(args, parser)
+    if not args.probe:
+        # Preserve the historical reconstruction metric/column names for the
+        # legacy --epoch2/--epoch4/--epoch5 invocation.
+        paths = {f"e{epoch}": paths[f"epoch{epoch}"] for epoch in (2, 4, 5)}
+    labels = tuple(paths)
     probe_manifests = validate_manifests(paths)
     probes = {epoch: load_probe(path) for epoch, path in paths.items()}
     dataset = PairedObservationDataset(args.eval_cache, args.eval_jsonl, "eval", condition="state")
     cache = FrozenTrajectoryCache(args.eval_cache)
-    wanted = {key[0] for key in probes[2]}
+    wanted = {key[0] for key in next(iter(probes.values()))}
     records = {str(entry["trajectory_id"]): cache.load(index) for index, entry in enumerate(cache.records)
                if str(entry["trajectory_id"]) in wanted}
     rows = aligned_rows(probes, records)
     unique_observations = {(row["trajectory"], row["observation"]) for row in rows}
-    if (len(wanted), len(probes[2]), len(rows), len(unique_observations)) != (8, 71, 284, 95):
+    if (len(wanted), len(next(iter(probes.values()))), len(rows), len(unique_observations)) != (8, 71, 284, 95):
         raise ValueError("unexpected diagnostic population; expected8trajectories/71windows/284positions/95observations")
     image_lookup = {tuple(key): index for index, key in enumerate(dataset.keys)}
     originals = torch.stack([dataset.images[image_lookup[(r["trajectory"], r["observation"])]] for r in rows]).float()/127.5-1
@@ -237,9 +233,9 @@ def main(argv=None):
         decoder_identity = validate_decoder_identity(payload, dataset.identity, family, decoder_identity)
         del payload
         fields = {"oracle": "gt_state" if family == "state" else "gt_dino"}
-        fields.update({f"e{epoch}_predicted": f"e{epoch}_predicted" for epoch in EPOCHS})
+        fields.update({f"{label}_predicted": f"{label}_predicted" for label in labels})
         if family == "state":
-            fields.update({f"e{epoch}_{kind}": f"e{epoch}_{kind}" for kind in ("observed", "copy") for epoch in EPOCHS})
+            fields.update({f"{label}_{kind}": f"{label}_{kind}" for kind in ("observed", "copy") for label in labels})
         for label, field in fields.items():
             name = f"{family}_{label}"
             seed_metrics, all_values, decoded_counts = {}, [], []
@@ -258,9 +254,9 @@ def main(argv=None):
         del model
         if device.type == "cuda":
             torch.cuda.empty_cache()
-    render(rows, originals, display, args.output)
+    render(rows, originals, display, args.output, labels)
     (args.output / "metrics.json").write_text(json.dumps(results, indent=2, allow_nan=False))
-    manifest = {"schema": "matched_cfm_stage3_probe_evaluation_v1", "checkpoints": {
+    manifest = {"schema": "matched_cfm_named_stage3_probe_evaluation_v2", "probe_labels": list(labels), "checkpoints": {
         str(path): digest(path) for path in (args.state_checkpoint, args.dino_checkpoint)},
         "cache_identity": dataset.identity, "decoder_identity": decoder_identity, "probes": probe_manifests, "noise_seeds": SEEDS,
         "noise_identity": "sha256(seed,trajectory,successor_observation); same pure noise across epochs/decoders/columns",
