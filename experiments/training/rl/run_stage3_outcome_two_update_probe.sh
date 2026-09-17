@@ -13,6 +13,8 @@ RL_CONFIG=${RL_CONFIG:-${REPO}/configs/training/rl/stage3_outcome_best_two_updat
 PIPELINE=${REPO}/experiments/training/rl/run_vllm_online_ppo_smoke.sh
 MIN_FREE_GIB=${MIN_FREE_GIB:-110}
 TOTAL_TIMEOUT_SECONDS=${TOTAL_TIMEOUT_SECONDS:-900}
+export ROLLOUT_CUDA_VISIBLE_DEVICES=${ROLLOUT_CUDA_VISIBLE_DEVICES:-0,1,2,3}
+export VLLM_WORKER_MULTIPROC_METHOD=spawn
 
 [[ "${TOTAL_TIMEOUT_SECONDS}" == 900 ]] || {
   echo "the approved short probe has a fixed 900-second total deadline" >&2

@@ -292,10 +292,11 @@ export WANDB_MODE=${WANDB_MODE_REQUESTED}
 export WANDB_DIR=${WANDB_DIR:-${REPO}/.cache/wandb}
 
 VISIBLE=${CUDA_VISIBLE_DEVICES:-$(seq -s, 0 $((TRAIN_TOTAL_GPUS - 1)))}
-IFS=',' read -r -a GPUS <<< "${VISIBLE}"
+ROLLOUT_VISIBLE=${ROLLOUT_CUDA_VISIBLE_DEVICES:-${VISIBLE}}
+IFS=',' read -r -a GPUS <<< "${ROLLOUT_VISIBLE}"
 if [[ "${RUN_ROLLOUT}" == true && -z "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" ]] \
     && (( ${#GPUS[@]} != TENSOR_PARALLEL_SIZE )); then
-  echo "expected ${TENSOR_PARALLEL_SIZE} visible GPUs, got ${VISIBLE}" >&2
+  echo "expected ${TENSOR_PARALLEL_SIZE} rollout GPUs, got ${ROLLOUT_VISIBLE}" >&2
   exit 1
 fi
 HEAD_IP=$(hostname -I | tr ' ' '\n' | awk '/^10\.23\./ {print; exit}')
@@ -364,7 +365,7 @@ if [[ "${RUN_ROLLOUT}" == true ]]; then
       --env-id "nimloth-navigation-prewarm-${ITERATION_TAG}" \
     2>&1 | tee -a "${LOG}"
 
-  export CUDA_VISIBLE_DEVICES=${VISIBLE}
+  export CUDA_VISIBLE_DEVICES=${ROLLOUT_VISIBLE}
   export PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VAGEN/verl:${REPO}/external/le-wm
   VLLM_BACKEND_ARGS=()
   if [[ -n "${VLLM_DISTRIBUTED_EXECUTOR_BACKEND}" ]]; then
@@ -470,6 +471,7 @@ if [[ "${RUN_REFERENCE}" == true ]]; then
 fi
 
 if [[ "${RUN_TRAIN}" == true ]]; then
+  export CUDA_VISIBLE_DEVICES=${VISIBLE}
   export PYTHONPATH=${REPO}/src:${ENV_REPO}/external/VAGEN:${ENV_REPO}/external/VAGEN/verl:${REPO}/external/le-wm
   export NIMLOTH_DDP_GPU_STRIDE=${TRAIN_GPUS_PER_RANK}
 TRAIN_ARGS=(
