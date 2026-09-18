@@ -21,6 +21,20 @@ export VLLM_WORKER_MULTIPROC_METHOD=spawn
   exit 2
 }
 [[ -x "${PYTHON}" && -x "${PIPELINE}" && -f "${RL_CONFIG}" ]]
+read -r ACTOR_ENABLED CREDIT_ASSIGNMENT < <(
+  "${PYTHON}" - "${RL_CONFIG}" <<'PY'
+import sys, yaml
+from pathlib import Path
+
+config = yaml.safe_load(Path(sys.argv[1]).read_text())
+actor = config.get("actor", {})
+print(str(actor.get("enabled") is True).lower(), actor.get("credit_assignment", ""))
+PY
+)
+if [[ "${ACTOR_ENABLED}" == true && "${CREDIT_ASSIGNMENT}" != turn ]]; then
+  echo "direct Qwen PPO probe requires actor.credit_assignment=turn" >&2
+  exit 2
+fi
 [[ ! -e "${RUN_OUT}" ]] || {
   echo "refusing to reuse probe output: ${RUN_OUT}" >&2
   exit 2
@@ -68,17 +82,26 @@ LATEST=${RUN_OUT}/train/latest
 run_iteration 2 "${LATEST}" 0 "${LATEST}"
 
 [[ -f "${RUN_OUT}/train/final/rl_state.pt" ]]
-"${PYTHON}" - "${RUN_OUT}" <<'PY'
+"${PYTHON}" - "${RUN_OUT}" "${ACTOR_ENABLED}" "${CREDIT_ASSIGNMENT}" <<'PY'
 import csv, json, math, sys
 from pathlib import Path
 root = Path(sys.argv[1])
+actor_enabled = sys.argv[2] == "true"
+if actor_enabled and sys.argv[3] != "turn":
+    raise SystemExit("direct Qwen PPO probe requires actor.credit_assignment=turn")
 rows = list(csv.DictReader((root / "train/train_step_log.csv").open()))
 if len(rows) != 2 or [int(row["global_step"]) for row in rows] != [1, 2]:
     raise SystemExit(f"expected exactly two updates: {rows}")
 required = ("wm_mse", "dino_grid_mse", "value_loss", "outcome_bce", "total_loss",
             "outcome_count", "loss_finite", "gradient_finite", "optimizer_updates")
 for row in rows:
-    for key in required:
+    actor_required = (
+        "actor_loss", "policy_tokens", "mean_ratio", "clip_fraction",
+        "mean_advantage", "mean_abs_advantage", "entropy",
+        "gradient_l2", "gradient_parameter_count",
+        "gradient_qwen_l2", "gradient_qwen_parameter_count",
+    ) if actor_enabled else ()
+    for key in (*required, *actor_required):
         if key not in row or not math.isfinite(float(row[key])):
             raise SystemExit(f"invalid {key}: {row}")
     if float(row["outcome_count"]) <= 0:
@@ -87,7 +110,25 @@ for row in rows:
         raise SystemExit(f"non-finite update evidence: {row}")
     if float(row["optimizer_updates"]) != 1:
         raise SystemExit(f"missing optimizer update evidence: {row}")
+    if actor_enabled:
+        if float(row["policy_tokens"]) <= 0:
+            raise SystemExit(f"direct PPO update has no policy tokens: {row}")
+        if float(row["mean_abs_advantage"]) <= 0:
+            raise SystemExit(f"direct PPO update has no nonzero advantages: {row}")
+        if float(row["gradient_parameter_count"]) <= 0:
+            raise SystemExit(f"direct PPO update has no gradient parameters: {row}")
+        if float(row["gradient_l2"]) <= 0:
+            raise SystemExit(f"direct PPO update has zero gradient norm: {row}")
+        if float(row["gradient_qwen_parameter_count"]) <= 0:
+            raise SystemExit(f"direct PPO update has no Qwen gradient parameters: {row}")
+        if float(row["gradient_qwen_l2"]) <= 0:
+            raise SystemExit(f"direct PPO update has zero Qwen gradient norm: {row}")
 (root / "two_update_probe_complete.json").write_text(
-    json.dumps({"status": "ALL_OK", "updates": 2, "final": str(root / "train/final")}, indent=2) + "\n"
+    json.dumps({
+        "status": "ALL_OK",
+        "updates": 2,
+        "actor_enabled": actor_enabled,
+        "final": str(root / "train/final"),
+    }, indent=2) + "\n"
 )
 PY

@@ -22,11 +22,11 @@ from nimloth.training.rl.algorithm import (
     RLBatch,
     build_rl_batch,
 )
+from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
 from nimloth.training.rl.episodes import (
     ExecutedTransition,
     build_episode_training_batches,
 )
-from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
 from nimloth.training.rl.evaluation import (
     evaluate_rollout_collector,
     summarize_rollouts,
@@ -469,11 +469,18 @@ class RLTrainingLoop:
                     self.model_runtime,
                     batch,
                 )
+                if not torch.isfinite(output.loss):
+                    raise FloatingPointError(
+                        "sequence update produced a non-finite total loss"
+                    )
                 self.optimization_runtime.backward(output.loss)
                 self._accumulate_metrics(step_metrics, output.metrics)
                 del output
+                step_metrics.update(self._optimizer_gradient_metrics())
+                step_metrics["loss_finite"] = 1.0
                 optimizer_step_started = True
                 self.optimization_runtime.step()
+                step_metrics["optimizer_updates"] = 1.0
         except Exception as error:
             if consumption_id is not None and not optimizer_step_started:
                 assert abort_consumption is not None
@@ -574,9 +581,9 @@ class RLTrainingLoop:
         return tuple(target.unsqueeze(0) for target in targets.unbind(0))
 
     def _with_sequence_dino_grid_target(self, batch: RLBatch) -> RLBatch:
-        """把扁平 next-image targets 还原成 sequence objective 的 ``(B,H,...)``。"""
+        """把扁平 current-image targets 还原成 sequence objective 的 ``(B,H,...)``。"""
 
-        targets = self._load_dino_grid_target_batch(batch.next_image_paths)
+        targets = self._load_dino_grid_target_batch(batch.current_image_paths)
         if targets is None:
             return batch
         target_shape = (*batch.action_indices.shape, *targets.shape[1:])
@@ -603,24 +610,45 @@ class RLTrainingLoop:
 
         squared_norm = torch.zeros((), dtype=torch.float64, device=self.device)
         parameter_count = 0
+        group_squared_norms: dict[str, torch.Tensor] = {}
+        group_parameter_counts: dict[str, int] = {}
         for group in self.optimization_runtime.optimizer.param_groups:
+            group_name = str(group.get("name", "unnamed"))
+            group_squared_norm = torch.zeros(
+                (), dtype=torch.float64, device=self.device
+            )
+            group_parameter_count = 0
             for parameter in group["params"]:
                 gradient = parameter.grad
                 if gradient is None:
                     continue
                 if not torch.isfinite(gradient).all():
                     raise FloatingPointError(
-                        f"non-finite gradient in optimizer group {group.get('name', '<unnamed>')}"
+                        "non-finite gradient in optimizer group "
+                        f"{group.get('name', '<unnamed>')}"
                     )
-                squared_norm = squared_norm + gradient.detach().double().square().sum()
+                gradient_squared_norm = gradient.detach().double().square().sum()
+                squared_norm = squared_norm + gradient_squared_norm
+                group_squared_norm = group_squared_norm + gradient_squared_norm
                 parameter_count += int(gradient.numel())
+                group_parameter_count += int(gradient.numel())
+            group_squared_norms[group_name] = group_squared_norm
+            group_parameter_counts[group_name] = group_parameter_count
         if parameter_count == 0:
-            raise RuntimeError("planner update produced no optimizer gradients")
-        return {
+            raise RuntimeError("RL update produced no optimizer gradients")
+        metrics = {
             "gradient_finite": 1.0,
             "gradient_parameter_count": float(parameter_count),
             "gradient_l2": float(squared_norm.sqrt().item()),
         }
+        for group_name, group_squared_norm in group_squared_norms.items():
+            metrics[f"gradient_{group_name}_parameter_count"] = float(
+                group_parameter_counts[group_name]
+            )
+            metrics[f"gradient_{group_name}_l2"] = float(
+                group_squared_norm.sqrt().item()
+            )
+        return metrics
 
     def _reduce_planner_step_metrics(
         self,

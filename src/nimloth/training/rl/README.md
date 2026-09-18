@@ -172,13 +172,17 @@ Qwen action prior。这里的PPO只指ValueHead critic的frozen-old clipped regr
 states from the same raw trajectory; windows never cross episode boundaries.
 
 ```text
-hidden    = rollout_qwen_hidden[:, window_start:window_start+H+1]
-states    = state_proj(hidden)
-context   = states[:, :H]
-targets   = stop_gradient(states[:, 1:H+1])
-predicted = wm_predictor(context, actions[:, :H])
-L_wm      = mse(predicted, targets)
-L_sigreg  = SIGReg(states.transpose(0, 1))
+hidden       = recomputed_or_rollout_hidden(all H+1 real state prefixes)
+aux_hidden   = hidden if representation_to_backbone else stop_gradient(hidden)
+states       = state_proj(aux_hidden)
+context      = states[:, :H]
+targets      = stop_gradient(states[:, 1:H+1])
+predicted    = wm_predictor(context, actions[:, :H])
+observed     = state_proj(hidden)[:, :H]
+L_wm         = mse(predicted, targets)
+L_dino       = mse(observed, frozen_dino(current_images))
+L_outcome    = masked_bce(outcome_head(predicted), action_success)
+L_sigreg     = SIGReg(states.transpose(0, 1))
 
 Q         = value_head(context)
 L_value   = regression(Q[action], discounted_returns) + ranking_loss
@@ -204,6 +208,12 @@ When actor training is enabled, PPO recomputes `new_log_prob` from the exact
 same prompt and the same temperature/top-p transformation as the recorded
 behavior policy. The entropy term is calculated from that transformed
 distribution, including masked zero-probability actions.
+
+`actor.credit_assignment: turn`把每个environment step的Monte Carlo advantage
+分配给该turn中所有实际采样、且`loss_mask=true`的reasoning/action token。它直接
+训练Qwen policy，不构造PlannerPolicyHead，也不启用TokenValueHead；注入token不参与
+PPO loss。连续sequence路径上的WM、ValueHead和OutcomeHead可在Qwen hidden处截断，
+同时真实current observation的DINO锚定与actor PPO仍分别保留到Qwen的梯度。
 
 `actor.credit_assignment: token`启用真正的turn内token GAE。Qwen同一次replay
 forward通过`logits_to_keep`只保留loss-mask位置；TokenValueHead读取这些位置进入

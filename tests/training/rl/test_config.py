@@ -8,8 +8,17 @@ from pathlib import Path
 
 import pytest
 
-from nimloth.config.rl import load_rl_config, merge_rl_config_overrides, parse_rl_config
-from nimloth.training.rl.cli import main, parse_rl_args
+from nimloth.config.rl import (
+    RLConfig,
+    load_rl_config,
+    merge_rl_config_overrides,
+    parse_rl_config,
+)
+from nimloth.training.rl.cli import (
+    _validate_warm_start_checkpoints,
+    main,
+    parse_rl_args,
+)
 
 
 def _raw_config() -> dict:
@@ -697,6 +706,71 @@ def test_rl_cli_preserves_checkpoint_processor_by_default() -> None:
     )
 
     assert args.max_pixels is None
+
+
+def _outcome_warm_start_args(
+    root: Path,
+    *,
+    resume: bool = False,
+) -> Namespace:
+    return Namespace(
+        model=root,
+        wm_checkpoint=root / "wm_predictor",
+        state_proj_checkpoint=root / "state_proj.pt",
+        value_head_checkpoint=root / "value_head",
+        outcome_head_checkpoint=root / "outcome_head.pt",
+        fresh_rollout_manifest=root / "fresh_manifest.json",
+        resume=resume,
+    )
+
+
+def _direct_outcome_config() -> RLConfig:
+    raw = _raw_config()
+    raw["actor"] = {"enabled": True, "credit_assignment": "turn"}
+    raw["predictor"].update({"train_wm": True, "lambda_dino": 2.0})
+    raw["outcome_head"] = {"enabled": True, "lambda_bce": 1.0}
+    return parse_rl_config(raw)
+
+
+def test_fresh_direct_outcome_rl_requires_complete_same_root_checkpoint(
+    tmp_path: Path,
+) -> None:
+    config = _direct_outcome_config()
+    args = _outcome_warm_start_args(tmp_path / "stage3_epoch5")
+    args.outcome_head_checkpoint = None
+
+    with pytest.raises(
+        ValueError,
+        match=r"fresh OutcomeHead RL requires --outcome-head-checkpoint",
+    ):
+        _validate_warm_start_checkpoints(args, config)
+
+    args = _outcome_warm_start_args(tmp_path / "stage3_epoch5")
+    args.value_head_checkpoint = tmp_path / "other_epoch" / "value_head"
+    with pytest.raises(ValueError, match="components must share one checkpoint root"):
+        _validate_warm_start_checkpoints(args, config)
+
+
+def test_fresh_direct_outcome_rl_accepts_one_checkpoint_family(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "stage3_epoch5"
+    _validate_warm_start_checkpoints(
+        _outcome_warm_start_args(root),
+        _direct_outcome_config(),
+    )
+
+
+def test_direct_outcome_resume_keeps_existing_recovery_behavior(
+    tmp_path: Path,
+) -> None:
+    args = _outcome_warm_start_args(tmp_path / "stage3_epoch5", resume=True)
+    args.wm_checkpoint = None
+    args.state_proj_checkpoint = None
+    args.value_head_checkpoint = None
+    args.outcome_head_checkpoint = None
+
+    _validate_warm_start_checkpoints(args, _direct_outcome_config())
 
 
 def test_rl_config_rejects_impossible_distributed_topology() -> None:

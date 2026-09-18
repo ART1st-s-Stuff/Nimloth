@@ -6,8 +6,8 @@ import math
 from dataclasses import replace
 from pathlib import Path
 
-import torch
 import pytest
+import torch
 
 from nimloth.agent import (
     Agent,
@@ -23,6 +23,7 @@ from nimloth.config.rl import (
     DistributedConfig,
     FreezeConfig,
     GradientConfig,
+    OutcomeHeadConfig,
     PlannerPolicyConfig,
     PredictorConfig,
     RLConfig,
@@ -51,13 +52,13 @@ from nimloth.training.rl.algorithm import (
 )
 from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.util.module import move_to_device
-from nimloth.wm.model import WorldModel
 from nimloth.wm.grid import (
     GridPredictorConfig,
     GridWorldModel,
     SharedSlotProjector,
     TemporalSpatialGridPredictor,
 )
+from nimloth.wm.model import WorldModel
 from nimloth.wm.sigreg import SequenceSIGReg
 from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
@@ -75,7 +76,7 @@ class _Backbone(Backbone):
     def forward(self, batch: BackboneBatch, **_kwargs) -> BackboneOutput:
         return BackboneOutput(self.language_model(batch.tensors["hidden"]))
 
-    def with_model(self, model: torch.nn.Module) -> "_Backbone":
+    def with_model(self, model: torch.nn.Module) -> _Backbone:
         view = _Backbone()
         view.language_model = model
         return view
@@ -159,6 +160,17 @@ class _StateProjector(torch.nn.Linear):
         return super().forward(hidden)
 
 
+class _SequenceOutcomeHead(torch.nn.Module):
+    """Tiny non-grid test head that preserves the explicit time axis."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.linear = torch.nn.Linear(2, 1)
+
+    def forward(self, predicted_states: torch.Tensor) -> torch.Tensor:
+        return self.linear(predicted_states).squeeze(-1)
+
+
 class _RecordingSIGReg(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -180,6 +192,34 @@ class _TokenReplay(torch.nn.Module):
             selected_log_probs=self.log_probs,
             entropies=torch.ones_like(self.log_probs),
             token_values=self.token_values,
+        )
+
+
+class _BackboneCoupledTokenReplay(torch.nn.Module):
+    """Minimal replay graph used to prove PPO reaches the Qwen parameter path."""
+
+    def __init__(
+        self,
+        backbone: _Backbone,
+        old_log_probs: torch.Tensor,
+    ) -> None:
+        super().__init__()
+        object.__setattr__(self, "backbone", backbone)
+        self.register_buffer("old_log_probs", old_log_probs.detach().clone())
+
+    def forward(self, _samples) -> PolicyReplayOutput:
+        backbone = object.__getattribute__(self, "backbone")
+        anchor = backbone.model.weight.reshape(-1)[0]
+        coefficients = torch.arange(
+            1,
+            self.old_log_probs.numel() + 1,
+            dtype=anchor.dtype,
+            device=anchor.device,
+        )
+        selected = self.old_log_probs.to(anchor.device) + anchor * coefficients
+        return PolicyReplayOutput(
+            selected_log_probs=selected,
+            entropies=torch.ones_like(selected),
         )
 
 
@@ -304,6 +344,7 @@ def _rl_config(
     reference_kl_loss_weight: float = 0.0,
     world_model_weight: float = 1.0,
     dino_grid_weight: float = 0.0,
+    outcome_enabled: bool = False,
 ) -> RLConfig:
     return RLConfig(
         agent=AgentConfig(),
@@ -330,6 +371,11 @@ def _rl_config(
             rank_margin=0.1,
             lambda_rank=value_rank_weight,
         ),
+        outcome_head=OutcomeHeadConfig(
+            enabled=outcome_enabled,
+            lr=1e-4,
+            lambda_bce=1.0 if outcome_enabled else 0.0,
+        ),
         planner_policy=PlannerPolicyConfig(),
         rollout=RolloutConfig(),
         rl=RLLoopConfig(),
@@ -344,6 +390,8 @@ def _algorithm(
     sigreg: SequenceSIGReg | None = None,
     state_source: str = "recompute",
     representation_to_backbone: bool = True,
+    dino_grid_weight: float = 0.0,
+    outcome_enabled: bool = False,
 ) -> tuple[
     RLAlgorithm,
     RLModelRuntime,
@@ -364,11 +412,16 @@ def _algorithm(
             state_proj=state_proj,
             wm_predictor=predictor,
             value_head=value_head,
+            outcome_head=(_SequenceOutcomeHead() if outcome_enabled else None),
         ),
     )
     return (
         RLAlgorithm(
-            config=_rl_config(sigreg_weight=0.1 if sigreg is not None else 0.0),
+            config=_rl_config(
+                sigreg_weight=0.1 if sigreg is not None else 0.0,
+                dino_grid_weight=dino_grid_weight,
+                outcome_enabled=outcome_enabled,
+            ),
             sigreg=sigreg,
         ),
         RLModelRuntime(
@@ -410,6 +463,156 @@ def test_sequence_batch_preserves_trajectory_boundaries_and_alignment() -> None:
         assert replay_inputs[0].action_index == window.trajectory.action_indices[
             window.start_step
         ]
+
+
+def test_sequence_batch_aligns_current_images_and_masked_action_outcomes() -> None:
+    trajectory = _trajectory("aligned", 3)
+    trajectory.action_successes = [True, True, False]
+    window = sample_trajectory_windows(
+        [trajectory],
+        history_size=2,
+        batch_size=1,
+        seed=0,
+    )[0]
+    batch = build_rl_batch(
+        (window,),
+        gamma=1.0,
+        device=torch.device("cpu"),
+    )
+    start = window.start_step
+
+    assert batch.current_image_paths == tuple(
+        trajectory.image_paths[start : start + 2]
+    )
+    assert batch.action_success_targets is not None
+    assert batch.action_success_mask is not None
+    expected_labels = trajectory.action_successes[start : start + 2]
+    assert batch.action_success_mask.tolist() == [[True, True]]
+    assert batch.action_success_targets.tolist() == [
+        [float(value) for value in expected_labels]
+    ]
+
+
+def test_sequence_outcome_mask_and_gradient_boundaries_with_turn_ppo() -> None:
+    labeled = _trajectory("direct-ppo-labeled", 2)
+    labeled.action_successes = [True, False]
+    unlabeled = _trajectory("direct-ppo-unlabeled", 2)
+    batch = build_rl_batch(
+        (
+            sample_trajectory_windows(
+                [labeled], history_size=2, batch_size=1, seed=0
+            )[0],
+            sample_trajectory_windows(
+                [unlabeled], history_size=2, batch_size=1, seed=0
+            )[0],
+        ),
+        gamma=1.0,
+        device=torch.device("cpu"),
+    )
+    dino_target = torch.zeros((2, 2, 2))
+    batch = replace(batch, dino_grid_target=dino_target)
+    (
+        algorithm,
+        base_runtime,
+        _,
+        backbone,
+        state_proj,
+        predictor,
+        value_head,
+    ) = _algorithm(
+        representation_to_backbone=False,
+        dino_grid_weight=2.0,
+        outcome_enabled=True,
+    )
+    algorithm = RLAlgorithm(
+        config=replace(
+            algorithm.config,
+            actor=replace(
+                algorithm.config.actor,
+                enabled=True,
+                credit_assignment="turn",
+            ),
+        ),
+        sigreg=None,
+    )
+    replay = _TokenReplay(token_count=batch.old_log_probs.numel())
+    runtime = replace(base_runtime, policy_replay=replay)
+
+    output = algorithm.sequence_step(runtime, batch)
+    assert output.losses["outcome"] is not None
+    assert output.metrics["outcome_count"] == 2.0
+    assert output.metrics["lambda_outcome"] == 1.0
+    auxiliary_loss = (
+        algorithm.config.predictor.lambda_wm * output.losses["wm"]
+        + output.losses["value"]
+        + algorithm.config.outcome_head.lambda_bce * output.losses["outcome"]
+    )
+    auxiliary_loss.backward(retain_graph=True)
+    assert backbone.model.weight.grad is None
+    assert state_proj.weight.grad is not None
+    assert predictor.linear.weight.grad is not None
+    assert value_head.net[0].weight.grad is not None
+    assert runtime.agent.wm.outcome_head is not None
+    assert runtime.agent.wm.outcome_head.linear.weight.grad is not None
+    for module in (
+        backbone,
+        state_proj,
+        predictor,
+        value_head,
+        runtime.agent.wm.outcome_head,
+        replay,
+    ):
+        module.zero_grad(set_to_none=True)
+    output.loss.backward()
+
+    # WM/value/outcome stop at hidden, while current-state DINO and turn PPO
+    # independently keep Qwen gradients. Projector and every auxiliary head train.
+    assert backbone.model.weight.grad is not None
+    assert state_proj.weight.grad is not None
+    assert predictor.linear.weight.grad is not None
+    assert value_head.net[0].weight.grad is not None
+    assert runtime.agent.wm.outcome_head.linear.weight.grad is not None
+    assert replay.log_probs.grad is not None
+    assert output.metrics["policy_tokens"] == float(batch.old_log_probs.numel())
+
+
+def test_turn_ppo_alone_reaches_backbone_when_auxiliary_hidden_is_detached() -> None:
+    batch = _batch()
+    algorithm, base_runtime, _, backbone, *_rest = _algorithm(
+        representation_to_backbone=False,
+    )
+    algorithm = RLAlgorithm(
+        config=replace(
+            algorithm.config,
+            actor=replace(
+                algorithm.config.actor,
+                enabled=True,
+                credit_assignment="turn",
+            ),
+        ),
+        sigreg=None,
+    )
+    with torch.no_grad():
+        backbone.model.weight.zero_()
+    runtime = replace(
+        base_runtime,
+        policy_replay=_BackboneCoupledTokenReplay(backbone, batch.old_log_probs),
+    )
+
+    output = algorithm.sequence_step(runtime, batch)
+    output.loss.backward()
+
+    assert output.losses["dino"] is None
+    assert backbone.model.weight.grad is not None
+    assert torch.count_nonzero(backbone.model.weight.grad) > 0
+
+
+def test_sequence_outcome_fails_closed_when_all_labels_are_missing() -> None:
+    batch = _batch()
+    algorithm, runtime, *_ = _algorithm(outcome_enabled=True)
+
+    with pytest.raises(ValueError, match="at least one fresh action_success label"):
+        algorithm.sequence_step(runtime, batch)
 
 
 def test_runtime_rejects_over_budget_state_before_backbone_forward() -> None:
@@ -651,7 +854,7 @@ def test_grid_rl_uses_same_state_and_dino_losses_as_sft2() -> None:
     flat_dino_targets = torch.stack(
         [
             torch.full((2, 2), float(index + 1))
-            for index, _path in enumerate(batch.next_image_paths)
+            for index, _path in enumerate(batch.current_image_paths)
         ]
     )
     batch = replace(
@@ -676,6 +879,7 @@ def test_grid_rl_uses_same_state_and_dino_losses_as_sft2() -> None:
     assert set(output.losses) == {
         "wm",
         "dino",
+        "outcome",
         "sigreg",
         "value",
         "policy",

@@ -380,6 +380,21 @@ def test_fresh_consumption_commits_after_post_update_checkpoint(
     assert loop.state.global_step == 1
 
 
+def test_optimizer_gradient_metrics_report_qwen_group_separately(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop, _collector = _training_loop(tmp_path, monkeypatch)
+    parameter = loop.optimization_runtime.parameter  # type: ignore[attr-defined]
+    loop.optimization_runtime.optimizer.param_groups[0]["name"] = "qwen"
+    parameter.grad = torch.full_like(parameter, 3.0)
+
+    metrics = loop._optimizer_gradient_metrics()
+
+    assert metrics["gradient_qwen_parameter_count"] == 1.0
+    assert metrics["gradient_qwen_l2"] == 3.0
+
+
 def test_planner_dino_targets_are_loaded_once_and_aligned_across_episodes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -505,7 +520,7 @@ def test_planner_dino_targets_load_only_the_rank_local_transition_shard(
     )
 
 
-def test_sequence_dino_targets_are_loaded_and_reshaped_before_algorithm(
+def test_sequence_current_dino_targets_are_loaded_and_reshaped_before_algorithm(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -549,7 +564,7 @@ def test_sequence_dino_targets_are_loaded_and_reshaped_before_algorithm(
 
     loop._run_iteration(1)
 
-    assert source.loaded_paths == [("step_1.png", "step_2.png")]
+    assert source.loaded_paths == [("step_0.png", "step_1.png")]
     assert len(received) == 1
     torch.testing.assert_close(
         received[0],

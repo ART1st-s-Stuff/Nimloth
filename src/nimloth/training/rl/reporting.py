@@ -154,6 +154,7 @@ _LOG_COLUMNS = (
     "entropy",
     "clip_fraction",
     "mean_advantage",
+    "mean_abs_advantage",
     "token_value_loss",
     "reference_kl_loss",
     "mean_ratio",
@@ -162,6 +163,8 @@ _LOG_COLUMNS = (
     "gradient_finite",
     "gradient_parameter_count",
     "gradient_l2",
+    "gradient_qwen_parameter_count",
+    "gradient_qwen_l2",
     "optimizer_updates",
 )
 
