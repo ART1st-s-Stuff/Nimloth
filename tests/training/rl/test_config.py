@@ -152,7 +152,7 @@ def test_activation_offload_is_strictly_typed(invalid: object) -> None:
     assert parse_rl_config(raw).training.activation_offload is True
 
 
-def test_direct_ppo_retry_config_enables_activation_offload() -> None:
+def test_direct_ppo_retry_config_keeps_activation_offload_disabled() -> None:
     config_path = (
         Path(__file__).resolve().parents[3]
         / "configs"
@@ -161,7 +161,7 @@ def test_direct_ppo_retry_config_enables_activation_offload() -> None:
         / "stage3_outcome_best_direct_qwen_ppo_one_update_retry.yaml"
     )
 
-    assert load_rl_config(config_path).training.activation_offload is True
+    assert load_rl_config(config_path).training.activation_offload is False
 
 
 @pytest.mark.parametrize(

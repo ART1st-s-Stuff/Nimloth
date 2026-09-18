@@ -73,7 +73,7 @@ training:
   log_interval: 1
   save_interval: 1
   sequence_micro_batch_size: 1
-  activation_offload: true
+  activation_offload: false
 
 distributed:
   nodes: 1
