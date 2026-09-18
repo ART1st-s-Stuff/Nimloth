@@ -13,7 +13,7 @@ import torch
 import torch.distributed as dist
 
 from nimloth.config.sft2 import SFT2LoopConfig
-from nimloth.training.sft.stage3.activation_offload import saved_activation_context
+from nimloth.training.common.activation_offload import saved_activation_context
 from nimloth.training.sft.stage3.batch import SFT2BatchBuilder
 from nimloth.training.sft.stage3.checkpoint import (
     SFT2CheckpointRuntime,

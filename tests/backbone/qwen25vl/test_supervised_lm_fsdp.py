@@ -14,7 +14,7 @@ from nimloth.backbone.qwen25vl.latent import _capture_last_hidden, extract_qwen_
 from nimloth.backbone.selected_token_rows import install_full_language_selected_rows
 from nimloth.latent.extraction import LatentActionTokens
 from nimloth.training.sft.stage3.fsdp import qwen_wrap_policy
-from nimloth.training.sft.stage3.activation_offload import saved_activation_context
+from nimloth.training.common.activation_offload import saved_activation_context
 
 
 def _model():

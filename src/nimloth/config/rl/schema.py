@@ -156,6 +156,7 @@ class TrainingConfig:
     save_interval: int = 50
     planner_micro_batch_size: int = 1
     sequence_micro_batch_size: int | None = None
+    activation_offload: bool = False
 
 
 @dataclass(frozen=True)
@@ -316,6 +317,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             "save_interval",
             "planner_micro_batch_size",
             "sequence_micro_batch_size",
+            "activation_offload",
         },
     )
     distributed = _section(
@@ -724,9 +726,18 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         if "sequence_micro_batch_size" in training
         else None
     )
+    activation_offload = _boolean(
+        training.get("activation_offload", False),
+        "training.activation_offload",
+    )
     if agent_config.planning.enabled and sequence_micro_batch_size is not None:
         raise ValueError(
             "training.sequence_micro_batch_size is only valid for non-planner "
+            "sequence training"
+        )
+    if agent_config.planning.enabled and activation_offload:
+        raise ValueError(
+            "training.activation_offload is only valid for non-planner "
             "sequence training"
         )
     if (
@@ -875,6 +886,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
                 "training.planner_micro_batch_size",
             ),
             sequence_micro_batch_size=sequence_micro_batch_size,
+            activation_offload=activation_offload,
         ),
         distributed=distributed_config,
         outcome_head=OutcomeHeadConfig(

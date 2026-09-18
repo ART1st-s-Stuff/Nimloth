@@ -1,18 +1,5 @@
-"""Optional CPU storage for tensors saved by Stage3 forward autograd graphs."""
-from __future__ import annotations
+"""Compatibility import for the shared training activation context."""
 
-from contextlib import nullcontext
+from nimloth.training.common.activation_offload import saved_activation_context
 
-import torch
-
-
-def saved_activation_context(enabled: bool):
-    """Preserve tensor values/dtypes and restore their device during backward.
-
-    Parameters, optimizer state, computation and gradient reduction stay on their
-    original devices. PyTorch may save parameter views as well as activations;
-    their saved copies use CPU storage without moving the live parameters.
-    """
-    if enabled:
-        return torch.autograd.graph.save_on_cpu(pin_memory=True)
-    return nullcontext()
+__all__ = ["saved_activation_context"]

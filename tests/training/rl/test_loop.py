@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -293,6 +294,7 @@ def _training_loop(
             log_interval=1,
             save_interval=2,
             sequence_micro_batch_size=None,
+            activation_offload=False,
         ),
         validation=SimpleNamespace(enabled=False, interval=1),
     )
@@ -342,6 +344,7 @@ def test_sequence_micro_batches_accumulate_before_exactly_one_optimizer_step(
 ) -> None:
     loop, collector = _training_loop(tmp_path, monkeypatch)
     loop.config.training.sequence_micro_batch_size = 1
+    loop.config.training.activation_offload = True
     loop.config.rl.batch_size = 2
     loop.config.outcome_head = SimpleNamespace(enabled=False)
     monkeypatch.setattr(loop_module, "count_trajectory_windows", lambda *_a, **_k: 2)
@@ -381,6 +384,22 @@ def test_sequence_micro_batches_accumulate_before_exactly_one_optimizer_step(
 
     monkeypatch.setattr(loop_module, "slice_rl_batch", slice_batch)
 
+    activation_events: list[str] = []
+    activation_depth = [0]
+
+    @contextmanager
+    def saved_context(enabled: bool):
+        assert enabled is True
+        activation_events.append("enter")
+        activation_depth[0] += 1
+        try:
+            yield
+        finally:
+            activation_depth[0] -= 1
+            activation_events.append("exit")
+
+    monkeypatch.setattr(loop_module, "saved_activation_context", saved_context)
+
     class _MicroAlgorithm(_Algorithm):
         def __init__(self) -> None:
             super().__init__()
@@ -399,6 +418,7 @@ def test_sequence_micro_batches_accumulate_before_exactly_one_optimizer_step(
             normalization,
             include_policy,
         ):
+            assert activation_depth[0] == 1
             assert include_policy is False
             assert normalization.action_positions == 2
             assert normalization.policy_tokens == 2
@@ -416,6 +436,7 @@ def test_sequence_micro_batches_accumulate_before_exactly_one_optimizer_step(
             *,
             normalization,
         ):
+            assert activation_depth[0] == 1
             assert normalization.policy_tokens == 2
             assert prepared.policy_step_advantages is not None
             return SimpleNamespace(
@@ -440,6 +461,7 @@ def test_sequence_micro_batches_accumulate_before_exactly_one_optimizer_step(
     assert loop.optimization_runtime.zero_grad_calls == 1
     assert loop.optimization_runtime.backward_calls == 4
     assert loop.optimization_runtime.step_calls == 1
+    assert activation_events == ["enter", "exit"] * 4
     assert loop.state.global_step == 1
     assert collector.events == ["collect", "begin", "commit"]
 

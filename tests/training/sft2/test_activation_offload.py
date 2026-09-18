@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from nimloth.config.sft2 import SFT2LoopConfig, flatten_sft2_yaml_config
-from nimloth.training.sft.stage3 import activation_offload
+from nimloth.training.common import activation_offload
 from nimloth.training.sft.stage3.cli import parse_sft2_args
 
 

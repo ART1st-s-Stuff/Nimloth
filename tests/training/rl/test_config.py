@@ -88,6 +88,7 @@ def test_rl_config_builds_immutable_sections_and_cli_overrides() -> None:
     assert overridden.training.seed == 7
     assert config.training.planner_micro_batch_size == 1
     assert config.training.sequence_micro_batch_size is None
+    assert config.training.activation_offload is False
     assert overridden.rollout.train_datasets == ("base_train",)
     assert config.rollout.max_episode_attempts == 1
     assert config.predictor.lambda_sigreg == 0.1
@@ -134,6 +135,33 @@ def test_sequence_micro_batch_size_is_typed_and_positive() -> None:
     raw["training"]["sequence_micro_batch_size"] = 3
     with pytest.raises(ValueError, match="must be <= rl.batch_size"):
         parse_rl_config(raw)
+
+
+@pytest.mark.parametrize("invalid", ["false", 0, 1, None])
+def test_activation_offload_is_strictly_typed(invalid: object) -> None:
+    raw = _raw_config()
+    raw["training"] = {"activation_offload": invalid}
+
+    with pytest.raises(
+        ValueError,
+        match="training.activation_offload must be a boolean",
+    ):
+        parse_rl_config(raw)
+
+    raw["training"] = {"activation_offload": True}
+    assert parse_rl_config(raw).training.activation_offload is True
+
+
+def test_direct_ppo_retry_config_enables_activation_offload() -> None:
+    config_path = (
+        Path(__file__).resolve().parents[3]
+        / "configs"
+        / "training"
+        / "rl"
+        / "stage3_outcome_best_direct_qwen_ppo_one_update_retry.yaml"
+    )
+
+    assert load_rl_config(config_path).training.activation_offload is True
 
 
 @pytest.mark.parametrize(
@@ -185,6 +213,30 @@ def test_sequence_micro_batch_field_is_rejected_for_planner_training() -> None:
         }
     }
     raw["training"] = {"sequence_micro_batch_size": 1}
+    raw["predictor"].update({"train_wm": True, "lambda_sigreg": 0.0})
+    raw["value_head"] = {
+        "lambda_rank": 0.0,
+        "ppo_clip_range": 0.2,
+        "ppo_epochs": 1,
+    }
+    raw["rl"]["batch_size"] = 8
+    raw["rl"]["envs_per_iteration"] = 8
+
+    with pytest.raises(ValueError, match="only valid for non-planner"):
+        parse_rl_config(raw)
+
+
+def test_activation_offload_is_rejected_for_planner_training() -> None:
+    raw = _raw_config()
+    raw["agent"] = {
+        "planning": {
+            "enabled": True,
+            "horizon": 1,
+            "search_mode": "greedy",
+            "device": "cuda",
+        }
+    }
+    raw["training"] = {"activation_offload": True}
     raw["predictor"].update({"train_wm": True, "lambda_sigreg": 0.0})
     raw["value_head"] = {
         "lambda_rank": 0.0,

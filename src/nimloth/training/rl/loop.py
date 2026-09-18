@@ -17,6 +17,7 @@ from nimloth.rollout import (
     count_trajectory_windows,
     sample_trajectory_windows,
 )
+from nimloth.training.common.activation_offload import saved_activation_context
 from nimloth.training.rl.algorithm import (
     RLAlgorithm,
     RLBatch,
@@ -545,12 +546,15 @@ class RLTrainingLoop:
                                 len(batch.windows),
                             ),
                         )
-                        output = self.algorithm.sequence_step(
-                            self.model_runtime,
-                            micro_batch,
-                            normalization=normalization,
-                            include_policy=False,
-                        )
+                        with saved_activation_context(
+                            self.config.training.activation_offload
+                        ):
+                            output = self.algorithm.sequence_step(
+                                self.model_runtime,
+                                micro_batch,
+                                normalization=normalization,
+                                include_policy=False,
+                            )
                         if not torch.isfinite(output.loss):
                             raise FloatingPointError(
                                 "sequence update produced a non-finite total loss"
@@ -559,11 +563,14 @@ class RLTrainingLoop:
                         self._accumulate_metrics(step_metrics, output.metrics)
                         del output
                         if self.model_runtime.policy_replay is not None:
-                            policy_output = self.algorithm.sequence_policy_step(
-                                self.model_runtime,
-                                micro_batch,
-                                normalization=normalization,
-                            )
+                            with saved_activation_context(
+                                self.config.training.activation_offload
+                            ):
+                                policy_output = self.algorithm.sequence_policy_step(
+                                    self.model_runtime,
+                                    micro_batch,
+                                    normalization=normalization,
+                                )
                             if not torch.isfinite(policy_output.loss):
                                 raise FloatingPointError(
                                     "sequence PPO update produced a non-finite loss"
@@ -575,10 +582,13 @@ class RLTrainingLoop:
                             )
                             del policy_output
                 else:
-                    output = self.algorithm.sequence_step(
-                        self.model_runtime,
-                        batch,
-                    )
+                    with saved_activation_context(
+                        self.config.training.activation_offload
+                    ):
+                        output = self.algorithm.sequence_step(
+                            self.model_runtime,
+                            batch,
+                        )
                     if not torch.isfinite(output.loss):
                         raise FloatingPointError(
                             "sequence update produced a non-finite total loss"
