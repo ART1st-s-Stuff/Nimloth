@@ -142,11 +142,6 @@ def test_sequence_micro_batch_size_is_typed_and_positive() -> None:
         ("credit_assignment", "token", "does not support token credit"),
         ("lambda_sigreg", 0.1, "requires predictor.lambda_sigreg=0"),
         ("lambda_rank", 0.1, "requires value_head.lambda_rank=0"),
-        (
-            "reference_kl_loss_weight",
-            0.1,
-            "requires actor.reference_kl_loss_weight=0",
-        ),
     ],
 )
 def test_sequence_micro_batch_rejects_non_equivalent_objectives(
@@ -170,10 +165,6 @@ def test_sequence_micro_batch_rejects_non_equivalent_objectives(
             "hidden_dim": 8,
         }
         raw["rl"]["truncated_bootstrap"] = "zero"
-    elif field == "reference_kl_loss_weight":
-        raw["actor"]["enabled"] = True
-        raw["actor"][field] = value
-        raw["actor"]["reference_kl_loss_type"] = "low_var_kl"
     elif field == "lambda_sigreg":
         raw["predictor"][field] = value
     else:

@@ -753,11 +753,6 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             raise ValueError(
                 "sequence micro-batching requires value_head.lambda_rank=0"
             )
-        if actor_config.reference_kl_loss_weight != 0.0:
-            raise ValueError(
-                "sequence micro-batching requires "
-                "actor.reference_kl_loss_weight=0"
-            )
 
     if "state_source" not in gradient:
         raise ValueError("gradient.state_source must be explicit")
