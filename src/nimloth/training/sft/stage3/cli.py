@@ -113,6 +113,16 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         help="Load the configured model/checkpoint and evaluate without updates or checkpoint writes.",
     )
     ap.add_argument(
+        "--rl-eval-checkpoint",
+        type=Path,
+        default=None,
+        help=(
+            "Complete RL checkpoint root used only with --eval-only. --model must "
+            "name this same directory; projector, WM, value and outcome weights are "
+            "then loaded from its fixed same-root artifact names."
+        ),
+    )
+    ap.add_argument(
         "--feature-export-dir",
         type=Path,
         default=None,
@@ -317,6 +327,21 @@ def parse_sft2_args(argv: list[str] | None = None) -> argparse.Namespace:
             ap.error("diagnostic-dir must not contain the training output")
     if args.feature_export_dir is not None and not args.eval_only:
         ap.error("feature_export_dir requires --eval-only")
+    if args.rl_eval_checkpoint is not None:
+        if not args.eval_only:
+            ap.error("rl_eval_checkpoint requires --eval-only")
+        if Path(args.model).resolve() != args.rl_eval_checkpoint.resolve():
+            ap.error("RL eval requires --model and --rl-eval-checkpoint to name the same root")
+        if args.resume or args.resume_from is not None:
+            ap.error("RL eval checkpoint cannot be combined with Stage3 resume")
+        if args.wm_predictor_checkpoint is not None:
+            ap.error("RL eval checkpoint owns the WM predictor; remove --wm-predictor-checkpoint")
+        if args.objective != "dino_grid":
+            ap.error("RL eval checkpoint currently requires the dino_grid objective")
+        if args.frozen_wm_cache_dir is not None:
+            ap.error("RL eval checkpoint does not support frozen_wm_cache export")
+        if args.outcome_eval_dir is not None:
+            ap.error("RL eval checkpoint does not support outcome_eval export")
     if args.frozen_wm_cache_dir is not None and not args.eval_only:
         ap.error("frozen_wm_cache_dir requires --eval-only")
     if args.frozen_wm_cache_dir is not None and args.objective != "dino_grid":

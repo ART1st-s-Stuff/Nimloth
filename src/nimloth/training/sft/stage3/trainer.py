@@ -22,6 +22,7 @@ from nimloth.backbone import (
     build_input_builder,
     build_vision_ema,
     load_backbone,
+    model_output_device,
     resolve_tune_modes,
     resolve_vision_ema,
     uses_lora,
@@ -71,10 +72,164 @@ from nimloth.wm import (
 from nimloth.wm.grid import (
     GridPredictorConfig,
     GridWorldModel,
+    SharedSlotProjector,
     TemporalSpatialGridPredictor,
     ResidualTemporalSpatialGridPredictor,
     load_sft1_slot_projector,
 )
+
+
+def _rl_eval_checkpoint_root(args: Any) -> Path | None:
+    checkpoint = getattr(args, "rl_eval_checkpoint", None)
+    return Path(checkpoint).resolve() if checkpoint is not None else None
+
+
+def _validate_rl_eval_checkpoint_contract(args: Any) -> tuple[Path, dict[str, Any]]:
+    """Validate the self-contained RL artifact before allocating model weights."""
+
+    root = _rl_eval_checkpoint_root(args)
+    if root is None:
+        raise ValueError("RL eval checkpoint root is required")
+    if Path(args.model).resolve() != root:
+        raise ValueError("RL eval Qwen and auxiliary components must share one checkpoint root")
+    required = (
+        root / "config.json",
+        root / "rl_state.pt",
+        root / "state_proj.pt",
+        root / "wm_predictor" / "config.json",
+        root / "wm_predictor" / "predictor.pt",
+        root / "value_head" / "value_head.pt",
+        root / "outcome_head.pt",
+    )
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f"incomplete RL eval checkpoint; missing: {missing}")
+    if (root / "planner_policy_head").exists():
+        raise ValueError("Stage3 RL evaluation does not support PlannerPolicyHead checkpoints")
+
+    state = torch.load(root / "rl_state.pt", map_location="cpu", weights_only=False)
+    if not isinstance(state, dict):
+        raise ValueError("RL eval rl_state.pt must contain a dictionary")
+    outcome_config = state.get("outcome_config")
+    if not isinstance(outcome_config, dict) or not outcome_config.get("enabled", False):
+        raise ValueError("RL eval checkpoint must declare an enabled OutcomeHead")
+    if not getattr(args, "outcome_head", False):
+        raise ValueError("RL eval checkpoint with OutcomeHead requires --outcome-head")
+    return root, state
+
+
+def _load_rl_eval_grid_world_model(
+    args: Any,
+    *,
+    model: torch.nn.Module,
+    device: torch.device,
+    pair_parallel: bool,
+) -> tuple[GridWorldModel, torch.device]:
+    """Build and strictly restore Stage3-compatible components from one RL root."""
+
+    root, _state = _validate_rl_eval_checkpoint_contract(args)
+    predictor_metadata = json.loads(
+        (root / "wm_predictor" / "config.json").read_text(encoding="utf-8")
+    )
+    is_residual = (
+        predictor_metadata.get("schema")
+        == "nimloth_residual_temporal_spatial_grid_v1"
+    )
+    predictor_type = (
+        ResidualTemporalSpatialGridPredictor
+        if is_residual
+        else TemporalSpatialGridPredictor
+    )
+    predictor = predictor_type.load_checkpoint(
+        root / "wm_predictor", map_location="cpu"
+    )
+    expected_kind = "residual" if is_residual else "direct"
+    expected = {
+        "grid_predictor_kind": (
+            getattr(args, "grid_predictor_kind", "direct"),
+            expected_kind,
+        ),
+        "latent_token_count": (
+            int(args.latent_token_count),
+            int(predictor.config.grid_tokens),
+        ),
+        "grid_size": (int(args.grid_size) ** 2, int(predictor.config.grid_tokens)),
+        "emb_dim": (int(args.emb_dim), int(predictor.config.emb_dim)),
+        "history_size": (int(args.history_size), int(predictor.config.history_size)),
+        "grid_wm_depth": (int(args.grid_wm_depth), int(predictor.config.depth)),
+        "grid_wm_heads": (int(args.grid_wm_heads), int(predictor.config.heads)),
+        "grid_wm_dim_head": (
+            int(args.grid_wm_dim_head),
+            int(predictor.config.dim_head),
+        ),
+        "grid_wm_mlp_dim": (
+            int(args.grid_wm_mlp_dim),
+            int(predictor.config.mlp_dim),
+        ),
+        "grid_wm_dropout": (
+            float(args.grid_wm_dropout),
+            float(predictor.config.dropout),
+        ),
+    }
+    mismatches = {
+        key: values for key, values in expected.items() if values[0] != values[1]
+    }
+    if mismatches:
+        raise ValueError(f"RL eval checkpoint/config mismatch: {mismatches}")
+
+    world_model_device = (
+        model_output_device(model, default=device) if pair_parallel else device
+    )
+
+    projector_state = torch.load(
+        root / "state_proj.pt", map_location="cpu", weights_only=True
+    )
+    if not isinstance(projector_state, dict):
+        raise ValueError("RL eval state_proj.pt must contain a state dictionary")
+    projector_first = projector_state.get("net.0.weight")
+    if projector_first is None or projector_first.ndim != 2:
+        raise ValueError("RL eval state projector is missing net.0.weight")
+    if not projector_first.is_floating_point():
+        raise ValueError("RL eval state projector weights must be floating point")
+    qwen_hidden_dim = int(model.config.hidden_size)
+    if int(projector_first.shape[1]) != qwen_hidden_dim:
+        raise ValueError(
+            "RL eval state projector/Qwen hidden dimension mismatch: "
+            f"projector={projector_first.shape[1]}, qwen={qwen_hidden_dim}"
+        )
+    state_proj = SharedSlotProjector(
+        input_dim=qwen_hidden_dim,
+        output_dim=predictor.config.emb_dim,
+        hidden_dim=int(projector_first.shape[0]),
+        grid_tokens=predictor.config.grid_tokens,
+    ).to(dtype=projector_first.dtype)
+    state_proj.load_state_dict(projector_state, strict=True)
+    value_head = ValueHead.load_checkpoint(
+        root / "value_head",
+        emb_dim=predictor.config.emb_dim,
+        map_location="cpu",
+    )
+    outcome_payload = torch.load(
+        root / "outcome_head.pt", map_location="cpu", weights_only=True
+    )
+    if not isinstance(outcome_payload, dict):
+        raise ValueError("RL eval outcome_head.pt must contain a dictionary")
+    if outcome_payload.get("schema") != ActionOutcomeHead.schema:
+        raise ValueError("unsupported RL eval OutcomeHead checkpoint schema")
+    if int(outcome_payload.get("emb_dim", -1)) != predictor.config.emb_dim:
+        raise ValueError("RL eval OutcomeHead dimension mismatch")
+    outcome_state = outcome_payload.get("state_dict")
+    if not isinstance(outcome_state, dict):
+        raise ValueError("RL eval OutcomeHead checkpoint is missing state_dict")
+    outcome_head = ActionOutcomeHead(predictor.config.emb_dim)
+    outcome_head.load_state_dict(outcome_state, strict=True)
+    world_model = GridWorldModel(
+        state_proj=state_proj,
+        wm_predictor=predictor,
+        value_head=value_head,
+        outcome_head=outcome_head,
+    ).to(world_model_device)
+    return world_model, world_model_device
 
 
 def _validate_dino_grid_contract(args: Any) -> dict[str, Any]:
@@ -104,6 +259,13 @@ def _validate_dino_grid_contract(args: Any) -> dict[str, Any]:
         )
     if args.dino_grid_cache is None:
         raise ValueError("DINO-grid SFT2 requires --dino-grid-cache")
+
+    if _rl_eval_checkpoint_root(args) is not None:
+        root, state = _validate_rl_eval_checkpoint_contract(args)
+        predictor_metadata = json.loads(
+            (root / "wm_predictor" / "config.json").read_text(encoding="utf-8")
+        )
+        return {"rl_state": state, "wm_predictor": predictor_metadata}
 
     config_path = Path(args.model) / "grid_state_config.json"
     if not config_path.is_file():
@@ -154,6 +316,16 @@ def _build_world_model(
     train_wm_predictor: bool,
 ) -> tuple[WorldModel, torch.device]:
     """按 objective 构造并恢复 world-model 子模块。"""
+
+    if _rl_eval_checkpoint_root(args) is not None:
+        if resume_ckpt_dir is not None or getattr(args, "resume", False):
+            raise ValueError("RL eval checkpoint cannot be combined with Stage3 resume")
+        return _load_rl_eval_grid_world_model(
+            args,
+            model=model,
+            device=device,
+            pair_parallel=pair_parallel,
+        )
 
     world_model_device = device
     if pair_parallel:
@@ -495,6 +667,7 @@ def _train_sft2_impl(args=None) -> int:
     resume_state_path = (
         resume_ckpt_dir / "training_state.pt" if resume_ckpt_dir is not None else None
     )
+    rl_eval_checkpoint_dir = _rl_eval_checkpoint_root(args)
     if is_main():
         print(
             json.dumps(
@@ -507,6 +680,11 @@ def _train_sft2_impl(args=None) -> int:
                     "objective": args.objective,
                     "resume": args.resume,
                     "resume_from": str(resume_ckpt_dir) if resume_ckpt_dir is not None else None,
+                    "rl_eval_checkpoint": (
+                        str(rl_eval_checkpoint_dir)
+                        if rl_eval_checkpoint_dir is not None
+                        else None
+                    ),
                     "init_model": str(args.model),
                     "wm_predictor_checkpoint": str(args.wm_predictor_checkpoint) if args.wm_predictor_checkpoint else None,
                     "output_dir": str(args.output_dir),
@@ -559,14 +737,22 @@ def _train_sft2_impl(args=None) -> int:
         from nimloth.training.sft.stage3.vision_ema_fsdp import build_fsdp_vision_ema
         vision_ema = build_fsdp_vision_ema(
             decay=args.vision_ema_decay, model=agent.backbone.model,
-            resume_path=(resume_ckpt_dir / "vision_ema.pt") if resume_ckpt_dir else None,
+            resume_path=(
+                (resume_ckpt_dir or rl_eval_checkpoint_dir) / "vision_ema.pt"
+                if (resume_ckpt_dir or rl_eval_checkpoint_dir) is not None
+                else None
+            ),
         )
     else:
         vision_ema = build_vision_ema(
             enabled=vision_ema_enabled,
             decay=args.vision_ema_decay,
             llm=agent.backbone.model,
-            resume_path=(resume_ckpt_dir / "vision_ema.pt") if resume_ckpt_dir else None,
+            resume_path=(
+                (resume_ckpt_dir or rl_eval_checkpoint_dir) / "vision_ema.pt"
+                if (resume_ckpt_dir or rl_eval_checkpoint_dir) is not None
+                else None
+            ),
             device=device,
         )
     input_builder = build_input_builder(
