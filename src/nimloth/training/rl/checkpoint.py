@@ -18,6 +18,7 @@ import torch.distributed as dist
 
 from nimloth.agent import Agent
 from nimloth.backbone import BackboneEMA
+from nimloth.backbone.selected_token_rows import materialize_selected_state_dict
 from nimloth.util.distributed import is_main
 from nimloth.wm.predictor import LatentWMPredictor
 from nimloth.wm.value_head import ValueHead
@@ -49,6 +50,40 @@ def _rank_world() -> tuple[int, int]:
     if dist.is_available() and dist.is_initialized():
         return dist.get_rank(), dist.get_world_size()
     return 0, 1
+
+
+def _save_collected_fsdp_backbone(
+    agent: Agent,
+    out_dir: Path,
+    state: dict[str, torch.Tensor],
+) -> None:
+    """Export one already-collected CPU FSDP state without new collectives."""
+
+    if not state or any(value.device.type != "cpu" for value in state.values()):
+        raise ValueError("FSDP export requires nonempty CPU full backbone state")
+    wrapped = agent.backbone.model
+    model = getattr(wrapped, "module", None)
+    if model is None or not hasattr(model, "save_pretrained"):
+        raise TypeError("FSDP backbone must wrap a Hugging Face model")
+    row_state = {
+        key: value.detach().clone()
+        for key, value in state.items()
+        if key.rsplit(".", 1)[-1]
+        in {
+            "nimloth_query_rows",
+            "nimloth_protocol_rows",
+            "nimloth_query_ids",
+            "nimloth_protocol_ids",
+        }
+    }
+    dense_state = materialize_selected_state_dict(state) if row_state else state
+    model.save_pretrained(
+        out_dir,
+        state_dict=dense_state,
+        safe_serialization=True,
+    )
+    if row_state:
+        torch.save(row_state, out_dir / "selected_token_rows.pt")
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +147,12 @@ def save_rl_checkpoint(
         policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
         with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, policy):
             full_model_state = model.state_dict()
+        # Ignored or unsharded tensors are not guaranteed to follow the FSDP
+        # offload policy.  Normalize the sole export state here while every
+        # rank is still in the same completed collective.
+        for key, value in full_model_state.items():
+            if value.device.type != "cpu":
+                full_model_state[key] = value.detach().cpu()
 
     # 原始 optimizer state 是 rank-local FSDP shard。每个 rank 单独保存一份，
     # 既支持相同 world size 的精确恢复，也覆盖本 rank 的 WM heads。
@@ -150,10 +191,11 @@ def save_rl_checkpoint(
 
         # Qwen 模型
         if save_llm:
-            agent.backbone.save_pretrained(
-                out_dir,
-                state_dict=full_model_state if fsdp_model else None,
-            )
+            if fsdp_model:
+                assert full_model_state is not None
+                _save_collected_fsdp_backbone(agent, out_dir, full_model_state)
+            else:
+                agent.backbone.save_pretrained(out_dir)
             processor.save_pretrained(out_dir)
             if vision_ema is not None and vision_ema.shadow:
                 vision_ema.save_checkpoint(out_dir / "vision_ema.pt")
