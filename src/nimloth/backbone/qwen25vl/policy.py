@@ -480,12 +480,16 @@ class QwenActionLogProbReplay:
                 "policy replay requires persisted token traces; historical "
                 "action-only records must not enter the current actor objective"
             )
-        with evaluating(self.model):
-            return replay_policy_token_log_probs(
-                samples=samples,
-                model=self.model,
-                processor=self.processor,
-                token_id_map=self.token_id_map,
-                device=self.device,
-                token_value_head=self.token_value_head,
+        if not self.model.training:
+            raise RuntimeError(
+                "current-policy replay requires the trainable Qwen model in "
+                "training mode; eval mode disables gradient checkpointing"
             )
+        return replay_policy_token_log_probs(
+            samples=samples,
+            model=self.model,
+            processor=self.processor,
+            token_id_map=self.token_id_map,
+            device=self.device,
+            token_value_head=self.token_value_head,
+        )

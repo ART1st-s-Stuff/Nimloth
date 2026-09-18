@@ -14,6 +14,7 @@ from nimloth.agent import (
     PromptTemplateSpec,
 )
 from nimloth.backbone.qwen25vl.policy import (
+    QwenActionLogProbReplay,
     _logits_to_keep_positions,
     replay_policy_token_log_probs,
 )
@@ -93,6 +94,54 @@ class _TokenModel(_Model):
         self.last_logits_to_keep = logits_to_keep
         hidden = self.scale * torch.ones((1, len(logits_to_keep), 4))
         return SimpleNamespace(logits=self.lm_head(hidden))
+
+
+def test_current_policy_replay_preserves_training_and_frozen_child_modes(
+    monkeypatch,
+) -> None:
+    model = _Model()
+    model.visual = torch.nn.Linear(1, 1)
+    model.train()
+    model.visual.eval()
+    expected = object()
+
+    def replay(**kwargs):
+        assert kwargs["model"].training is True
+        assert kwargs["model"].visual.training is False
+        return expected
+
+    monkeypatch.setattr(
+        "nimloth.backbone.qwen25vl.policy.replay_policy_token_log_probs",
+        replay,
+    )
+    adapter = QwenActionLogProbReplay(
+        model=model,
+        processor=_Processor(),
+        token_id_map={},
+        device=torch.device("cpu"),
+    )
+    sample = SimpleNamespace(token_trace=object())
+
+    assert adapter((sample,)) is expected
+    assert model.training is True
+    assert model.visual.training is False
+
+
+def test_current_policy_replay_rejects_eval_mode_before_forward(monkeypatch) -> None:
+    model = _Model().eval()
+    monkeypatch.setattr(
+        "nimloth.backbone.qwen25vl.policy.replay_policy_token_log_probs",
+        lambda **_kwargs: pytest.fail("eval-mode replay must fail before forward"),
+    )
+    adapter = QwenActionLogProbReplay(
+        model=model,
+        processor=_Processor(),
+        token_id_map={},
+        device=torch.device("cpu"),
+    )
+
+    with pytest.raises(RuntimeError, match="disables gradient checkpointing"):
+        adapter((SimpleNamespace(token_trace=object()),))
 
 
 def test_logits_to_keep_positions_are_native_indices_for_device_mapped_qwen() -> None:
