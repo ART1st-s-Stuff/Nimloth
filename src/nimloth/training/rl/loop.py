@@ -20,7 +20,10 @@ from nimloth.rollout import (
 from nimloth.training.rl.algorithm import (
     RLAlgorithm,
     RLBatch,
+    SequenceLossNormalization,
     build_rl_batch,
+    normalized_monte_carlo_advantages,
+    slice_rl_batch,
 )
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
 from nimloth.training.rl.episodes import (
@@ -465,17 +468,107 @@ class RLTrainingLoop:
             else:
                 assert batch is not None
                 self.optimization_runtime.zero_grad()
-                output = self.algorithm.sequence_step(
-                    self.model_runtime,
-                    batch,
+                configured_micro_batch_size = (
+                    self.config.training.sequence_micro_batch_size
                 )
-                if not torch.isfinite(output.loss):
-                    raise FloatingPointError(
-                        "sequence update produced a non-finite total loss"
+                sequence_micro_batch_size = (
+                    len(batch.windows)
+                    if configured_micro_batch_size is None
+                    else min(configured_micro_batch_size, len(batch.windows))
+                )
+                if sequence_micro_batch_size < len(batch.windows):
+                    old_action_values = []
+                    for offset in range(
+                        0,
+                        len(batch.windows),
+                        sequence_micro_batch_size,
+                    ):
+                        old_value_batch = slice_rl_batch(
+                            batch,
+                            offset,
+                            min(
+                                offset + sequence_micro_batch_size,
+                                len(batch.windows),
+                            ),
+                        )
+                        old_action_values.append(
+                            self.algorithm.sequence_old_action_values(
+                                self.model_runtime,
+                                old_value_batch,
+                            )
+                        )
+                    full_old_action_values = torch.cat(old_action_values, dim=0)
+                    full_step_advantages = normalized_monte_carlo_advantages(
+                        return_targets=batch.return_targets.to(
+                            device=full_old_action_values.device,
+                            dtype=full_old_action_values.dtype,
+                        ).flatten(),
+                        predicted_values=full_old_action_values.flatten(),
+                    ).reshape_as(batch.return_targets)
+                    batch = replace(
+                        batch,
+                        policy_step_advantages=full_step_advantages,
                     )
-                self.optimization_runtime.backward(output.loss)
-                self._accumulate_metrics(step_metrics, output.metrics)
-                del output
+                    total_outcomes = (
+                        int(batch.action_success_mask.sum().item())
+                        if batch.action_success_mask is not None
+                        else 0
+                    )
+                    if self.config.outcome_head.enabled and total_outcomes == 0:
+                        raise ValueError(
+                            "OutcomeHead training requires at least one fresh "
+                            "action_success label"
+                        )
+                    total_policy_tokens = int(batch.old_log_probs.numel())
+                    if (
+                        self.model_runtime.policy_replay is not None
+                        and total_policy_tokens == 0
+                    ):
+                        raise ValueError(
+                            "direct PPO sequence update requires policy tokens"
+                        )
+                    normalization = SequenceLossNormalization(
+                        action_positions=batch.action_indices.numel(),
+                        outcome_labels=total_outcomes,
+                        policy_tokens=total_policy_tokens,
+                    )
+                    for offset in range(
+                        0,
+                        len(batch.windows),
+                        sequence_micro_batch_size,
+                    ):
+                        micro_batch = slice_rl_batch(
+                            batch,
+                            offset,
+                            min(
+                                offset + sequence_micro_batch_size,
+                                len(batch.windows),
+                            ),
+                        )
+                        output = self.algorithm.sequence_step(
+                            self.model_runtime,
+                            micro_batch,
+                            normalization=normalization,
+                        )
+                        if not torch.isfinite(output.loss):
+                            raise FloatingPointError(
+                                "sequence update produced a non-finite total loss"
+                            )
+                        self.optimization_runtime.backward(output.loss)
+                        self._accumulate_metrics(step_metrics, output.metrics)
+                        del output
+                else:
+                    output = self.algorithm.sequence_step(
+                        self.model_runtime,
+                        batch,
+                    )
+                    if not torch.isfinite(output.loss):
+                        raise FloatingPointError(
+                            "sequence update produced a non-finite total loss"
+                        )
+                    self.optimization_runtime.backward(output.loss)
+                    self._accumulate_metrics(step_metrics, output.metrics)
+                    del output
                 step_metrics.update(self._optimizer_gradient_metrics())
                 step_metrics["loss_finite"] = 1.0
                 optimizer_step_started = True
@@ -488,7 +581,11 @@ class RLTrainingLoop:
                 print(
                     json.dumps(
                         {
-                            "phase": "planner_optimizer_update",
+                            "phase": (
+                                "planner_optimizer_update"
+                                if episode_batches is not None
+                                else "sequence_optimizer_update"
+                            ),
                             "rank": rank,
                             "world_size": world_size,
                             "exception_type": type(error).__name__,

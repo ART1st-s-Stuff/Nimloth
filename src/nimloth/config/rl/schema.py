@@ -155,6 +155,7 @@ class TrainingConfig:
     log_interval: int = 1
     save_interval: int = 50
     planner_micro_batch_size: int = 1
+    sequence_micro_batch_size: int | None = None
 
 
 @dataclass(frozen=True)
@@ -309,7 +310,13 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     training = _section(
         raw,
         "training",
-        {"seed", "log_interval", "save_interval", "planner_micro_batch_size"},
+        {
+            "seed",
+            "log_interval",
+            "save_interval",
+            "planner_micro_batch_size",
+            "sequence_micro_batch_size",
+        },
     )
     distributed = _section(
         raw,
@@ -709,6 +716,49 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             "rl.envs_per_iteration"
         )
 
+    sequence_micro_batch_size = (
+        _positive_int(
+            training["sequence_micro_batch_size"],
+            "training.sequence_micro_batch_size",
+        )
+        if "sequence_micro_batch_size" in training
+        else None
+    )
+    if agent_config.planning.enabled and sequence_micro_batch_size is not None:
+        raise ValueError(
+            "training.sequence_micro_batch_size is only valid for non-planner "
+            "sequence training"
+        )
+    if (
+        sequence_micro_batch_size is not None
+        and sequence_micro_batch_size > batch_size
+    ):
+        raise ValueError(
+            "training.sequence_micro_batch_size must be <= rl.batch_size"
+        )
+    if (
+        sequence_micro_batch_size is not None
+        and sequence_micro_batch_size < batch_size
+    ):
+        if actor_config.credit_assignment == "token":
+            raise ValueError(
+                "sequence micro-batching does not support token credit; use "
+                "actor.credit_assignment=action or turn"
+            )
+        if sigreg_weight != 0.0:
+            raise ValueError(
+                "sequence micro-batching requires predictor.lambda_sigreg=0"
+            )
+        if value_rank_weight != 0.0:
+            raise ValueError(
+                "sequence micro-batching requires value_head.lambda_rank=0"
+            )
+        if actor_config.reference_kl_loss_weight != 0.0:
+            raise ValueError(
+                "sequence micro-batching requires "
+                "actor.reference_kl_loss_weight=0"
+            )
+
     if "state_source" not in gradient:
         raise ValueError("gradient.state_source must be explicit")
     state_source = str(gradient["state_source"])
@@ -829,6 +879,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
                 training.get("planner_micro_batch_size", 1),
                 "training.planner_micro_batch_size",
             ),
+            sequence_micro_batch_size=sequence_micro_batch_size,
         ),
         distributed=distributed_config,
         outcome_head=OutcomeHeadConfig(

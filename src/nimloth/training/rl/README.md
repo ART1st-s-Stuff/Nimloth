@@ -291,6 +291,11 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
   `zero`；未确认时配置解析直接失败，不猜测实验参数。
 - rollout behavior log-prob 与 replay 都使用同一 temperature/top-p 分布；注入的 latent
   query、action boundary 和补全 delimiter 不进入 PPO loss。
+- 非planner的sequence训练可设置`training.sequence_micro_batch_size`降低一次更新的
+  峰值显存；`rl.batch_size`仍是有效batch，一次有效batch只执行一次optimizer step。
+  action/turn advantage在完整有效batch上统一归一化，PPO按policy token、Outcome
+  按有效标签、WM/DINO/value按动作位置聚合。首版微批模式拒绝token credit、SIGReg、
+  Value ranking和reference KL；这些目标在实现完整batch等价统计前不能按局部均值近似。
 - `agent.planning.enabled: true`时，独立vLLM rollout在每个environment step让Qwen生成
   真实CoT；worker extension从同一次多模态forward截取latent hidden，不加载第二份
   HF Qwen。每次搜索只执行首动作，下一步用真实observation重新规划；terminal

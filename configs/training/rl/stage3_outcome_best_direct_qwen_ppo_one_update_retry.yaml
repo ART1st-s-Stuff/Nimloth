@@ -1,4 +1,4 @@
-# Two-update fresh direct-Qwen PPO probe from the selected Stage3 Outcome checkpoint.
+# One-update fresh direct-Qwen PPO OOM retry from the selected Stage3 Outcome checkpoint.
 agent:
   prompt_template: nimloth-latent-action
   planning:
@@ -47,7 +47,7 @@ outcome_head:
   lambda_bce: 1.0
 
 rl:
-  iterations: 2
+  iterations: 1
   envs_per_iteration: 8
   max_steps_per_episode: 20
   gamma: 1.0
@@ -71,7 +71,7 @@ validation:
 training:
   seed: 42
   log_interval: 1
-  save_interval: 2
+  save_interval: 1
   sequence_micro_batch_size: 1
 
 distributed:

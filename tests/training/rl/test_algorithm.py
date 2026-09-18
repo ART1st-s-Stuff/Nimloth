@@ -47,8 +47,11 @@ from nimloth.rollout.record_format import (
 from nimloth.training.rl.algorithm import (
     RLAlgorithm,
     RLBatch,
+    SequenceLossNormalization,
     build_rl_batch,
     low_variance_kl,
+    normalized_monte_carlo_advantages,
+    slice_rl_batch,
 )
 from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.util.module import move_to_device
@@ -217,6 +220,22 @@ class _BackboneCoupledTokenReplay(torch.nn.Module):
             device=anchor.device,
         )
         selected = self.old_log_probs.to(anchor.device) + anchor * coefficients
+        return PolicyReplayOutput(
+            selected_log_probs=selected,
+            entropies=torch.ones_like(selected),
+        )
+
+
+class _SharedScalarTokenReplay(torch.nn.Module):
+    """Replay with one shared parameter and sample-dependent token count."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.log_prob = torch.nn.Parameter(torch.tensor(-0.1))
+
+    def forward(self, samples) -> PolicyReplayOutput:  # type: ignore[no-untyped-def]
+        count = sum(len(sample.selected_old_log_probs) for sample in samples)
+        selected = self.log_prob.expand(count)
         return PolicyReplayOutput(
             selected_log_probs=selected,
             entropies=torch.ones_like(selected),
@@ -491,6 +510,136 @@ def test_sequence_batch_aligns_current_images_and_masked_action_outcomes() -> No
     assert batch.action_success_targets.tolist() == [
         [float(value) for value in expected_labels]
     ]
+
+
+def test_slice_rl_batch_preserves_window_and_variable_policy_token_alignment() -> None:
+    first = _trajectory("first", 2)
+    second = _trajectory("second", 2)
+    second.policy_token_ids = [
+        [50 + step, 70 + step, 100 + action_index, 200]
+        for step, action_index in enumerate(second.action_indices)
+    ]
+    second.policy_loss_masks = [[True, True, True, False]] * 2
+    second.policy_token_log_probs = [
+        [-0.2, -0.3, -math.log(8.0), None]
+    ] * 2
+    second.policy_token_roles = [
+        ["reasoning", "reasoning", "action", "injected"]
+    ] * 2
+    windows = tuple(
+        sample_trajectory_windows(
+            [trajectory], history_size=2, batch_size=1, seed=0
+        )[0]
+        for trajectory in (first, second)
+    )
+    batch = build_rl_batch(windows, gamma=1.0, device=torch.device("cpu"))
+    batch = replace(
+        batch,
+        dino_grid_target=torch.arange(8, dtype=torch.float32).reshape(2, 2, 2),
+        policy_step_advantages=torch.arange(4, dtype=torch.float32).reshape(2, 2),
+    )
+
+    first_slice = slice_rl_batch(batch, 0, 1)
+    second_slice = slice_rl_batch(batch, 1, 2)
+
+    assert first_slice.windows == (windows[0],)
+    assert second_slice.windows == (windows[1],)
+    assert first_slice.old_log_probs.numel() == 4
+    assert second_slice.old_log_probs.numel() == 6
+    torch.testing.assert_close(second_slice.dino_grid_target, batch.dino_grid_target[1:])
+    torch.testing.assert_close(
+        second_slice.policy_step_advantages,
+        batch.policy_step_advantages[1:],
+    )
+
+
+def test_sequence_micro_batches_match_full_batch_loss_and_gradients() -> None:
+    first = _trajectory("micro-first", 2)
+    second = _trajectory("micro-second", 2)
+    second.action_successes = [True, False]
+    second.policy_token_ids = [
+        [50 + step, 70 + step, 100 + action_index, 200]
+        for step, action_index in enumerate(second.action_indices)
+    ]
+    second.policy_loss_masks = [[True, True, True, False]] * 2
+    second.policy_token_log_probs = [
+        [-0.2, -0.3, -math.log(8.0), None]
+    ] * 2
+    second.policy_token_roles = [
+        ["reasoning", "reasoning", "action", "injected"]
+    ] * 2
+    windows = tuple(
+        sample_trajectory_windows(
+            [trajectory], history_size=2, batch_size=1, seed=0
+        )[0]
+        for trajectory in (first, second)
+    )
+    batch = build_rl_batch(windows, gamma=1.0, device=torch.device("cpu"))
+    batch = replace(batch, dino_grid_target=torch.zeros((2, 2, 2)))
+    algorithm, base_runtime, _, *_ = _algorithm(
+        representation_to_backbone=False,
+        dino_grid_weight=2.0,
+        outcome_enabled=True,
+    )
+    algorithm = RLAlgorithm(
+        config=replace(
+            algorithm.config,
+            actor=replace(
+                algorithm.config.actor,
+                enabled=True,
+                credit_assignment="turn",
+            ),
+            value_head=replace(algorithm.config.value_head, lambda_rank=0.0),
+        ),
+        sigreg=None,
+    )
+    replay = _SharedScalarTokenReplay()
+    runtime = replace(base_runtime, policy_replay=replay)
+
+    old_values = algorithm.sequence_old_action_values(runtime, batch)
+    advantages = normalized_monte_carlo_advantages(
+        return_targets=batch.return_targets.flatten(),
+        predicted_values=old_values.flatten(),
+    ).reshape_as(batch.return_targets)
+    micro_batch_source = replace(batch, policy_step_advantages=advantages)
+
+    full_output = algorithm.sequence_step(runtime, batch)
+    full_output.loss.backward()
+    full_loss = full_output.loss.detach().clone()
+    parameters = tuple(runtime.agent.parameters()) + tuple(replay.parameters())
+    full_gradients = tuple(
+        None if parameter.grad is None else parameter.grad.detach().clone()
+        for parameter in parameters
+    )
+    runtime.agent.zero_grad(set_to_none=True)
+    replay.zero_grad(set_to_none=True)
+
+    normalization = SequenceLossNormalization(
+        action_positions=batch.action_indices.numel(),
+        outcome_labels=int(batch.action_success_mask.sum().item()),
+        policy_tokens=batch.old_log_probs.numel(),
+    )
+    micro_outputs = tuple(
+        algorithm.sequence_step(
+            runtime,
+            slice_rl_batch(micro_batch_source, index, index + 1),
+            normalization=normalization,
+        )
+        for index in range(2)
+    )
+    for output in micro_outputs:
+        output.loss.backward()
+    micro_loss = sum(output.loss.detach() for output in micro_outputs)
+
+    torch.testing.assert_close(micro_loss, full_loss)
+    for full_gradient, parameter in zip(full_gradients, parameters, strict=True):
+        if full_gradient is None:
+            assert parameter.grad is None
+        else:
+            assert parameter.grad is not None
+            torch.testing.assert_close(parameter.grad, full_gradient)
+    assert sum(output.metrics["policy_tokens"] for output in micro_outputs) == 10.0
+    assert sum(output.metrics["outcome_count"] for output in micro_outputs) == 2.0
 
 
 def test_sequence_outcome_mask_and_gradient_boundaries_with_turn_ppo() -> None:

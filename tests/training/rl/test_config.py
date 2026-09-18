@@ -87,6 +87,7 @@ def test_rl_config_builds_immutable_sections_and_cli_overrides() -> None:
     assert overridden.rl.envs_per_iteration == 3
     assert overridden.training.seed == 7
     assert config.training.planner_micro_batch_size == 1
+    assert config.training.sequence_micro_batch_size is None
     assert overridden.rollout.train_datasets == ("base_train",)
     assert config.rollout.max_episode_attempts == 1
     assert config.predictor.lambda_sigreg == 0.1
@@ -116,6 +117,91 @@ def test_planner_micro_batch_size_must_be_positive() -> None:
 
     raw["training"]["planner_micro_batch_size"] = 0
     with pytest.raises(ValueError, match="planner_micro_batch_size must be >= 1"):
+        parse_rl_config(raw)
+
+
+def test_sequence_micro_batch_size_is_typed_and_positive() -> None:
+    raw = _raw_config()
+    raw["rl"]["batch_size"] = 2
+    raw["training"] = {"sequence_micro_batch_size": 2}
+
+    assert parse_rl_config(raw).training.sequence_micro_batch_size == 2
+
+    raw["training"]["sequence_micro_batch_size"] = 0
+    with pytest.raises(ValueError, match="sequence_micro_batch_size must be >= 1"):
+        parse_rl_config(raw)
+
+    raw["training"]["sequence_micro_batch_size"] = 3
+    with pytest.raises(ValueError, match="must be <= rl.batch_size"):
+        parse_rl_config(raw)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("credit_assignment", "token", "does not support token credit"),
+        ("lambda_sigreg", 0.1, "requires predictor.lambda_sigreg=0"),
+        ("lambda_rank", 0.1, "requires value_head.lambda_rank=0"),
+        (
+            "reference_kl_loss_weight",
+            0.1,
+            "requires actor.reference_kl_loss_weight=0",
+        ),
+    ],
+)
+def test_sequence_micro_batch_rejects_non_equivalent_objectives(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    raw = _raw_config()
+    raw["rl"]["batch_size"] = 8
+    raw["training"] = {"sequence_micro_batch_size": 1}
+    raw["actor"] = {"credit_assignment": "turn"}
+    raw["predictor"]["lambda_sigreg"] = 0.0
+    raw["value_head"] = {"lambda_rank": 0.0}
+    if field == "credit_assignment":
+        raw["actor"][field] = value
+        raw["token_credit"] = {
+            "gamma": 0.99,
+            "gae_lambda": 0.95,
+            "value_lr": 1e-4,
+            "value_loss_weight": 1.0,
+            "hidden_dim": 8,
+        }
+        raw["rl"]["truncated_bootstrap"] = "zero"
+    elif field == "reference_kl_loss_weight":
+        raw["actor"][field] = value
+    elif field == "lambda_sigreg":
+        raw["predictor"][field] = value
+    else:
+        raw["value_head"][field] = value
+
+    with pytest.raises(ValueError, match=message):
+        parse_rl_config(raw)
+
+
+def test_sequence_micro_batch_field_is_rejected_for_planner_training() -> None:
+    raw = _raw_config()
+    raw["agent"] = {
+        "planning": {
+            "enabled": True,
+            "horizon": 1,
+            "search_mode": "greedy",
+            "device": "cuda",
+        }
+    }
+    raw["training"] = {"sequence_micro_batch_size": 1}
+    raw["predictor"].update({"train_wm": True, "lambda_sigreg": 0.0})
+    raw["value_head"] = {
+        "lambda_rank": 0.0,
+        "ppo_clip_range": 0.2,
+        "ppo_epochs": 1,
+    }
+    raw["rl"]["batch_size"] = 8
+    raw["rl"]["envs_per_iteration"] = 8
+
+    with pytest.raises(ValueError, match="only valid for non-planner"):
         parse_rl_config(raw)
 
 

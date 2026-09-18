@@ -71,6 +71,7 @@ class _Optimization:
         self.fail_step = fail_step
         self.zero_grad_calls = 0
         self.step_calls = 0
+        self.backward_calls = 0
         self.parameter = torch.nn.Parameter(torch.tensor(0.0))
         self.optimizer = torch.optim.SGD(
             [{"params": [self.parameter], "name": "test"}], lr=0.1
@@ -81,6 +82,7 @@ class _Optimization:
         self.optimizer.zero_grad(set_to_none=True)
 
     def backward(self, _loss: torch.Tensor) -> None:
+        self.backward_calls += 1
         self.parameter.grad = torch.ones_like(self.parameter)
 
     def step(self) -> None:
@@ -286,7 +288,12 @@ def _training_loop(
         predictor=SimpleNamespace(history_size=1),
         value_head=SimpleNamespace(ppo_epochs=1),
         planner_policy=SimpleNamespace(enabled=False, entropy_coeff=0.0),
-        training=SimpleNamespace(seed=1, log_interval=1, save_interval=2),
+        training=SimpleNamespace(
+            seed=1,
+            log_interval=1,
+            save_interval=2,
+            sequence_micro_batch_size=None,
+        ),
         validation=SimpleNamespace(enabled=False, interval=1),
     )
     return (
@@ -327,6 +334,98 @@ def test_fresh_consumption_aborts_when_failure_precedes_optimizer_step(
         loop._run_iteration(1)
 
     assert collector.events == ["collect", "begin", "abort"]
+
+
+def test_sequence_micro_batches_accumulate_before_exactly_one_optimizer_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop, collector = _training_loop(tmp_path, monkeypatch)
+    loop.config.training.sequence_micro_batch_size = 1
+    loop.config.rl.batch_size = 2
+    loop.config.outcome_head = SimpleNamespace(enabled=False)
+    monkeypatch.setattr(loop_module, "count_trajectory_windows", lambda *_a, **_k: 2)
+    monkeypatch.setattr(
+        loop_module,
+        "sample_trajectory_windows",
+        lambda *_a, **_k: (object(), object()),
+    )
+    windows = tuple(
+        SimpleNamespace(
+            trajectory=SimpleNamespace(image_paths=(f"step_{index}.png",)),
+            start_step=0,
+            history_size=1,
+        )
+        for index in range(2)
+    )
+    batch = RLBatch(
+        windows=windows,  # type: ignore[arg-type]
+        action_indices=torch.zeros((2, 1), dtype=torch.long),
+        return_targets=torch.tensor([[1.0], [3.0]]),
+        old_log_probs=torch.zeros(2),
+    )
+    monkeypatch.setattr(loop_module, "build_rl_batch", lambda *_a, **_k: batch)
+
+    def slice_batch(source: RLBatch, start: int, stop: int) -> RLBatch:
+        return RLBatch(
+            windows=source.windows[start:stop],
+            action_indices=source.action_indices[start:stop],
+            return_targets=source.return_targets[start:stop],
+            old_log_probs=source.old_log_probs[start:stop],
+            policy_step_advantages=(
+                None
+                if source.policy_step_advantages is None
+                else source.policy_step_advantages[start:stop]
+            ),
+        )
+
+    monkeypatch.setattr(loop_module, "slice_rl_batch", slice_batch)
+
+    class _MicroAlgorithm(_Algorithm):
+        def __init__(self) -> None:
+            super().__init__()
+            self.old_value_batch_sizes: list[int] = []
+            self.step_advantages: list[torch.Tensor] = []
+
+        def sequence_old_action_values(self, _runtime, prepared):  # type: ignore[no-untyped-def]
+            self.old_value_batch_sizes.append(len(prepared.windows))
+            return torch.zeros_like(prepared.return_targets)
+
+        def sequence_step(  # type: ignore[no-untyped-def]
+            self,
+            _runtime,
+            prepared,
+            *,
+            normalization,
+        ):
+            assert normalization.action_positions == 2
+            assert normalization.policy_tokens == 2
+            assert prepared.policy_step_advantages is not None
+            self.step_advantages.append(prepared.policy_step_advantages.clone())
+            return SimpleNamespace(
+                loss=torch.tensor(0.5, requires_grad=True),
+                metrics={"total_loss": 0.5, "policy_tokens": 1.0},
+            )
+
+    algorithm = _MicroAlgorithm()
+    loop.algorithm = algorithm  # type: ignore[assignment]
+    loop.model_runtime = SimpleNamespace(policy_replay=object())  # type: ignore[assignment]
+
+    loop._run_iteration(1)
+
+    assert algorithm.old_value_batch_sizes == [1, 1]
+    assert len(algorithm.step_advantages) == 2
+    combined_advantages = torch.cat(algorithm.step_advantages)
+    torch.testing.assert_close(combined_advantages.mean(), torch.tensor(0.0))
+    torch.testing.assert_close(
+        combined_advantages.std(unbiased=False),
+        torch.tensor(1.0),
+    )
+    assert loop.optimization_runtime.zero_grad_calls == 1
+    assert loop.optimization_runtime.backward_calls == 2
+    assert loop.optimization_runtime.step_calls == 1
+    assert loop.state.global_step == 1
+    assert collector.events == ["collect", "begin", "commit"]
 
 
 def test_distributed_failure_leaves_consumption_in_progress_and_reports_error(
