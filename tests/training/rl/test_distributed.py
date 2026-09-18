@@ -11,7 +11,7 @@ from nimloth.backbone import (
     DistributedBackbone,
 )
 from nimloth.training.rl.trainer import (
-    _prepare_planner_qwen_training,
+    _prepare_qwen_training,
     _wrap_distributed_modules,
     _wrap_world_model_ddp,
 )
@@ -61,12 +61,12 @@ class _CheckpointedBlock(nn.Module):
         self.gradient_checkpointing = enabled
 
 
-def test_planner_qwen_training_activates_requested_gradient_checkpointing() -> None:
+def test_qwen_training_activates_requested_gradient_checkpointing() -> None:
     checkpointed = _CheckpointedBlock(enabled=True)
     frozen_checkpointed = _CheckpointedBlock(enabled=True).requires_grad_(False)
     model = nn.Sequential(checkpointed, frozen_checkpointed).eval()
 
-    active_modules = _prepare_planner_qwen_training(
+    active_modules = _prepare_qwen_training(
         model,
         gradient_checkpointing=True,
         eval_modules=(frozen_checkpointed,),
@@ -78,14 +78,14 @@ def test_planner_qwen_training_activates_requested_gradient_checkpointing() -> N
     assert active_modules == 1
 
 
-def test_planner_qwen_training_rejects_ineffective_checkpointing_flag() -> None:
+def test_qwen_training_rejects_ineffective_checkpointing_flag() -> None:
     model = nn.Sequential(_CheckpointedBlock(enabled=False)).eval()
 
     with pytest.raises(
         RuntimeError,
         match="no checkpoint-enabled module",
     ):
-        _prepare_planner_qwen_training(
+        _prepare_qwen_training(
             model,
             gradient_checkpointing=True,
         )

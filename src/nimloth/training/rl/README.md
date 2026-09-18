@@ -296,6 +296,8 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
   action/turn advantage在完整有效batch上统一归一化，PPO按policy token、Outcome
   按有效标签、WM/DINO/value按动作位置聚合。首版微批模式拒绝token credit、SIGReg、
   Value ranking和reference KL；这些目标在实现完整batch等价统计前不能按局部均值近似。
+- 只要Qwen语言参数参与RL更新，训练器会显式切换Qwen到train mode并核验gradient
+  checkpointing实际激活；该要求同时适用于planner recompute和直接Qwen PPO/DINO。
 - `agent.planning.enabled: true`时，独立vLLM rollout在每个environment step让Qwen生成
   真实CoT；worker extension从同一次多模态forward截取latent hidden，不加载第二份
   HF Qwen。每次搜索只执行首动作，下一步用真实observation重新规划；terminal

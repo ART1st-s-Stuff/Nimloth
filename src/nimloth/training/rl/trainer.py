@@ -100,20 +100,21 @@ class RLDistributedModules:
         return self.backbone.model
 
 
-def _prepare_planner_qwen_training(
+def _prepare_qwen_training(
     model: torch.nn.Module,
     *,
     gradient_checkpointing: bool,
     eval_modules: tuple[torch.nn.Module, ...] = (),
 ) -> int:
-    """Put the planner's differentiable Qwen recompute in real train mode.
+    """Put every trainable RL Qwen path in real train mode.
 
     ``transformers.PreTrainedModel.from_pretrained`` returns an eval-mode model.
     Qwen only executes an enabled gradient-checkpointing function while the
-    corresponding module is also in train mode.  Planner rollout is handled by
-    an independent vLLM process, so this model exists solely for the
-    differentiable critic/WM update and must use training semantics before DDP
-    wrapping.
+    corresponding module is also in train mode.  Behavior rollout is handled by
+    an independent vLLM process.  Planner recompute and direct Qwen PPO/DINO
+    therefore both require training semantics before distributed wrapping.
+    Leaving the direct path in eval mode silently disables checkpointing and can
+    exhaust device memory even at sequence micro-batch size one.
 
     Return the number of modules on which checkpointing is effectively active
     so the launch log and tests can fail closed instead of trusting the CLI flag.
@@ -130,7 +131,7 @@ def _prepare_planner_qwen_training(
     )
     if gradient_checkpointing and not checkpointed_modules:
         raise RuntimeError(
-            "planner requested Qwen gradient checkpointing, but the loaded model "
+            "RL requested Qwen gradient checkpointing, but the loaded model "
             "has no checkpoint-enabled module"
         )
     inactive_modules = tuple(
@@ -138,7 +139,7 @@ def _prepare_planner_qwen_training(
     )
     if inactive_modules:
         raise RuntimeError(
-            "planner Qwen gradient checkpointing is disabled by eval-mode modules"
+            "RL Qwen gradient checkpointing is disabled by eval-mode modules"
         )
     return len(checkpointed_modules)
 
@@ -946,13 +947,13 @@ def train_rl(
             resume_path=(resume_dir / "vision_ema.pt") if args.resume else None,
             device=device,
         )
-        if planning_enabled:
+        if backbone_trainable:
             eval_modules = (
                 (find_visual_module(model),)
                 if vision_tune == "freeze"
                 else ()
             )
-            checkpointed_modules = _prepare_planner_qwen_training(
+            checkpointed_modules = _prepare_qwen_training(
                 model,
                 gradient_checkpointing=bool(args.gradient_checkpointing),
                 eval_modules=eval_modules,
@@ -961,7 +962,7 @@ def train_rl(
                 print(
                     json.dumps(
                         {
-                            "planner_qwen_training_mode": "train",
+                            "qwen_training_mode": "train",
                             "gradient_checkpointing_requested": bool(
                                 args.gradient_checkpointing
                             ),
