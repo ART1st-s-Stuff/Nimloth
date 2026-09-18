@@ -14,7 +14,7 @@ from nimloth.agent import (
     PolicyReplayInput,
     PolicyReplayOutput,
     behavior_log_probs,
-    categorical_entropy_from_log_probs,
+    categorical_entropies_from_log_probs,
     sample_policy_decision,
 )
 from nimloth.latent import (
@@ -221,13 +221,7 @@ class QwenAgentPolicy:
 
 
 def _row_entropies(log_probs: torch.Tensor) -> torch.Tensor:
-    probabilities = log_probs.exp()
-    terms = torch.where(
-        probabilities > 0,
-        probabilities * log_probs,
-        torch.zeros_like(log_probs),
-    )
-    return -terms.sum(dim=-1)
+    return categorical_entropies_from_log_probs(log_probs)
 
 
 def _logits_to_keep_positions(positions: Sequence[int]) -> list[int]:

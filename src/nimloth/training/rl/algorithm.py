@@ -942,9 +942,13 @@ class RLAlgorithm:
                 if normalization is None
                 else policy_tokens / normalization.policy_tokens
             )
-            total = total + policy_scale * (
-                policy_loss - self.config.actor.entropy_coeff * policy_entropy
-            )
+            total = total + policy_scale * policy_loss
+            if self.config.actor.entropy_coeff > 0.0:
+                total = total - (
+                    policy_scale
+                    * self.config.actor.entropy_coeff
+                    * policy_entropy
+                )
             if token_value_loss is not None:
                 token_value_weight = cast(
                     float,
@@ -1090,10 +1094,13 @@ class RLAlgorithm:
             raise RuntimeError("sequence policy step produced no PPO objective")
         policy_tokens = int(policy["advantages"].numel())
         policy_scale = policy_tokens / normalization.policy_tokens
-        total = policy_scale * (
-            policy["loss"]
-            - self.config.actor.entropy_coeff * policy["entropy"]
-        )
+        total = policy_scale * policy["loss"]
+        if self.config.actor.entropy_coeff > 0.0:
+            total = total - (
+                policy_scale
+                * self.config.actor.entropy_coeff
+                * policy["entropy"]
+            )
         if token_value_loss is not None:
             total = total + (
                 cast(float, self.config.token_credit.value_loss_weight)

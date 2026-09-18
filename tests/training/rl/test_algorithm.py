@@ -242,6 +242,22 @@ class _SharedScalarTokenReplay(torch.nn.Module):
         )
 
 
+class _NonfiniteEntropyTokenReplay(_TokenReplay):
+    """Replay proving disabled entropy regularization stays out of autograd."""
+
+    def __init__(self, token_count: int) -> None:
+        super().__init__(token_count)
+        self.entropy_source = torch.nn.Parameter(torch.tensor(1.0))
+
+    def forward(self, _samples) -> PolicyReplayOutput:
+        return PolicyReplayOutput(
+            selected_log_probs=self.log_probs,
+            entropies=self.entropy_source.expand_as(self.log_probs)
+            * torch.tensor(float("nan")),
+            token_values=self.token_values,
+        )
+
+
 class _ReferenceTokenReplay(_TokenReplay):
     def __init__(self, token_count: int, reasoning_count: int) -> None:
         super().__init__(token_count)
@@ -652,6 +668,47 @@ def test_sequence_micro_batches_match_full_batch_loss_and_gradients() -> None:
             torch.testing.assert_close(parameter.grad, full_gradient)
     assert sum(output.metrics["policy_tokens"] for output in policy_outputs) == 10.0
     assert sum(output.metrics["outcome_count"] for output in micro_outputs) == 2.0
+
+
+def test_disabled_entropy_regularization_stays_out_of_policy_loss_graph() -> None:
+    batch = _batch()
+    algorithm, base_runtime, *_rest = _algorithm()
+    algorithm = RLAlgorithm(
+        config=replace(
+            algorithm.config,
+            actor=replace(
+                algorithm.config.actor,
+                enabled=True,
+                credit_assignment="turn",
+                entropy_coeff=0.0,
+            ),
+        ),
+        sigreg=None,
+    )
+    replay = _NonfiniteEntropyTokenReplay(batch.old_log_probs.numel())
+    runtime = replace(base_runtime, policy_replay=replay)
+    batch = replace(
+        batch,
+        policy_step_advantages=torch.ones_like(batch.return_targets),
+    )
+    normalization = SequenceLossNormalization(
+        action_positions=batch.action_indices.numel(),
+        outcome_labels=0,
+        policy_tokens=batch.old_log_probs.numel(),
+    )
+
+    output = algorithm.sequence_policy_step(
+        runtime,
+        batch,
+        normalization=normalization,
+    )
+    assert torch.isfinite(output.loss)
+    assert math.isnan(output.metrics["entropy"])
+
+    output.loss.backward()
+    assert replay.log_probs.grad is not None
+    assert torch.isfinite(replay.log_probs.grad).all()
+    assert replay.entropy_source.grad is None
 
 
 def test_sequence_outcome_mask_and_gradient_boundaries_with_turn_ppo() -> None:
