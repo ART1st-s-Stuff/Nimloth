@@ -619,17 +619,29 @@ def test_sequence_micro_batches_match_full_batch_loss_and_gradients() -> None:
         outcome_labels=int(batch.action_success_mask.sum().item()),
         policy_tokens=batch.old_log_probs.numel(),
     )
-    micro_outputs = tuple(
-        algorithm.sequence_step(
+    micro_outputs = []
+    policy_outputs = []
+    for index in range(2):
+        micro_batch = slice_rl_batch(micro_batch_source, index, index + 1)
+        output = algorithm.sequence_step(
             runtime,
-            slice_rl_batch(micro_batch_source, index, index + 1),
+            micro_batch,
+            normalization=normalization,
+            include_policy=False,
+        )
+        output.loss.backward()
+        micro_outputs.append(output)
+        policy_output = algorithm.sequence_policy_step(
+            runtime,
+            micro_batch,
             normalization=normalization,
         )
-        for index in range(2)
+        policy_output.loss.backward()
+        policy_outputs.append(policy_output)
+    micro_loss = sum(
+        output.loss.detach()
+        for output in (*micro_outputs, *policy_outputs)
     )
-    for output in micro_outputs:
-        output.loss.backward()
-    micro_loss = sum(output.loss.detach() for output in micro_outputs)
 
     torch.testing.assert_close(micro_loss, full_loss)
     for full_gradient, parameter in zip(full_gradients, parameters, strict=True):
@@ -638,7 +650,7 @@ def test_sequence_micro_batches_match_full_batch_loss_and_gradients() -> None:
         else:
             assert parameter.grad is not None
             torch.testing.assert_close(parameter.grad, full_gradient)
-    assert sum(output.metrics["policy_tokens"] for output in micro_outputs) == 10.0
+    assert sum(output.metrics["policy_tokens"] for output in policy_outputs) == 10.0
     assert sum(output.metrics["outcome_count"] for output in micro_outputs) == 2.0
 
 

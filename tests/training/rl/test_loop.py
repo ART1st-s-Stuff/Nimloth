@@ -397,7 +397,9 @@ def test_sequence_micro_batches_accumulate_before_exactly_one_optimizer_step(
             prepared,
             *,
             normalization,
+            include_policy,
         ):
+            assert include_policy is False
             assert normalization.action_positions == 2
             assert normalization.policy_tokens == 2
             assert prepared.policy_step_advantages is not None
@@ -405,6 +407,20 @@ def test_sequence_micro_batches_accumulate_before_exactly_one_optimizer_step(
             return SimpleNamespace(
                 loss=torch.tensor(0.5, requires_grad=True),
                 metrics={"total_loss": 0.5, "policy_tokens": 1.0},
+            )
+
+        def sequence_policy_step(  # type: ignore[no-untyped-def]
+            self,
+            _runtime,
+            prepared,
+            *,
+            normalization,
+        ):
+            assert normalization.policy_tokens == 2
+            assert prepared.policy_step_advantages is not None
+            return SimpleNamespace(
+                loss=torch.tensor(0.25, requires_grad=True),
+                metrics={"total_loss": 0.25, "actor_loss": 0.25},
             )
 
     algorithm = _MicroAlgorithm()
@@ -422,7 +438,7 @@ def test_sequence_micro_batches_accumulate_before_exactly_one_optimizer_step(
         torch.tensor(1.0),
     )
     assert loop.optimization_runtime.zero_grad_calls == 1
-    assert loop.optimization_runtime.backward_calls == 2
+    assert loop.optimization_runtime.backward_calls == 4
     assert loop.optimization_runtime.step_calls == 1
     assert loop.state.global_step == 1
     assert collector.events == ["collect", "begin", "commit"]

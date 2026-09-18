@@ -549,6 +549,7 @@ class RLTrainingLoop:
                             self.model_runtime,
                             micro_batch,
                             normalization=normalization,
+                            include_policy=False,
                         )
                         if not torch.isfinite(output.loss):
                             raise FloatingPointError(
@@ -557,6 +558,22 @@ class RLTrainingLoop:
                         self.optimization_runtime.backward(output.loss)
                         self._accumulate_metrics(step_metrics, output.metrics)
                         del output
+                        if self.model_runtime.policy_replay is not None:
+                            policy_output = self.algorithm.sequence_policy_step(
+                                self.model_runtime,
+                                micro_batch,
+                                normalization=normalization,
+                            )
+                            if not torch.isfinite(policy_output.loss):
+                                raise FloatingPointError(
+                                    "sequence PPO update produced a non-finite loss"
+                                )
+                            self.optimization_runtime.backward(policy_output.loss)
+                            self._accumulate_metrics(
+                                step_metrics,
+                                policy_output.metrics,
+                            )
+                            del policy_output
                 else:
                     output = self.algorithm.sequence_step(
                         self.model_runtime,

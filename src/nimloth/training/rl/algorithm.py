@@ -766,8 +766,15 @@ class RLAlgorithm:
         batch: RLBatch,
         *,
         normalization: SequenceLossNormalization | None = None,
+        include_policy: bool = True,
     ) -> RLStepOutput:
-        """构造 RL 计算图并计算 WM、value 与可选 PPO 目标。"""
+        """构造表示计算图，并可选地在同一图中计算 PPO 目标。
+
+        ``include_policy=False`` 供 sequence micro-batching 使用：调用者先对
+        表示目标反向并释放这张 Qwen 图，再调用 ``sequence_policy_step``。
+        这样仍然累积到同一次 optimizer update，但不会让两张 Qwen 计算图
+        同时驻留显存。
+        """
 
         local_action_positions = batch.action_indices.numel()
         action_scale = (
@@ -917,10 +924,10 @@ class RLAlgorithm:
         if sigreg_loss is not None:
             total = total + self.config.predictor.lambda_sigreg * sigreg_loss
 
-        policy, token_value_loss, reference_kl_loss = self._policy_replay_losses(
-            runtime,
-            batch,
-            value_objective,
+        policy, token_value_loss, reference_kl_loss = (
+            self._policy_replay_losses(runtime, batch, value_objective)
+            if include_policy
+            else (None, None, None)
         )
         if policy is not None:
             # policy["loss"] 已取 clipped surrogate 的负号；entropy 作为奖励项减去。
@@ -1054,6 +1061,88 @@ class RLAlgorithm:
             metrics=metrics,
         )
 
+    def sequence_policy_step(
+        self,
+        runtime: RLModelRuntime,
+        batch: RLBatch,
+        *,
+        normalization: SequenceLossNormalization,
+    ) -> RLStepOutput:
+        """单独构造 direct PPO policy replay 图。
+
+        只允许在 full-batch critic advantage 已预计算后调用，保证拆分前后
+        使用同一组全局归一化 advantage。该 loss 随表示 loss 一起累积梯度，
+        由训练 loop 统一执行一次 optimizer step。
+        """
+
+        if runtime.policy_replay is None:
+            raise RuntimeError("sequence policy step requires policy replay")
+        if batch.policy_step_advantages is None:
+            raise ValueError(
+                "split sequence policy step requires precomputed step advantages"
+            )
+        policy, token_value_loss, reference_kl_loss = self._policy_replay_losses(
+            runtime,
+            batch,
+            None,
+        )
+        if policy is None:
+            raise RuntimeError("sequence policy step produced no PPO objective")
+        policy_tokens = int(policy["advantages"].numel())
+        policy_scale = policy_tokens / normalization.policy_tokens
+        total = policy_scale * (
+            policy["loss"]
+            - self.config.actor.entropy_coeff * policy["entropy"]
+        )
+        if token_value_loss is not None:
+            total = total + (
+                cast(float, self.config.token_credit.value_loss_weight)
+                * token_value_loss
+            )
+        if reference_kl_loss is not None:
+            total = total + policy_scale * (
+                self.config.actor.reference_kl_loss_weight * reference_kl_loss
+            )
+        return RLStepOutput(
+            loss=total,
+            losses={
+                "wm": None,
+                "dino": None,
+                "outcome": None,
+                "sigreg": None,
+                "value": None,
+                "policy": policy["loss"],
+                "token_value": token_value_loss,
+                "reference_kl": reference_kl_loss,
+            },
+            metrics={
+                "total_loss": float(total.detach().item()),
+                "actor_loss": policy_scale
+                * float(policy["loss"].detach().item()),
+                "token_value_loss": (
+                    float(token_value_loss.detach().item())
+                    if token_value_loss is not None
+                    else 0.0
+                ),
+                "reference_kl_loss": (
+                    policy_scale * float(reference_kl_loss.detach().item())
+                    if reference_kl_loss is not None
+                    else 0.0
+                ),
+                "entropy": policy_scale
+                * float(policy["entropy"].detach().item()),
+                "mean_advantage": policy_scale
+                * float(policy["advantages"].mean().item()),
+                "mean_abs_advantage": policy_scale
+                * float(policy["advantages"].abs().mean().item()),
+                "clip_fraction": policy_scale
+                * float(policy["clip_fraction"].item()),
+                "mean_ratio": policy_scale
+                * float(policy["probability_ratio"].mean().item()),
+                "policy_tokens": float(policy_tokens),
+            },
+        )
+
     @torch.no_grad()
     def sequence_old_action_values(
         self,
@@ -1107,7 +1196,7 @@ class RLAlgorithm:
         self,
         runtime: RLModelRuntime,
         batch: RLBatch,
-        value_objective: ActionValueLoss,
+        value_objective: ActionValueLoss | None,
     ) -> tuple[
         dict[str, torch.Tensor] | None,
         torch.Tensor | None,
@@ -1145,17 +1234,21 @@ class RLAlgorithm:
                 ),
             )
         else:
-            step_advantages = (
-                normalized_monte_carlo_advantages(
+            if batch.policy_step_advantages is None:
+                if value_objective is None:
+                    raise ValueError(
+                        "policy replay requires critic values or precomputed advantages"
+                    )
+                step_advantages = normalized_monte_carlo_advantages(
                     return_targets=batch.return_targets.flatten().to(
                         device=value_objective.selected_action_values.device,
                         dtype=value_objective.selected_action_values.dtype,
                     ),
                     predicted_values=value_objective.selected_action_values.flatten(),
                 )
-                if batch.policy_step_advantages is None
-                else batch.policy_step_advantages.flatten()
-            ).to(
+            else:
+                step_advantages = batch.policy_step_advantages.flatten()
+            step_advantages = step_advantages.to(
                 device=replay_output.selected_log_probs.device,
                 dtype=replay_output.selected_log_probs.dtype,
             )
