@@ -171,6 +171,7 @@ def test_sequence_micro_batch_rejects_non_equivalent_objectives(
         }
         raw["rl"]["truncated_bootstrap"] = "zero"
     elif field == "reference_kl_loss_weight":
+        raw["actor"]["enabled"] = True
         raw["actor"][field] = value
     elif field == "lambda_sigreg":
         raw["predictor"][field] = value
