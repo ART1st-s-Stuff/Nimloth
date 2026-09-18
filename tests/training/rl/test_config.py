@@ -164,6 +164,24 @@ def test_direct_ppo_retry_config_keeps_activation_offload_disabled() -> None:
     assert load_rl_config(config_path).training.activation_offload is False
 
 
+def test_direct_ppo_ten_more_iterations_only_change_training_horizon() -> None:
+    config_root = (
+        Path(__file__).resolve().parents[3] / "configs" / "training" / "rl"
+    )
+    retry = load_rl_config(
+        config_root / "stage3_outcome_best_direct_qwen_ppo_one_update_retry.yaml"
+    ).to_dict()
+    continuation = load_rl_config(
+        config_root / "stage3_outcome_best_direct_qwen_ppo_continue_to11.yaml"
+    ).to_dict()
+
+    retry["rl"]["iterations"] = 11
+    retry["training"]["save_interval"] = 11
+    assert continuation == retry
+    assert continuation["training"]["sequence_micro_batch_size"] == 1
+    assert continuation["training"]["activation_offload"] is False
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [

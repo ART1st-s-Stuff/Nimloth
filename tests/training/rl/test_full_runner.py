@@ -16,6 +16,10 @@ FULL_RUNNER = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_full.sh"
 CONTINUATION_CONFIG = (
     REPO_ROOT / "configs/training/rl/planner_greedy_h2_continuation_gate.yaml"
 )
+DIRECT_PPO_TEN_MORE_CONFIG = (
+    REPO_ROOT
+    / "configs/training/rl/stage3_outcome_best_direct_qwen_ppo_continue_to11.yaml"
+)
 
 
 def _write_fake_iteration_runner(path: Path) -> None:
@@ -297,6 +301,38 @@ def test_full_runner_can_continue_optimizer_state_in_a_new_output(tmp_path: Path
     )
     assert consumption["starting_global_step"] == 1
     assert consumption["committed_global_step"] == 2
+
+
+def test_full_runner_continues_r11_checkpoint_for_ten_more_iterations(
+    tmp_path: Path,
+) -> None:
+    environment = _runner_environment(tmp_path)
+    initial_resume = tmp_path / "r11_train_final"
+    initial_resume.mkdir()
+    torch.save(
+        {"iteration": 1, "global_step": 1},
+        initial_resume / "rl_state.pt",
+    )
+    environment["RL_CONFIG"] = str(DIRECT_PPO_TEN_MORE_CONFIG)
+    environment["INITIAL_RESUME_CHECKPOINT"] = str(initial_resume)
+    environment["INITIAL_GLOBAL_STEP"] = "1"
+
+    subprocess.run([str(FULL_RUNNER)], check=True, env=environment)
+
+    run_output = Path(environment["RUN_OUT"])
+    assert (run_output / "train/final/rl_state.pt").read_bytes() == b"step=11"
+    with (run_output / "train/train_step_log.csv").open(encoding="utf-8") as stream:
+        assert [row["global_step"] for row in csv.DictReader(stream)] == [
+            str(step) for step in range(2, 12)
+        ]
+    assert (tmp_path / "formal/fake_calls.txt").read_text(encoding="utf-8") == (
+        "".join(f"{step}\n" for step in range(2, 12))
+    )
+    assert (tmp_path / "formal/fake_seed_offsets.txt").read_text(
+        encoding="utf-8"
+    ) == "".join(
+        f"{step}:{1 + 8 * (step - 1)}\n" for step in range(2, 12)
+    )
 
 
 def test_full_runner_can_continue_after_noncanonical_consumed_seeds(
