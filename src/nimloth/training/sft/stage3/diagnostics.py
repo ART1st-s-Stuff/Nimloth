@@ -27,13 +27,25 @@ class DINOFeatureWriter:
 
     schema = "stage3_dino_feature_batch_v1"
 
-    def __init__(self, directory: Path, *, rank: int) -> None:
+    def __init__(
+        self,
+        directory: Path,
+        *,
+        rank: int,
+        step: int | None = None,
+        identity: dict | None = None,
+    ) -> None:
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
         self.rank = int(rank)
         self.batch_index = 0
         self.paths: list[Path] = []
         self.batch_identities: list[dict] = []
+        self.step = step
+        self.identity = identity
+        self.complete_path = self.directory / f"rank_{self.rank:03d}_COMPLETE.json"
+        if self.complete_path.exists():
+            raise FileExistsError(self.complete_path)
 
     def __call__(self, batch, output) -> None:
         diagnostic = output.diagnostics or {}
@@ -84,6 +96,62 @@ class DINOFeatureWriter:
         self.batch_identities.append({"keys": payload["keys"], "actions": payload["actions"].tolist()})
         self.paths.append(path)
         self.batch_index += 1
+
+    def finalize(self, *, metrics: dict | None = None) -> None:
+        """Atomically seal an eval export so downstream comparisons can trust it."""
+
+        if self.step is None or self.identity is None:
+            return
+        if not self.paths:
+            raise ValueError("cannot seal an empty DINO feature export")
+        payload = {
+            "schema": "stage3_fixed_batch_probe_v1",
+            "step": int(self.step),
+            "rank": self.rank,
+            "identity": json.loads(json.dumps(self.identity, sort_keys=True)),
+            "metrics": dict(metrics or {}),
+            "batches": self.batch_identities,
+            "files": [
+                {"name": path.name, "sha256": _file_sha256(path)}
+                for path in self.paths
+            ],
+        }
+        temporary = self.complete_path.with_suffix(".tmp")
+        with temporary.open("x", encoding="utf-8") as stream:
+            json.dump(payload, stream, indent=2, allow_nan=False)
+            stream.write("\n")
+        temporary.replace(self.complete_path)
+
+
+def seal_existing_dino_feature_export(
+    directory: Path,
+    *,
+    rank: int,
+    step: int,
+    identity: dict,
+) -> Path:
+    """Validate and seal completed legacy eval shards without rerunning the model."""
+
+    directory = Path(directory)
+    writer = DINOFeatureWriter(directory, rank=rank, step=step, identity=identity)
+    paths = sorted(directory.glob(f"rank_{rank:03d}_batch_*.pt"))
+    if not paths:
+        raise ValueError(f"no DINO feature shards for rank {rank}: {directory}")
+    for expected_index, path in enumerate(paths):
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+        if payload.get("schema") != writer.schema:
+            raise ValueError(f"unsupported DINO feature schema: {path}")
+        if payload.get("rank") != rank or payload.get("batch_index") != expected_index:
+            raise ValueError(f"DINO feature rank/batch identity mismatch: {path}")
+        keys, actions = payload.get("keys"), payload.get("actions")
+        if not isinstance(keys, (list, tuple)) or not keys:
+            raise ValueError(f"DINO feature shard has no keys: {path}")
+        if not isinstance(actions, torch.Tensor) or actions.ndim != 2 or actions.shape[0] != len(keys):
+            raise ValueError(f"DINO feature actions do not align with keys: {path}")
+        writer.paths.append(path)
+        writer.batch_identities.append({"keys": keys, "actions": actions.tolist()})
+    writer.finalize()
+    return writer.complete_path
 
 
 class FrozenWMTrajectoryWriter:

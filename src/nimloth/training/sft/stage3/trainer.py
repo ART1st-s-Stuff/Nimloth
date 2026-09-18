@@ -1086,17 +1086,37 @@ def _train_sft2_impl(args=None) -> int:
                 ["git", "rev-parse", "HEAD"], text=True
             ).strip(),
         }
+    feature_export_step = int(loop_state.global_step)
+    diagnostic_identity = {
+        "run_output": str(Path(args.output_dir).resolve()),
+        "initialization": str(Path(args.model).resolve()),
+        "validation": str(Path(args.val_jsonl).resolve()),
+        "invariants": checkpoint_invariants,
+    }
+    if rl_eval_checkpoint_dir is not None:
+        from nimloth.eval.stage3_outcome import file_sha256
+
+        rl_eval_state = torch.load(
+            rl_eval_checkpoint_dir / "rl_state.pt",
+            map_location="cpu",
+            weights_only=False,
+        )
+        feature_export_step = int(rl_eval_state["global_step"])
+        diagnostic_identity["rl_eval"] = {
+            "checkpoint": str(rl_eval_checkpoint_dir),
+            "rl_state_sha256": file_sha256(rl_eval_checkpoint_dir / "rl_state.pt"),
+            "global_step": feature_export_step,
+        }
     training_loop = SFT2TrainingLoop(
         config=SFT2LoopConfig.from_namespace(args),
         outcome_eval_dir=getattr(args, "outcome_eval_dir", None),
         outcome_export_identity=outcome_export_identity,
         feature_export_dir=getattr(args, "feature_export_dir", None),
+        feature_export_identity=diagnostic_identity,
+        feature_export_step=feature_export_step,
         diagnostic_steps=tuple(getattr(args, "diagnostic_steps", ())),
         diagnostic_dir=getattr(args, "diagnostic_dir", None),
-        diagnostic_identity={"run_output": str(Path(args.output_dir).resolve()),
-                             "initialization": str(args.model),
-                             "validation": str(args.val_jsonl),
-                             "invariants": checkpoint_invariants},
+        diagnostic_identity=diagnostic_identity,
         frozen_wm_cache_dir=getattr(args, "frozen_wm_cache_dir", None),
         frozen_wm_cache_split=getattr(args, "frozen_wm_cache_split", None),
         frozen_wm_cache_identity=frozen_wm_cache_identity,

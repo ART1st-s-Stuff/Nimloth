@@ -139,6 +139,8 @@ class SFT2TrainingLoop:
     outcome_eval_dir: Path | None = None
     outcome_export_identity: dict | None = None
     feature_export_dir: Path | None = None
+    feature_export_identity: dict | None = None
+    feature_export_step: int | None = None
     diagnostic_steps: tuple[int, ...] = ()
     diagnostic_dir: Path | None = None
     diagnostic_identity: dict | None = None
@@ -207,7 +209,16 @@ class SFT2TrainingLoop:
         if self.feature_export_dir is not None:
             from nimloth.training.sft.stage3.diagnostics import DINOFeatureWriter
 
-            writer = DINOFeatureWriter(self.feature_export_dir, rank=self.rank)
+            writer = DINOFeatureWriter(
+                self.feature_export_dir,
+                rank=self.rank,
+                step=(
+                    self.feature_export_step
+                    if self.feature_export_step is not None
+                    else self.state.global_step
+                ),
+                identity=self.feature_export_identity,
+            )
         elif self.frozen_wm_cache_dir is not None:
             from nimloth.training.sft.stage3.diagnostics import FrozenWMTrajectoryWriter
 
@@ -230,7 +241,10 @@ class SFT2TrainingLoop:
             on_batch=writer,
         )
         if writer is not None and hasattr(writer, "finalize"):
-            writer.finalize()
+            if self.feature_export_dir is not None:
+                writer.finalize(metrics=metrics)
+            else:
+                writer.finalize()
         if is_main():
             print(json.dumps({"eval_only": True, "metrics": metrics}), flush=True)
         return metrics
