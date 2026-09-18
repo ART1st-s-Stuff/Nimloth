@@ -215,6 +215,14 @@ distribution, including masked zero-probability actions.
 PPO loss。连续sequence路径上的WM、ValueHead和OutcomeHead可在Qwen hidden处截断，
 同时真实current observation的DINO锚定与actor PPO仍分别保留到Qwen的梯度。
 
+当`training.sequence_micro_batch_size`小于有效batch时，loop先在完整batch上冻结并
+归一化turn/action advantage，再逐微批累积梯度。每个微批先完成表示侧
+WM/DINO/Value/Outcome前向与反向并释放该Qwen图，然后单独执行policy replay前向与
+反向；所有微批结束后只调用一次`optimizer.step()`。两部分按完整batch的动作位置、
+Outcome标签和policy token总数归一化，因此拆分只改变计算图驻留时间，不改变目标或
+有效batch。该模式拒绝token credit、SIGReg和value ranking，直到这些跨样本统计具备
+等价聚合实现。
+
 `actor.credit_assignment: token`启用真正的turn内token GAE。Qwen同一次replay
 forward通过`logits_to_keep`只保留loss-mask位置；TokenValueHead读取这些位置进入
 `lm_head`前的hidden state，对每个sampled reasoning/action token分别预测value。
