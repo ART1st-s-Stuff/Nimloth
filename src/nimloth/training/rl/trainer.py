@@ -38,6 +38,7 @@ from nimloth.training.rl.algorithm import (
 )
 from nimloth.training.rl.checkpoint import load_rl_wm_checkpoint
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
+from nimloth.training.rl.fsdp import wrap_qwen_fsdp
 from nimloth.training.rl.loop import RLLoopState, RLTrainingLoop
 from nimloth.training.common.value_semantics import validate_planning_value_semantics
 from nimloth.training.rl.reporting import RLReporter
@@ -383,24 +384,21 @@ def _wrap_llm_fsdp(
 ) -> torch.nn.Module:
     if world_size <= 1:
         return llm
-    from torch.distributed.fsdp import (
-        FullyShardedDataParallel as FSDP,
-        ShardingStrategy,
-    )
-
     # FULL_SHARD 的局部 embedding 不保证包含 padding row。
     embedding = llm.get_input_embeddings()
     if getattr(embedding, "padding_idx", None) is not None:
         embedding.padding_idx = None
-    wrapped = FSDP(
+    wrapped, metadata = wrap_qwen_fsdp(
         llm,
-        device_id=torch.cuda.current_device(),
-        sharding_strategy=ShardingStrategy.FULL_SHARD,
-        sync_module_states=True,
-        use_orig_params=True,
+        device=torch.device("cuda", torch.cuda.current_device()),
     )
     if is_main():
-        print(json.dumps({"fsdp": "wrapped", "world_size": world_size}))
+        print(
+            json.dumps(
+                {"fsdp": "wrapped", "world_size": world_size, **metadata},
+                sort_keys=True,
+            )
+        )
     return wrapped
 
 
