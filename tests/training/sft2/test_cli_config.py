@@ -42,7 +42,7 @@ def test_backbone_gradient_boundary_is_explicit_opt_in():
     args = parse_sft2_args([*REQUIRED, "--history-size", "1", "--no-wm-value-backbone-grad"])
     assert args.wm_value_backbone_grad is False
     assert args.preprocess_cache_reuse_image_root is None
-    assert args.require_prebuilt_cache is True
+    assert args.require_prebuilt_cache is False
 
 
 def test_stage3_image_cache_reuse_cli_is_explicit_and_nonoverlapping(tmp_path) -> None:
