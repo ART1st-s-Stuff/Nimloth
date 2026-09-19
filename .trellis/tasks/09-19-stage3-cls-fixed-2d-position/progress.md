@@ -261,3 +261,23 @@
   `5.2453547 -> 5.2139006`，CSV LR均为 `1e-4`；8卡利用率95--100%，未见 NaN/OOM/
   traceback。heartbeat `stage3-dino2` 已改为每5分钟只读监控本续训，只在新验证轮、完成、
   失败、磁盘危险或需要用户处理时通知，禁止自动重启、改参、删除或进入Stage3。
+
+## 2026-09-19 Stage2 CLS Query LR 1e-4 convergence completion
+
+- 运行于 `2026-09-19T17:20:39Z--18:04:36Z` 正常 exit 0，完成 epoch6--8、global
+  step136--216。controller 标记为 `controller_complete`；无 NaN/OOM/traceback，结束后
+  controller、torchrun、8 ranks和GPU compute进程均为0，8张GPU显存/利用率归零。
+- 验证 CLS DINO MSE：epoch5父边界 `1.9153741598`，epoch6 `1.8922255039`
+  （改善1.209%），epoch7 `1.8808287382`（改善0.602%），epoch8 `1.8699512482`
+  （改善0.578%）。epoch7/8连续两轮相对改善不足1%，所以 epoch8 按既定 patience规则
+  标记 `converged=true`；相对续训起点总改善约2.371%。
+- epoch8 的 spatial DINO MSE `0.5954238176`，与 epoch5 `0.5953418612` 基本不变；LM
+  loss `0.4559269249`，格式 `32/32=100%`，验证总损失 `5.3866772950`。这些仅证明当前
+  evaluation-only split上的收敛与健康，不构成正式从epoch1训练的K64+CLS Stage2或rollout
+  success证据。
+- `epoch_008` 与 `best` 都是完整 epoch8/step216 checkpoint，`COMMITTED` 为
+  `{"epoch": 8, "step": 216}`；两者 `training_state.pt` SHA256 均为
+  `21721232e9b915135c4e2a1c91b66a15e365af6018f9aa7a5491bad526e483ad`，包含一组
+  optimizer state、8份 rank RNG、Query LR `1e-4` 和 converged history。运行目录约16GiB，
+  `/mnt` 剩余约111GiB。因VPN重连导致旧 ControlMaster 连续三轮无输出，heartbeat曾暂停；
+  直接SSH恢复后完成上述终态核验，监控保持暂停且不得自动进入Stage3。
