@@ -291,3 +291,24 @@
 - 新增 reporter CSV 回归测试，并扩展训练/验证聚合测试覆盖分项及其正确统计总体。
 - 本地 `compileall` 与 `git diff --check` 通过；本机 Python 环境缺少 `torch`、`pytest` 和
   `ruff`，因此依赖测试需在远端既有训练环境复跑后才能进入真实实验。
+
+## 2026-09-19 Stage3 fresh restart from converged Stage2 epoch8
+
+- 分项日志修复提交 `d15ac3476aacb4f5a8e02f415537d0345fc0dbfa` 已 fast-forward 到
+  a100-1 专用 worktree。远端真实训练环境聚焦回归为 `47 passed`，`compileall`、提交范围
+  `git diff --check` 和独立 Trellis check 通过；远端环境未提供 Ruff。
+- 用户授权重新开始 Stage3。本次从 evaluation-only Stage2 `epoch_008` / step216 fresh
+  start，不加载任何旧 Stage3 WM、optimizer 或收敛历史。唯一输出目录为
+  `/mnt/nimloth/outputs/experiments/stage3-cls-fixed2d/20260919_stage3_k65_fixed2d_eval_r4_from_stage2_epoch8`；
+  controller PID `1546716` 于 `2026-09-19T18:31:14Z` 启动。
+- 训练使用8卡、K64 spatial + 1 CLS、fixed 2D residual WM、H1/T4、有效 batch64、
+  DINO系数2、SIGReg0、Outcome BCE1、全量 Qwen/vision；WM/Value梯度不回传到 backbone，
+  但 projector 仍可由既定目标更新。最多5 epoch、固定46次 schedule、每10步保存、只保留
+  最新恢复点，12小时为中断上限，禁止自动进入RL。
+- 启动时8张GPU均空闲，`/mnt` 约111GiB可用；两份 DINO cache 的共同 feature-space
+  fingerprint 为 `9cd1e5853004528b`，K65 preprocess train/validation fingerprint 分别为
+  `5d90132427d7cc27` / `cfd55732e7e4c7f6`。首3步已完成，8卡利用率98--100%，无
+  NaN/OOM/traceback。step1 observed DINO total/spatial/CLS 为
+  `2.47117498 / 0.61726485 / 1.85391013`，证明新日志已按预期分项。
+- heartbeat `stage3-dino2` 已改名并恢复为每5分钟只读监控；仅在新step、epoch/checkpoint、
+  终态、失败或磁盘危险时通知，禁止自动重启、改参、删除或进入RL。
