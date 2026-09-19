@@ -476,7 +476,7 @@ def prune_older_epoch_checkpoints(
             continue
         try:
             epoch, step, identity = _committed_epoch_identity(path)
-        except ValueError:
+        except (TypeError, ValueError):
             continue
         if step <= latest_step and objective_identities_match(identity, latest_identity):
             owned.append((epoch, path))

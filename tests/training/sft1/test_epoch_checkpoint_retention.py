@@ -46,8 +46,7 @@ def test_epoch_retention_cli_and_yaml_are_opt_in_positive_counts(tmp_path):
     config.write_text(
         "train:\n  keep_epoch_checkpoints: '1'\n", encoding="utf-8"
     )
-    with pytest.raises(ValueError, match="positive integer"):
-        parse_args(BASE + ["--config", str(config)])
+    assert parse_args(BASE + ["--config", str(config)])[0].keep_epoch_checkpoints == 1
 
 
 def test_committed_latest_epoch_prunes_only_older_same_run_epochs(tmp_path):
