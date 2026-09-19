@@ -51,8 +51,12 @@ CLS/固定二维位置的 evaluation-only 路径使用显式
 `spatial_grid_size=8, global_tokens=1, state_tokens=65` 合同，state 顺序固定为
 K64 row-major spatial 后接真实 DINO CLS。此时 `latent.token_count` 必须等于
 `grid.size ** 2 + grid.global_tokens`，初始化 checkpoint 必须来自带
-evaluation-only lineage 的 Stage2 CLS alignment，并与 v2 DINO cache fingerprint
-一致。`fixed_2d_sincos_v1` 给 K64 使用确定性的二维 sine-cosine persistent
+evaluation-only lineage 的 Stage2 CLS alignment。若 Stage3 的 v2 DINO cache 覆盖
+更多 future observations，启动时必须用 `--stage2-aligned-dino-cache` 提供 Stage2
+实际使用的 cache：其 corpus fingerprint 必须等于 checkpoint 记录，两个 cache 的
+teacher、processor、K64+CLS layout、dtype/dimension 和 ordering 必须逐项一致；两边
+corpus fingerprint 与 feature-space identity 都写入 checkpoint 审计元数据。该检查在
+distributed setup 和模型加载前执行。`fixed_2d_sincos_v1` 给 K64 使用确定性的二维 sine-cosine persistent
 buffer，CLS 使用零空间位置；它不叠加旧的可训练 spatial position。Residual
 delta head 仍为零初始化，所以首个更新前 K65 逐值复制输入。
 

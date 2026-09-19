@@ -3,6 +3,9 @@
 objective:
   name: dino_grid
 
+# Supply dino_grid_cache and stage2_aligned_dino_cache at launch. They may
+# cover different corpora, but their validated feature-space contracts must match.
+
 data:
   include_failed_rollouts: true
 

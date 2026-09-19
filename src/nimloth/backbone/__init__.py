@@ -15,6 +15,8 @@ from nimloth.backbone.dino_grid import (
     DINOIdentity,
     DINOV2_LARGE_IDENTITY,
     FrozenDINOGridTargets,
+    StandaloneDINOCacheContract,
+    inspect_standalone_dino_cache,
 )
 
 
@@ -81,12 +83,14 @@ __all__ = [
     "DINOIdentity",
     "DINOV2_LARGE_IDENTITY",
     "FrozenDINOGridTargets",
+    "StandaloneDINOCacheContract",
     "backbone_hidden_size",
     "build_action_log_prob_replay",
     "build_agent_policy",
     "build_input_builder",
     "build_vision_ema",
     "load_backbone",
+    "inspect_standalone_dino_cache",
     "model_output_device",
     "resolve_tune_modes",
     "resolve_vision_ema",

@@ -14,6 +14,7 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("init", "sft1_checkpoint"): "model",
     ("init", "wm_predictor_checkpoint"): "wm_predictor_checkpoint",
     ("supervision", "dino_grid_cache"): "dino_grid_cache",
+    ("supervision", "stage2_aligned_dino_cache"): "stage2_aligned_dino_cache",
     ("data", "train_jsonl"): "train_jsonl",
     ("data", "val_jsonl"): "val_jsonl",
     ("data", "include_failed_rollouts"): "include_failed_rollouts",

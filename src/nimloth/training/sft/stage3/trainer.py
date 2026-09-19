@@ -21,6 +21,7 @@ from nimloth.backbone import (
     CachedDINOGridTargets,
     build_input_builder,
     build_vision_ema,
+    inspect_standalone_dino_cache,
     load_backbone,
     model_output_device,
     resolve_tune_modes,
@@ -322,6 +323,61 @@ def _validate_dino_grid_contract(args: Any) -> dict[str, Any]:
             f"{checkpoint_mismatches}"
         )
     return config
+
+
+def _validate_stage2_stage3_dino_cache_contract(
+    args: Any,
+    stage2_grid_config: dict[str, Any],
+) -> dict[str, Any]:
+    """Anchor Stage2's cache, then compare feature semantics across corpora."""
+
+    stage2_fingerprint = stage2_grid_config.get("dino_cache_fingerprint")
+    if not isinstance(stage2_fingerprint, str) or not stage2_fingerprint:
+        raise ValueError("Stage2 checkpoint is missing its DINO cache fingerprint")
+    stage3 = inspect_standalone_dino_cache(
+        args.dino_grid_cache,
+        identity=DINOV2_LARGE_IDENTITY,
+        grid_size=args.grid_size,
+    )
+    aligned_root = getattr(args, "stage2_aligned_dino_cache", None)
+    if aligned_root is None:
+        if stage3.cache_fingerprint != stage2_fingerprint:
+            raise ValueError(
+                "Stage3 uses a different DINO corpus from Stage2; "
+                "--stage2-aligned-dino-cache is required to prove feature-space compatibility"
+            )
+        aligned = stage3
+        aligned_root = args.dino_grid_cache
+    else:
+        aligned = inspect_standalone_dino_cache(
+            aligned_root,
+            identity=DINOV2_LARGE_IDENTITY,
+            grid_size=args.grid_size,
+        )
+        if aligned.cache_fingerprint != stage2_fingerprint:
+            raise ValueError(
+                "Stage2 aligned DINO cache fingerprint does not match the checkpoint: "
+                f"cache={aligned.cache_fingerprint}, checkpoint={stage2_fingerprint}"
+            )
+    if aligned.feature_space != stage3.feature_space:
+        keys = sorted(set(aligned.feature_space) | set(stage3.feature_space))
+        mismatches = {
+            key: (aligned.feature_space.get(key), stage3.feature_space.get(key))
+            for key in keys
+            if aligned.feature_space.get(key) != stage3.feature_space.get(key)
+        }
+        raise ValueError(
+            "Stage2/Stage3 DINO feature-space identity mismatch: "
+            f"{mismatches}"
+        )
+    return {
+        "stage2_aligned_cache_root": str(Path(aligned_root).resolve()),
+        "stage2_aligned_cache_fingerprint": aligned.cache_fingerprint,
+        "stage3_supervision_cache_root": str(Path(args.dino_grid_cache).resolve()),
+        "stage3_supervision_cache_fingerprint": stage3.cache_fingerprint,
+        "feature_space_fingerprint": stage3.feature_space_fingerprint,
+        "feature_space": stage3.feature_space,
+    }
 
 
 def _build_world_model(
@@ -662,8 +718,14 @@ def _train_sft2_impl(args=None) -> int:
             f"got H={args.history_size}, T={args.prediction_horizon}"
         )
     stage2_grid_config = None
+    args.dino_cache_audit = None
     if args.objective == "dino_grid":
         stage2_grid_config = _validate_dino_grid_contract(args)
+        if args.grid_global_tokens and _rl_eval_checkpoint_root(args) is None:
+            args.dino_cache_audit = _validate_stage2_stage3_dino_cache_contract(
+                args,
+                stage2_grid_config,
+            )
 
     llm_tune, vision_tune = resolve_tune_modes(args)
     if args.query_tune == "adapter" and uses_lora(args):
@@ -749,6 +811,7 @@ def _train_sft2_impl(args=None) -> int:
                         if args.dino_grid_cache is not None
                         else None
                     ),
+                    "dino_cache_audit": args.dino_cache_audit,
                 }
             )
         )
@@ -820,13 +883,12 @@ def _train_sft2_impl(args=None) -> int:
         if dino_targets.include_cls != bool(args.grid_global_tokens):
             raise ValueError("Stage3 state layout and DINO cache global-token schema mismatch")
         if (
-            args.grid_global_tokens
-            and stage2_grid_config is not None
-            and stage2_grid_config.get("dino_cache_fingerprint")
+            args.dino_cache_audit is not None
+            and args.dino_cache_audit["stage3_supervision_cache_fingerprint"]
             != dino_targets.cache_fingerprint
         ):
             raise ValueError(
-                "Stage3 DINO cache does not match the aligned Stage2 checkpoint"
+                "Stage3 DINO cache changed after feature-space preflight"
             )
         args.dino_cache_fingerprint = dino_targets.cache_fingerprint
         batch_builder = DINOGridBatchAssembler(
@@ -1003,6 +1065,7 @@ def _train_sft2_impl(args=None) -> int:
                 "dino_grid_size": int(args.grid_size),
                 "dino_identity": asdict(DINOV2_LARGE_IDENTITY),
                 "dino_cache_fingerprint": args.dino_cache_fingerprint,
+                "dino_cache_audit": args.dino_cache_audit,
                 "dino_weight": float(args.lambda_dino),
                 "grid_state_format": "trainable_sft1_projector_v2",
                 "dino_supervision": "unique_observed_online_state_mse_v1",

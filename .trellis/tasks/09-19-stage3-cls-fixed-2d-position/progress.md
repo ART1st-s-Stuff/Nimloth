@@ -163,3 +163,20 @@
   split 接线、CLI 冲突和视觉设置拒绝。
 - 本地环境没有 pytest/ruff；`compileall` 与 `git diff --check` 已通过。尚未提交、同步或启动
   远端任务；完整 focused pytest/ruff 仍须在依赖齐全环境执行。
+
+## 2026-09-19 Stage3 canary DINO cache identity failure and fix
+
+- 首次 Stage3 canary 在加载8卡模型后被旧 gate 拒绝：Stage2 CLS alignment checkpoint
+  记录的 cache fingerprint 为 `199285c3bf8d22d8`，Stage3 为覆盖 future observations
+  构建的 K65 cache fingerprint 为 `c0de771b10cedd9c`。两份 manifest 的 teacher、processor、
+  K64+CLS layout、dtype、ordering 与 teacher provenance 一致，差异来自 images/splits/
+  shards 和 parent data；因此要求整个 corpus fingerprint 相同把“特征空间一致”错误等同
+  于“监督语料完全相同”。此次失败发生在 distributed setup 与模型加载之后，浪费了启动时间。
+- 修复增加显式 `--stage2-aligned-dino-cache`：先证明该 cache fingerprint 等于 checkpoint
+  记录，再比较 Stage2/Stage3 cache 的 feature-space identity；不同 corpus 可通过，teacher、
+  processor、grid/global layout、feature dtype/dim、ordering 或完整 teacher provenance
+  任一差异均 fail closed。manifest/COMPLETED preflight 在 distributed setup 和模型加载前
+  执行；完整 image/shard hash 审计仍由正式 cache loader 执行，未削弱数据完整性门禁。
+- checkpoint 审计元数据同时保存 Stage2 aligned 与 Stage3 supervision 两个 corpus
+  fingerprint、cache root、feature-space fingerprint 和展开后的 identity，避免后续只见一个
+  fingerprint 而丢失数据 lineage。

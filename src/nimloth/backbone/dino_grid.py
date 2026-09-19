@@ -50,12 +50,105 @@ class DINOIdentity:
     hidden_size: int
 
 
+@dataclass(frozen=True)
+class StandaloneDINOCacheContract:
+    """A standalone cache's corpus identity and feature-space contract.
+
+    ``cache_fingerprint`` identifies the concrete image corpus and shards.  The
+    feature-space fingerprint intentionally excludes corpus-specific fields so
+    two caches can supervise different observation sets while still proving
+    that their target tensors have identical semantics.
+    """
+
+    cache_fingerprint: str
+    feature_space_fingerprint: str
+    feature_space: dict[str, Any]
+
+
 DINOV2_LARGE_IDENTITY = DINOIdentity(
     source="facebook/dinov2-large",
     revision="47b73eefe95e8d44ec3623f8890bd894b6ea2d6c",
     processor_fingerprint="7d65a7de8788e87d",
     hidden_size=1024,
 )
+
+
+def inspect_standalone_dino_cache(
+    cache_root: str | Path,
+    *,
+    identity: DINOIdentity,
+    grid_size: int,
+) -> StandaloneDINOCacheContract:
+    """Validate and return the cheap, manifest-only cache identity.
+
+    This preflight deliberately does not replace ``CachedDINOGridTargets``'s
+    complete image/shard hash audit.  It lets callers reject an incompatible
+    cache before distributed setup or model allocation.
+    """
+
+    root = Path(cache_root)
+    manifest_path = root / "manifest.json"
+    completed_path = root / "COMPLETED"
+    if not manifest_path.is_file() or not completed_path.is_file():
+        raise FileNotFoundError(
+            f"standalone DINO cache is missing manifest/COMPLETED: {root}"
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    claimed = manifest.get("fingerprint")
+    if not isinstance(claimed, str) or claimed != _json_fingerprint(
+        {key: value for key, value in manifest.items() if key != "fingerprint"}
+    ):
+        raise ValueError(f"standalone DINO manifest fingerprint mismatch: {root}")
+    if completed_path.read_text(encoding="utf-8").strip() != claimed:
+        raise ValueError(f"standalone DINO cache is not complete: {root}")
+    if manifest.get("format") != STANDALONE_DINO_STATE_CACHE_FORMAT:
+        raise ValueError("feature-space comparison requires a spatial/CLS v2 cache")
+
+    expected_layout = {
+        "identity": asdict(identity),
+        "processor_fingerprint": identity.processor_fingerprint,
+        "grid_size": int(grid_size),
+        "spatial_tokens": int(grid_size) ** 2,
+        "global_tokens": 1,
+        "state_tokens": int(grid_size) ** 2 + 1,
+        "global_role": "dino_cls",
+        "ordering": "row_major_spatial_then_global",
+        "feature_dtype": "float32",
+    }
+    mismatches = {
+        key: (manifest.get(key), expected)
+        for key, expected in expected_layout.items()
+        if manifest.get(key) != expected
+    }
+    provenance = manifest.get("teacher_provenance")
+    if not isinstance(provenance, dict):
+        mismatches["teacher_provenance"] = (provenance, "mapping")
+    else:
+        for key, expected in {
+            "source": identity.source,
+            "revision": identity.revision,
+        }.items():
+            if provenance.get(key) != expected:
+                mismatches[f"teacher_provenance.{key}"] = (
+                    provenance.get(key),
+                    expected,
+                )
+    if mismatches:
+        raise ValueError(f"standalone DINO feature-space mismatch: {mismatches}")
+
+    feature_space = {
+        "schema": STANDALONE_DINO_STATE_CACHE_FORMAT,
+        **expected_layout,
+        "feature_dim": int(identity.hidden_size),
+        # Exact provenance (including pinned file digests) is part of the
+        # feature-space identity, rather than merely trusting a model label.
+        "teacher_provenance": provenance,
+    }
+    return StandaloneDINOCacheContract(
+        cache_fingerprint=claimed,
+        feature_space_fingerprint=_json_fingerprint(feature_space),
+        feature_space=feature_space,
+    )
 
 
 class DINOGridTargets(Protocol):
@@ -618,4 +711,6 @@ __all__ = [
     "DINOGridTargets",
     "DINOIdentity",
     "FrozenDINOGridTargets",
+    "StandaloneDINOCacheContract",
+    "inspect_standalone_dino_cache",
 ]

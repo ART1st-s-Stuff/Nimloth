@@ -32,6 +32,15 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         default="latent",
     )
     ap.add_argument("--dino-grid-cache", type=Path, default=None)
+    ap.add_argument(
+        "--stage2-aligned-dino-cache",
+        type=Path,
+        default=None,
+        help=(
+            "Standalone DINO cache used by the Stage2 alignment checkpoint. "
+            "Required when Stage3 uses a different-corpus spatial/CLS cache."
+        ),
+    )
     ap.add_argument("--train-jsonl", type=Path, required=True)
     ap.add_argument("--val-jsonl", type=Path, required=True)
     ap.add_argument("--output-dir", type=Path, required=True)
