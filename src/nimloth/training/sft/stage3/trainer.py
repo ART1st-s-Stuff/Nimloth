@@ -52,7 +52,7 @@ from nimloth.training.sft.stage3.loop import (
     SFT2TrainingLoop,
     load_sft2_loop_state,
 )
-from nimloth.training.sft.stage3.reporting import SFT2Reporter
+from nimloth.training.sft.stage3.reporting import STAGE3_LOG_COLUMNS, SFT2Reporter
 from nimloth.training.sft.stage3.runtime import (
     SFT2ModelRuntime,
     SFT2OptimizationRuntime,
@@ -1110,31 +1110,7 @@ def _train_sft2_impl(args=None) -> int:
 
     log_writer = CSVRecordWriter(
         args.output_dir / "train_step_log.csv",
-        (
-            "time",
-            "epoch",
-            "global_step",
-            "total_loss",
-            "wm_mse",
-            "dino_grid_mse",
-            "predicted_dino_grid_mse",
-            "sigreg_loss",
-            "sigreg_global_batch_size",
-            "value_total",
-            "value_mc_mse",
-            "lm_ce",
-            "outcome_bce",
-            "outcome_count",
-            "lambda_wm",
-            "lambda_dino",
-            "lambda_sigreg",
-            "qwen_lr",
-            "context_length",
-            "prediction_horizon",
-            "current_batch_size",
-            "trajectory_batch_size",
-            "val_wm_mse",
-        ),
+        STAGE3_LOG_COLUMNS,
     )
     if is_main():
         log_writer.ensure_header()

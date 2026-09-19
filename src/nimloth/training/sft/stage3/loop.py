@@ -322,9 +322,17 @@ class SFT2TrainingLoop:
             if regularizer_metrics:
                 accumulator.update(regularizer_metrics, count=1)
             if sample_count > 0:
-                dino_metric = metrics.pop("dino_grid_mse", None)
-                if dino_metric is not None:
-                    accumulator.update({"dino_grid_mse": dino_metric}, count=loss_scales[7])
+                dino_metrics = {
+                    key: metrics.pop(key)
+                    for key in (
+                        "dino_grid_mse",
+                        "dino_spatial_mse",
+                        "dino_cls_mse",
+                    )
+                    if key in metrics
+                }
+                if dino_metrics:
+                    accumulator.update(dino_metrics, count=loss_scales[7])
                 lm_metric = metrics.pop("lm_ce", None)
                 if lm_metric is not None and loss_scales[2] > 0:
                     accumulator.update({"lm_ce": lm_metric}, count=loss_scales[2])

@@ -148,8 +148,13 @@ def test_evaluate_total_uses_component_populations():
 
         def evaluation_step(self, runtime, batch):
             return SimpleNamespace(sample_count=batch.windows, metrics={
-                "wm_mse": 1.0, "value_total": 2.0, "dino_grid_mse": batch.dino,
+                "wm_mse": 1.0, "wm_spatial_mse": .25, "wm_cls_mse": .75,
+                "value_total": 2.0, "dino_grid_mse": batch.dino,
+                "dino_spatial_mse": batch.dino / 4,
+                "dino_cls_mse": batch.dino * 3 / 4,
                 "predicted_dino_grid_mse": batch.dino,
+                "predicted_dino_spatial_mse": batch.dino / 4,
+                "predicted_dino_cls_mse": batch.dino * 3 / 4,
                 "lm_ce": batch.lm, "outcome_bce": batch.outcome,
                 "total_loss": 9.0 + 3.0 * batch.lm + 4.0 * batch.outcome,
             })
@@ -171,5 +176,11 @@ def test_evaluate_total_uses_component_populations():
     assert result["lm_ce"] == pytest.approx(2.0)
     assert result["outcome_bce"] == pytest.approx(2.5)
     assert result['dino_grid_mse'] == pytest.approx(6.5)
+    assert result['dino_spatial_mse'] == pytest.approx(1.625)
+    assert result['dino_cls_mse'] == pytest.approx(4.875)
     assert result['predicted_dino_grid_mse'] == pytest.approx(7.5)
+    assert result['predicted_dino_spatial_mse'] == pytest.approx(1.875)
+    assert result['predicted_dino_cls_mse'] == pytest.approx(5.625)
+    assert result['wm_spatial_mse'] == pytest.approx(.25)
+    assert result['wm_cls_mse'] == pytest.approx(.75)
     assert result["total_loss"] == pytest.approx(32.0)

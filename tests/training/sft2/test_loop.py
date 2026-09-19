@@ -320,7 +320,9 @@ def test_batch_size_metrics_average_microbatches_including_padding(monkeypatch, 
         scales.append(kwargs['loss_scales'])
         count = int(items[0].windows * items[0].loss_weight)
         return 1., {"current_batch_size": float(count), "wm_mse": float(items[0].windows),
-                    "dino_grid_mse": float(items[0].windows)}, count
+                    "dino_grid_mse": float(items[0].windows),
+                    "dino_spatial_mse": float(items[0].windows) / 4,
+                    "dino_cls_mse": float(items[0].windows) * 3 / 4}, count
 
     loop._train_microbatch = train_microbatch
     captured = []
@@ -331,6 +333,8 @@ def test_batch_size_metrics_average_microbatches_including_padding(monkeypatch, 
     assert captured[0]["trajectory_batch_size"] == pytest.approx(2 / 3)
     assert captured[0]["wm_mse"] == pytest.approx((2 * 2 + 6 * 6) / 8)
     assert captured[0]['dino_grid_mse'] == pytest.approx((2 * 6 + 6 * 10) / 16)
+    assert captured[0]['dino_spatial_mse'] == pytest.approx((.5 * 6 + 1.5 * 10) / 16)
+    assert captured[0]['dino_cls_mse'] == pytest.approx((1.5 * 6 + 4.5 * 10) / 16)
     global_states = 16 if world_size == 1 else 24
     assert [value[4] for value in scales] == pytest.approx(
         [world_size * 6 / global_states, world_size * 10 / global_states, 0])

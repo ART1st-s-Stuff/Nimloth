@@ -85,10 +85,20 @@ def evaluate(
                 if on_batch is not None:
                     on_batch(agent_batch, output)
                 metrics = dict(output.metrics)
-                dino = metrics.pop("dino_grid_mse", None)
-                if dino is not None:
-                    accumulator.update({"dino_grid_mse": dino},
-                                       count=int(agent_batch.observed_state_weights.sum().item()))
+                dino_metrics = {
+                    key: metrics.pop(key)
+                    for key in (
+                        "dino_grid_mse",
+                        "dino_spatial_mse",
+                        "dino_cls_mse",
+                    )
+                    if key in metrics
+                }
+                if dino_metrics:
+                    accumulator.update(
+                        dino_metrics,
+                        count=int(agent_batch.observed_state_weights.sum().item()),
+                    )
                 lm = metrics.pop("lm_ce", None)
                 if lm is not None:
                     lm_count = int(agent_batch.lm_weights.sum().item())

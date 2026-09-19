@@ -12,6 +12,39 @@ from nimloth.util.distributed import is_main
 from nimloth.util.wandb import log_metrics
 
 
+STAGE3_LOG_COLUMNS = (
+    "time",
+    "epoch",
+    "global_step",
+    "total_loss",
+    "wm_mse",
+    "wm_spatial_mse",
+    "wm_cls_mse",
+    "dino_grid_mse",
+    "dino_spatial_mse",
+    "dino_cls_mse",
+    "predicted_dino_grid_mse",
+    "predicted_dino_spatial_mse",
+    "predicted_dino_cls_mse",
+    "sigreg_loss",
+    "sigreg_global_batch_size",
+    "value_total",
+    "value_mc_mse",
+    "lm_ce",
+    "outcome_bce",
+    "outcome_count",
+    "lambda_wm",
+    "lambda_dino",
+    "lambda_sigreg",
+    "qwen_lr",
+    "context_length",
+    "prediction_horizon",
+    "current_batch_size",
+    "trajectory_batch_size",
+    "val_wm_mse",
+)
+
+
 @dataclass(frozen=True)
 class SFT2Reporter:
     """统一 SFT2 的 CSV、W&B 与 epoch 摘要，loop 只提交结构化指标。"""
@@ -94,4 +127,4 @@ class SFT2Reporter:
         )
 
 
-__all__ = ["SFT2Reporter"]
+__all__ = ["SFT2Reporter", "STAGE3_LOG_COLUMNS"]

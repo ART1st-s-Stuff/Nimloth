@@ -62,7 +62,9 @@ delta head 仍为零初始化，所以首个更新前 K65 逐值复制输入。
 
 K65 训练把 WM spatial/CLS MSE 和 observed-state DINO spatial/CLS MSE 分开
 归一化并分别记录，`lambda_dino` 同时乘到两个 DINO 分项，不做 65-token
-平均。ValueHead、OutcomeHead 与 SIGReg 通过 `GridStateLayout` 只读取 K64，
+平均。`train_step_log.csv` 同时持久化兼容总量 `wm_mse`、`dino_grid_mse`、
+`predicted_dino_grid_mse` 及其 `*_spatial_mse` / `*_cls_mse` 分项；总量仍是两个
+分别归一化分项的和，不是对 K65 直接取平均。ValueHead、OutcomeHead 与 SIGReg 通过 `GridStateLayout` 只读取 K64，
 保持既有 spatial mean-pooling 语义；这不修复两个 head 已知的汇聚限制。
 frozen CFM reconstruction 同样只接收 K64，CLS 只通过独立特征指标评估。
 配置样例为
