@@ -3,9 +3,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from pathlib import Path
 
 from .convergence import ConvergenceState
+
+
+def _without_query_token_lr(identity):
+    """Return an identity with only the reviewed Query-LR field removed."""
+    normalized = deepcopy(identity)
+    token_rows = normalized.get("token_row_training")
+    if not isinstance(token_rows, dict) or "query_token_lr" not in token_rows:
+        raise ValueError(
+            "query LR continuation requires a saved query-token optimizer identity"
+        )
+    query_lr = token_rows.pop("query_token_lr")
+    return normalized, query_lr
 
 
 def validate_epoch_continuation(
@@ -16,7 +29,17 @@ def validate_epoch_continuation(
     world,
     allow_dino_weight_change=False,
     allow_projector_lr_change=False,
+    allow_query_token_lr_change=False,
 ):
+    if sum(
+        bool(value)
+        for value in (
+            allow_dino_weight_change,
+            allow_projector_lr_change,
+            allow_query_token_lr_change,
+        )
+    ) > 1:
+        raise ValueError("change only one continuation identity field at a time")
     path = Path(path)
     marker = json.loads((path / "COMMITTED").read_text())
     epoch = state.get("epoch")
@@ -30,6 +53,16 @@ def validate_epoch_continuation(
     elif allow_projector_lr_change:
         allowed.add("projector_lr")
     previous = state.get("identity")
+    if allow_query_token_lr_change:
+        if not isinstance(previous, dict):
+            raise ValueError("continuation stage/dataset/optimizer identity mismatch")
+        previous, previous_query_lr = _without_query_token_lr(previous)
+        identity, query_lr = _without_query_token_lr(identity)
+        if previous_query_lr == query_lr:
+            raise ValueError("query LR continuation requires query_token_lr to change")
+        # Unlike ordinary schedule continuation, this explicit gate permits no
+        # top-level policy or schedule changes alongside the nested Query LR.
+        allowed = set()
     if not isinstance(previous, dict) or (
         {k: v for k, v in previous.items() if k not in allowed}
         != {k: v for k, v in identity.items() if k not in allowed}

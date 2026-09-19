@@ -223,3 +223,18 @@
   2.5。若按 65 个 token 的元素统一平均，Stage2 epoch5 为约 `0.6156501`，但该值不是当前
   训练目标。Stage2 在 epoch5 被计划暂停且 CLS 指标尚未达到收敛条件，不能作为完成对齐的
   正式 checkpoint。
+
+## 2026-09-19 Stage2 Query LR epoch-boundary continuation gate
+
+- 为用户要求的 CLS Query LR `5e-5 -> 1e-4` 续训增加显式
+  `--continue-with-query-token-lr-change`。该模式仅在 Stage2、已提交 epoch 边界、
+  `--until-converged` 和新输出目录下成立；checkpoint identity 只放开嵌套的
+  `token_row_training.query_token_lr`。若未来 `global_query_only` identity 显式保存
+  `protocol_token_lr`，它仍属于严格身份字段，本门禁不允许改变。
+- 续训仍加载原 optimizer state/moments、per-rank RNG、epoch 数据边界与完整验证历史；
+  随后按包含新 Query LR 的配置学习率重启 schedule。`continuation.json` 记录父 checkpoint
+  hash、旧/新 Query LR、schedule policy 和完整新身份；DINO、projector、protocol rows 及
+  其他训练身份改变仍拒绝。
+- 新增 identity/绑定 LR/CLI 互斥回归测试。本地 `compileall`、AST、`git diff --check` 和
+  不依赖 torch 的 continuation smoke 通过；本地运行 pytest 受环境缺少 `pytest`/`torch`
+  阻塞，尚未启动或修改任何远程 GPU 训练。

@@ -134,6 +134,154 @@ def test_projector_lr_change_is_explicit_and_does_not_allow_other_changes(tmp_pa
             )
 
 
+def test_query_token_lr_change_is_explicit_and_keeps_other_row_lrs_fixed(tmp_path):
+    path = tmp_path / "epoch_005"
+    path.mkdir()
+    (path / "COMMITTED").write_text(json.dumps({"epoch": 5, "step": 135}))
+    identity = {
+        "weight_dino": 2.0,
+        "projector_lr": None,
+        "token_row_training": {
+            "schema": "input_query_row_only_v1",
+            "query_token_ids": [64],
+            "query_token_lr": 5e-5,
+            "protocol_token_ids": [],
+        },
+        "tuning_mode": "global_query_only",
+    }
+    state = dict(
+        epoch=5,
+        step=135,
+        identity=identity,
+        world_size=1,
+        rank_rng_states=[capture_rng_state()],
+        optimizer={"state": {"preserved": True}},
+        scheduler={"last_epoch": 135},
+    )
+    changed = copy.deepcopy(identity)
+    changed["token_row_training"]["query_token_lr"] = 1e-4
+    with pytest.raises(ValueError, match="identity"):
+        validate_epoch_continuation(path, state, changed, world=1)
+    assert validate_epoch_continuation(
+        path,
+        state,
+        changed,
+        world=1,
+        allow_query_token_lr_change=True,
+    ) == 5
+
+    changed_protocol = copy.deepcopy(changed)
+    changed_protocol["token_row_training"]["protocol_token_ids"] = [1]
+    with pytest.raises(ValueError, match="identity"):
+        validate_epoch_continuation(
+            path,
+            state,
+            changed_protocol,
+            world=1,
+            allow_query_token_lr_change=True,
+        )
+    for key, value in [("warmup_ratio", 0.2), ("convergence", {"patience_epochs": 3})]:
+        changed_policy = copy.deepcopy(changed)
+        changed_policy[key] = value
+        with pytest.raises(ValueError, match="identity"):
+            validate_epoch_continuation(
+                path,
+                state,
+                changed_policy,
+                world=1,
+                allow_query_token_lr_change=True,
+            )
+    with pytest.raises(ValueError, match="requires query_token_lr to change"):
+        validate_epoch_continuation(
+            path,
+            state,
+            identity,
+            world=1,
+            allow_query_token_lr_change=True,
+        )
+
+
+def test_query_lr_continuation_rejects_protocol_lr_and_other_change_flags(tmp_path):
+    path = tmp_path / "epoch_003"
+    path.mkdir()
+    (path / "COMMITTED").write_text(json.dumps({"epoch": 3, "step": 81}))
+    identity = {
+        "tuning_mode": "global_query_only",
+        "token_row_training": {
+            "query_token_lr": 5e-5,
+            "protocol_token_lr": 5e-5,
+        },
+    }
+    state = dict(
+        epoch=3,
+        step=81,
+        identity=identity,
+        world_size=1,
+        rank_rng_states=[capture_rng_state()],
+        optimizer={"state": {"preserved": True}},
+        scheduler={"last_epoch": 81},
+    )
+    changed = copy.deepcopy(identity)
+    changed["token_row_training"]["query_token_lr"] = 1e-4
+    changed["token_row_training"]["protocol_token_lr"] = 1e-4
+    with pytest.raises(ValueError, match="identity"):
+        validate_epoch_continuation(
+            path,
+            state,
+            changed,
+            world=1,
+            allow_query_token_lr_change=True,
+        )
+    changed["token_row_training"]["protocol_token_lr"] = 5e-5
+    with pytest.raises(ValueError, match="only one"):
+        validate_epoch_continuation(
+            path,
+            state,
+            changed,
+            world=1,
+            allow_projector_lr_change=True,
+            allow_query_token_lr_change=True,
+        )
+
+
+def test_restart_schedule_resets_every_group_without_losing_moments():
+    parameters = [torch.nn.Parameter(torch.ones(1)) for _ in range(3)]
+    optimizer = torch.optim.AdamW(
+        [
+            {"params": [parameters[0]], "lr": 2e-6},
+            {"params": [parameters[1]], "lr": 5e-5},
+            {"params": [parameters[2]], "lr": 1e-5},
+        ]
+    )
+    sum(parameter.sum() for parameter in parameters).backward()
+    optimizer.step()
+    saved = copy.deepcopy(optimizer.state_dict())
+    optimizer.load_state_dict(saved)
+
+    scheduler = restart_schedule(
+        optimizer,
+        [2e-6, 1e-4, 1e-5],
+        steps_per_epoch=10,
+        remaining_epochs=0,
+        warmup_ratio=0.0,
+        until_converged=True,
+    )
+
+    assert [group["lr"] for group in optimizer.param_groups] == pytest.approx(
+        [2e-6, 1e-4, 1e-5]
+    )
+    assert [
+        optimizer.state[parameter]["step"] for parameter in parameters
+    ] == [1, 1, 1]
+    optimizer.zero_grad()
+    sum(parameter.sum() for parameter in parameters).backward()
+    optimizer.step()
+    scheduler.step()
+    assert [group["lr"] for group in optimizer.param_groups] == pytest.approx(
+        [2e-6, 1e-4, 1e-5]
+    )
+
+
 def test_changed_objective_baseline_drops_old_patience(tmp_path):
     from nimloth.training.sft.stage1.continuation import changed_objective_baseline
     path = tmp_path / "validation_metrics.jsonl"

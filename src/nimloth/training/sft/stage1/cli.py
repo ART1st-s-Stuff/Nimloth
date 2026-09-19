@@ -63,6 +63,15 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         ),
     )
     ap.add_argument(
+        "--continue-with-query-token-lr-change",
+        action="store_true",
+        help=(
+            "Continue a Stage2 epoch with only query_token_lr changed. Optimizer "
+            "moments, convergence history, RNG and the epoch data boundary are "
+            "preserved; configured group LRs start a new schedule."
+        ),
+    )
+    ap.add_argument(
         "--max-optimizer-steps", type=int, default=None,
         help="Pause with a resume checkpoint and exit 75 at this absolute optimizer step.",
     )
@@ -256,7 +265,20 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         raise ValueError(
             "projector LR continuation requires Stage2, --continue-from-epoch and --until-converged"
         )
-    if args.continue_with_dino_weight_change and args.continue_with_projector_lr_change:
+    if args.continue_with_query_token_lr_change and (
+        stage != "query" or args.continue_from_epoch is None or not args.until_converged
+    ):
+        raise ValueError(
+            "query-token LR continuation requires Stage2, --continue-from-epoch and --until-converged"
+        )
+    if sum(
+        bool(value)
+        for value in (
+            args.continue_with_dino_weight_change,
+            args.continue_with_projector_lr_change,
+            args.continue_with_query_token_lr_change,
+        )
+    ) > 1:
         raise ValueError("change only one continuation identity field at a time")
     global_query_only = stage == "query" and args.tuning_mode == "global_query_only"
     full_language = stage == "query" and args.tuning_mode == "full_language"
@@ -320,6 +342,8 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
             raise ValueError("Stage2 selected token rows require LoRA and FP32 masters")
         if args.embedding_lr is not None and args.embedding_lr != args.query_token_lr:
             raise ValueError("legacy --embedding-lr must equal --query-token-lr in Stage2")
+    if args.continue_with_query_token_lr_change and args.query_token_lr is None:
+        raise ValueError("query-token LR continuation requires a trainable query-token row group")
     if args.projector_lr is not None and (stage != "query" or not 0 < args.projector_lr < float("inf")):
         raise ValueError("projector_lr requires Stage2 and a finite positive value")
     if args.embedding_master_dtype not in ("bfloat16", "float32"):

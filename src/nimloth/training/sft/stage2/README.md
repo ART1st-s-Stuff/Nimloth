@@ -70,6 +70,14 @@ LoRA 合并导出保留 projector 文件及阶段元数据，SFT3 使用同一 p
 `projector_lr` 改变：恢复既有优化器 moments、每 rank RNG、数据游标和完整验证历史，
 然后按命令行给出的五组学习率创建新的续训 schedule；普通 resume 仍禁止改变学习率。
 
+从已提交 epoch 调整 Query token 学习率时，必须使用
+`--continue-with-query-token-lr-change --continue-from-epoch <epoch目录>`。该门禁只允许
+checkpoint identity 中的 `token_row_training.query_token_lr` 改变；
+包括 `protocol_token_lr`、收敛规则和 warmup 在内的其他身份字段必须保持不变。续训恢复原
+optimizer moments、每 rank RNG、epoch 数据边界和完整收敛历史，再用新 Query LR 及其余
+原配置学习率重启 schedule。输出 `continuation.json` 记录父 checkpoint hash、旧/新 Query
+LR 与新 schedule identity。
+
 优化器更新前只预取一个累积组的 CPU 输入并统计成功/全部回答数，跨 rank 求和后逐微批单次前向。两个损失分别按各自全局分母缩放；恢复身份包含此监督语义，旧的全部回答 LM 优化器状态不能续训为新目标。
 
 ## 数据加载与计算开销

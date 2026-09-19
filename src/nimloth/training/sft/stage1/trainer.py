@@ -920,6 +920,7 @@ def main(*, stage: str = "format") -> int:
                 world=world,
                 allow_dino_weight_change=args.continue_with_dino_weight_change,
                 allow_projector_lr_change=args.continue_with_projector_lr_change,
+                allow_query_token_lr_change=args.continue_with_query_token_lr_change,
             )
             if not args.until_converged and args.epochs <= int(state["epoch"]):
                 raise ValueError("--epochs must exceed the completed source epoch")
@@ -1168,6 +1169,7 @@ def main(*, stage: str = "format") -> int:
                 world=world,
                 allow_dino_weight_change=args.continue_with_dino_weight_change,
                 allow_projector_lr_change=args.continue_with_projector_lr_change,
+                allow_query_token_lr_change=args.continue_with_query_token_lr_change,
             )
         if convergence_policy is not None and continuing:
             if args.continue_with_dino_weight_change:
@@ -1266,7 +1268,15 @@ def main(*, stage: str = "format") -> int:
         elif continuing:
             scheduler = restart_schedule(optimizer, configured_learning_rates, steps_per_epoch=steps_per_epoch, remaining_epochs=(args.epochs - int(state["epoch"])) if args.epochs is not None else 0, warmup_ratio=args.warmup_ratio, until_converged=args.until_converged)
             if is_main():
-                (args.output_dir / "continuation.json").write_text(json.dumps(continuation_provenance(resume_dir, resume_identity), indent=2) + "\n")
+                provenance = continuation_provenance(resume_dir, resume_identity)
+                provenance["schedule_policy"] = "restart_with_configured_learning_rates"
+                if args.continue_with_query_token_lr_change:
+                    provenance.update(
+                        changed_identity_field="token_row_training.query_token_lr",
+                        previous_query_token_lr=state["identity"]["token_row_training"]["query_token_lr"],
+                        query_token_lr=args.query_token_lr,
+                    )
+                (args.output_dir / "continuation.json").write_text(json.dumps(provenance, indent=2) + "\n")
         elif state.get("scheduler") is not None:
             scheduler.load_state_dict(state["scheduler"])
         if is_main():

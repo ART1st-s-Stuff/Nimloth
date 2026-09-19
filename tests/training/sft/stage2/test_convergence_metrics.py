@@ -53,6 +53,18 @@ def test_global_query_only_requires_the_reviewed_cls_convergence_contract():
     assert args.projector_lr is None
     assert args.query_token_lr == pytest.approx(5e-5)
 
+    continued, _ = parse_args(
+        argv
+        + [
+            "--continue-from-epoch", "/source/epoch_005",
+            "--continue-with-query-token-lr-change",
+            "--query-token-lr", "1e-4",
+        ],
+        stage="query",
+    )
+    assert continued.query_token_lr == pytest.approx(1e-4)
+    assert continued.protocol_token_lr == pytest.approx(1e-4)
+
     with pytest.raises(ValueError, match="global_query_only uses DDP"):
         parse_args(
             [
@@ -60,6 +72,32 @@ def test_global_query_only_requires_the_reviewed_cls_convergence_contract():
                 for index, value in enumerate(argv)
                 if argv[index - 1] != "--distributed-strategy"
                 and value != "--distributed-strategy"
+            ],
+            stage="query",
+        )
+
+
+def test_query_lr_continuation_requires_explicit_epoch_boundary_and_exclusive_change():
+    argv = [
+        "--model", "/model", "--train-jsonl", "/train", "--val-jsonl", "/val",
+        "--output-dir", "/output", "--dino-cache-root", "/dino",
+        "--until-converged", "--convergence-min-epochs", "2",
+        "--convergence-patience-epochs", "2",
+        "--convergence-min-relative-improvement", "0.01",
+        "--query-token-lr", "1e-4",
+    ]
+    with pytest.raises(ValueError, match="requires Stage2"):
+        parse_args(
+            argv + ["--continue-with-query-token-lr-change"],
+            stage="query",
+        )
+    with pytest.raises(ValueError, match="only one"):
+        parse_args(
+            argv
+            + [
+                "--continue-from-epoch", "/source/epoch_005",
+                "--continue-with-query-token-lr-change",
+                "--continue-with-projector-lr-change",
             ],
             stage="query",
         )
