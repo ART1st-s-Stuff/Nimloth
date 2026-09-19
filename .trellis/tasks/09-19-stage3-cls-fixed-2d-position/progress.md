@@ -105,3 +105,21 @@
   token 可读取新增 global KV，以及后续 Query 的 position ids 从 `2091/2755` 变为
   `2092/2757`。长 Stage2/Stage3 暂不启动，frozen reconstruction identity 也不作为通过项；
   需要先决定是否保留严格 identity 合同，再决定做 attention/position ablation 或修改设计。
+
+## 2026-09-19 evaluation-only Stage2 CLS formal launch approval
+
+- 用户在获知零更新与单步增量结果后明确回复“你可以启动”。本次授权允许 evaluation-only
+  Stage2 CLS alignment 在“新增 CLS 会小幅改变后续 K64”的已知条件下继续；不把该现象
+  误报为已满足原严格 identity 门禁，也不自动授权后续 Stage3 或 RL。
+- 为避免收敛训练占满磁盘，新增 opt-in `--keep-epoch-checkpoints 1`：新 epoch 和可能更新的
+  `best` 完整提交后，仅清理同一输出目录、同一训练身份中更旧的完整 epoch；默认保留行为
+  不变。实现 commit `6c36b33b6fb505a9fbdaf608222074d65b346f64`。远端 CPU 门禁
+  `test_epoch_checkpoint_retention.py + test_config.py + test_convergence_metrics.py` 为
+  `19 passed`。
+- 最终运行从原 Stage2 epoch16 fresh start，8卡 DDP、每卡 trajectory batch1、grad accum8、
+  有效 batch64；只训练新增 global Query input row（FP32 master，LR `5e-5`），其余冻结；
+  LM1、DINO2、K64+CLS/K65、grid8、完整 train1709/val193、每10步保存恢复点。
+  收敛监控为完整验证集 CLS DINO MSE：至少2轮，连续2轮相对改善不足1%停止。12小时是
+  运行中断上限，不作为收敛；届时从最后完整 checkpoint 续训。输出唯一目录为
+  `/mnt/nimloth/outputs/experiments/stage3-cls-fixed2d/20260919_stage2_cls_alignment_eval_r1`，
+  只保留最新 epoch、独立 best、逐步日志和恢复元数据。
