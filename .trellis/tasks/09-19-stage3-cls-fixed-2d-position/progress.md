@@ -71,3 +71,28 @@
 - 修复提交 `ae275374` 的远端 focused tests 为 `42 passed`。实际 epoch16 dtype
   探针确认文本 embedding/q_proj 从 FP32 转为 BF16，visual 和 output head 为 BF16，
   新行 master 为 FP32；转换前后 FP32 buffer 均为38个，未改动 buffer 精度。
+
+## 2026-09-19 Stage2 CLS canary r3 and identity gate
+
+- r3 使用远端记录 HEAD `5be85cdc`（实现 `ae275374`），08卡 DDP 在
+  2026-09-19T09:32:14Z--09:34:49Z 完成1次 optimizer update；train loss
+  `6.2461381`，提交 `resume_step_00000001`。日志明确记录
+  `pause_at_optimizer_step_cap/global_step=1`。`torchrun` 将 rank0 的预期 exit75 包装为
+  `ChildFailedError` 并使 launcher 返回1；无其他 rank failure，GPU均释放。
+- checkpoint 审计：`evaluation_only=true`、`formal_stage2=false`、K64+CLS/K65；恢复状态
+  `step=1,next_micro_batch=8,micro_accum=0,world_size=8` 并保存8份 rank RNG。optimizer
+  只有一个 lr `5e-5`、weight decay0 的参数和一个 state entry。旧 input embedding 行、
+  layer0 q_proj、layer35 down_proj、旧 LM-head 行均逐值等于父 checkpoint 转 BF16；
+  projector 与父 checkpoint FP32 逐值一致。新增行相对初始化 L2 `0.00226273`、max abs
+  `5.00008e-5`、cosine `0.99998868`，且 materialized BF16 行与 FP32 master 对应。
+- production-shaped canary 因此通过“真实前向/反向、单行更新、checkpoint可恢复”机械门禁；
+  launcher 退出码合同需记录 torchrun 包装语义，不能把顶层1误报为训练失败或顶层75。
+- 随后在固定轨迹 `vagen-step60/000006`（3个回答）比较 epoch16 K64 与 r3 K65 的
+  observed spatial state。删除3个新增 global token 后，两边完整 input IDs逐值一致；首个
+  回答的64个 hidden/state逐值一致，但第二、第三个回答会读取历史回答中的 global token：
+  state max abs分别 `0.30025995`、`0.24371362`，总体 MSE `0.0002898332`、cosine
+  `0.99983722`，严格 identity gate失败。详细 artifact 位于 r3
+  `spatial_identity_detailed/metrics.json`，标记为 `FAILED_GATE`。
+- 这证实当前“每个回答都在 action 前插入 CLS Query”的普通因果 attention 不可能同时
+  保证后续回答的旧 K64 完全不变。长 Stage2/Stage3 暂不启动，frozen reconstruction
+  identity 也不作为通过项；需要先审查 history 中 global token 的 attention/表示合同。
