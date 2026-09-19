@@ -68,3 +68,6 @@
   等 FP32 buffer；随后新增 Query 行仍建立 FP32 master，forward hook 输出 BF16。
   同时移除该模式下错误的“full fine-tuning”提示。重跑前须通过 focused tests、远端
   dtype 探针，并使用新的唯一输出目录。
+- 修复提交 `ae275374` 的远端 focused tests 为 `42 passed`。实际 epoch16 dtype
+  探针确认文本 embedding/q_proj 从 FP32 转为 BF16，visual 和 output head 为 BF16，
+  新行 master 为 FP32；转换前后 FP32 buffer 均为38个，未改动 buffer 精度。

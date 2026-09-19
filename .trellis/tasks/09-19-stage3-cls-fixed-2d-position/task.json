@@ -15,7 +15,7 @@
   "branch": "codex/stage3-cls-fixed-2d-position",
   "base_branch": "codex/stage3-residual-rl",
   "worktree_path": "/workspace/remote2/nimloth/.worktree/stage3-cls-fixed-2d-position",
-  "commit": "4e1f840ccc3dc60146a23e9ad644647216c88747",
+  "commit": "ae275374ac93e238a5073d574e192251fffa0886",
   "pr_url": null,
   "subtasks": [],
   "children": [],
