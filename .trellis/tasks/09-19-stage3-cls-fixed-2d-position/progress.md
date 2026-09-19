@@ -281,3 +281,13 @@
   optimizer state、8份 rank RNG、Query LR `1e-4` 和 converged history。运行目录约16GiB，
   `/mnt` 剩余约111GiB。因VPN重连导致旧 ControlMaster 连续三轮无输出，heartbeat曾暂停；
   直接SSH恢复后完成上述终态核验，监控保持暂停且不得自动进入Stage3。
+
+## 2026-09-19 Stage3 K65 component metric persistence
+
+- 在重启 Stage3 前补齐 `train_step_log.csv` 列：保留兼容总量 `wm_mse`、
+  `dino_grid_mse`、`predicted_dino_grid_mse`，并持久化对应 spatial/CLS 六个分项。
+- 训练和验证聚合时，observed-state DINO 总量及两个分项共同使用有效独立观测数；WM 与
+  predicted-DINO 总量/分项继续使用有效窗口数。损失定义、训练目标和 checkpoint 选择未变。
+- 新增 reporter CSV 回归测试，并扩展训练/验证聚合测试覆盖分项及其正确统计总体。
+- 本地 `compileall` 与 `git diff --check` 通过；本机 Python 环境缺少 `torch`、`pytest` 和
+  `ruff`，因此依赖测试需在远端既有训练环境复跑后才能进入真实实验。
