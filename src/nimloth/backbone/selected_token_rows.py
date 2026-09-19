@@ -118,6 +118,7 @@ def install_input_query_row(
     query_id: int,
     *,
     initialize_from_ids: Sequence[int] | None = None,
+    forward_dtype: torch.dtype | None = None,
 ) -> None:
     """Freeze the model and expose one FP32 input-embedding master row.
 
@@ -127,6 +128,17 @@ def install_input_query_row(
     """
 
     language_model.requires_grad_(False)
+    if forward_dtype is not None:
+        if forward_dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError("global-query-only forward dtype must be FP16 or BF16")
+        # The parent Stage2 checkpoint stores FP32 masters. FSDP used to cast
+        # those parameters for BF16 forwards, but this DDP-only mode has no
+        # FSDP mixed-precision wrapper. Cast frozen parameters explicitly while
+        # preserving FP32 buffers such as rotary frequencies. The selected row
+        # master is installed below, after this conversion, and remains FP32.
+        for parameter in language_model.parameters():
+            parameter.data = parameter.data.to(dtype=forward_dtype)
+        language_model.config.torch_dtype = forward_dtype
     input_leaf = language_model.get_input_embeddings()
     output_leaf = language_model.get_output_embeddings()
     if input_leaf.weight is output_leaf.weight:

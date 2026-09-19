@@ -52,3 +52,19 @@
   `include_cls`、full-tuning fixture 缺 `config`、一个测试缺可选 `peft`，以及本地
   Transformers API 与测试预期的 `visual` 属性不一致；本次不扩大范围修改。
   未修改实验超参、CLS/WM实现或远端产物。
+
+## 2026-09-19 Stage2 CLS canary r2
+
+- 使用实现提交 `4e1f840c`（远端记录 HEAD `1913f779`）、epoch16、原 Stage2
+  answer-view 1709/193 条数据和 K65 cache `199285c3bf8d22d8` 启动8卡 DDP 单步
+  canary；CPU preflight 对真实 train/validation 均通过。
+- 运行在第一次前向、optimizer update 前以 exit 1 失败；全部 rank 的文本
+  FlashAttention 收到 FP32 hidden。无有效 checkpoint，仅留下日志表头，GPU 已全部释放。
+- 只读探针确认当前 Transformers 4.49 对该 Qwen composite config 的
+  `torch_dtype=bfloat16` 仅使视觉模块成为 BF16；epoch16 的文本 embedding、attention、
+  norm 仍按 checkpoint config 保持 FP32。旧 FSDP 路径会在前向转 BF16，新的 DDP
+  单行模式没有该 wrapper。
+- 修复限定于 `global_query_only`：在安装新行之前只将冻结参数转为 BF16，保留 rotary
+  等 FP32 buffer；随后新增 Query 行仍建立 FP32 master，forward hook 输出 BF16。
+  同时移除该模式下错误的“full fine-tuning”提示。重跑前须通过 focused tests、远端
+  dtype 探针，并使用新的唯一输出目录。

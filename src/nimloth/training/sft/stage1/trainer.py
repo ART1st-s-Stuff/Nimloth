@@ -996,7 +996,10 @@ def main(*, stage: str = "format") -> int:
             model.enable_input_require_grads()
     elif args.lora:
         model = apply_lora(model, args)
-    elif is_main() and getattr(args, "tuning_mode", None) != "full_language":
+    elif is_main() and getattr(args, "tuning_mode", None) not in {
+        "full_language",
+        "global_query_only",
+    }:
         print(
             json.dumps(
                 {
@@ -1038,6 +1041,7 @@ def main(*, stage: str = "format") -> int:
             language_model,
             args.query_token_ids[-1],
             initialize_from_ids=args.query_token_ids[:-1],
+            forward_dtype=torch.bfloat16,
         )
         if resume_dir is not None:
             from nimloth.training.sft.stage2.selected_token_rows import (

@@ -139,3 +139,43 @@ def test_input_global_query_row_is_the_only_trainable_parameter():
     model.embed(torch.tensor([[15, 1]])).sum().backward()
     optimizer.step()
     assert torch.equal(model.embed.weight, before)
+
+
+def test_input_global_query_row_casts_frozen_parameters_but_preserves_buffers():
+    class InputOnlyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed = nn.Embedding(16, 4)
+            self.head = nn.Linear(4, 16, bias=False)
+            self.register_buffer("rotary_frequency", torch.randn(4))
+            self.config = SimpleNamespace(torch_dtype=torch.float32)
+
+        def get_input_embeddings(self):
+            return self.embed
+
+        def get_output_embeddings(self):
+            return self.head
+
+    model = InputOnlyModel()
+    source = model.embed.weight.detach()[[1, 2, 3]].to(torch.bfloat16)
+    install_input_query_row(
+        model,
+        15,
+        initialize_from_ids=[1, 2, 3],
+        forward_dtype=torch.bfloat16,
+    )
+
+    assert model.embed.weight.dtype == torch.bfloat16
+    assert model.head.weight.dtype == torch.bfloat16
+    assert model.embed.nimloth_query_rows.dtype == torch.float32
+    assert model.rotary_frequency.dtype == torch.float32
+    assert model.config.torch_dtype == torch.bfloat16
+    torch.testing.assert_close(
+        model.embed.nimloth_query_rows[0], source.float().mean(0)
+    )
+
+    output = model.embed(torch.tensor([[15, 1]]))
+    assert output.dtype == torch.bfloat16
+    output.float().sum().backward()
+    assert model.embed.nimloth_query_rows.grad is not None
+    assert model.embed.nimloth_query_rows.grad.dtype == torch.float32
