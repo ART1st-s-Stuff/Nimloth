@@ -632,6 +632,25 @@ def main(*, stage: str = "format") -> int:
     args, query_config = parse_args(stage=stage)
     if query_config is not None and args.action_token_loss_weight != 1:
         raise ValueError("query alignment uses answer-equal LM loss and requires action weight 1")
+    if query_config is not None:
+        from nimloth.training.sft.stage2.data import validate_query_alignment_jsonl
+
+        # Fail before distributed/CUDA setup and model or processor loading. A raw
+        # trajectory record is not the answer-view supervision required by Stage2.
+        validate_query_alignment_jsonl(
+            args.train_jsonl,
+            split="train",
+            query_count=args.latent_token_count,
+            max_records=args.max_train_records,
+            max_images_per_record=args.max_images_per_record,
+        )
+        validate_query_alignment_jsonl(
+            args.val_jsonl,
+            split="validation",
+            query_count=args.latent_token_count,
+            max_records=args.max_val_records,
+            max_images_per_record=args.max_images_per_record,
+        )
     random.seed(args.seed)
     torch.manual_seed(args.seed)
     rank, world, local_rank, device = setup_dist()

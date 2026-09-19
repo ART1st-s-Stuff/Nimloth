@@ -41,6 +41,14 @@ rollout 门禁，避免空间常量项掩盖新增全局 Query 的收敛。
 
 ## 模块职责与计算顺序
 
+入口在初始化 distributed/CUDA、processor 和模型前，先在 CPU 上逐条预检实际会读取的
+train/validation JSONL。Stage2 训练只接受带顶层 `messages`、字符串 `id`、布尔
+`success` 及逐回答观测/非空 CoT 的 answer-view 数据；传入
+`record_format=nimloth_trajectory_v1` 的原始 trajectory 会立即报出 split、record index
+和文件路径；缺少 CoT 后 Query state 到 `action_start` 边界的数据也会拒绝，不会等到首个
+DataLoader batch 才失败。`--max-train-records` 与
+`--max-val-records` 同样约束预检范围。
+
 dataset 保持以完整轨迹为样本，因此 `--batch-size` 按轨迹计数，`--max-train-records` 也直接限制原始轨迹。collator 为每个回答记录 query 位置、回答 token 归属和当前观测，但不会复制回答前缀。每条轨迹只执行一次因果 teacher-forcing 前向。
 
 `data.py` 保留完整多轮记录。每个回答之前的当前用户轮必须恰好对应一个观测图像，多图歧义会报错。每条记录必须显式提供完整轨迹的布尔 `success`。只有成功轨迹的回答计算 LM 监督；失败回答仍作为真实因果上下文参与前向和 DINO 对齐。每个回答内部先对 token CE 求平均，再在成功回答之间等权平均；全失败更新组 LM 为图连接的零。真实非空 CoT、有序连续 query 区间和观测图像必须逐回答对齐；缺失或截断回答、query 位置均拒绝，不生成替代思考内容。

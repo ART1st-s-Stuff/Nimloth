@@ -33,3 +33,22 @@
   下一门禁：远端完整依赖回归；真实 v2 cache
   lineage 核验；production-shaped 单步 GPU canary；epoch16/aligned Stage2 observed K64与
   frozen reconstruction identity；随后展示正式长训练 launch contract 并取得单独批准。
+
+## 2026-09-19 Stage2 data preflight follow-up
+
+- 远端 canary 暴露输入接线错误：Stage2 query alignment 收到了
+  `record_format=nimloth_trajectory_v1`，旧入口直到8 rank加载模型后访问首条记录才因缺少
+  `messages` 失败。
+- 新增 CPU-only answer-view preflight，并在 `setup_dist()`、processor及模型加载之前同时
+  检查 train/validation；错误明确包含 split、record index、文件路径与收到的 record
+  format。正确 answer-view 继续复用既有 observation/CoT 语义检查。
+- 独立检查补齐坏 JSONL 的物理行/record 定位、空集、实际 `max_records`/
+  `max_images_per_record` 范围及多模态 part 结构回归；新增 preflight 测试现为
+  `8 passed`。preflight 与相邻 query-alignment 最终回归
+  `37 passed, 1 deselected`（缺少可选 `peft`），此前 Stage1 continuation、Stage2
+  convergence/query alignment 回归 `51 passed, 1 deselected`；Stage2 multiprocessing
+  回归在允许 IPC 的环境中 `3 passed`。Ruff、`compileall` 与 `git diff --check` 通过。
+- 全 Stage2 邻接测试另有4个与本补丁无关的既有失败：cache reuse fixture 未接收
+  `include_cls`、full-tuning fixture 缺 `config`、一个测试缺可选 `peft`，以及本地
+  Transformers API 与测试预期的 `visual` 属性不一致；本次不扩大范围修改。
+  未修改实验超参、CLS/WM实现或远端产物。

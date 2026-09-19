@@ -1,7 +1,9 @@
 """Align every answer in a full trajectory with its observation and DINO grid."""
 
+import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -11,7 +13,147 @@ from nimloth.latent import (
     latent_state_tokens,
     normalize_latent_state_blocks,
 )
-from nimloth.training.sft.stage1.data import assistant_token_spans, collate_fn
+from nimloth.training.sft.stage1.data import (
+    NimlothVLSFTDataset,
+    assistant_token_spans,
+    collate_fn,
+)
+
+
+def validate_query_alignment_jsonl(
+    path: Path,
+    *,
+    split: str,
+    query_count: int,
+    max_records: int = -1,
+    max_images_per_record: int = -1,
+) -> int:
+    """Validate the Stage2 answer-view contract without loading a model or CUDA."""
+    try:
+        dataset = NimlothVLSFTDataset(
+            path,
+            processor=None,
+            max_records=max_records,
+            max_images_per_record=max_images_per_record,
+        )
+    except json.JSONDecodeError as exc:
+        source_line = None
+        record_index = 0
+        with path.open("r", encoding="utf-8") as source:
+            for line_number, line in enumerate(source, start=1):
+                if not line.strip():
+                    continue
+                if line.strip() == exc.doc.strip():
+                    source_line = line_number
+                    break
+                record_index += 1
+        location = (
+            f"record {record_index}, source line {source_line}"
+            if source_line is not None
+            else "an unknown source line"
+        )
+        raise ValueError(
+            f"Stage2 query alignment {split} dataset contains invalid JSONL at "
+            f"{path} ({location}): {exc.msg} (column {exc.colno})"
+        ) from exc
+    if not dataset.records:
+        raise ValueError(f"Stage2 query alignment {split} dataset is empty: {path}")
+
+    for index, record in enumerate(dataset.records):
+        location = f"{split} record {index} in {path}"
+        if not isinstance(record, dict):
+            raise TypeError(
+                f"Stage2 query alignment {location} must be a JSON object"
+            )
+        if "messages" not in record:
+            record_format = record.get("record_format", "unknown")
+            raise ValueError(
+                f"Stage2 query alignment {location} must be answer-view JSONL with "
+                f"top-level 'messages'; received record_format={record_format!r}"
+            )
+        if not isinstance(record.get("id"), str) or not record["id"]:
+            raise ValueError(
+                f"Stage2 query alignment {location} requires a nonempty string 'id'"
+            )
+        if type(record.get("success")) is not bool:
+            raise ValueError(
+                f"Stage2 query alignment {location} requires boolean 'success'"
+            )
+        messages = record["messages"]
+        if not isinstance(messages, list) or not messages:
+            raise ValueError(
+                f"Stage2 query alignment {location} requires a nonempty 'messages' list"
+            )
+        for message_index, message in enumerate(messages):
+            if not isinstance(message, dict) or not isinstance(
+                message.get("role"), str
+            ):
+                raise TypeError(
+                    f"Stage2 query alignment {location} message {message_index} "
+                    "requires a string 'role'"
+                )
+            if not isinstance(message.get("content"), (str, list)):
+                raise TypeError(
+                    f"Stage2 query alignment {location} message {message_index} "
+                    "requires string or multimodal-list 'content'"
+                )
+            if isinstance(message["content"], list):
+                for part_index, part in enumerate(message["content"]):
+                    if not isinstance(part, dict):
+                        raise TypeError(
+                            f"Stage2 query alignment {location} message "
+                            f"{message_index} content part {part_index} must be an object"
+                        )
+                    if part.get("type") == "image" and (
+                        not isinstance(part.get("image"), str) or not part["image"]
+                    ):
+                        raise ValueError(
+                            f"Stage2 query alignment {location} message "
+                            f"{message_index} content part {part_index} requires a "
+                            "nonempty string image path"
+                        )
+        if "image_paths" in record:
+            image_paths = record["image_paths"]
+            if not isinstance(image_paths, list) or any(
+                not isinstance(image_path, str) or not image_path
+                for image_path in image_paths
+            ):
+                raise ValueError(
+                    f"Stage2 query alignment {location} requires 'image_paths' to be "
+                    "a list of nonempty strings"
+                )
+        try:
+            messages = dataset.get_messages(index)
+            answer_observation_paths([{"messages": messages}])
+            _answer_messages_with_query_boundary(messages, query_count)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Stage2 query alignment {location} violates the answer-view contract: "
+                f"{exc}"
+            ) from exc
+    return len(dataset.records)
+
+
+def _answer_messages_with_query_boundary(
+    messages: list[dict[str, Any]], query_count: int
+) -> list[dict[str, Any]]:
+    answer_messages = [message for message in messages if message["role"] == "assistant"]
+    boundary = (
+        r"</think>\s*"
+        + re.escape(latent_state_block(query_count))
+        + r"\s*<\|action_start\|>"
+    )
+    if any(
+        not isinstance(message["content"], str)
+        or re.search(
+            boundary,
+            normalize_latent_state_blocks(message["content"], query_count),
+        )
+        is None
+        for message in answer_messages
+    ):
+        raise ValueError("query state must follow the recorded CoT and precede the action")
+    return answer_messages
 
 
 def answer_observation_paths(batch: list[dict[str, Any]]) -> list[str]:
@@ -86,28 +228,11 @@ class QueryAlignmentCollator:
         query_batch_indices: list[int] = []
         query_positions: list[list[int]] = []
         answer_index = 0
-        boundary = (
-            r"</think>\s*"
-            + re.escape(latent_state_block(self.query_count))
-            + r"\s*<\|action_start\|>"
-        )
         for row, record in enumerate(batch):
             messages = record["messages"]
-            answer_messages = [m for m in messages if m["role"] == "assistant"]
-            if any(
-                not isinstance(message["content"], str)
-                or re.search(
-                    boundary,
-                    normalize_latent_state_blocks(
-                        message["content"], self.query_count
-                    ),
-                )
-                is None
-                for message in answer_messages
-            ):
-                raise ValueError(
-                    "query state must follow the recorded CoT and precede the action"
-                )
+            answer_messages = _answer_messages_with_query_boundary(
+                messages, self.query_count
+            )
             spans = assistant_token_spans(
                 messages,
                 self.processor,
