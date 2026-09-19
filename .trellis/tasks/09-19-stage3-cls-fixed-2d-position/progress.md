@@ -180,3 +180,6 @@
 - checkpoint 审计元数据同时保存 Stage2 aligned 与 Stage3 supervision 两个 corpus
   fingerprint、cache root、feature-space fingerprint 和展开后的 identity，避免后续只见一个
   fingerprint 而丢失数据 lineage。
+- 实现提交 `445643209315be57b3a6b820860f778d3e7f3f09` 已 fast-forward 到 a100-1 专用
+  worktree；远端真实依赖环境 focused regression 为 `25 passed`，对应 cache feature-space
+  gate 与 standalone DINO cache；相关文件 `compileall` 和提交范围 `git diff --check` 通过。
