@@ -123,3 +123,11 @@
   运行中断上限，不作为收敛；届时从最后完整 checkpoint 续训。输出唯一目录为
   `/mnt/nimloth/outputs/experiments/stage3-cls-fixed2d/20260919_stage2_cls_alignment_eval_r1`，
   只保留最新 epoch、独立 best、逐步日志和恢复元数据。
+- 正式运行于 2026-09-19T13:24:12Z 在 a100-1 启动，源码/远端 clean worktree HEAD
+  `b0bca0da37a8dbe37bd7c872f5155fcb013b9cb4`，controller PID `1524037`，8个 DDP rank。
+  最终合同和启动脚本分别为实验组根目录的
+  `stage2_cls_alignment_eval_r1.contract.json` 与 `run_stage2_cls_alignment_eval_r1.sh`；
+  日志为 `stage2_cls_alignment_eval_r1.log`。首两步 train loss `6.2461381 -> 6.1518106`，
+  相邻更新约20秒；8卡利用率100%、显存约16--20 GiB，未见 NaN/OOM/traceback。
+  复用本线程 heartbeat `stage3-dino2` 每5分钟监控，仅在阶段变化、异常或终态通知，禁止
+  自动重启或进入 Stage3。
