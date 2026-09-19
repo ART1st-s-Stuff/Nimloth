@@ -131,3 +131,18 @@
   相邻更新约20秒；8卡利用率100%、显存约16--20 GiB，未见 NaN/OOM/traceback。
   复用本线程 heartbeat `stage3-dino2` 每5分钟监控，仅在阶段变化、异常或终态通知，禁止
   自动重启或进入 Stage3。
+
+## 2026-09-19 evaluation-only Stage2 CLS planned pause after epoch 5
+
+- 用户要求当前轮结束后暂停。watcher 在 `epoch_005/COMMITTED` 写入且旧 epoch/resume
+  checkpoints 完成 retention 后，于 2026-09-19T14:36:35Z 向精确 torchrun PID `1524070`
+  发送 TERM。controller、torchrun 和8个 rank 随后全部退出，8张 GPU 显存归零；这是用户
+  计划暂停，不是训练失败。wrapper 的 `controller_failed`/非零退出和末尾 traceback 来自
+  该计划信号；此前无 NaN、OOM 或训练 traceback。
+- 运行从 13:24:12Z 到 14:36:35Z 完成5个完整 epoch、135次更新。验证 CLS DINO MSE：
+  `2.1530478, 2.0637002, 1.9820465, 1.9362458, 1.9153742`；epoch4到5相对改善约
+  `1.078%`，仍略高于1%阈值，因此本次是未收敛暂停，不能标记 convergence complete。
+  epoch5 的 spatial DINO MSE `0.5953419`、LM loss `0.4574867`、格式 `31/32=96.875%`。
+- 最新且唯一保留的完整恢复边界为输出目录 `epoch_005`（step135）；磁盘恢复为约86 GiB
+  可用。未启动 Stage3、reconstruction、rollout 或 RL。下一步须先评估 epoch5 的 CLS/
+  spatial表示与 reconstruction，再由用户决定继续 Stage2 收敛或进入 evaluation-only Stage3。
