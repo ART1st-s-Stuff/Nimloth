@@ -164,6 +164,26 @@
 - 本地环境没有 pytest/ruff；`compileall` 与 `git diff --check` 已通过。尚未提交、同步或启动
   远端任务；完整 focused pytest/ruff 仍须在依赖齐全环境执行。
 
+## 2026-09-19 Stage3 K65 cache completion, canary acceptance and formal resume
+
+- K65 preprocess cache 已在 a100-1 完成：train `19099` transitions / `164` image shards，
+  validation `1363` / `12`；两边图像 shard 均通过完整 hash/metadata 检查后与原 K64 cache
+  hardlink，K65 transition shards 重新生成。train/validation fingerprint 分别为
+  `5d90132427d7cc27`、`cfd55732e7e4c7f6`，无残留 `build_state.json`。
+- r2 仅在 CPU launch preflight 因脚本仍固定修复前 config hash 而立即拒绝；没有创建输出目录
+  或占用 GPU。r3 更新 config hash 后，8卡 FSDP canary 正常完成一次 update 并以 exit 0
+  原子发布 `20260919_stage3_k65_fixed2d_eval_r3/stop_step_000001`。状态为 step1、epoch1、
+  `micro_step_in_epoch=8`、optimizer/rank RNG 可恢复；完整 checkpoint 约44 GiB。step1 的
+  DINO MSE `2.5142505`、WM MSE `0.1639661`、LM CE `0.2413980`、Outcome BCE `0.7641851`，
+  均有限；Value MSE `29.7361` 属于新初始化 head 的首步值，尚不能作趋势结论。真实两份
+  cache preflight 的共同 feature-space fingerprint 为 `9cd1e5853004528b`。
+- 正式 evaluation-only Stage3 于 `2026-09-19T16:36Z` 从上述 stop checkpoint 精确恢复，
+  controller PID `1539307`，8卡 FSDP、最多5 epoch、固定 schedule horizon 46、每10步保存、
+  `checkpoint_latest_only`、12小时中断上限、无 W&B、禁止进入 RL。恢复日志确认
+  `global_step=1`、跳过 epoch1 前8个 microbatch；随后 step2 完成，DINO MSE `2.4617160`，
+  未见 NaN/OOM/traceback。5分钟 heartbeat `stage3-dino2` 已更新为只读监控，禁止自动重启、
+  改参或删除文件。
+
 ## 2026-09-19 Stage3 canary DINO cache identity failure and fix
 
 - 首次 Stage3 canary 在加载8卡模型后被旧 gate 拒绝：Stage2 CLS alignment checkpoint
