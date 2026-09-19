@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import pickle
 import random
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -329,7 +331,7 @@ def find_latest_resume_dir(output_dir: Path) -> Path | None:
             continue
         try:
             step = int(p.name.rsplit("_", 1)[-1])
-        except ValueError:
+        except (TypeError, ValueError):
             continue
         if step > latest_step:
             latest_step = step
@@ -399,6 +401,87 @@ def prune_resume_checkpoints_covered_by_epoch(
                     or int(state.get("epoch", covered_epoch + 1)) > covered_epoch):
                 raise ValueError(f"resume checkpoint identity mismatch: {path}")
             candidates.append(path)
+    for path in candidates:
+        shutil.rmtree(path)
+    _fsync_directory(output_dir)
+    return candidates
+
+
+def _committed_epoch_identity(path: Path) -> tuple[int, int, dict[str, Any]]:
+    """Validate an immutable epoch boundary before it participates in pruning."""
+    match = re.fullmatch(r"epoch_([0-9]+)", path.name)
+    if path.is_symlink() or not path.is_dir() or match is None:
+        raise ValueError(f"not an owned epoch checkpoint: {path}")
+    marker_path = path / COMMITTED_MARKER
+    state_path = path / "training_state.pt"
+    if not marker_path.is_file() or not state_path.is_file():
+        raise ValueError(f"epoch checkpoint is not committed: {path}")
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        state = torch.load(state_path, map_location="cpu", weights_only=False)
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        AttributeError,
+        EOFError,
+        RuntimeError,
+        pickle.UnpicklingError,
+    ) as error:
+        raise ValueError(f"epoch checkpoint metadata is unreadable: {path}") from error
+    if not isinstance(marker, dict) or not isinstance(state, dict):
+        raise TypeError(f"epoch checkpoint identity is inconsistent: {path}")
+    try:
+        epoch = int(match.group(1))
+        marker_epoch = int(marker.get("epoch", -1))
+        step = int(marker.get("step", -1))
+        state_epoch = int(state.get("epoch", -1))
+        state_step = int(state.get("step", -1))
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"epoch checkpoint identity is inconsistent: {path}") from error
+    identity = state.get("identity")
+    if (
+        marker_epoch != epoch
+        or state_epoch != epoch
+        or state_step != step
+        or step < 0
+        or not isinstance(identity, dict)
+    ):
+        raise ValueError(f"epoch checkpoint identity is inconsistent: {path}")
+    return epoch, step, identity
+
+
+def prune_older_epoch_checkpoints(
+    output_dir: Path, latest_epoch_dir: Path, *, keep: int
+) -> list[Path]:
+    """Keep the newest verified epochs for one early-stage training identity.
+
+    ``best`` and non-epoch artifacts are outside this policy. An incomplete,
+    malformed, symlinked or foreign epoch is preserved rather than guessed to be
+    owned by this run.
+    """
+    if keep < 1:
+        raise ValueError("epoch checkpoint retention count must be positive")
+    if latest_epoch_dir.parent != output_dir:
+        raise ValueError("latest epoch checkpoint must be directly under output_dir")
+    latest_epoch, latest_step, latest_identity = _committed_epoch_identity(
+        latest_epoch_dir
+    )
+    owned: list[tuple[int, Path]] = [(latest_epoch, latest_epoch_dir)]
+    for path in sorted(output_dir.glob("epoch_*")):
+        if path == latest_epoch_dir or path.is_symlink():
+            continue
+        match = re.fullmatch(r"epoch_([0-9]+)", path.name)
+        if match is None or int(match.group(1)) >= latest_epoch:
+            continue
+        try:
+            epoch, step, identity = _committed_epoch_identity(path)
+        except ValueError:
+            continue
+        if step <= latest_step and objective_identities_match(identity, latest_identity):
+            owned.append((epoch, path))
+    owned.sort(reverse=True)
+    candidates = [path for _, path in sorted(owned[keep:])]
     for path in candidates:
         shutil.rmtree(path)
     _fsync_directory(output_dir)

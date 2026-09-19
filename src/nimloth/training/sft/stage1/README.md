@@ -68,6 +68,10 @@ embedding 和独立 lm_head 的 FP32 master。Stage 2 固定使用更窄的
 训练默认每 10 个 optimizer step 保存原子 `resume_step_*`。完整 epoch checkpoint
 提交并经所有 rank 同步后，删除已被该 epoch 覆盖的 step checkpoint；epoch checkpoint
 全部保留。诊断运行可显式传入 `--keep-step-checkpoints` 保留中间 step checkpoint。
+磁盘受限的收敛训练可显式传入 `--keep-epoch-checkpoints N`：新的 `epoch_*` 完成
+`COMMITTED` 校验且可能更新的 `best` 保存后，才保留同一训练身份中最新的 N 个完整
+epoch；独立 `best` 始终保留，且不再额外写一份重复的 `final` 权重。默认行为不变；
+不完整、损坏、软链接或不同训练身份的目录不会被该策略删除。
 
 Stage2 `--continue-from-epoch PATH` explicitly starts a new output directory from
 an exact COMMITTED epoch boundary. It is mutually exclusive with `--resume`.

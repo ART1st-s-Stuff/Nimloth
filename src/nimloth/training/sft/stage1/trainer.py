@@ -46,6 +46,7 @@ from .checkpoint import (
     find_latest_resume_dir,
     load_lora_adapter_state,
     objective_identities_match,
+    prune_older_epoch_checkpoints,
     prune_resume_checkpoints_covered_by_epoch,
     restore_rng_state,
     save_checkpoint,
@@ -1622,6 +1623,12 @@ def main(*, stage: str = "format") -> int:
                 args.output_dir, args.output_dir / f"epoch_{epoch:03d}",
                 covered_step=global_step,
             )
+        if is_main() and args.keep_epoch_checkpoints is not None:
+            prune_older_epoch_checkpoints(
+                args.output_dir,
+                args.output_dir / f"epoch_{epoch:03d}",
+                keep=args.keep_epoch_checkpoints,
+            )
         distributed_barrier()
         if is_main():
             print(
@@ -1664,27 +1671,28 @@ def main(*, stage: str = "format") -> int:
             cleanup_dist()
             return 75
 
-    save_checkpoint(
-        model,
-        processor,
-        args.output_dir,
-        "final",
-        optimizer,
-        scheduler,
-        global_step,
-        epoch,
-        best_val,
-        lora=args.lora,
-        base_model_path=base_model_path,
-        merge_for_eval=False,
-        latent_token_count=args.latent_token_count,
-        mask_latent_query_labels=args.mask_latent_query_labels,
-        latent_query_mode=args.latent_query_mode,
-        world_size=world,
-        identity=resume_identity,
-        convergence_state=convergence.state_dict() if convergence_policy else None,
-        rank_rng_states=epoch_rng_states,
-    )
+    if args.keep_epoch_checkpoints is None:
+        save_checkpoint(
+            model,
+            processor,
+            args.output_dir,
+            "final",
+            optimizer,
+            scheduler,
+            global_step,
+            epoch,
+            best_val,
+            lora=args.lora,
+            base_model_path=base_model_path,
+            merge_for_eval=False,
+            latent_token_count=args.latent_token_count,
+            mask_latent_query_labels=args.mask_latent_query_labels,
+            latent_query_mode=args.latent_query_mode,
+            world_size=world,
+            identity=resume_identity,
+            convergence_state=convergence.state_dict() if convergence_policy else None,
+            rank_rng_states=epoch_rng_states,
+        )
     if is_main():
         if convergence_policy is not None:
             (args.output_dir / "CONVERGED.json").write_text(

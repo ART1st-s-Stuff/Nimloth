@@ -32,6 +32,8 @@ Stage2 路径从 epoch1 设置 `include_global_token`，无需依赖 epoch16 扩
 新建 projector 使用语言模型输入 embedding 的 dtype/device（BF16 模型不会新建 FP32 projector 参数）。多卡可指定 `--distributed-strategy fsdp`；语言模型和 projector 均参与分片、完整保存与恢复。
 
 可使用 `--until-converged --convergence-min-epochs 2 --convergence-patience-epochs 2 --convergence-min-relative-improvement 0.01` 训练至收敛，不能同时指定固定 `--epochs`，也不能限制验证批次数。每轮以完整验证的加权总损失 `weight_lm * LM + weight_dino * DINO` 对比上一轮，连续两轮改善不足 1% 且达到最少轮数后停止；`best` 始终选择总损失最低的 checkpoint。预热后学习率保持不变，运行时限不代表收敛。
+收敛运行如需控制磁盘，可显式使用 `--keep-epoch-checkpoints 1`，仅保留最新已提交 epoch
+与独立 `best`；该选项默认不启用，且不会删除无法完整核验或属于其他训练身份的目录。
 evaluation-only `global_query_only` 是例外：它按独立的验证 CLS DINO MSE
 应用同一 patience/1% 规则并选择 best，同时继续记录总损失、空间 DINO、LM、格式与
 rollout 门禁，避免空间常量项掩盖新增全局 Query 的收敛。

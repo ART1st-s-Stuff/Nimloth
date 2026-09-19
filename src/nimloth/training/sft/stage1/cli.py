@@ -134,6 +134,16 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         help="Keep resume_step checkpoints after a covering epoch checkpoint commits.",
     )
     ap.add_argument(
+        "--keep-epoch-checkpoints",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Keep the N newest committed epoch checkpoints plus the separate best "
+            "checkpoint. By default every epoch checkpoint is kept."
+        ),
+    )
+    ap.add_argument(
         "--max-pixels",
         type=int,
         default=602112,
@@ -232,6 +242,12 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         if action.required and action.default is not None:
             action.required = False
     args = ap.parse_args(argv)
+    if args.keep_epoch_checkpoints is not None and (
+        isinstance(args.keep_epoch_checkpoints, bool)
+        or not isinstance(args.keep_epoch_checkpoints, int)
+        or args.keep_epoch_checkpoints < 1
+    ):
+        raise ValueError("--keep-epoch-checkpoints must be a positive integer")
     if args.continue_with_dino_weight_change and (stage != "query" or args.continue_from_epoch is None or not args.until_converged):
         raise ValueError("DINO objective continuation requires Stage2, --continue-from-epoch and --until-converged")
     if args.continue_with_projector_lr_change and (

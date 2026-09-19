@@ -37,6 +37,7 @@ _SFT1_YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("train", "embedding_master_dtype"): "embedding_master_dtype",
     ("train", "max_length"): "max_length",
     ("train", "max_pixels"): "max_pixels",
+    ("train", "keep_epoch_checkpoints"): "keep_epoch_checkpoints",
 }
 
 
