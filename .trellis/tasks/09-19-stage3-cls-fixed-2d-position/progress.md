@@ -29,6 +29,7 @@
   5 epochs、固定 schedule 46 steps、Qwen `2e-7`、projector `8e-6`、Query `1e-5`、
   protocol rows `2e-6`、WM `3e-4`、Value/Outcome `1e-4`、max length 16384；配置测试
   固定这些值，避免 evaluation-only 架构变更同时混入旧学习率。
-- 尚未提交远端/GPU实验。下一门禁：提交本任务代码；远端完整依赖回归；真实 v2 cache
+- 实现提交：`f91e95b9c4c49ba8f6c2e26f497ea18d0b86180e`。尚未启动远端/GPU实验。
+  下一门禁：远端完整依赖回归；真实 v2 cache
   lineage 核验；production-shaped 单步 GPU canary；epoch16/aligned Stage2 observed K64与
   frozen reconstruction identity；随后展示正式长训练 launch contract 并取得单独批准。
