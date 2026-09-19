@@ -312,3 +312,20 @@
   `2.47117498 / 0.61726485 / 1.85391013`，证明新日志已按预期分项。
 - heartbeat `stage3-dino2` 已改名并恢复为每5分钟只读监控；仅在新step、epoch/checkpoint、
   终态、失败或磁盘危险时通知，禁止自动重启、改参、删除或进入RL。
+
+## 2026-09-19 Stage3 disk headroom cleanup
+
+- 当前 run 在写入 `step_000060` 时可用空间曾暂时降至约25GiB；用户授权清理无用
+  checkpoint，要求保证 Stage3 至少可以训练到 epoch5。清理严格排除当前 Stage3、两组
+  Stage2 CLS alignment、K65 preprocess 与两份 DINO cache。
+- 删除 9 月16日三个已结束 frozen-WM 诊断中的51个 canary/中间 checkpoint，共
+  `57,138,970,224` bytes。完整保留 capacity 和 residual 两个 arm 各自的 `step_000046`，
+  以及已核验 `status=converged` 的 residual-convergence DINO `step_000506` 与 Stage2-state
+  `step_000483`；所有结果摘要和训练日志保持不变。
+- 被删 checkpoint 的小型指标先复制到
+  `/mnt/nimloth/outputs/experiments/stage3-action-outcome-ablation/cleanup-metadata-20260919-stage3-space/`；
+  清理 manifest SHA256 为
+  `59de2a3811deeb59e04cd690482af221dac6ed200147774aa2ca8d3ab614a5bf`。
+- 清理并完成当前 checkpoint retention 后，`/mnt` 可用空间约121GiB；当前完整 Stage3
+  checkpoint 约46.5GB，因此能够覆盖下一次原子写入的峰值并保留约74GB余量。训练仍健康，
+  最新恢复点为 `step_000060`，核验时已推进至step63，无NaN/OOM/训练进程中断。
