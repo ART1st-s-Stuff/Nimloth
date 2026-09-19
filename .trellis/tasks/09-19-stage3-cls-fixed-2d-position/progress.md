@@ -203,3 +203,23 @@
 - 实现提交 `445643209315be57b3a6b820860f778d3e7f3f09` 已 fast-forward 到 a100-1 专用
   worktree；远端真实依赖环境 focused regression 为 `25 passed`，对应 cache feature-space
   gate 与 standalone DINO cache；相关文件 `compileall` 和提交范围 `git diff --check` 通过。
+
+## 2026-09-19 Stage3 user-requested stop and cleanup
+
+- 用户判定当前 Stage3 方案不应继续并要求暂停、清理。先向 controller process group 发送
+  TERM；由于 `timeout`/`torchrun` 使用独立 process group，随后核对精确命令并向该运行的
+  `torchrun` PID 发送 TERM。最终确认 controller、launcher、8 个 rank 及相关数据进程均为
+  0，rendezvous 端口关闭，8 张 GPU 显存占用和利用率均为 0。这是用户计划停止，不是训练
+  自行失败，也未见 NaN/OOM。
+- 正式运行最后写入 epoch 1、global step 16；最后完整 checkpoint 是 `step_000010`，约
+  44 GiB。由于用户要求清理本轮错误 Stage3，r1/r2/r3 的输出、checkpoint、合同、脚本、
+  日志和状态标记随后删除，不再保留可恢复边界。Stage2 `epoch_005`、Stage2/Stage3 DINO
+  cache 和 K65 preprocess cache 明确保留。
+- 停止前日志中的 `dino_grid_mse` 不是旧口径的空间 DINO MSE。K65 实现把分别平均的
+  `dino_spatial_mse` 与 `dino_cls_mse` 直接相加作为训练目标，却继续使用
+  `dino_grid_mse` 名称。Stage2 epoch5 原始验证分项为 `0.5953418612` 与
+  `1.9153741598`，和为 `2.5107161999`；Stage3 step1 为 `2.5142505252`，与初始化口径
+  一致。因此高总值主要来自 CLS 分项和指标命名/归一化，不能解释为空间 K64 MSE 突然升至
+  2.5。若按 65 个 token 的元素统一平均，Stage2 epoch5 为约 `0.6156501`，但该值不是当前
+  训练目标。Stage2 在 epoch5 被计划暂停且 CLS 指标尚未达到收敛条件，不能作为完成对齐的
+  正式 checkpoint。
