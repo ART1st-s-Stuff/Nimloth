@@ -41,6 +41,65 @@ def test_backbone_gradient_boundary_is_explicit_opt_in():
     assert args.wm_value_backbone_grad is True
     args = parse_sft2_args([*REQUIRED, "--history-size", "1", "--no-wm-value-backbone-grad"])
     assert args.wm_value_backbone_grad is False
+    assert args.preprocess_cache_reuse_image_root is None
+    assert args.require_prebuilt_cache is True
+
+
+def test_stage3_image_cache_reuse_cli_is_explicit_and_nonoverlapping(tmp_path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    processor_source = tmp_path / "epoch16"
+    processor_source.mkdir()
+    for split in ("train", "val"):
+        split_dir = source / split
+        split_dir.mkdir(parents=True)
+        (split_dir / "manifest.json").write_text("{}", encoding="utf-8")
+    common = [
+        *REQUIRED,
+        "--preprocess-cache-dir",
+        str(destination),
+        "--preprocess-cache-reuse-image-root",
+        str(source),
+        "--preprocess-cache-reuse-processor-source",
+        str(processor_source),
+    ]
+    args = parse_sft2_args(common)
+    assert args.preprocess_cache_reuse_image_root == source
+    assert args.preprocess_cache_reuse_processor_source == processor_source
+    assert args.preprocess_cache_processor_source is None
+
+    with pytest.raises(SystemExit):
+        parse_sft2_args([*common, "--require-prebuilt-cache"])
+    with pytest.raises(SystemExit):
+        parse_sft2_args(
+            [
+                *REQUIRED,
+                "--preprocess-cache-dir",
+                str(source / "nested"),
+                "--preprocess-cache-reuse-image-root",
+                str(source),
+                "--preprocess-cache-reuse-processor-source",
+                str(processor_source),
+            ]
+        )
+
+
+def test_legacy_stage3_image_cache_reuse_requires_original_processor(tmp_path) -> None:
+    source = tmp_path / "source"
+    for split in ("train", "val"):
+        split_dir = source / split
+        split_dir.mkdir(parents=True)
+        (split_dir / "manifest.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        parse_sft2_args(
+            [
+                *REQUIRED,
+                "--preprocess-cache-dir",
+                str(tmp_path / "destination"),
+                "--preprocess-cache-reuse-image-root",
+                str(source),
+            ]
+        )
     assert flatten_sft2_yaml_config({"loss": {"wm_value_backbone_grad": False}}) == {
         "wm_value_backbone_grad": False}
     with pytest.raises(ValueError, match="must be a boolean"):

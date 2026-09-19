@@ -146,3 +146,20 @@
 - 最新且唯一保留的完整恢复边界为输出目录 `epoch_005`（step135）；磁盘恢复为约86 GiB
   可用。未启动 Stage3、reconstruction、rollout 或 RL。下一步须先评估 epoch5 的 CLS/
   spatial表示与 reconstruction，再由用户决定继续 Stage2 收敛或进入 evaluation-only Stage3。
+
+## 2026-09-19 Stage3 K64 image-cache reuse plumbing
+
+- Stage3 CLI 新增显式 `--preprocess-cache-reuse-image-root`，按 `train/val` 只复用已核验
+  image shards，并在新 cache 重建全部 transition shards；拒绝与 required-prebuilt 模式、
+  缺失 split、缺失 manifest 及 source/destination 重叠组合。
+- 新 cache manifest 保存独立于 tokenizer 的完整 image-processor identity、processor source
+  和 vocab size。旧 K64 manifest 没有该字段时，必须通过独立 reuse processor 参数显式
+  给出原 epoch16 processor source；destination transition 始终由当前 K65 `model` 构建，
+  构建器从该路径加载旧 tokenizer 重算旧 base fingerprint，并逐值比较旧/新视觉 processor，
+  不从 K65 vocab 猜测旧身份，也不修改源 manifest。
+- 复用验证保持 exact ordered resolved image paths、image source fingerprint、dtype、pixel
+  bounds、shard count/size、grid/offset/tensor shape、source 完整性、metadata 和 SHA256 门禁；
+  hardlink 前再次核对 shard hash。focused regression 覆盖 K64->K65 文本重建/图像 hardlink、
+  split 接线、CLI 冲突和视觉设置拒绝。
+- 本地环境没有 pytest/ruff；`compileall` 与 `git diff --check` 已通过。尚未提交、同步或启动
+  远端任务；完整 focused pytest/ruff 仍须在依赖齐全环境执行。

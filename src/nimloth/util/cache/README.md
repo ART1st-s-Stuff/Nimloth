@@ -10,3 +10,7 @@ Transition expansion v4 保存可选 `action_success`；加载时核对 source t
 分片结构，然后仅将图像分片 hardlink 到新缓存。来源指纹基于路径、大小和
 mtime；复用记录另保存分片 SHA256。文本和 labels 由当前编码流程重新生成，
 旧 manifest 和 transition 分片不复用。新旧目录不得相同或互相包含。
+新 manifest 另存与 tokenizer 无关的完整 image-processor identity，所以增加
+Query token、改变 vocab 或文本长度时可复用图像。旧 manifest 必须显式提供其
+原始 reuse processor 路径，并通过旧 base fingerprint 与当前 source/destination
+image processor 等值检查；不能猜测旧 tokenizer 或改写旧 manifest。

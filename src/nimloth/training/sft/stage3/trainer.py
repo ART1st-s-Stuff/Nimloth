@@ -733,6 +733,16 @@ def _train_sft2_impl(args=None) -> int:
                     "query_tune": args.query_tune,
                     "mask_latent_query_labels": args.mask_latent_query_labels,
                     "preprocess_cache_image_dtype": args.preprocess_cache_image_dtype,
+                    "preprocess_cache_reuse_image_root": (
+                        str(args.preprocess_cache_reuse_image_root)
+                        if args.preprocess_cache_reuse_image_root is not None
+                        else None
+                    ),
+                    "preprocess_cache_reuse_processor_source": (
+                        str(args.preprocess_cache_reuse_processor_source)
+                        if args.preprocess_cache_reuse_processor_source is not None
+                        else None
+                    ),
                     "require_prebuilt_cache": args.require_prebuilt_cache,
                     "dino_grid_cache": (
                         str(args.dino_grid_cache)

@@ -150,12 +150,20 @@ def _build_or_open_cached_datasets(
         "image_shard_size": config.preprocess_cache_image_shard_size,
         "transition_shard_size": config.preprocess_cache_transition_shard_size,
     }
+    reuse_root = getattr(config, "preprocess_cache_reuse_image_root", None)
+    reuse_processor_source = getattr(
+        config,
+        "preprocess_cache_reuse_processor_source",
+        None,
+    )
     if is_main() and not config.require_prebuilt_cache:
         build_compact_transition_preprocess_cache(
             jsonl_path=config.train_jsonl,
             cache_dir=train_cache_dir,
             max_records=config.max_train_records,
             success_only=config.success_only,
+            reuse_image_cache=(Path(reuse_root) / "train" if reuse_root is not None else None),
+            reuse_image_processor_source=reuse_processor_source,
             **build_kwargs,
             **compact_kwargs,
         )
@@ -164,6 +172,8 @@ def _build_or_open_cached_datasets(
             cache_dir=val_cache_dir,
             max_records=config.max_val_records,
             success_only=False,
+            reuse_image_cache=(Path(reuse_root) / "val" if reuse_root is not None else None),
+            reuse_image_processor_source=reuse_processor_source,
             **build_kwargs,
             **compact_kwargs,
         )

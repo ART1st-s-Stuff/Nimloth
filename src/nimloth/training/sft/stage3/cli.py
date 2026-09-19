@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 from nimloth.config.sft2 import apply_sft2_yaml_defaults
@@ -209,8 +210,25 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         type=Path,
         default=None,
         help=(
-            "Original model path recorded by a required prebuilt cache. Use only "
-            "when model weights were re-exported without changing processor files."
+            "Original model path recorded by a required prebuilt destination cache."
+        ),
+    )
+    ap.add_argument(
+        "--preprocess-cache-reuse-image-root",
+        type=Path,
+        default=None,
+        help=(
+            "Completed source preprocess-cache root with train/ and val/ children. "
+            "Only verified image shards are hardlinked; transition shards are rebuilt."
+        ),
+    )
+    ap.add_argument(
+        "--preprocess-cache-reuse-processor-source",
+        type=Path,
+        default=None,
+        help=(
+            "Exact original processor checkpoint for a legacy reuse source whose "
+            "manifest predates image_processor_identity. Never used to encode the destination."
         ),
     )
     ap.add_argument("--preprocess-workers", type=int, default=4, help="Workers for building preprocess cache.")
@@ -225,7 +243,8 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--preprocess-cache-shard-lru", type=int, default=2)
     ap.add_argument(
         "--require-prebuilt-cache",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=False,
         help="Refuse to build cache inside the GPU training job.",
     )
     ap.add_argument("--force-rebuild-cache", action="store_true")
@@ -389,6 +408,65 @@ def parse_sft2_args(argv: list[str] | None = None) -> argparse.Namespace:
         ap.error("trajectory-native Stage3 requires history_size=1")
     if args.stop_after_steps < 0:
         ap.error("stop_after_steps must be nonnegative")
+    if args.preprocess_cache_reuse_image_root is not None:
+        if args.require_prebuilt_cache:
+            ap.error(
+                "preprocess_cache_reuse_image_root cannot be combined with "
+                "--require-prebuilt-cache"
+            )
+        if args.preprocess_cache_dir is None:
+            ap.error("preprocess_cache_reuse_image_root requires --preprocess-cache-dir")
+        source_root = args.preprocess_cache_reuse_image_root
+        if not source_root.is_dir():
+            ap.error(f"preprocess cache image reuse root is not a directory: {source_root}")
+        missing = [
+            str(source_root / split)
+            for split in ("train", "val")
+            if not (source_root / split).is_dir()
+        ]
+        if missing:
+            ap.error(
+                "preprocess cache image reuse root is missing split directories: "
+                + ", ".join(missing)
+            )
+        legacy_splits = []
+        for split in ("train", "val"):
+            manifest_path = source_root / split / "manifest.json"
+            if not manifest_path.is_file():
+                ap.error(f"preprocess cache image reuse manifest is missing: {manifest_path}")
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                ap.error(f"invalid preprocess cache image reuse manifest: {manifest_path}: {exc}")
+            if manifest.get("image_processor_identity") is None:
+                legacy_splits.append(split)
+        if legacy_splits and args.preprocess_cache_reuse_processor_source is None:
+            ap.error(
+                "legacy image reuse caches require --preprocess-cache-reuse-processor-source "
+                "to name their exact original processor; missing for "
+                + ", ".join(legacy_splits)
+            )
+        if (
+            args.preprocess_cache_reuse_processor_source is not None
+            and not args.preprocess_cache_reuse_processor_source.is_dir()
+        ):
+            ap.error(
+                "preprocess cache reuse processor source is not a directory: "
+                f"{args.preprocess_cache_reuse_processor_source}"
+            )
+        source = source_root.resolve()
+        destination = args.preprocess_cache_dir.resolve()
+        if (
+            source == destination
+            or source in destination.parents
+            or destination in source.parents
+        ):
+            ap.error("preprocess cache source and destination roots must not overlap")
+    elif args.preprocess_cache_reuse_processor_source is not None:
+        ap.error(
+            "preprocess_cache_reuse_processor_source requires "
+            "--preprocess-cache-reuse-image-root"
+        )
     if args.diagnose_outcome_gradients and args.lambda_outcome <= 0:
         ap.error("outcome gradient diagnostic requires positive lambda_outcome")
     args.mask_latent_query_labels = query_labels_are_masked(args.latent_query_mode)

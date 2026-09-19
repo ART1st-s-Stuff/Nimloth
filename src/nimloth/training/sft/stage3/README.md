@@ -64,6 +64,20 @@ frozen CFM reconstruction 同样只接收 K64，CLS 只通过独立特征指标�
 配置样例为
 `configs/training/sft2/action_outcome_k64_cls_fixed2d_h1_t4_eval.yaml`。
 
+K64 到 K65 会改变 Query 数量和 tokenizer，因此 transition token cache 必须重建。
+`--preprocess-cache-reuse-image-root <root>` 可从 `<root>/train` 与 `<root>/val`
+分别复用经过完整身份校验的 image shards，同时在新的
+`--preprocess-cache-dir` 重建两组 transition shards。该入口不能与
+`--require-prebuilt-cache` 同用；配置默认要求 prebuilt 时必须显式传入
+`--no-require-prebuilt-cache`，source/destination 目录不得重叠。对于尚未保存独立
+image-processor identity 的旧 K64 cache，还必须用
+`--preprocess-cache-reuse-processor-source` 指向当时构建 cache 的精确 processor
+checkpoint；该路径只验证旧 source，destination transition 始终使用当前 `--model`
+processor 构建。既有 `--preprocess-cache-processor-source` 仍只描述 required-prebuilt
+destination cache，不能替代 reuse source。加载器会重算旧 base fingerprint，并比较旧
+processor 与 K65 destination processor 的视觉配置。任何图像路径/指纹、pixel bounds、
+dtype、分片、grid/offset、文件 hash 或视觉 processor 不匹配都会拒绝复用。
+
 ## 验证、诊断和兼容
 
 `--eval-only --feature-export-dir <new-directory>` loads the configured weights

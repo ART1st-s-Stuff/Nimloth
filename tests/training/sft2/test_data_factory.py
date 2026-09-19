@@ -167,3 +167,63 @@ def test_factory_fsdp_validation_uses_zero_weight_equal_padding(monkeypatch, str
     assert sum(s.current_steps_per_batch[i] for s in samplers for i in range(len(s))) == 9
     assert sum(item.loss_weight == 0 for item in indices) == 1
     assert sorted(item.index for item in indices if item.loss_weight) == [0, 1, 2]
+
+
+def test_factory_reuses_split_images_but_rebuilds_each_transition_cache(tmp_path, monkeypatch):
+    from nimloth.training.sft.stage3.data import factory
+
+    calls = []
+    monkeypatch.setattr(factory, "is_main", lambda: True)
+    monkeypatch.setattr(
+        factory,
+        "build_compact_transition_preprocess_cache",
+        lambda **kwargs: calls.append(kwargs),
+    )
+    monkeypatch.setattr(factory, "_verify_cache_manifest", lambda **kwargs: None)
+    monkeypatch.setattr(factory, "CachedTransitionDataset", lambda *args, **kwargs: (args, kwargs))
+    monkeypatch.setattr(
+        factory,
+        "CompactCachedTransitionCollator",
+        lambda *args, **kwargs: (args, kwargs),
+    )
+    source = tmp_path / "source"
+    config = SimpleNamespace(
+        model=tmp_path / "model",
+        preprocess_cache_processor_source=None,
+        preprocess_cache_reuse_processor_source=tmp_path / "epoch16",
+        preprocess_cache_reuse_image_root=source,
+        preprocess_cache_dir=tmp_path / "destination",
+        require_prebuilt_cache=False,
+        train_jsonl=tmp_path / "train.jsonl",
+        val_jsonl=tmp_path / "val.jsonl",
+        max_length=128,
+        max_pixels=100352,
+        preprocess_workers=1,
+        force_rebuild_cache=False,
+        value_gamma=1.0,
+        latent_token_count=65,
+        mask_latent_query_labels=True,
+        preprocess_cache_image_dtype="bfloat16",
+        preprocess_cache_image_shard_size=128,
+        preprocess_cache_transition_shard_size=256,
+        preprocess_cache_shard_lru=2,
+        max_train_records=-1,
+        max_val_records=-1,
+        success_only=False,
+    )
+    builder = SimpleNamespace(processor=SimpleNamespace(tokenizer=[]))
+    factory._build_or_open_cached_datasets(config, builder, [], [])
+    assert [call["reuse_image_cache"] for call in calls] == [
+        source / "train",
+        source / "val",
+    ]
+    assert [call["cache_dir"] for call in calls] == [
+        config.preprocess_cache_dir / "train",
+        config.preprocess_cache_dir / "val",
+    ]
+    assert all(call["model_path"] == config.model for call in calls)
+    assert all(
+        call["reuse_image_processor_source"]
+        == config.preprocess_cache_reuse_processor_source
+        for call in calls
+    )

@@ -12,11 +12,13 @@ def source_cache(tmp_path):
     root = tmp_path / 'old'
     (root / 'images').mkdir(parents=True)
     (root / 'transitions').mkdir()
-    (root / 'transitions/old.pt').write_bytes(b'old-text-must-not-be-reused')
+    (root / 'transitions/shard_00000.pt').write_bytes(b'old-text-must-not-be-reused')
+    visual_identity = dict(schema='qwen_image_processor_v1', sha256='visual', config={})
     manifest = dict(format=COMPACT_CACHE_FORMAT, base_fingerprint='old-base',
                     image_source_fingerprint='image-fingerprint', image_dtype='bfloat16',
                     max_pixels=100352, min_pixels=3136, image_shard_size=2,
-                    image_shards=1, unique_images=2)
+                    image_shards=1, unique_images=2, transition_shards=1,
+                    image_processor_identity=visual_identity)
     (root / 'manifest.json').write_text(json.dumps(manifest))
     rows = [dict(path=f'/image-{i}', shard=0, index=i, grid_thw=[1, 2, 2]) for i in range(2)]
     (root / 'image_index.json').write_text(json.dumps(dict(format=COMPACT_CACHE_FORMAT, images=rows)))
@@ -24,7 +26,8 @@ def source_cache(tmp_path):
                     image_grid_thw=torch.tensor([[1, 2, 2], [1, 2, 2]]),
                     offsets=torch.tensor([0, 4, 8])), root / 'images/shard_00000.pt')
     kwargs = dict(paths=[r['path'] for r in rows], source_fingerprint='image-fingerprint',
-                  base_fingerprint='old-base', image_dtype='bfloat16', max_pixels=100352,
+                  visual_identity=visual_identity, legacy_base_fingerprint=None,
+                  image_dtype='bfloat16', max_pixels=100352,
                   min_pixels=3136, image_shard_size=2, pixel_width=12, merge_size=2)
     return root, kwargs
 
@@ -43,7 +46,7 @@ def test_links_only_images_and_leaves_old_bytes_unchanged(tmp_path):
 
 @pytest.mark.parametrize('key,value', [('image_dtype','float32'), ('max_pixels',42),
                                        ('min_pixels',1), ('source_fingerprint','other'),
-                                       ('base_fingerprint','other'), ('image_shard_size',1),
+                                       ('visual_identity',{'sha256':'other'}), ('image_shard_size',1),
                                        ('paths',['/image-1','/image-0']), ('pixel_width',13)])
 def test_rejects_source_contract_mismatches(tmp_path, key, value):
     root, kwargs = source_cache(tmp_path)
@@ -81,3 +84,16 @@ def test_rejects_source_change_after_validation(tmp_path):
     path.write_bytes(path.read_bytes() + b'changed')
     with pytest.raises(ValueError, match='changed after verification'):
         link_verified_images(identity, tmp_path / 'new')
+
+
+def test_legacy_source_requires_exact_reconstructed_base(tmp_path):
+    root, kwargs = source_cache(tmp_path)
+    manifest_path = root / 'manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    manifest.pop('image_processor_identity')
+    manifest_path.write_text(json.dumps(manifest))
+    kwargs['legacy_base_fingerprint'] = 'old-base'
+    validate_image_reuse(root, **kwargs)
+    kwargs['legacy_base_fingerprint'] = 'wrong'
+    with pytest.raises(ValueError, match='base fingerprint mismatch'):
+        validate_image_reuse(root, **kwargs)

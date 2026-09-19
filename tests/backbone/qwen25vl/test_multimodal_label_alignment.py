@@ -141,10 +141,14 @@ def test_image_reuse_builds_fresh_transition_labels_without_touching_source(tmp_
     from concurrent.futures import Future
     from types import SimpleNamespace
     from nimloth.rollout.transitions import TransitionSample
+    from nimloth.latent import add_special_tokens
     from nimloth.util.cache import build, schema
     from nimloth.util.cache.image_reuse import file_sha256
 
+    source_processor = _processor("right")
+    add_special_tokens(source_processor.tokenizer, latent_token_count=64)
     processor = _processor("right")
+    add_special_tokens(processor.tokenizer, latent_token_count=65)
     messages = _messages(image_path, two_images=False)
     paths = [str(image_path.resolve())]
     unbound = [{"role": "user", "content": "<image>observe"}, messages[-1]]
@@ -155,7 +159,7 @@ def test_image_reuse_builds_fresh_transition_labels_without_touching_source(tmp_
     (source / "images").mkdir(parents=True)
     (source / "transitions").mkdir()
     with Image.open(image_path) as picture:
-        pixels = processor.image_processor(images=[picture.convert("RGB")], return_tensors="pt")
+        pixels = source_processor.image_processor(images=[picture.convert("RGB")], return_tensors="pt")
     grids = pixels["image_grid_thw"].long()
     image_file = source / "images" / "shard_00000.pt"
     torch.save(dict(pixel_values=pixels["pixel_values"].bfloat16(), image_grid_thw=grids,
@@ -166,16 +170,20 @@ def test_image_reuse_builds_fresh_transition_labels_without_touching_source(tmp_
                  images=[dict(path=paths[0], shard=0, index=0, grid_thw=grids[0].tolist())])
     (source / "image_index.json").write_text(json.dumps(index))
     old_base = schema.cache_fingerprint(data, max_length=128, max_pixels=3136,
-        min_pixels=3136, vocab_size=len(processor.tokenizer), image_dtype="bfloat16",
-        processor_source=str(tmp_path.resolve()), ce_mask_version="last_assistant_span_v1")
+        min_pixels=3136, vocab_size=len(source_processor.tokenizer), image_dtype="bfloat16",
+        processor_source=str(tmp_path.resolve()), latent_token_count=64,
+        ce_mask_version="last_assistant_span_v1")
     manifest = dict(format=schema.COMPACT_CACHE_FORMAT, base_fingerprint=old_base,
         image_source_fingerprint=build._compact_image_source_fingerprint(paths), image_dtype="bfloat16",
         max_pixels=3136, min_pixels=3136, max_length=128, image_shard_size=128,
         image_shards=1, unique_images=1, ce_mask_version="last_assistant_span_v1",
+        transition_shards=1, value_gamma=1.0, latent_token_count=64,
+        mask_latent_query_labels=True,
         transition_expansion_version=schema.TRANSITION_EXPANSION_VERSION)
     (source / "manifest.json").write_text(json.dumps(manifest))
     before = {path: file_sha256(path) for path in source.rglob("*") if path.is_file()}
     monkeypatch.setattr(build, "TransitionJsonlDataset", lambda *args, **kwargs: SimpleNamespace(samples=[sample]))
+    monkeypatch.setattr(build.AutoProcessor, "from_pretrained", lambda *args, **kwargs: source_processor)
 
     def initialize(_model, _min, _max, max_length, latent_count, mask_queries):
         monkeypatch.setattr(build, "_CACHE_PROCESSOR", processor)
@@ -203,13 +211,17 @@ def test_image_reuse_builds_fresh_transition_labels_without_touching_source(tmp_
     monkeypatch.setattr(build, "_cache_one_image_shard", no_image_reencode)
     build.build_compact_transition_preprocess_cache(jsonl_path=data, cache_dir=destination,
         model_path=tmp_path, processor=processor, max_length=512, max_pixels=3136,
-        min_pixels=3136, reuse_image_cache=source)
+        min_pixels=3136, latent_token_count=65, reuse_image_cache=source,
+        reuse_image_processor_source=tmp_path)
     assert (destination / "images" / image_file.name).samefile(image_file)
     generated = destination / "transitions" / old_text.name
     assert not generated.samefile(old_text)
     fresh = torch.load(generated, weights_only=True)["entries"][0]["current_enc"]
     expected = encode_qwen_item(messages, processor, 512)
-    torch.testing.assert_close(fresh["labels"], expected["labels"])
+    assert fresh["labels"][fresh["labels"] != -100].tolist() == expected["labels"][
+        expected["labels"] != -100
+    ].tolist()
+    assert len(fresh["input_ids"]) == len(expected["input_ids"]) + 64
     assert int((fresh["labels"] != -100).sum()) == 6
     assert all(file_sha256(path) == digest for path, digest in before.items())
     result = json.loads((destination / "manifest.json").read_text())

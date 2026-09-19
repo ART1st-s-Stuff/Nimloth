@@ -20,6 +20,7 @@ from nimloth.util.distributed import is_main
 from nimloth.util.cache.encoding import (
     encode_qwen_item_from_image_grids,
 )
+from nimloth.util.cache.image_reuse import image_processor_identity
 from nimloth.util.cache.schema import (
     CE_MASK_VERSION,
     COMPACT_CACHE_FORMAT,
@@ -294,6 +295,7 @@ def build_compact_transition_preprocess_cache(
     image_shard_size: int = 128,
     transition_shard_size: int = 256,
     reuse_image_cache: Path | None = None,
+    reuse_image_processor_source: Path | None = None,
 ) -> None:
     """Build a deduplicated cache: each image once, token prefixes in mmap shards."""
 
@@ -365,21 +367,61 @@ def build_compact_transition_preprocess_cache(
                 or destination_root in source_root.parents):
             raise ValueError("image reuse source and destination caches must not overlap")
         old_manifest = json.loads((reuse_image_cache / "manifest.json").read_text())
-        # Recompute the old identity using its text length/mask version. Images
-        # are unchanged, while the destination always uses current text identity.
-        old_base = cache_fingerprint(
-            jsonl_path, max_length=int(old_manifest["max_length"]),
-            max_pixels=max_pixels, min_pixels=min_pixels, vocab_size=len(processor.tokenizer),
-            value_gamma=value_gamma, latent_token_count=latent_token_count,
-            mask_latent_query_labels=mask_latent_query_labels,
-            cache_format=COMPACT_CACHE_FORMAT, image_dtype=image_dtype,
-            processor_source=str(model_path.resolve()),
-            ce_mask_version=old_manifest["ce_mask_version"],
-            transition_expansion_version=old_manifest["transition_expansion_version"],
+        visual_identity = image_processor_identity(
+            processor,
+            max_pixels=max_pixels,
+            min_pixels=min_pixels,
         )
+        old_base = None
+        if old_manifest.get("image_processor_identity") is None:
+            # Legacy manifests coupled image and text identity. Load the
+            # explicitly supplied original processor path to reconstruct that
+            # identity; never guess its vocabulary from the destination model.
+            old_latent_token_count = int(old_manifest["latent_token_count"])
+            if reuse_image_processor_source is None:
+                raise ValueError(
+                    "legacy image reuse requires its exact original processor source"
+                )
+            source_processor_path = reuse_image_processor_source.resolve()
+            source_processor = AutoProcessor.from_pretrained(
+                source_processor_path,
+                trust_remote_code=True,
+            )
+            source_processor.image_processor.min_pixels = min_pixels
+            source_processor.image_processor.max_pixels = max_pixels
+            add_special_tokens(
+                source_processor.tokenizer,
+                latent_token_count=old_latent_token_count,
+            )
+            source_visual_identity = image_processor_identity(
+                source_processor,
+                max_pixels=max_pixels,
+                min_pixels=min_pixels,
+            )
+            if source_visual_identity != visual_identity:
+                raise ValueError(
+                    "legacy image reuse source and destination visual processors differ"
+                )
+            old_base = cache_fingerprint(
+                jsonl_path,
+                max_length=int(old_manifest["max_length"]),
+                max_pixels=int(old_manifest["max_pixels"]),
+                min_pixels=int(old_manifest["min_pixels"]),
+                vocab_size=len(source_processor.tokenizer),
+                value_gamma=float(old_manifest["value_gamma"]),
+                latent_token_count=old_latent_token_count,
+                mask_latent_query_labels=bool(old_manifest["mask_latent_query_labels"]),
+                cache_format=COMPACT_CACHE_FORMAT,
+                image_dtype=str(old_manifest["image_dtype"]),
+                processor_source=str(source_processor_path),
+                ce_mask_version=str(old_manifest["ce_mask_version"]),
+                transition_expansion_version=str(old_manifest["transition_expansion_version"]),
+            )
         image_reuse = validate_image_reuse(
             reuse_image_cache, paths=unique_image_paths,
-            source_fingerprint=image_source_fingerprint, base_fingerprint=old_base,
+            source_fingerprint=image_source_fingerprint,
+            visual_identity=visual_identity,
+            legacy_base_fingerprint=old_base,
             image_dtype=image_dtype, max_pixels=max_pixels, min_pixels=min_pixels,
             image_shard_size=image_shard_size,
             pixel_width=(int(processor.image_processor.patch_size) ** 2
@@ -602,6 +644,13 @@ def build_compact_transition_preprocess_cache(
         "cumulative_image_refs": cumulative_image_refs,
         "image_reuse_factor": cumulative_image_refs / max(len(unique_image_paths), 1),
         "image_source_fingerprint": image_source_fingerprint,
+        "image_processor_identity": image_processor_identity(
+            processor,
+            max_pixels=max_pixels,
+            min_pixels=min_pixels,
+        ),
+        "processor_source": str(model_path.resolve()),
+        "vocab_size": len(processor.tokenizer),
         "max_length": max_length,
         "max_pixels": max_pixels,
         "min_pixels": min_pixels,
