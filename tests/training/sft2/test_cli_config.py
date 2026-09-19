@@ -62,6 +62,7 @@ def test_stage3_image_cache_reuse_cli_is_explicit_and_nonoverlapping(tmp_path) -
         str(source),
         "--preprocess-cache-reuse-processor-source",
         str(processor_source),
+        "--no-require-prebuilt-cache",
     ]
     args = parse_sft2_args(common)
     assert args.preprocess_cache_reuse_image_root == source
@@ -80,6 +81,7 @@ def test_stage3_image_cache_reuse_cli_is_explicit_and_nonoverlapping(tmp_path) -
                 str(source),
                 "--preprocess-cache-reuse-processor-source",
                 str(processor_source),
+                "--no-require-prebuilt-cache",
             ]
         )
 
@@ -98,6 +100,7 @@ def test_legacy_stage3_image_cache_reuse_requires_original_processor(tmp_path) -
                 str(tmp_path / "destination"),
                 "--preprocess-cache-reuse-image-root",
                 str(source),
+                "--no-require-prebuilt-cache",
             ]
         )
     assert flatten_sft2_yaml_config({"loss": {"wm_value_backbone_grad": False}}) == {
