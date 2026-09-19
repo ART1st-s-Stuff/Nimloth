@@ -9,7 +9,6 @@ from typing import Any
 
 from nimloth.config.io import load_yaml_config
 
-
 _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("objective", "name"): "objective",
     ("init", "sft1_checkpoint"): "model",
@@ -56,6 +55,8 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("train", "prediction_horizon"): "prediction_horizon",
     ("grid", "size"): "grid_size",
     ("grid", "predictor_kind"): "grid_predictor_kind",
+    ("grid", "global_tokens"): "grid_global_tokens",
+    ("grid", "position_encoding"): "grid_position_encoding",
     ("grid", "wm_depth"): "grid_wm_depth",
     ("grid", "wm_heads"): "grid_wm_heads",
     ("grid", "wm_dim_head"): "grid_wm_dim_head",
@@ -130,7 +131,7 @@ class SFT2LoopConfig:
     early_stop_baseline: float | None = None
 
     @classmethod
-    def from_namespace(cls, args: argparse.Namespace) -> "SFT2LoopConfig":
+    def from_namespace(cls, args: argparse.Namespace) -> SFT2LoopConfig:
         return cls(
             epochs=int(args.epochs),
             early_stop_metric=getattr(args, "early_stop_metric", None),

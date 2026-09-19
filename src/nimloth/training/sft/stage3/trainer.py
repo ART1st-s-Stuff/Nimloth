@@ -17,8 +17,8 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from nimloth.agent import Agent
 from nimloth.backbone import (
-    CachedDINOGridTargets,
     DINOV2_LARGE_IDENTITY,
+    CachedDINOGridTargets,
     build_input_builder,
     build_vision_ema,
     load_backbone,
@@ -32,38 +32,37 @@ from nimloth.latent import (
     query_labels_are_masked,
     resolve_latent_query_mode,
 )
+from nimloth.training.sft.stage3.algorithm import (
+    SFT2_VALUE_OBJECTIVE,
+    SFT2Algorithm,
+    require_sft2_wm_history,
+)
+from nimloth.training.sft.stage3.batch import Stage3BatchAssembler
 from nimloth.training.sft.stage3.checkpoint import (
     SFT2CheckpointManager,
     SFT2CheckpointRuntime,
     load_world_model_checkpoint,
     resolve_resume_checkpoint_dir,
 )
-from nimloth.training.sft.stage3.batch import Stage3BatchAssembler
 from nimloth.training.sft.stage3.cli import parse_sft2_args
 from nimloth.training.sft.stage3.data.factory import build_data_bundle
 from nimloth.training.sft.stage3.dino_grid import DINOGridBatchAssembler
-from nimloth.wm.outcome import ActionOutcomeHead
-from nimloth.training.sft.stage3.algorithm import (
-    SFT2Algorithm,
-    SFT2_VALUE_OBJECTIVE,
-    require_sft2_wm_history,
-)
 from nimloth.training.sft.stage3.loop import (
     SFT2TrainingLoop,
     load_sft2_loop_state,
 )
+from nimloth.training.sft.stage3.reporting import SFT2Reporter
 from nimloth.training.sft.stage3.runtime import (
     SFT2ModelRuntime,
     SFT2OptimizationRuntime,
 )
-from nimloth.training.sft.stage3.reporting import SFT2Reporter
-from nimloth.util.distributed import cleanup_dist, is_main, setup_dist
 from nimloth.util.csv_log import CSVRecordWriter
-from nimloth.util.wandb import init_wandb_run
+from nimloth.util.distributed import cleanup_dist, is_main, setup_dist
 from nimloth.util.optim import OptimizationRuntime
+from nimloth.util.wandb import init_wandb_run
 from nimloth.wm import (
-    LeWMConfig,
     LatentWMPredictor,
+    LeWMConfig,
     SequenceSIGReg,
     StateProjector,
     ValueHead,
@@ -72,11 +71,13 @@ from nimloth.wm import (
 from nimloth.wm.grid import (
     GridPredictorConfig,
     GridWorldModel,
+    ResidualTemporalSpatialGridPredictor,
     SharedSlotProjector,
     TemporalSpatialGridPredictor,
-    ResidualTemporalSpatialGridPredictor,
     load_sft1_slot_projector,
 )
+from nimloth.wm.layout import GridStateLayout
+from nimloth.wm.outcome import ActionOutcomeHead
 
 
 def _rl_eval_checkpoint_root(args: Any) -> Path | None:
@@ -109,7 +110,7 @@ def _validate_rl_eval_checkpoint_contract(args: Any) -> tuple[Path, dict[str, An
 
     state = torch.load(root / "rl_state.pt", map_location="cpu", weights_only=False)
     if not isinstance(state, dict):
-        raise ValueError("RL eval rl_state.pt must contain a dictionary")
+        raise TypeError("RL eval rl_state.pt must contain a dictionary")
     outcome_config = state.get("outcome_config")
     if not isinstance(outcome_config, dict) or not outcome_config.get("enabled", False):
         raise ValueError("RL eval checkpoint must declare an enabled OutcomeHead")
@@ -131,10 +132,10 @@ def _load_rl_eval_grid_world_model(
     predictor_metadata = json.loads(
         (root / "wm_predictor" / "config.json").read_text(encoding="utf-8")
     )
-    is_residual = (
-        predictor_metadata.get("schema")
-        == "nimloth_residual_temporal_spatial_grid_v1"
-    )
+    is_residual = predictor_metadata.get("schema") in {
+        "nimloth_residual_temporal_spatial_grid_v1",
+        "nimloth_residual_temporal_spatial_grid_v2",
+    }
     predictor_type = (
         ResidualTemporalSpatialGridPredictor
         if is_residual
@@ -153,7 +154,10 @@ def _load_rl_eval_grid_world_model(
             int(args.latent_token_count),
             int(predictor.config.grid_tokens),
         ),
-        "grid_size": (int(args.grid_size) ** 2, int(predictor.config.grid_tokens)),
+        "grid_size": (
+            int(args.grid_size) ** 2 + int(getattr(args, "grid_global_tokens", 0)),
+            int(predictor.config.grid_tokens),
+        ),
         "emb_dim": (int(args.emb_dim), int(predictor.config.emb_dim)),
         "history_size": (int(args.history_size), int(predictor.config.history_size)),
         "grid_wm_depth": (int(args.grid_wm_depth), int(predictor.config.depth)),
@@ -185,7 +189,7 @@ def _load_rl_eval_grid_world_model(
         root / "state_proj.pt", map_location="cpu", weights_only=True
     )
     if not isinstance(projector_state, dict):
-        raise ValueError("RL eval state_proj.pt must contain a state dictionary")
+        raise TypeError("RL eval state_proj.pt must contain a state dictionary")
     projector_first = projector_state.get("net.0.weight")
     if projector_first is None or projector_first.ndim != 2:
         raise ValueError("RL eval state projector is missing net.0.weight")
@@ -213,14 +217,14 @@ def _load_rl_eval_grid_world_model(
         root / "outcome_head.pt", map_location="cpu", weights_only=True
     )
     if not isinstance(outcome_payload, dict):
-        raise ValueError("RL eval outcome_head.pt must contain a dictionary")
+        raise TypeError("RL eval outcome_head.pt must contain a dictionary")
     if outcome_payload.get("schema") != ActionOutcomeHead.schema:
         raise ValueError("unsupported RL eval OutcomeHead checkpoint schema")
     if int(outcome_payload.get("emb_dim", -1)) != predictor.config.emb_dim:
         raise ValueError("RL eval OutcomeHead dimension mismatch")
     outcome_state = outcome_payload.get("state_dict")
     if not isinstance(outcome_state, dict):
-        raise ValueError("RL eval OutcomeHead checkpoint is missing state_dict")
+        raise TypeError("RL eval OutcomeHead checkpoint is missing state_dict")
     outcome_head = ActionOutcomeHead(predictor.config.emb_dim)
     outcome_head.load_state_dict(outcome_state, strict=True)
     world_model = GridWorldModel(
@@ -250,7 +254,7 @@ def _validate_dino_grid_contract(args: Any) -> dict[str, Any]:
         )
     if not math.isfinite(args.lambda_sigreg) or args.lambda_sigreg < 0:
         raise ValueError("lambda_sigreg must be finite and nonnegative")
-    expected_tokens = int(args.grid_size) ** 2
+    expected_tokens = int(args.grid_size) ** 2 + int(args.grid_global_tokens)
     if int(args.latent_token_count) != expected_tokens:
         raise ValueError(
             "DINO-grid token/grid mismatch: "
@@ -281,7 +285,9 @@ def _validate_dino_grid_contract(args: Any) -> dict[str, Any]:
         "grid_tokens": int(args.latent_token_count),
         "state_dim": int(args.emb_dim),
         "shared_slot_projector": True,
-        "ordering": "row_major",
+        "ordering": (
+            "row_major_spatial_then_global" if args.grid_global_tokens else "row_major"
+        ),
     }
     checkpoint_mismatches = {
         key: (config.get(key), value)
@@ -292,6 +298,18 @@ def _validate_dino_grid_contract(args: Any) -> dict[str, Any]:
         checkpoint_mismatches["objective.grid_size"] = (
             checkpoint_grid_size,
             int(args.grid_size),
+        )
+    if int(config.get("global_tokens", 0)) != int(args.grid_global_tokens):
+        checkpoint_mismatches["global_tokens"] = (
+            config.get("global_tokens"),
+            int(args.grid_global_tokens),
+        )
+    if args.grid_global_tokens and (
+        not config.get("evaluation_only") or config.get("formal_stage2") is not False
+    ):
+        checkpoint_mismatches["evaluation_only"] = (
+            config.get("evaluation_only"),
+            True,
         )
     if config.get("dino_identity") != asdict(DINOV2_LARGE_IDENTITY):
         checkpoint_mismatches["dino_identity"] = (
@@ -348,6 +366,15 @@ def _build_world_model(
             grid_tokens=args.latent_token_count,
             map_location=world_model_device,
             dtype=grid_dtype,
+            state_layout=(
+                GridStateLayout(
+                    spatial_grid_size=args.grid_size,
+                    global_tokens=1,
+                    global_role="dino_cls",
+                )
+                if args.grid_global_tokens
+                else None
+            ),
         ).to(world_model_device)
         predictor_kind = getattr(args, "grid_predictor_kind", "direct")
         predictor_types = {
@@ -359,6 +386,13 @@ def _build_world_model(
         wm_predictor = predictor_types[predictor_kind](
             GridPredictorConfig(
                 grid_tokens=args.latent_token_count,
+                spatial_grid_size=(
+                    args.grid_size
+                    if args.grid_position_encoding == "fixed_2d_sincos_v1"
+                    else None
+                ),
+                global_tokens=args.grid_global_tokens,
+                position_encoding=args.grid_position_encoding,
                 emb_dim=args.emb_dim,
                 history_size=args.history_size,
                 depth=args.grid_wm_depth,
@@ -627,8 +661,9 @@ def _train_sft2_impl(args=None) -> int:
             "multi-step SFT2 training requires --history-size 1, "
             f"got H={args.history_size}, T={args.prediction_horizon}"
         )
+    stage2_grid_config = None
     if args.objective == "dino_grid":
-        _validate_dino_grid_contract(args)
+        stage2_grid_config = _validate_dino_grid_contract(args)
 
     llm_tune, vision_tune = resolve_tune_modes(args)
     if args.query_tune == "adapter" and uses_lora(args):
@@ -643,7 +678,7 @@ def _train_sft2_impl(args=None) -> int:
 
     random.seed(args.seed)
     torch.manual_seed(args.seed)
-    rank, world, local_rank, device = setup_dist()
+    rank, world, _local_rank, device = setup_dist()
     args.output_dir.mkdir(parents=True, exist_ok=True)
     prefix = os.environ.get("WANDB_RUN_PREFIX", "")
     wandb_run = init_wandb_run(
@@ -772,6 +807,17 @@ def _train_sft2_impl(args=None) -> int:
             identity=DINOV2_LARGE_IDENTITY,
             grid_size=args.grid_size,
         )
+        if dino_targets.include_cls != bool(args.grid_global_tokens):
+            raise ValueError("Stage3 state layout and DINO cache global-token schema mismatch")
+        if (
+            args.grid_global_tokens
+            and stage2_grid_config is not None
+            and stage2_grid_config.get("dino_cache_fingerprint")
+            != dino_targets.cache_fingerprint
+        ):
+            raise ValueError(
+                "Stage3 DINO cache does not match the aligned Stage2 checkpoint"
+            )
         args.dino_cache_fingerprint = dino_targets.cache_fingerprint
         batch_builder = DINOGridBatchAssembler(
             base_batch_builder,
@@ -891,6 +937,14 @@ def _train_sft2_impl(args=None) -> int:
         "query_tune": args.query_tune,
         "history_size": int(args.history_size),
         "prediction_horizon": int(args.prediction_horizon),
+        "state_layout": (
+            agent.wm.state_layout.metadata()
+            if getattr(agent.wm, "state_layout", None) is not None
+            else None
+        ),
+        "grid_position_encoding": str(args.grid_position_encoding),
+        "evaluation_only": bool(args.grid_global_tokens),
+        "formal_stage3": not bool(args.grid_global_tokens),
         "training_unit": "complete_trajectory_v1",
         "batch_unit": "trajectory",
         "sigreg_batch_scope": "global_unique_trajectory_transitions_v1",
@@ -900,7 +954,7 @@ def _train_sft2_impl(args=None) -> int:
         "value_objective": SFT2_VALUE_OBJECTIVE,
         "lm_supervision": "successful_trajectory_window_mean_v1",
         "loss_normalization": "global_optimizer_group_counts_v1",
-        "train_micro_batches": int(len(train_loader)),
+        "train_micro_batches": len(train_loader),
         "rng_schedule_version": "trajectory_micro_rank_v1",
         "training_mode_contract": "online_train_teacher_eval_v1",
         "evaluation_state_contract": "online_policy_eval_target_visual_ema_v1",
@@ -931,7 +985,11 @@ def _train_sft2_impl(args=None) -> int:
         checkpoint_invariants.update(
             {
                 "grid_tokens": int(args.latent_token_count),
-                "grid_ordering": "row_major",
+                "grid_ordering": (
+                    "row_major_spatial_then_global"
+                    if args.grid_global_tokens
+                    else "row_major"
+                ),
                 "dino_grid_size": int(args.grid_size),
                 "dino_identity": asdict(DINOV2_LARGE_IDENTITY),
                 "dino_cache_fingerprint": args.dino_cache_fingerprint,
@@ -941,6 +999,17 @@ def _train_sft2_impl(args=None) -> int:
                 "dino_normalization": "global_optimizer_group_observed_states_v1",
             }
         )
+    if args.grid_global_tokens:
+        checkpoint_invariants["loss_weights"] = {
+            "wm_start": float(args.lambda_wm_start),
+            "wm_end": float(args.lambda_wm_end),
+            "lm_ce": float(args.lambda_ce),
+            "dino_spatial": float(args.lambda_dino),
+            "dino_cls": float(args.lambda_dino),
+            "value": float(args.lambda_value),
+            "outcome": float(args.lambda_outcome),
+            "sigreg": float(args.lambda_sigreg),
+        }
     checkpoint_manager = SFT2CheckpointManager(
         output_dir=args.output_dir,
         agent=agent,
@@ -1003,9 +1072,9 @@ def _train_sft2_impl(args=None) -> int:
         vision_tune=vision_tune,
     )
 
-    algorithm_kwargs = dict(
-        history_size=args.history_size,
-        sigreg=(
+    algorithm_kwargs = {
+        "history_size": args.history_size,
+        "sigreg": (
             SequenceSIGReg(
                 knots=args.sigreg_knots,
                 num_proj=args.sigreg_num_proj,
@@ -1013,15 +1082,15 @@ def _train_sft2_impl(args=None) -> int:
             if args.lambda_sigreg > 0.0
             else None
         ),
-        sigreg_weight=args.lambda_sigreg,
-        wm_value_backbone_grad=args.wm_value_backbone_grad,
-        value_weight=args.lambda_value,
-        ce_weight=args.lambda_ce,
-        wm_weight_start=args.lambda_wm_start,
-        wm_weight_end=args.lambda_wm_end,
-        dino_grid_weight=(args.lambda_dino if args.objective == "dino_grid" else 0.0),
-        prediction_horizon=args.prediction_horizon,
-    )
+        "sigreg_weight": args.lambda_sigreg,
+        "wm_value_backbone_grad": args.wm_value_backbone_grad,
+        "value_weight": args.lambda_value,
+        "ce_weight": args.lambda_ce,
+        "wm_weight_start": args.lambda_wm_start,
+        "wm_weight_end": args.lambda_wm_end,
+        "dino_grid_weight": (args.lambda_dino if args.objective == "dino_grid" else 0.0),
+        "prediction_horizon": args.prediction_horizon,
+    }
     algorithm_kwargs["outcome_weight"] = getattr(args, "lambda_outcome", 0.0)
     algorithm = SFT2Algorithm(**algorithm_kwargs)
 
@@ -1036,8 +1105,9 @@ def _train_sft2_impl(args=None) -> int:
     )
     outcome_export_identity = None
     if getattr(args, "outcome_eval_dir", None) is not None:
-        from nimloth.eval.stage3_outcome import file_sha256
         import subprocess
+
+        from nimloth.eval.stage3_outcome import file_sha256
         if args.max_val_batches > 0:
             raise ValueError("complete outcome exports require max_val_batches=-1")
         outcome_export_identity = {
@@ -1050,9 +1120,10 @@ def _train_sft2_impl(args=None) -> int:
         }
     frozen_wm_cache_identity = None
     if getattr(args, "frozen_wm_cache_dir", None) is not None:
+        import subprocess
+
         from nimloth.eval.stage3_outcome import file_sha256
         from nimloth.rollout.fresh import policy_artifact_fingerprint
-        import subprocess
 
         frozen_split = args.frozen_wm_cache_split
         if frozen_split == "train":

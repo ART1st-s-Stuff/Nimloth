@@ -1,12 +1,15 @@
 """FP32 master rows shared by dense and PEFT backbone tuning."""
 from __future__ import annotations
+
 from collections.abc import Mapping, Sequence
+
 import torch
 from torch import nn
 from torch.nn import functional as F
 
 TOKEN_ROW_SCHEMA = "selected_rows_v1"
 FULL_LANGUAGE_SELECTED_ROW_SCHEMA = "full_language_selected_rows_v1"
+INPUT_QUERY_ROW_SCHEMA = "input_query_row_only_v1"
 
 def _active_saved_leaf(module: nn.Module) -> nn.Module:
     copies = getattr(module, "modules_to_save", None)
@@ -28,14 +31,28 @@ def _install_leaf(leaf: nn.Module, query_ids: tuple[int, ...], protocol_ids: tup
     leaf.weight.requires_grad_(False)
     leaf.register_buffer("nimloth_query_ids", torch.tensor(query_ids, dtype=torch.long, device=leaf.weight.device))
     leaf.register_buffer("nimloth_protocol_ids", torch.tensor(protocol_ids, dtype=torch.long, device=leaf.weight.device))
-    leaf.register_parameter("nimloth_query_rows", nn.Parameter(leaf.weight.detach()[list(query_ids)].float().clone()))
-    leaf.register_parameter("nimloth_protocol_rows", nn.Parameter(leaf.weight.detach()[list(protocol_ids)].float().clone()))
+    leaf.register_parameter(
+        "nimloth_query_rows",
+        nn.Parameter(
+            leaf.weight.detach()[list(query_ids)].float().clone(),
+            requires_grad=bool(query_ids),
+        ),
+    )
+    leaf.register_parameter(
+        "nimloth_protocol_rows",
+        nn.Parameter(
+            leaf.weight.detach()[list(protocol_ids)].float().clone(),
+            requires_grad=bool(protocol_ids),
+        ),
+    )
     leaf._nimloth_selected_token_rows = True
     if isinstance(leaf, nn.Embedding):
         def replace_embedding(module, inputs, output):
             input_ids = inputs[0]
             for ids, rows in ((module.nimloth_query_ids, module.nimloth_query_rows),
                               (module.nimloth_protocol_ids, module.nimloth_protocol_rows)):
+                if ids.numel() == 0:
+                    continue
                 ids = ids.to(input_ids.device)
                 matches = input_ids[..., None] == ids
                 local = matches.to(torch.int64).argmax(-1)
@@ -95,6 +112,45 @@ def install_full_language_selected_rows(
     _install_leaf(output_leaf, query_ids, protocol_ids)
     language_model.config.nimloth_token_row_schema = FULL_LANGUAGE_SELECTED_ROW_SCHEMA
 
+
+def install_input_query_row(
+    language_model: nn.Module,
+    query_id: int,
+    *,
+    initialize_from_ids: Sequence[int] | None = None,
+) -> None:
+    """Freeze the model and expose one FP32 input-embedding master row.
+
+    With ``initialize_from_ids``, the master is initialized by an FP32
+    reduction over the existing spatial Query rows. This avoids a BF16 round
+    trip through the frozen dense table.
+    """
+
+    language_model.requires_grad_(False)
+    input_leaf = language_model.get_input_embeddings()
+    output_leaf = language_model.get_output_embeddings()
+    if input_leaf.weight is output_leaf.weight:
+        raise ValueError("global-query-only alignment requires untied input/output tables")
+    _install_leaf(input_leaf, (int(query_id),), ())
+    if initialize_from_ids is not None:
+        source_ids = tuple(int(value) for value in initialize_from_ids)
+        if (
+            not source_ids
+            or int(query_id) in source_ids
+            or len(set(source_ids)) != len(source_ids)
+        ):
+            raise ValueError(
+                "global query initialization requires distinct spatial Query IDs"
+            )
+        if any(
+            value < 0 or value >= input_leaf.weight.shape[0] for value in source_ids
+        ):
+            raise ValueError("global query initialization ID outside vocabulary")
+        with torch.no_grad():
+            source = input_leaf.weight.detach()[list(source_ids)].float()
+            input_leaf.nimloth_query_rows.copy_(source.mean(dim=0, keepdim=True))
+    language_model.config.nimloth_token_row_schema = INPUT_QUERY_ROW_SCHEMA
+
 def selected_row_parameters(model: nn.Module) -> dict[str, list[nn.Parameter]]:
     result = {"query": [], "protocol": []}
     for module in model.modules():
@@ -104,7 +160,11 @@ def selected_row_parameters(model: nn.Module) -> dict[str, list[nn.Parameter]]:
         if module.__dict__.get("_nimloth_selected_token_rows", False):
             result["query"].append(module.nimloth_query_rows)
             result["protocol"].append(module.nimloth_protocol_rows)
-    if len(result["query"]) != 2 or len(result["protocol"]) != 2:
+    schema = getattr(getattr(model, "config", None), "nimloth_token_row_schema", None)
+    if schema == INPUT_QUERY_ROW_SCHEMA:
+        if len(result["query"]) != 1 or len(result["protocol"]) != 1:
+            raise ValueError("expected one input-only query row master")
+    elif len(result["query"]) != 2 or len(result["protocol"]) != 2:
         raise ValueError("expected selected rows for input embedding and independent LM head")
     return result
 
@@ -112,8 +172,8 @@ def materialize_selected_state_dict(state: Mapping[str, torch.Tensor]) -> dict[s
     """Replace private selected-row state with ordinary dense PEFT weights."""
     result = dict(state)
     prefixes = sorted({key.removesuffix(".nimloth_query_rows") for key in result if key.endswith(".nimloth_query_rows")})
-    if len(prefixes) != 2:
-        raise ValueError("selected-row export requires exactly two tables")
+    if len(prefixes) not in (1, 2):
+        raise ValueError("selected-row export requires one or two token tables")
     for prefix in prefixes:
         weight_key = prefix + ".weight"
         query_key = prefix + ".nimloth_query_rows"

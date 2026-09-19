@@ -19,6 +19,7 @@ from PIL import Image
 
 DINO_GRID_CACHE_FORMAT = "dino_grid_sharded_v1"
 STANDALONE_DINO_GRID_CACHE_FORMAT = "dino_grid_images_v1"
+STANDALONE_DINO_STATE_CACHE_FORMAT = "dino_spatial_cls_images_v2"
 
 
 def file_sha256(path: str | Path) -> str:
@@ -90,12 +91,14 @@ class FrozenDINOGridTargets:
         identity: DINOIdentity,
         grid_size: int = 4,
         batch_size: int = 32,
+        include_cls: bool = False,
     ) -> None:
         self.model = model.requires_grad_(False).eval()
         self.image_processor = image_processor
         self.identity = identity
         self.grid_size = int(grid_size)
         self.batch_size = int(batch_size)
+        self.include_cls = bool(include_cls)
         self._cached_targets: dict[str, torch.Tensor] = {}
 
     @classmethod
@@ -107,6 +110,7 @@ class FrozenDINOGridTargets:
         dtype: torch.dtype,
         grid_size: int = 4,
         batch_size: int = 32,
+        include_cls: bool = False,
     ) -> FrozenDINOGridTargets:
         """按固定 revision 加载 RL 使用的 frozen DINO teacher。"""
 
@@ -131,6 +135,7 @@ class FrozenDINOGridTargets:
             identity=identity,
             grid_size=grid_size,
             batch_size=batch_size,
+            include_cls=include_cls,
         )
 
     @property
@@ -169,11 +174,21 @@ class FrozenDINOGridTargets:
             spatial_tokens.permute(0, 3, 1, 2).float(),
             (self.grid_size, self.grid_size),
         )
-        return pooled.permute(0, 2, 3, 1).reshape(
+        spatial = pooled.permute(0, 2, 3, 1).reshape(
             len(images),
             self.grid_tokens,
             self.identity.hidden_size,
         )
+        if not self.include_cls:
+            return spatial
+        cls = hidden[:, 0, :].float().unsqueeze(1)
+        if cls.shape != (len(images), 1, self.identity.hidden_size):
+            raise ValueError("DINO CLS target has unexpected shape")
+        return torch.cat((spatial, cls), dim=1)
+
+    @property
+    def state_tokens(self) -> int:
+        return self.grid_tokens + int(self.include_cls)
 
     @torch.no_grad()
     def load_images(
@@ -247,12 +262,35 @@ def _parent_cache_identity(cache_split_dir: Path) -> dict[str, str]:
     }
 
 
-def _load_grid_shard(path: Path) -> torch.Tensor:
+def _load_grid_shard(
+    path: Path,
+    *,
+    require_spatial_cls: bool = False,
+) -> torch.Tensor:
     try:
         payload = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
     except TypeError:  # pragma: no cover - older torch fallback
         payload = torch.load(path, map_location="cpu", weights_only=True)
+    has_spatial_cls = {"spatial_features", "cls_features"} <= set(payload)
+    if require_spatial_cls and (not has_spatial_cls or "features" in payload):
+        raise ValueError(
+            f"DINO spatial/CLS shard must store explicit spatial_features and "
+            f"cls_features tensors: {path}"
+        )
     features = payload.get("features")
+    if features is None and has_spatial_cls:
+        spatial = payload["spatial_features"]
+        cls = payload["cls_features"]
+        if (
+            not isinstance(spatial, torch.Tensor)
+            or not isinstance(cls, torch.Tensor)
+            or cls.ndim != 2
+            or spatial.ndim != 3
+            or spatial.shape[0] != cls.shape[0]
+            or spatial.shape[-1] != cls.shape[-1]
+        ):
+            raise ValueError(f"invalid DINO spatial/CLS feature shard: {path}")
+        features = torch.cat((spatial, cls.unsqueeze(1)), dim=1)
     if not isinstance(features, torch.Tensor) or features.ndim != 3:
         raise ValueError(f"invalid DINO grid feature shard: {path}")
     return features
@@ -269,12 +307,14 @@ class CachedDINOGridTargets:
         path_to_feature: dict[str, tuple[torch.Tensor, int]],
         cache_fingerprint: str,
         shard_references: dict[int, tuple] | None = None,
+        include_cls: bool = False,
     ) -> None:
         self.identity = identity
         self.grid_size = int(grid_size)
         self.path_to_feature = path_to_feature
         self.cache_fingerprint = str(cache_fingerprint)
         self._shard_references = shard_references
+        self.include_cls = bool(include_cls)
 
     @staticmethod
     def _file_identity(path: Path) -> tuple[int, ...]:
@@ -306,7 +346,10 @@ class CachedDINOGridTargets:
                 path = Path(filename)
                 if self._file_identity(path) != signature:
                     raise ValueError(f"validated DINO shard changed before worker load: {path}")
-                tensor = _load_grid_shard(path)
+                tensor = _load_grid_shard(
+                    path,
+                    require_spatial_cls=bool(state.get("include_cls", False)),
+                )
                 if (tuple(tensor.shape) != shape or tensor.dtype != dtype
                         or self._file_identity(path) != signature):
                     raise ValueError(f"validated DINO shard changed during worker load: {path}")
@@ -323,6 +366,10 @@ class CachedDINOGridTargets:
     @property
     def grid_tokens(self) -> int:
         return self.grid_size**2
+
+    @property
+    def state_tokens(self) -> int:
+        return self.grid_tokens + int(self.include_cls)
 
     @classmethod
     def from_cache_root(
@@ -441,13 +488,41 @@ class CachedDINOGridTargets:
             {k: v for k, v in manifest.items() if k != "fingerprint"}
         ):
             raise ValueError("standalone DINO manifest fingerprint mismatch")
+        cache_format = manifest.get("format")
+        include_cls = cache_format == STANDALONE_DINO_STATE_CACHE_FORMAT
         if (
-            manifest.get("format") != STANDALONE_DINO_GRID_CACHE_FORMAT
+            cache_format not in {
+                STANDALONE_DINO_GRID_CACHE_FORMAT,
+                STANDALONE_DINO_STATE_CACHE_FORMAT,
+            }
             or manifest.get("identity") != asdict(identity)
             or manifest.get("grid_size") != grid_size
             or manifest.get("feature_dtype") != "float32"
         ):
             raise ValueError("standalone DINO teacher/grid identity mismatch")
+        if include_cls:
+            if (
+                manifest.get("spatial_tokens") != grid_size**2
+                or manifest.get("global_tokens") != 1
+                or manifest.get("state_tokens") != grid_size**2 + 1
+                or manifest.get("global_role") != "dino_cls"
+                or manifest.get("ordering") != "row_major_spatial_then_global"
+                or manifest.get("processor_fingerprint")
+                != identity.processor_fingerprint
+            ):
+                raise ValueError("standalone DINO spatial/CLS layout mismatch")
+            build_commit = manifest.get("build_commit")
+            if (
+                not isinstance(build_commit, str)
+                or len(build_commit) != 40
+                or any(character not in "0123456789abcdef" for character in build_commit)
+            ):
+                raise ValueError("standalone DINO spatial/CLS build commit is invalid")
+            expected_parent = _json_fingerprint(
+                {"images": manifest.get("images"), "splits": manifest.get("splits")}
+            )
+            if manifest.get("parent_data_fingerprint") != expected_parent:
+                raise ValueError("standalone DINO parent data fingerprint mismatch")
         splits = manifest.get("splits", {})
         if set(splits) != {"train", "val"}:
             raise ValueError("standalone DINO requires train and val lineage")
@@ -481,9 +556,13 @@ class CachedDINOGridTargets:
             path = root / shard["file"]
             if path.parent != root or file_sha256(path) != shard["sha256"]:
                 raise ValueError("standalone DINO shard hash/path mismatch")
-            features = _load_grid_shard(path)
+            features = _load_grid_shard(path, require_spatial_cls=include_cls)
             if (
-                features.shape != (shard["count"], grid_size**2, identity.hidden_size)
+                features.shape != (
+                    shard["count"],
+                    grid_size**2 + int(include_cls),
+                    identity.hidden_size,
+                )
                 or features.dtype != torch.float32
                 or not torch.isfinite(features).all()
             ):
@@ -504,6 +583,7 @@ class CachedDINOGridTargets:
             path_to_feature=mapping,
             cache_fingerprint=claimed,
             shard_references=shard_references,
+            include_cls=include_cls,
         )
 
     @torch.no_grad()
@@ -533,6 +613,7 @@ class CachedDINOGridTargets:
 __all__ = [
     "DINOV2_LARGE_IDENTITY",
     "DINO_GRID_CACHE_FORMAT",
+    "STANDALONE_DINO_STATE_CACHE_FORMAT",
     "CachedDINOGridTargets",
     "DINOGridTargets",
     "DINOIdentity",

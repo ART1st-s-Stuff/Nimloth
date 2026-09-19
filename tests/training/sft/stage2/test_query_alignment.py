@@ -114,6 +114,38 @@ def test_combined_loss_reaches_backbone_queries_projector_and_lm_but_not_teacher
     assert not torch.equal(before, model.projector.net[0].weight)
 
 
+def test_global_query_alignment_normalizes_spatial_and_cls_separately():
+    objective = QueryAlignmentConfig(
+        grid_size=2,
+        include_global_token=True,
+        projector_hidden_dim=7,
+    )
+    model = QueryAlignmentModel(
+        TinyCausalLM(),
+        SharedSlotProjector(6, 3, 7, grid_tokens=5),
+        [6, 7, 8, 9, 10],
+        objective,
+    ).eval()
+    with torch.no_grad():
+        for parameter in model.projector.parameters():
+            parameter.zero_()
+    batch = {
+        "input_ids": torch.tensor([[1, 2, 6, 7, 8, 9, 10, 3, 4]]),
+        "labels": torch.tensor([[-100] * 7 + [3, 4]]),
+        "answer_indices": torch.tensor([[-1] * 7 + [0, 0]]),
+        "lm_answer_mask": torch.tensor([True]),
+        "query_batch_indices": torch.tensor([0]),
+        "query_positions": torch.tensor([[2, 3, 4, 5, 6]]),
+        "dino_target": torch.cat(
+            (torch.ones(1, 4, 3), torch.full((1, 1, 3), 2.0)), dim=1
+        ),
+    }
+    output = model(**batch)
+    torch.testing.assert_close(output.dino_spatial_loss, torch.tensor(1.0))
+    torch.testing.assert_close(output.dino_cls_loss, torch.tensor(4.0))
+    torch.testing.assert_close(output.dino_loss, torch.tensor(5.0))
+
+
 def test_full_trajectory_matches_answer_prefix_losses_in_eval_mode():
     model = make_model().eval()
     full = inputs()
@@ -199,6 +231,31 @@ def test_checkpoint_restores_projector_and_preserves_stage_for_legacy_wm_loader(
     config_path.write_text(json.dumps(config))
     with pytest.raises(ValueError, match="configuration mismatch"):
         restored.restore_projector(checkpoint, allow_dino_weight_change=True)
+
+
+def test_evaluation_only_global_extension_restores_shared_k64_projector(tmp_path):
+    parent = make_model()
+    parent.dino_cache_fingerprint = "old-cache"
+    processor = SimpleNamespace(save_pretrained=lambda path: None)
+    save_checkpoint(parent, processor, tmp_path, "epoch16", latent_token_count=4)
+    checkpoint = tmp_path / "epoch16"
+
+    extended = QueryAlignmentModel(
+        TinyCausalLM(),
+        SharedSlotProjector(6, 3, 7, grid_tokens=5),
+        [6, 7, 8, 9, 10],
+        QueryAlignmentConfig(
+            grid_size=2,
+            include_global_token=True,
+            projector_hidden_dim=7,
+        ),
+    )
+    extended.evaluation_only = True
+    extended.parent_checkpoint = str(checkpoint)
+    extended.dino_cache_fingerprint = "spatial-cls-cache"
+    extended.restore_projector(checkpoint, allow_global_extension=True)
+    for key, value in parent.projector.state_dict().items():
+        torch.testing.assert_close(extended.projector.state_dict()[key], value)
 
 
 def test_answer_observations_keep_real_turn_alignment_and_cot():
@@ -487,13 +544,13 @@ def test_merge_export_requires_and_preserves_exact_query_artifacts(tmp_path):
 
 def test_real_tiny_qwen_multimodal_forward_and_backward():
     """Exercise the real HF image/CoT/query/CE path with random CPU unit weights."""
+    import inspect
+
     from transformers import Qwen2_5_VLConfig, Qwen2_5_VLForConditionalGeneration
 
     from nimloth.training.sft.stage1.trainer import (
         resize_token_embeddings_and_sync_vocab,
     )
-
-    import inspect
 
     text = {
         "vocab_size": 32,

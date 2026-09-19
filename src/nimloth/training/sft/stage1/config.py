@@ -12,6 +12,8 @@ _SFT1_YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("query_alignment", "projector_hidden_dim"): "projector_hidden_dim",
     ("query_alignment", "weight_lm"): "weight_lm",
     ("query_alignment", "weight_dino"): "weight_dino",
+    ("query_alignment", "include_global_token"): "include_global_token",
+    ("query_alignment", "evaluation_only"): "evaluation_only",
     ("query_alignment", "dino_cache_root"): "dino_cache_root",
     ("data", "train_jsonl"): "train_jsonl",
     ("data", "val_jsonl"): "val_jsonl",

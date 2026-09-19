@@ -12,6 +12,7 @@ from einops import rearrange
 from torch import nn
 
 from nimloth.wm._vendor_lewm import Embedder, modulate
+from nimloth.wm.layout import GridStateLayout
 from nimloth.wm.model import WorldModel
 
 
@@ -63,6 +64,7 @@ def load_sft1_slot_projector(
     grid_tokens: int = 16,
     map_location: str | torch.device = "cpu",
     dtype: torch.dtype | None = None,
+    state_layout: GridStateLayout | None = None,
 ) -> SharedSlotProjector:
     """加载 SFT1 的 row-major 16-slot projector，供 SFT2 继续训练。"""
 
@@ -79,7 +81,9 @@ def load_sft1_slot_projector(
         "qwen_hidden_dim": int(qwen_hidden_dim),
         "state_dim": int(state_dim),
         "shared_slot_projector": True,
-        "ordering": "row_major",
+        "ordering": (
+            "row_major_spatial_then_global" if state_layout is not None else "row_major"
+        ),
     }
     mismatches = {
         key: (config.get(key), value)
@@ -88,6 +92,10 @@ def load_sft1_slot_projector(
     }
     if mismatches:
         raise ValueError(f"SFT1 grid-state interface mismatch: {mismatches}")
+    if state_layout is not None:
+        saved_layout = GridStateLayout.from_metadata(config.get("state_layout") or {})
+        if saved_layout != state_layout or state_layout.state_tokens != grid_tokens:
+            raise ValueError("SFT1 grid-state layout mismatch")
 
     projector = SharedSlotProjector(
         input_dim=int(config["qwen_hidden_dim"]),
@@ -218,6 +226,9 @@ class _TemporalSpatialConditionalBlock(nn.Module):
 @dataclass(frozen=True)
 class GridPredictorConfig:
     grid_tokens: int = 16
+    spatial_grid_size: int | None = None
+    global_tokens: int = 0
+    position_encoding: str = "learned_v1"
     emb_dim: int = 1024
     action_dim: int = 8
     history_size: int = 4
@@ -226,6 +237,59 @@ class GridPredictorConfig:
     dim_head: int = 64
     mlp_dim: int = 2048
     dropout: float = 0.1
+
+    def __post_init__(self) -> None:
+        if self.grid_tokens < 1 or self.history_size < 1:
+            raise ValueError("grid_tokens and history_size must be positive")
+        if self.position_encoding not in ("learned_v1", "fixed_2d_sincos_v1"):
+            raise ValueError(f"unsupported position encoding: {self.position_encoding}")
+        if self.position_encoding == "fixed_2d_sincos_v1":
+            if self.spatial_grid_size is None:
+                raise ValueError("fixed 2D position encoding requires spatial_grid_size")
+            layout = self.state_layout
+            if layout.state_tokens != self.grid_tokens:
+                raise ValueError(
+                    "grid_tokens must equal spatial_grid_size squared plus global_tokens"
+                )
+            if self.emb_dim % 4:
+                raise ValueError("fixed 2D sine-cosine encoding requires emb_dim divisible by 4")
+        elif self.spatial_grid_size is not None or self.global_tokens:
+            raise ValueError(
+                "explicit spatial/global layout requires fixed_2d_sincos_v1"
+            )
+
+    @property
+    def state_layout(self) -> GridStateLayout:
+        if self.position_encoding != "fixed_2d_sincos_v1":
+            raise ValueError("legacy learned-position predictor has no explicit state layout")
+        return GridStateLayout(
+            spatial_grid_size=int(self.spatial_grid_size),
+            global_tokens=int(self.global_tokens),
+            global_role="dino_cls" if self.global_tokens else "none",
+        )
+
+
+def fixed_2d_sincos_position(layout: GridStateLayout, emb_dim: int) -> torch.Tensor:
+    """Return deterministic row-major 2D sin/cos positions and a zero global row."""
+
+    if emb_dim % 4:
+        raise ValueError("2D sine-cosine position dimension must be divisible by 4")
+    axis_dim = emb_dim // 2
+    frequencies = torch.arange(axis_dim // 2, dtype=torch.float64)
+    frequencies = 1.0 / (10000 ** (frequencies / max(1, axis_dim // 2)))
+    coordinates = torch.arange(layout.spatial_grid_size, dtype=torch.float64)
+
+    def encode_axis(values: torch.Tensor) -> torch.Tensor:
+        phase = values[:, None] * frequencies[None, :]
+        return torch.cat((phase.sin(), phase.cos()), dim=-1)
+
+    y, x = torch.meshgrid(coordinates, coordinates, indexing="ij")
+    spatial = torch.cat(
+        (encode_axis(y.reshape(-1)), encode_axis(x.reshape(-1))), dim=-1
+    ).to(torch.float32)
+    if layout.has_global:
+        spatial = torch.cat((spatial, torch.zeros(1, emb_dim)), dim=0)
+    return spatial.unsqueeze(0)
 
 
 class TemporalSpatialGridPredictor(nn.Module):
@@ -238,15 +302,20 @@ class TemporalSpatialGridPredictor(nn.Module):
 
     def __init__(self, config: GridPredictorConfig) -> None:
         super().__init__()
-        if config.grid_tokens < 1 or config.history_size < 1:
-            raise ValueError("grid_tokens and history_size must be positive")
         self.config = config
         self.grid_tokens = config.grid_tokens
         self.emb_dim = config.emb_dim
         self.action_dim = config.action_dim
-        self.spatial_position = nn.Parameter(
-            torch.randn(1, config.grid_tokens, config.emb_dim)
-        )
+        if config.position_encoding == "fixed_2d_sincos_v1":
+            self.register_buffer(
+                "spatial_position",
+                fixed_2d_sincos_position(config.state_layout, config.emb_dim),
+                persistent=True,
+            )
+        else:
+            self.spatial_position = nn.Parameter(
+                torch.randn(1, config.grid_tokens, config.emb_dim)
+            )
         self.temporal_position = nn.Parameter(
             torch.zeros(1, config.history_size, 1, config.emb_dim)
         )
@@ -437,7 +506,7 @@ class TemporalSpatialGridPredictor(nn.Module):
         path: str | Path,
         *,
         map_location: str | torch.device = "cpu",
-    ) -> "TemporalSpatialGridPredictor":
+    ) -> TemporalSpatialGridPredictor:
         path = Path(path)
         config_path = path / "config.json"
         state_path = path / "predictor.pt"
@@ -554,8 +623,17 @@ class ResidualTemporalSpatialGridPredictor(nn.Module):
         (path / "config.json").write_text(
             json.dumps(
                 {
-                    "schema": "nimloth_residual_temporal_spatial_grid_v1",
+                    "schema": (
+                        "nimloth_residual_temporal_spatial_grid_v2"
+                        if self.config.position_encoding == "fixed_2d_sincos_v1"
+                        else "nimloth_residual_temporal_spatial_grid_v1"
+                    ),
                     "predictor": asdict(self.config),
+                    "state_layout": (
+                        self.config.state_layout.metadata()
+                        if self.config.position_encoding == "fixed_2d_sincos_v1"
+                        else None
+                    ),
                     "delta_head_initialization": "zeros",
                     "prediction_form": "input_state_plus_delta",
                 },
@@ -572,12 +650,22 @@ class ResidualTemporalSpatialGridPredictor(nn.Module):
         path: str | Path,
         *,
         map_location: str | torch.device = "cpu",
-    ) -> "ResidualTemporalSpatialGridPredictor":
+    ) -> ResidualTemporalSpatialGridPredictor:
         path = Path(path)
         payload = json.loads((path / "config.json").read_text(encoding="utf-8"))
-        if payload.get("schema") != "nimloth_residual_temporal_spatial_grid_v1":
+        if payload.get("schema") not in {
+            "nimloth_residual_temporal_spatial_grid_v1",
+            "nimloth_residual_temporal_spatial_grid_v2",
+        }:
             raise ValueError("unsupported residual grid predictor checkpoint schema")
-        module = cls(GridPredictorConfig(**payload["predictor"]))
+        config = GridPredictorConfig(**payload["predictor"])
+        if payload["schema"].endswith("_v2"):
+            layout = GridStateLayout.from_metadata(payload.get("state_layout") or {})
+            if layout != config.state_layout:
+                raise ValueError("residual predictor state layout mismatch")
+        elif config.position_encoding != "learned_v1":
+            raise ValueError("v1 residual checkpoint cannot contain fixed position state")
+        module = cls(config)
         module.load_state_dict(
             torch.load(path / "predictor.pt", map_location=map_location, weights_only=True)
         )
@@ -587,6 +675,18 @@ class ResidualTemporalSpatialGridPredictor(nn.Module):
 class GridWorldModel(WorldModel):
     """16-slot WM；state 就是可训练的 SFT1 projector 输出。"""
 
+    @property
+    def state_layout(self) -> GridStateLayout | None:
+        predictor = _unwrap(self.wm_predictor)
+        config = getattr(predictor, "config", None)
+        if config is None or config.position_encoding != "fixed_2d_sincos_v1":
+            return None
+        return config.state_layout
+
+    def spatial_state(self, state: torch.Tensor) -> torch.Tensor:
+        layout = self.state_layout
+        return state if layout is None else layout.spatial(state)
+
     def sigreg_state(self, state: torch.Tensor) -> torch.Tensor:
         """单个时刻先对 slots 做 mean pooling，交给公共 SFT2 SIGReg。"""
 
@@ -595,7 +695,7 @@ class GridWorldModel(WorldModel):
                 "grid SIGReg state must have shape (B,N,D), "
                 f"got {tuple(state.shape)}"
             )
-        return state.mean(dim=-2)
+        return self.spatial_state(state).mean(dim=-2)
 
     def sigreg_state_sequence(self, state_sequence: torch.Tensor) -> torch.Tensor:
         """RL sequence 每个时刻先对 slots 做 mean pooling。"""
@@ -605,7 +705,7 @@ class GridWorldModel(WorldModel):
                 "grid SIGReg state must have shape (B,T,N,D), "
                 f"got {tuple(state_sequence.shape)}"
             )
-        return state_sequence.mean(dim=-2)
+        return self.spatial_state(state_sequence).mean(dim=-2)
 
     def predict_action_values(self, state: torch.Tensor) -> torch.Tensor:
         if state.ndim < 3:
@@ -613,7 +713,12 @@ class GridWorldModel(WorldModel):
                 "grid value input must have shape (...,N,D), "
                 f"got {tuple(state.shape)}"
             )
-        return self.value_head(state.mean(dim=-2)).float()
+        return self.value_head(self.spatial_state(state).mean(dim=-2)).float()
+
+    def predict_outcome_logits(self, predicted_state: torch.Tensor) -> torch.Tensor:
+        if self.outcome_head is None:
+            raise RuntimeError("grid world model has no OutcomeHead")
+        return self.outcome_head(self.spatial_state(predicted_state)).float()
 
     def predict_action_logits(self, state: torch.Tensor) -> torch.Tensor:
         if state.ndim < 3:
@@ -623,9 +728,9 @@ class GridWorldModel(WorldModel):
             )
         if self.planner_policy_head is None:
             raise RuntimeError("grid world model has no PlannerPolicyHead")
-        return self.planner_policy_head(state.mean(dim=-2)).float()
+        return self.planner_policy_head(self.spatial_state(state).mean(dim=-2)).float()
 
-    def unwrapped(self) -> "GridWorldModel":
+    def unwrapped(self) -> GridWorldModel:
         return GridWorldModel(
             state_proj=_unwrap(self.state_proj),
             wm_predictor=_unwrap(self.wm_predictor),
@@ -642,8 +747,9 @@ class GridWorldModel(WorldModel):
 __all__ = [
     "GridPredictorConfig",
     "GridWorldModel",
+    "ResidualTemporalSpatialGridPredictor",
     "SharedSlotProjector",
     "TemporalSpatialGridPredictor",
-    "ResidualTemporalSpatialGridPredictor",
+    "fixed_2d_sincos_position",
     "load_sft1_slot_projector",
 ]

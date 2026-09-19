@@ -1,9 +1,9 @@
 """Read-only fixed first-validation-batch probes during joint training."""
 from __future__ import annotations
 
-from contextlib import contextmanager
 import json
 import random
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -63,7 +63,11 @@ def run_fixed_diagnostic(loop) -> None:
     with preserve_probe_state(loop.model_runtime.agent.trainable_modules):
         # Use the same first validation batch, never the training iterator.
         first_batch = next(iter(loop.val_loader))
-        writer = DINOFeatureWriter(directory, rank=loop.rank)
+        writer = DINOFeatureWriter(
+            directory,
+            rank=loop.rank,
+            state_layout=getattr(loop.model_runtime.agent.wm, "state_layout", None),
+        )
         metrics = evaluate(loop.algorithm, loop.model_runtime, [first_batch],
                            batch_builder=loop.batch_builder, max_batches=1, on_batch=writer)
         batch_identity = json.loads(json.dumps(writer.batch_identities))

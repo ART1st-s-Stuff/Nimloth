@@ -1,0 +1,138 @@
+# Stage3 CLS、固定二维位置与 reconstruction 设计
+
+## 1. 实验边界
+
+本任务从包含近期 Outcome+BCE Stage3 与评估修复的
+`codex/stage3-residual-rl` 分支建立专用 worktree。实验分成两个连续阶段：
+
+1. 从既有 Stage2 epoch16 增补一个真正的 Qwen 全局 Query token，只训练该 token
+   的 embedding row，使其拟合真实 DINOv2 CLS；
+2. 从上述 evaluation-only Stage2 checkpoint fresh-start Stage3，用 K64 spatial + K1
+   global state、固定二维空间编码和 residual WM 正常训练。
+
+这是一组联合架构评估，不能把结果单独归因于 CLS 或二维位置。ValueHead 与
+OutcomeHead 继续训练并记录健康指标，但不属于主要比较目标。正式模型仍需以后从
+Stage2 epoch1 就启用 CLS；本任务不会把 epoch16 增补结果升级为正式模型或 RL 起点。
+
+## 2. State 与 token 合同
+
+统一 state 轴为：
+
+```text
+[spatial_00, ..., spatial_63, global_cls]
+```
+
+- spatial slots 固定为 row-major `8x8`，索引 `[0, 64)`；
+- global slot 固定为最后一个，索引 `64`；
+- 配置分别保存 `spatial_grid_size=8`、`spatial_tokens=64`、
+  `global_tokens=1`、`state_tokens=65`，不得继续用一个 `grid_tokens` 同时表示两种语义；
+- 所有切片通过一个显式 layout 对象完成，不在调用点散落 `[:-1]`、`-1` 或 `64`；
+- Qwen prompt 中全局 Query 位于64个 spatial Query之后、`action_start`之前。因果注意力
+  保证旧 spatial hidden 不读取新增 token，而 global hidden 可汇总全部 spatial Query，
+  且不能读取尚未执行的 action。
+
+旧 K64 checkpoint 没有 global slot 或新 schema 时必须 fail closed；不自动复制、补零、
+池化或猜测 CLS。
+
+## 3. DINO target 与缓存
+
+冻结 teacher 的一次前向同时提取：
+
+- `last_hidden_state[:, 0]` 作为真实 CLS，shape `1024`；
+- 最后 `patch_count` 个 patch tokens 按当前规则池化为 row-major `64x1024`。
+
+缓存使用新版本 schema，并记录 teacher source/revision、processor fingerprint、图像身份、
+split、dtype、grid size、父数据 fingerprint、构建 commit 和逐文件 hash。旧缓存保持只读，
+不得从 patch mean 或已有 state 推导伪 CLS。训练与验证加载时同时核对 spatial 与 CLS；
+任一部分缺失、顺序不符或 lineage 不一致即拒绝。
+
+## 4. Evaluation-only Stage2 CLS alignment
+
+从远端既有 Stage2 epoch16 完整加载 Qwen、tokenizer 与 shared projector：
+
+- 新 CLS Query row 以64个现有 Query embedding 的均值初始化，保持初始尺度且不借用
+  action/format token；
+- 冻结 Qwen backbone、视觉模块、旧64个 Query rows、action/format rows与 projector；
+- 只有新 CLS row 可训练；LM 目标继续约束它不能破坏后续语言/动作输出；
+- CLS 使用真实 DINO CLS MSE，沿用当前 DINO 系数2；spatial DINO 仅作为不变性诊断；
+- observed spatial state 必须与 epoch16 在数值容差内一致。由于它位于新增 token 之前且
+  其权重与 projector 均冻结，这是一项硬性回归；不满足时停止 Stage3。
+
+输出 checkpoint 明确标记 `evaluation_only=true`、`formal_stage2=false`、父 epoch16 identity、
+K64+CLS schema 与新增 token id。训练至少两轮，并在连续两轮 CLS 验证 MSE 相对改善均
+不足1%时停止；同时检查 LM、格式与固定 rollout success 未发生不可接受退化。
+
+## 5. Stage3 WM 与固定位置编码
+
+Stage3 fresh-start 新 residual predictor，不继承旧 WM、ValueHead、OutcomeHead、optimizer
+或收敛历史。WM 输入输出均为 `(B,T,65,1024)`。
+
+空间位置编码使用标准二维 sine-cosine：x/y 各占一半通道，每个轴内部使用成对 sin/cos
+频率，按 row-major 生成 `(1,64,1024)` persistent buffer。它不进入 optimizer，跨 rank、
+保存/恢复和随机种子逐值一致。global slot 使用零 positional vector 并由 layout/type metadata
+明确标记为 non-spatial；它是唯一没有二维坐标的槽位。现有 learned
+`spatial_position` 被替换，不与固定编码叠加；H1 temporal position 保持当前语义。
+
+Transformer 在65个槽位之间正常双向 attention，因此 global state 可影响 predicted
+spatial state。residual delta head 继续零初始化，首个 optimizer update 前所有65个预测槽位
+逐值等于输入 state。
+
+## 6. Loss、梯度与两个旧 head
+
+空间和 CLS 分开归一化，避免 global token 被 `1/65` 稀释：
+
+```text
+L_wm   = L_wm_spatial + L_wm_cls
+L_dino = 2 * L_dino_spatial + 2 * L_dino_cls
+```
+
+每一项先对自身有效样本、token和通道取 mean，再进入总目标。空间项保持旧权重，CLS 是
+新增的同权重目标；日志独立记录四个分项和加权总量。其余 LM、Value、Outcome BCE、
+WM warmup、SIGReg0 和 stop-gradient 合同沿用 Outcome epoch5 基线的实际 resolved config。
+
+ValueHead 继续从 decision state 计算 outgoing `Q(s_t,a)`，OutcomeHead 继续从 action-
+conditioned predicted successor 计算 BCE。为保持旧 K64 读出语义，两者都只接收 layout
+切出的64个 spatial slots，再执行当前 mean pooling；global slot 不直接进入两个 head。
+它们正常训练并保存，但只作为健康指标。这不会修复其汇聚缺陷，也不能据此宣称价值或
+结果预测变好。PlannerPolicyHead 与 RL 不在本任务中加载或训练。
+
+## 7. Reconstruction 与固定评估
+
+现有 `spatial_grid_v1` CFM decoder 保持冻结，只接收 layout 的64个 spatial slots。它不
+读取 CLS，也不在本任务重训。固定评估使用与近期 Stage3 epoch5 完全相同的样本身份、
+future horizon、decoder checkpoint、noise seed、采样步数和渲染尺度，分别报告：
+
+1. epoch16 与 CLS-aligned Stage2 的 observed spatial reconstruction；两者应一致；
+2. Stage3 的真实 future state reconstruction，作为 decoder/目标参照；
+3. Stage3 predicted spatial state reconstruction，按 H1--H4 与真实 future image 比较；
+4. copy-current spatial baseline；
+5. observed/predicted spatial 到 DINO grid 的 MSE、cosine、centered variation 与配对优势；
+6. observed/predicted global 到 DINO CLS 的 MSE、cosine、跨场景变化与错误配对优势。
+
+展示图只保留原图、真实 future、copy baseline、真实 future state reconstruction 与模型
+predicted reconstruction，并写清 horizon 和列名。实验用的均值图、误差热图等诊断列不
+混入最终展示；完整诊断仍保存在机器可读 artifact 中。
+
+因为 frozen decoder 不消费 CLS，图像改善只能说明 global/二维位置经 WM 改善了 predicted
+spatial state，不能说明 decoder 直接利用了 CLS。Value/Outcome 指标不参与 reconstruction
+结论。
+
+## 8. Checkpoint、兼容与回滚
+
+checkpoint 保存 tokenizer/token id、state layout、DINO cache identity、position encoding
+版本、predictor schema、各 loss 权重、train/freeze 参数集及 evaluation-only 标记。加载器
+必须验证 total/spatial/global token 数与 head input contract；旧 K64、旧 learned-position
+WM、缺失 CLS cache 或 mean-over-K65 的配置均拒绝混用。
+
+实验使用唯一输出目录并保留最后一个可续训 checkpoint、best checkpoint、逐步日志、
+resolved config、固定评估 artifact 和结果摘要。原 Stage2 epoch16、旧 Stage3 baseline 与
+冻结 CFM 均只读。失败时删除或保留输出遵循单独授权；代码回滚仅需移除本任务 worktree，
+不会修改既有模型产物。
+
+## 9. 启动门禁
+
+实现先通过 schema、shape/order、固定编码、grad reachability、head spatial slicing、residual
+copy、checkpoint round-trip、K64 fail-closed 与固定 reconstruction identity 测试；随后运行
+production-shaped 单步 GPU canary。正式训练预计超过10分钟，canary 后需提交包含精确
+commit、输入、资源、预算、保存策略、停止规则和输出路径的最终 launch contract，并取得
+单独启动批准。

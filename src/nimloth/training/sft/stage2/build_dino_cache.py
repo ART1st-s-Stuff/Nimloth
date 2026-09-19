@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import re
 from dataclasses import asdict
 from pathlib import Path
 
@@ -10,6 +11,7 @@ import torch
 from nimloth.backbone.dino_grid import (
     DINOV2_LARGE_IDENTITY,
     STANDALONE_DINO_GRID_CACHE_FORMAT,
+    STANDALONE_DINO_STATE_CACHE_FORMAT,
     CachedDINOGridTargets,
     FrozenDINOGridTargets,
     _json_fingerprint,
@@ -66,7 +68,14 @@ def observation_index(train_jsonl: Path, val_jsonl: Path):
     return images, splits
 
 
-def load_teacher(path: Path, device: torch.device, grid_size: int, batch_size: int):
+def load_teacher(
+    path: Path,
+    device: torch.device,
+    grid_size: int,
+    batch_size: int,
+    *,
+    include_cls: bool,
+):
     from transformers import AutoImageProcessor, AutoModel
 
     identity = DINOV2_LARGE_IDENTITY
@@ -103,22 +112,41 @@ def load_teacher(path: Path, device: torch.device, grid_size: int, batch_size: i
         identity=identity,
         grid_size=grid_size,
         batch_size=batch_size,
+        include_cls=include_cls,
     ), provenance
 
 
 def build(args):
-    objective = QueryAlignmentConfig(grid_size=args.grid_size)
+    include_cls = bool(getattr(args, "include_cls", False))
+    build_commit = getattr(args, "build_commit", None)
+    if include_cls and (
+        not isinstance(build_commit, str)
+        or re.fullmatch(r"[0-9a-f]{40}", build_commit) is None
+    ):
+        raise ValueError("spatial/CLS cache requires an exact 40-hex build commit")
+    objective = QueryAlignmentConfig(
+        grid_size=args.grid_size, include_global_token=include_cls
+    )
     if not 1 <= args.batch_size <= 32:
         raise ValueError("DINO cache batch size must be between 1 and 32")
     args.output.mkdir(parents=True, exist_ok=False)
     images, splits = observation_index(args.train_jsonl, args.val_jsonl)
+    parent_data_fingerprint = _json_fingerprint(
+        {"images": images, "splits": splits}
+    )
     teacher, provenance = None, None
     reuse_path = getattr(args, "reuse_cache", None)
     if reuse_path is not None:
         reuse_path = Path(reuse_path).resolve()
         reuse_manifest = json.loads((reuse_path / "manifest.json").read_text())
-        if reuse_manifest.get("format") != STANDALONE_DINO_GRID_CACHE_FORMAT:
+        expected_format = (
+            STANDALONE_DINO_STATE_CACHE_FORMAT
+            if include_cls
+            else STANDALONE_DINO_GRID_CACHE_FORMAT
+        )
+        if reuse_manifest.get("format") != expected_format:
             raise ValueError("reuse requires a standalone cache with verified image byte hashes")
+        provenance = reuse_manifest.get("teacher_provenance")
     reused = (CachedDINOGridTargets.from_cache_root(
         reuse_path, identity=DINOV2_LARGE_IDENTITY, grid_size=objective.grid_size
     ) if reuse_path is not None else None)
@@ -131,7 +159,11 @@ def build(args):
         missing = [path for path in paths if reused is None or path not in reused.path_to_feature]
         if missing and teacher is None:
             teacher, provenance = load_teacher(
-                args.teacher_path, torch.device(args.device), objective.grid_size, args.batch_size
+                args.teacher_path,
+                torch.device(args.device),
+                objective.grid_size,
+                args.batch_size,
+                include_cls=include_cls,
             )
         new = teacher.load(missing, device=torch.device("cpu")) if missing else None
         new_indices = {path: i for i, path in enumerate(missing)}
@@ -143,11 +175,20 @@ def build(args):
                 rows.append(reused.load([path], device=torch.device("cpu"))[0])
                 reused_count += 1
         features = torch.stack(rows)
-        if (features.shape != (len(entries), objective.grid_size**2, DINOV2_LARGE_IDENTITY.hidden_size)
+        if (features.shape != (len(entries), objective.state_tokens, DINOV2_LARGE_IDENTITY.hidden_size)
                 or features.dtype != torch.float32 or not torch.isfinite(features).all()):
             raise ValueError("teacher returned invalid grid values")
         name = f"shard_{len(shards):05d}.pt"
-        torch.save({"features": features}, args.output / name)
+        if include_cls:
+            torch.save(
+                {
+                    "spatial_features": features[:, : objective.grid_tokens],
+                    "cls_features": features[:, objective.grid_tokens],
+                },
+                args.output / name,
+            )
+        else:
+            torch.save({"features": features}, args.output / name)
         shards.append(
             {
                 "file": name,
@@ -164,10 +205,24 @@ def build(args):
             flush=True,
         )
     manifest = {
-        "format": STANDALONE_DINO_GRID_CACHE_FORMAT,
+        "format": (
+            STANDALONE_DINO_STATE_CACHE_FORMAT
+            if include_cls
+            else STANDALONE_DINO_GRID_CACHE_FORMAT
+        ),
         "identity": asdict(DINOV2_LARGE_IDENTITY),
+        "processor_fingerprint": DINOV2_LARGE_IDENTITY.processor_fingerprint,
         "teacher_provenance": provenance,
+        "build_commit": build_commit,
+        "parent_data_fingerprint": parent_data_fingerprint,
         "grid_size": objective.grid_size,
+        "spatial_tokens": objective.grid_tokens,
+        "global_tokens": int(include_cls),
+        "state_tokens": objective.state_tokens,
+        "global_role": "dino_cls" if include_cls else "none",
+        "ordering": (
+            "row_major_spatial_then_global" if include_cls else "row_major"
+        ),
         "feature_dtype": "float32",
         "images": images,
         "splits": splits,
@@ -205,6 +260,15 @@ def main():
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--grid-size", type=int, default=4)
     parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument(
+        "--build-commit",
+        help="Exact clean-worktree commit used to build a spatial/CLS cache.",
+    )
+    parser.add_argument(
+        "--include-cls",
+        action="store_true",
+        help="Persist real DINO CLS separately from the row-major spatial grid.",
+    )
     build(parser.parse_args())
 
 

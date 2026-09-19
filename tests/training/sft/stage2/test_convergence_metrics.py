@@ -24,11 +24,45 @@ def test_query_convergence_cli_requires_full_validation_and_no_epoch_cap():
     with pytest.raises(ValueError, match="must be positive"):
         parse_args(argv + ["--max-optimizer-steps", "0"], stage="query")
     assert convergence_monitor("query") == "validation_total_loss"
+    assert (
+        convergence_monitor("query", "global_query_only")
+        == "validation_dino_cls_loss"
+    )
     assert convergence_monitor("format") == "validation_lm_loss"
     with pytest.raises(ValueError, match="full validation"):
         parse_args(argv + ["--max-val-batches", "1"], stage="query")
     with pytest.raises(ValueError, match="cannot be combined"):
         parse_args(argv + ["--epochs", "5"], stage="query")
+
+
+def test_global_query_only_requires_the_reviewed_cls_convergence_contract():
+    argv = [
+        "--model", "/model", "--train-jsonl", "/train", "--val-jsonl", "/val",
+        "--output-dir", "/output", "--dino-cache-root", "/dino",
+        "--tuning-mode", "global_query_only", "--include-global-token",
+        "--evaluation-only", "--grid-size", "2", "--latent-token-count", "5",
+        "--distributed-strategy", "ddp", "--embedding-master-dtype", "bfloat16",
+        "--until-converged", "--convergence-min-epochs", "2",
+        "--convergence-patience-epochs", "2",
+        "--convergence-min-relative-improvement", "0.01",
+    ]
+    args, objective = parse_args(argv, stage="query")
+    assert objective.include_global_token
+    assert objective.state_tokens == 5
+    assert args.lora is False
+    assert args.projector_lr is None
+    assert args.query_token_lr == pytest.approx(5e-5)
+
+    with pytest.raises(ValueError, match="global_query_only uses DDP"):
+        parse_args(
+            [
+                value
+                for index, value in enumerate(argv)
+                if argv[index - 1] != "--distributed-strategy"
+                and value != "--distributed-strategy"
+            ],
+            stage="query",
+        )
 
 
 def test_component_means_share_total_reduction_and_format_api(monkeypatch):
@@ -46,7 +80,7 @@ def test_component_means_share_total_reduction_and_format_api(monkeypatch):
     model = Model()
     batches = [{"value": torch.tensor(x)} for x in (1.0, 3.0)]
     # Represent a second rank with three batches whose sum is 9.
-    remote_values = iter(([9.0, 18.0], [3.0, 3.0]))
+    remote_values = iter(([9.0, 18.0, 0.0, 0.0], [3.0, 3.0, 0.0, 0.0]))
     def reduce(tensor, op):
         tensor += torch.tensor(next(remote_values))
 

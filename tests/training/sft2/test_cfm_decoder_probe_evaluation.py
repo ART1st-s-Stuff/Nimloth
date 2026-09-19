@@ -8,10 +8,17 @@ from pathlib import Path
 import torch
 
 from experiments.training.sft.stage3.evaluate_cfm_decoder_probe import (
-    aligned_rows, image_metrics, paired_noise, validate_decoder_identity,
+    aligned_rows,
+    image_metrics,
+    paired_noise,
+    validate_decoder_identity,
 )
 from experiments.training.sft.stage3.render_continuation_features import (
-    column_layout, load_probe, parse_probe_specs, validate_manifests,
+    column_layout,
+    load_probe,
+    match,
+    parse_probe_specs,
+    validate_manifests,
 )
 
 
@@ -48,6 +55,107 @@ class CFMProbeEvaluationTests(unittest.TestCase):
         cached["a"]["dino"] = dino+5
         with self.assertRaisesRegex(ValueError, "current DINO"):
             aligned_rows(probes, cached)
+
+    def test_cache_alignment_allows_k64_baseline_against_k65_cls_probe(self):
+        spatial = torch.arange(5.0).reshape(5, 1, 1).expand(5, 64, 1024).clone()
+        cls = torch.full((5, 1, 1024), 99.0)
+        full = torch.cat((spatial, cls), dim=1)
+        cached = {
+            "a": {
+                "dino": full,
+                "states": full + 1,
+                "actions": torch.tensor([1, 2, 3, 4]),
+            }
+        }
+        aligned = {
+            "actions": torch.tensor([1, 2, 3, 4]),
+            "current_dino": full[0],
+            "dino": full[1:],
+            "online_direct": full[1:] + 2,
+            "predicted": full[1:] + 3,
+            "online_current": full[0] + 2,
+        }
+        baseline = {
+            key: value[..., :64, :].clone()
+            if key != "actions"
+            else value.clone()
+            for key, value in aligned.items()
+        }
+        rows = aligned_rows(
+            {
+                "aligned": {("a", 0): aligned},
+                "baseline": {("a", 0): baseline},
+            },
+            cached,
+        )
+        self.assertEqual(rows[0]["aligned_observed"].shape, (65, 1024))
+        self.assertEqual(rows[0]["baseline_observed"].shape, (64, 1024))
+
+    def test_feature_matching_allows_k64_baseline_against_k65_cls_probe(self):
+        actions = torch.tensor([1, 2, 3, 4])
+        spatial = torch.arange(4.0).reshape(4, 1, 1).expand(4, 64, 3).clone()
+        current = torch.zeros(64, 3)
+        full = torch.cat((spatial, torch.full((4, 1, 3), 9.0)), dim=1)
+        current_full = torch.cat((current, torch.full((1, 3), 8.0)), dim=0)
+        baseline = {
+            "actions": actions,
+            "dino": spatial,
+            "current_dino": current,
+            "online_direct": spatial + 1,
+            "predicted": spatial + 2,
+            "online_current": current + 1,
+        }
+        aligned = {
+            "actions": actions,
+            "dino": full,
+            "current_dino": current_full,
+            "online_direct": full + 1,
+            "predicted": full + 2,
+            "online_current": current_full + 1,
+        }
+        rows = match(
+            {
+                "baseline": {("trajectory", 0): baseline},
+                "aligned": {("trajectory", 0): aligned},
+            }
+        )
+        self.assertEqual(rows[0]["target"].shape, (64, 3))
+        self.assertEqual(rows[0]["target_cls"].shape, (3,))
+        self.assertNotIn("baseline_predicted_cls", rows[0])
+        self.assertEqual(rows[0]["aligned_predicted_cls"].shape, (3,))
+
+    def test_feature_matching_rejects_inconsistent_k65_cls_targets(self):
+        actions = torch.tensor([1, 2, 3, 4])
+        spatial = torch.zeros(4, 64, 3)
+        current = torch.zeros(64, 3)
+
+        def export(cls_value):
+            return {
+                "actions": actions.clone(),
+                "dino": torch.cat(
+                    (spatial, torch.full((4, 1, 3), cls_value)), dim=1
+                ),
+                "current_dino": torch.cat(
+                    (current, torch.full((1, 3), cls_value)), dim=0
+                ),
+                "online_direct": torch.cat(
+                    (spatial, torch.full((4, 1, 3), cls_value + 1)), dim=1
+                ),
+                "predicted": torch.cat(
+                    (spatial, torch.full((4, 1, 3), cls_value + 2)), dim=1
+                ),
+                "online_current": torch.cat(
+                    (current, torch.full((1, 3), cls_value + 1)), dim=0
+                ),
+            }
+
+        with self.assertRaisesRegex(ValueError, "global mismatch"):
+            match(
+                {
+                    "first": {("trajectory", 0): export(1.0)},
+                    "second": {("trajectory", 0): export(2.0)},
+                }
+            )
 
     def test_named_probe_specs_preserve_order_and_reject_ambiguity(self):
         probes = parse_probe_specs(["old_stage3_e5=/old", "new_outcome_e5=/new"])

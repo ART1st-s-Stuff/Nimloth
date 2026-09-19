@@ -11,12 +11,28 @@ import torch.nn.functional as F
 from PIL import Image, ImageDraw
 
 from experiments.training.sft.stage3.render_continuation_features import (
-    column_layout, load_probe, probe_paths, validate_manifests,
+    column_layout,
+    load_probe,
+    probe_paths,
+    validate_manifests,
 )
-from experiments.training.sft.stage3.render_dino_feature_comparison import select_page_rows
+from experiments.training.sft.stage3.render_dino_feature_comparison import (
+    select_page_rows,
+)
 from nimloth.recon.cfm.flow import sample_euler
+from nimloth.wm.layout import GridStateLayout
 
 SEEDS = (20260931, 20260932, 20260933)
+_STATE_LAYOUT = GridStateLayout(
+    spatial_grid_size=8, global_tokens=1, global_role="dino_cls"
+)
+
+
+def _spatial_state(value):
+    if value.shape[-2] == _STATE_LAYOUT.spatial_tokens:
+        return value
+    _STATE_LAYOUT.validate(value, name="decoder state")
+    return _STATE_LAYOUT.spatial(value)
 
 
 def digest(path):
@@ -61,6 +77,24 @@ def image_metrics(prediction, target):
     return {"mse": mse, "psnr": psnr, "ssim": ssim}
 
 
+def _same_dino_observation(left, right):
+    allowed = {_STATE_LAYOUT.spatial_tokens, _STATE_LAYOUT.state_tokens}
+    if (
+        left.ndim < 2
+        or right.ndim < 2
+        or left.shape[-2] not in allowed
+        or right.shape[-2] not in allowed
+    ):
+        return False
+    if left.shape == right.shape:
+        return torch.equal(left, right)
+    if left.shape[:-2] != right.shape[:-2] or left.shape[-1] != right.shape[-1]:
+        return False
+    if {left.shape[-2], right.shape[-2]} != allowed:
+        return False
+    return torch.equal(_spatial_state(left), _spatial_state(right))
+
+
 def aligned_rows(probes, cache_records):
     reference = next(iter(probes.values()))
     if any(set(probe) != set(reference) for probe in probes.values()):
@@ -73,15 +107,19 @@ def aligned_rows(probes, cache_records):
         if not torch.equal(item["actions"].long(), cached["actions"][start:start+4].long()):
             raise ValueError("cache/probe action alignment differs")
         for label in probes:
-            for field in ("actions", "dino", "current_dino"):
-                if not torch.equal(item[field], probes[label][key][field]):
-                    raise ValueError(f"probe {label} {field} mismatch")
-        if not torch.equal(item["current_dino"], cached["dino"][start].float()):
+            if not torch.equal(item["actions"], probes[label][key]["actions"]):
+                raise ValueError(f"probe {label} actions mismatch")
+            for field in ("dino", "current_dino"):
+                if not _same_dino_observation(item[field], probes[label][key][field]):
+                    raise ValueError(f"probe {label} {field} spatial mismatch")
+        if not _same_dino_observation(
+            item["current_dino"], cached["dino"][start].float()
+        ):
             raise ValueError("cached current DINO differs from probe")
         for horizon in range(1, 5):
             observation = start+horizon
             target_dino = cached["dino"][observation].float()
-            if not torch.equal(item["dino"][horizon-1], target_dino):
+            if not _same_dino_observation(item["dino"][horizon - 1], target_dino):
                 raise ValueError("cached successor DINO differs from probe")
             row = {"trajectory": trajectory, "window_start": start, "horizon_step": horizon,
                    "observation": observation, "gt_state": cached["states"][observation].float(), "gt_dino": target_dino}
@@ -127,8 +165,12 @@ def pil_rgb(tensor):
 
 def render(rows, originals, outputs, output, labels):
     """First fixed noise seed shown; numeric results average all three seeds."""
-    columns = ("raw", "state_oracle", *(f"state_{label}_observed" for label in labels),
-               *(f"state_{label}_predicted" for label in labels))
+    columns = (
+        "raw",
+        "state_oracle",
+        *(f"state_{label}_copy" for label in labels),
+        *(f"state_{label}_predicted" for label in labels),
+    )
     identity_index = {(r["trajectory"], r["window_start"], r["horizon_step"]): i for i, r in enumerate(rows)}
     for horizon in range(1, 5):
         selected = select_page_rows(rows, horizon, limit=8)
@@ -170,8 +212,9 @@ def decode_rows(model, rows, field, seed, *, device, batch_size):
     indices, conditions, keys, seen = [], [], [], {}
     for row in rows:
         feature = row[field].contiguous().float()
-        if feature.shape != (64, 1024) or not torch.isfinite(feature).all():
-            raise ValueError("decoder condition must be finite64x1024")
+        feature = _spatial_state(feature)
+        if feature.shape != (_STATE_LAYOUT.spatial_tokens, 1024) or not torch.isfinite(feature).all():
+            raise ValueError("decoder condition must be finite K64 spatial state")
         observation = (row["trajectory"], row["observation"])
         key = (*observation, hashlib.sha256(feature.numpy().tobytes()).hexdigest())
         if key not in seen:
@@ -194,11 +237,24 @@ def main(argv=None):
         parser.add_argument("--"+name, type=Path, required=True)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument(
+        "--spatial-identity-pair",
+        metavar="K64_LABEL=K65_LABEL",
+        help=(
+            "Fail unless the aligned checkpoint preserves every observed K64 "
+            "state and its frozen-decoder reconstruction."
+        ),
+    )
     args = parser.parse_args(argv)
     if args.batch_size < 1:
         parser.error("batch-size must be positive")
-    from experiments.training.sft.stage3.cfm_decoder_probe import PairedObservationDataset, load_decoder
-    from experiments.training.sft.stage3.frozen_wm_diagnostic import FrozenTrajectoryCache
+    from experiments.training.sft.stage3.cfm_decoder_probe import (
+        PairedObservationDataset,
+        load_decoder,
+    )
+    from experiments.training.sft.stage3.frozen_wm_diagnostic import (
+        FrozenTrajectoryCache,
+    )
 
     torch.set_num_threads(4)
     paths = probe_paths(args, parser)
@@ -215,6 +271,32 @@ def main(argv=None):
     records = {str(entry["trajectory_id"]): cache.load(index) for index, entry in enumerate(cache.records)
                if str(entry["trajectory_id"]) in wanted}
     rows = aligned_rows(probes, records)
+    identity_pair = None
+    identity_result = None
+    if args.spatial_identity_pair:
+        if args.spatial_identity_pair.count("=") != 1:
+            parser.error("spatial-identity-pair must be K64_LABEL=K65_LABEL")
+        reference_label, candidate_label = args.spatial_identity_pair.split("=", 1)
+        if reference_label not in labels or candidate_label not in labels:
+            parser.error("spatial identity labels must name supplied probes")
+        layout = GridStateLayout(
+            spatial_grid_size=8, global_tokens=1, global_role="dino_cls"
+        )
+        reference = torch.stack(
+            [row[f"{reference_label}_observed"] for row in rows]
+        )
+        candidate = torch.stack(
+            [row[f"{candidate_label}_observed"] for row in rows]
+        )
+        max_abs = layout.assert_spatial_identity(reference, candidate)
+        identity_pair = (reference_label, candidate_label)
+        identity_result = {
+            "reference": reference_label,
+            "candidate": candidate_label,
+            "state_max_abs": max_abs,
+            "state_atol": 0.0,
+            "state_rtol": 0.0,
+        }
     unique_observations = {(row["trajectory"], row["observation"]) for row in rows}
     if (len(wanted), len(next(iter(probes.values()))), len(rows), len(unique_observations)) != (8, 71, 284, 95):
         raise ValueError("unexpected diagnostic population; expected8trajectories/71windows/284positions/95observations")
@@ -222,11 +304,13 @@ def main(argv=None):
     originals = torch.stack([dataset.images[image_lookup[(r["trajectory"], r["observation"])]] for r in rows]).float()/127.5-1
     for row in rows:
         condition = dataset.conditions[image_lookup[(row["trajectory"], row["observation"])]]
-        if not torch.equal(condition.float(), row["gt_state"]):
+        gt_spatial = _spatial_state(row["gt_state"])
+        if not torch.equal(condition.float(), gt_spatial):
             raise ValueError("paired RGB dataset state differs from frozen cache")
     args.output.mkdir(parents=True, exist_ok=False)
     device = torch.device(args.device)
     results, display, counts = {}, {}, {}
+    identity_reconstructions = {}
     decoder_identity = None
     for family, checkpoint in (("state", args.state_checkpoint), ("dino", args.dino_checkpoint)):
         model, payload = load_decoder(checkpoint, device=args.device)
@@ -241,6 +325,33 @@ def main(argv=None):
             seed_metrics, all_values, decoded_counts = {}, [], []
             for seed in SEEDS:
                 images, count = decode_rows(model, rows, field, seed, device=device, batch_size=args.batch_size)
+                if family == "state" and identity_pair is not None:
+                    reference_name = f"{identity_pair[0]}_observed"
+                    candidate_name = f"{identity_pair[1]}_observed"
+                    if label in {reference_name, candidate_name}:
+                        identity_reconstructions[(seed, label)] = images.detach().cpu()
+                    reference_images = identity_reconstructions.get(
+                        (seed, reference_name)
+                    )
+                    candidate_images = identity_reconstructions.get(
+                        (seed, candidate_name)
+                    )
+                    if reference_images is not None and candidate_images is not None:
+                        difference = (reference_images - candidate_images).abs()
+                        max_abs = float(difference.max())
+                        if not torch.allclose(
+                            reference_images,
+                            candidate_images,
+                            atol=1e-6,
+                            rtol=0.0,
+                        ):
+                            raise ValueError(
+                                "observed spatial reconstruction identity failed: "
+                                f"seed={seed}, max_abs={max_abs:.9g}"
+                            )
+                        identity_result.setdefault("reconstruction_max_abs", {})[
+                            str(seed)
+                        ] = max_abs
                 values = image_metrics(images, originals)
                 seed_metrics[str(seed)] = summarize(values, rows)
                 all_values.append(values)
@@ -252,6 +363,10 @@ def main(argv=None):
             counts[name] = decoded_counts
             (args.output / "progress.json").write_text(json.dumps({"completed_columns": list(results)}, indent=2))
         del model
+        if family == "state" and identity_pair is not None:
+            completed = identity_result.get("reconstruction_max_abs", {})
+            if set(completed) != {str(seed) for seed in SEEDS}:
+                raise RuntimeError("spatial reconstruction identity gate was incomplete")
         if device.type == "cuda":
             torch.cuda.empty_cache()
     render(rows, originals, display, args.output, labels)
@@ -267,6 +382,7 @@ def main(argv=None):
         "metrics": {"MSE": "RGB [0,1] mean squared error", "PSNR": "per image -10log10(max(MSE,1e-12)); 120dB cap", "SSIM": "11x11 Gaussian sigma1.5, valid convolution, K1.01 K2.03, channel mean"},
         "image_transform": "full RGB image bicubic128, no crop; identical to decoder training",
         "scope": "frozen decoder readout diagnostic, not rollout success; Stage2 encoder exposure remains; DINO-decoder WM inputs cross distribution",
+        "spatial_identity_gate": identity_result,
         "condition_shuffle": "not measured by this reconstruction evaluator; separate decoder training sensitivity metrics are required",
         "artifacts": {p.name: digest(p) for p in sorted([*args.output.glob("*.png"), args.output / "metrics.json"])}}
     (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2, allow_nan=False))

@@ -4,10 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from nimloth.training.sft.stage3.cli import parse_sft2_args
-from nimloth.config.sft2 import flatten_sft2_yaml_config
 from nimloth.config.io import load_yaml_config
-
+from nimloth.config.sft2 import flatten_sft2_yaml_config
+from nimloth.training.sft.stage3.cli import parse_sft2_args
 
 ROOT = Path(__file__).resolve().parents[3]
 K8_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k8.yaml"
@@ -17,6 +16,13 @@ DINO_GRID_CONFIG = (
 )
 DINO_GRID_H1_T4_CONFIG = (
     ROOT / "configs" / "training" / "sft2" / "dino_grid_k16_h1_t4.yaml"
+)
+CLS_FIXED2D_CONFIG = (
+    ROOT
+    / "configs"
+    / "training"
+    / "sft2"
+    / "action_outcome_k64_cls_fixed2d_h1_t4_eval.yaml"
 )
 REQUIRED = [
     "--model",
@@ -139,6 +145,31 @@ def test_dino_grid_h1_t4_config_uses_real_value_and_recorded_rollout_contract() 
         "val_terminal_cot_migrated.jsonl"
     )
     assert "/52_terminalcot_" in str(flattened["preprocess_cache_dir"])
+
+
+def test_cls_fixed2d_evaluation_config_resolves_explicit_k65_contract() -> None:
+    args = parse_sft2_args(["--config", str(CLS_FIXED2D_CONFIG), *REQUIRED])
+    assert args.objective == "dino_grid"
+    assert args.epochs == 5
+    assert args.schedule_total_steps == 46
+    assert args.lr_qwen_start == pytest.approx(2e-7)
+    assert args.lr_qwen_peak == pytest.approx(2e-7)
+    assert args.state_proj_lr == pytest.approx(8e-6)
+    assert args.wm_predictor_lr == pytest.approx(3e-4)
+    assert args.value_head_lr == pytest.approx(1e-4)
+    assert args.outcome_head_lr == pytest.approx(1e-4)
+    assert args.query_lr == pytest.approx(1e-5)
+    assert args.protocol_lr == pytest.approx(2e-6)
+    assert args.max_length == 16384
+    assert args.grid_size == 8
+    assert args.latent_token_count == 65
+    assert args.grid_global_tokens == 1
+    assert args.grid_position_encoding == "fixed_2d_sincos_v1"
+    assert args.grid_predictor_kind == "residual"
+    assert args.lambda_dino == pytest.approx(2.0)
+    assert args.lambda_outcome == pytest.approx(1.0)
+    assert args.lambda_sigreg == pytest.approx(0.0)
+    assert args.wm_value_backbone_grad is False
 
 
 def test_sft2_config_rejects_unknown_fields() -> None:

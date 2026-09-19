@@ -11,11 +11,33 @@ import torch
 from PIL import Image, ImageDraw
 
 from experiments.training.sft.stage3.render_dino_feature_comparison import (
-    cosine, feature_image, load_images, pca_basis, select_page_rows,
+    cosine,
+    feature_image,
+    load_images,
+    pca_basis,
+    select_page_rows,
 )
+from nimloth.wm.layout import GridStateLayout
 
 LEGACY_EPOCHS = (2, 4, 5)
 _LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_STATE_LAYOUT = GridStateLayout(
+    spatial_grid_size=8, global_tokens=1, global_role="dino_cls"
+)
+
+
+def _spatial(value):
+    if value.shape[-2] == _STATE_LAYOUT.spatial_tokens:
+        return value
+    _STATE_LAYOUT.validate(value, name="diagnostic feature")
+    return _STATE_LAYOUT.spatial(value)
+
+
+def _global(value):
+    if value.shape[-2] == _STATE_LAYOUT.spatial_tokens:
+        return None
+    _STATE_LAYOUT.validate(value, name="diagnostic feature")
+    return _STATE_LAYOUT.global_state(value)
 
 
 def load_probe(directory):
@@ -24,18 +46,31 @@ def load_probe(directory):
     names = ("actions", "dino", "current_dino", "predicted", "online_direct", "online_current")
     for path in sorted(directory.glob("rank_*_batch_*.pt")):
         payload = torch.load(path, map_location="cpu", weights_only=True)
-        if payload.get("schema") != "stage3_dino_feature_batch_v1":
+        schema = payload.get("schema")
+        if schema not in {
+            "stage3_dino_feature_batch_v1",
+            "stage3_dino_spatial_cls_feature_batch_v2",
+        }:
             raise ValueError(f"unsupported Stage3 diagnostic schema: {path}")
+        if schema.endswith("_v2"):
+            layout = GridStateLayout.from_metadata(payload.get("state_layout") or {})
+            if (
+                layout.spatial_grid_size != 8
+                or layout.global_tokens != 1
+                or layout.global_role != "dino_cls"
+            ):
+                raise ValueError(f"unexpected Stage3 diagnostic layout: {path}")
         keys = payload.get("keys")
         if not isinstance(keys, (list, tuple)) or not keys:
             raise ValueError(f"diagnostic export requires non-empty keys: {path}")
+        state_tokens = 65 if schema.endswith("_v2") else 64
         expected_shapes = {
             "actions": (len(keys), 4),
-            "dino": (len(keys), 4, 64, 1024),
-            "current_dino": (len(keys), 64, 1024),
-            "predicted": (len(keys), 4, 64, 1024),
-            "online_direct": (len(keys), 4, 64, 1024),
-            "online_current": (len(keys), 64, 1024),
+            "dino": (len(keys), 4, state_tokens, 1024),
+            "current_dino": (len(keys), state_tokens, 1024),
+            "predicted": (len(keys), 4, state_tokens, 1024),
+            "online_direct": (len(keys), 4, state_tokens, 1024),
+            "online_current": (len(keys), state_tokens, 1024),
         }
         for name in names:
             value = payload.get(name)
@@ -66,23 +101,72 @@ def match(exports):
     rows = []
     for identity in sorted(first):
         reference = first[identity]
+        global_reference = next(
+            (
+                export[identity]
+                for export in exports.values()
+                if export[identity]["dino"].shape[-2] == _STATE_LAYOUT.state_tokens
+            ),
+            None,
+        )
         for label, export in exports.items():
             source = export[identity]
-            for field in ("actions", "dino", "current_dino"):
-                if not torch.equal(reference[field], source[field]):
-                    raise ValueError(f"probe {label} {field} mismatch: {identity}")
+            if not torch.equal(reference["actions"], source["actions"]):
+                raise ValueError(f"probe {label} actions mismatch: {identity}")
+            for field in ("dino", "current_dino"):
+                reference_value = reference[field]
+                source_value = source[field]
+                if (
+                    reference_value.shape[:-2] != source_value.shape[:-2]
+                    or reference_value.shape[-1] != source_value.shape[-1]
+                    or reference_value.shape[-2]
+                    not in (_STATE_LAYOUT.spatial_tokens, _STATE_LAYOUT.state_tokens)
+                    or source_value.shape[-2]
+                    not in (_STATE_LAYOUT.spatial_tokens, _STATE_LAYOUT.state_tokens)
+                    or not torch.equal(_spatial(reference_value), _spatial(source_value))
+                ):
+                    raise ValueError(
+                        f"probe {label} {field} spatial mismatch: {identity}"
+                    )
+                if (
+                    global_reference is not None
+                    and source_value.shape[-2] == _STATE_LAYOUT.state_tokens
+                    and not torch.equal(source_value, global_reference[field])
+                ):
+                    raise ValueError(
+                        f"probe {label} {field} global mismatch: {identity}"
+                    )
             for field in ("online_direct", "predicted", "dino"):
                 value = source[field]
-                if value.shape != reference["dino"].shape or value.ndim != 3 or value.shape[:2] != (4, 64):
+                if (
+                    value.ndim != 3
+                    or value.shape[0] != 4
+                    or value.shape[1]
+                    not in (_STATE_LAYOUT.spatial_tokens, _STATE_LAYOUT.state_tokens)
+                    or value.shape[-1] != reference["dino"].shape[-1]
+                ):
                     raise ValueError("requires H4 native8x8 exports with matching channels")
                 if not torch.isfinite(value).all():
                     raise ValueError("non-finite features")
         for horizon in range(4):
+            target_source = (
+                global_reference["dino"][horizon]
+                if global_reference is not None
+                else reference["dino"][horizon]
+            )
+            target = target_source
             row = {"trajectory": identity[0], "window_start": identity[1], "horizon_step": horizon+1,
-                   "action": int(reference["actions"][horizon]), "target": reference["dino"][horizon]}
+                   "action": int(reference["actions"][horizon]), "target": _spatial(target)}
+            target_global = _global(target)
+            if target_global is not None:
+                row["target_cls"] = target_global
             for label, export in exports.items():
                 for kind in ("online_direct", "predicted"):
-                    row[f"{label}_{kind}"] = export[identity][kind][horizon]
+                    value = export[identity][kind][horizon]
+                    row[f"{label}_{kind}"] = _spatial(value)
+                    value_global = _global(value)
+                    if value_global is not None:
+                        row[f"{label}_{kind}_cls"] = value_global
             rows.append(row)
     return rows
 
@@ -91,8 +175,23 @@ def model_names(labels):
     return tuple(f"{label}_{kind}" for kind in ("online_direct", "predicted") for label in labels)
 
 
+def mismatched_targets(target, rows):
+    """Deterministically pair every prediction with another trajectory's target."""
+    if len({row["trajectory"] for row in rows}) < 2:
+        raise ValueError("wrong-pair metrics require at least two trajectories")
+    selected = []
+    for index, row in enumerate(rows):
+        for offset in range(1, len(rows) + 1):
+            other = (index + offset) % len(rows)
+            if rows[other]["trajectory"] != row["trajectory"]:
+                selected.append(target[other])
+                break
+    return torch.stack(selected)
+
+
 def metrics(rows, models):
     target = torch.stack([row["target"] for row in rows])
+    wrong_target = mismatched_targets(target, rows)
     centered_target = target - target.mean(0, keepdim=True)
     target_var = float(centered_target.square().mean())
     result = {"count": len(rows), "models": {}}
@@ -100,12 +199,43 @@ def metrics(rows, models):
         prediction = torch.stack([row[model] for row in rows])
         centered = prediction - prediction.mean(0, keepdim=True)
         variance = float(centered.square().mean())
+        correct_mse = float((prediction-target).square().mean())
+        wrong_mse = float((prediction-wrong_target).square().mean())
         result["models"][model] = {
-            "mse": float((prediction-target).square().mean()), "cosine": cosine(prediction, target),
+            "mse": correct_mse, "cosine": cosine(prediction, target),
+            "wrong_trajectory_mse": wrong_mse,
+            "pairing_advantage_over_target_variance": (
+                (wrong_mse - correct_mse) / target_var if target_var > 0 else None
+            ),
             "centered_cosine": cosine(centered, centered_target), "observation_variance": variance,
             "target_observation_variance": target_var,
             "observation_variance_ratio": variance/target_var if target_var > 0 else None,
         }
+        cls_key = f"{model}_cls"
+        if "target_cls" in rows[0] and cls_key in rows[0]:
+            cls_target = torch.stack([row["target_cls"] for row in rows])
+            cls_prediction = torch.stack([row[cls_key] for row in rows])
+            centered_cls_target = cls_target - cls_target.mean(0, keepdim=True)
+            centered_cls_prediction = cls_prediction - cls_prediction.mean(0, keepdim=True)
+            wrong_cls_target = mismatched_targets(cls_target, rows)
+            cls_mse = float((cls_prediction - cls_target).square().mean())
+            cls_wrong_mse = float(
+                (cls_prediction - wrong_cls_target).square().mean()
+            )
+            cls_target_variance = float(centered_cls_target.square().mean())
+            result["models"][model]["cls"] = {
+                "mse": cls_mse,
+                "cosine": cosine(cls_prediction, cls_target),
+                "centered_cosine": cosine(centered_cls_prediction, centered_cls_target),
+                "observation_variance": float(centered_cls_prediction.square().mean()),
+                "target_observation_variance": cls_target_variance,
+                "wrong_trajectory_mse": cls_wrong_mse,
+                "pairing_advantage_over_target_variance": (
+                    (cls_wrong_mse - cls_mse) / cls_target_variance
+                    if cls_target_variance > 0
+                    else None
+                ),
+            }
     return result
 
 
@@ -137,7 +267,7 @@ def validate_manifests(paths):
             elif data["step"] != probe_step:
                 raise ValueError(f"probe {label} rank steps differ")
             if not isinstance(data.get("identity"), dict):
-                raise ValueError(f"invalid diagnostic identity: {path}")
+                raise TypeError(f"invalid diagnostic identity: {path}")
             if probe_identity is None:
                 probe_identity = data["identity"]
             elif data["identity"] != probe_identity:
@@ -146,7 +276,7 @@ def validate_manifests(paths):
                 raise ValueError(f"empty diagnostic manifest: {path}")
             for entry in data["files"]:
                 if not isinstance(entry, dict) or not isinstance(entry.get("name"), str) or not isinstance(entry.get("sha256"), str):
-                    raise ValueError(f"invalid diagnostic file entry: {path}")
+                    raise TypeError(f"invalid diagnostic file entry: {path}")
                 name = entry["name"]
                 if (Path(name).name != name or not name.startswith(f"rank_{rank:03d}_batch_")
                         or not name.endswith(".pt") or name in declared_files

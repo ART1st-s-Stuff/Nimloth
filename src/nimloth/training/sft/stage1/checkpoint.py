@@ -82,6 +82,9 @@ def objective_identities_match(saved, expected) -> bool:
     def normalized(identity):
         result = dict(identity)
         result.setdefault("action_token_loss_weight", 1.0)
+        if result.get("stage") == "query":
+            result.setdefault("include_global_token", False)
+            result.setdefault("evaluation_only", False)
         return result
     return normalized(saved) == normalized(expected)
 

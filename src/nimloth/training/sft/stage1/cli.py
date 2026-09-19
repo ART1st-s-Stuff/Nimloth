@@ -28,12 +28,22 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", type=Path, default=probed.config)
     if stage == "query":
-        ap.add_argument("--tuning-mode", choices=("selected_lora", "full_language"), default="selected_lora")
+        ap.add_argument(
+            "--tuning-mode",
+            choices=("selected_lora", "full_language", "global_query_only"),
+            default="selected_lora",
+        )
         ap.add_argument("--dino-cache-root", type=Path, required=True)
         ap.add_argument("--grid-size", type=int, default=4)
         ap.add_argument("--projector-hidden-dim", type=int, default=2048)
         ap.add_argument("--weight-lm", type=float, default=1.0)
         ap.add_argument("--weight-dino", type=float, default=1.0)
+        ap.add_argument("--include-global-token", action="store_true")
+        ap.add_argument(
+            "--evaluation-only",
+            action="store_true",
+            help="Mark an epoch16 global-query alignment run as evaluation-only.",
+        )
         ap.add_argument("--query-token-lr", type=float, default=None)
         ap.add_argument("--protocol-token-lr", type=float, default=None)
     ap.add_argument("--model", type=Path, required=True)
@@ -232,7 +242,41 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         )
     if args.continue_with_dino_weight_change and args.continue_with_projector_lr_change:
         raise ValueError("change only one continuation identity field at a time")
+    global_query_only = stage == "query" and args.tuning_mode == "global_query_only"
     full_language = stage == "query" and args.tuning_mode == "full_language"
+    if global_query_only:
+        if not args.include_global_token or not args.evaluation_only:
+            raise ValueError(
+                "global_query_only requires --include-global-token and --evaluation-only"
+            )
+        if args.distributed_strategy != "ddp":
+            raise ValueError(
+                "global_query_only uses DDP so the frozen BF16 tables remain "
+                "separate from the one FP32 row master"
+            )
+        if args.embedding_master_dtype != "bfloat16":
+            raise ValueError(
+                "global_query_only keeps dense embedding/head tables BF16; "
+                "only the selected input row has an FP32 master"
+            )
+        args.lora = False
+        if args.query_token_lr is None:
+            args.query_token_lr = 5e-5
+        if not 0 < args.query_token_lr < float("inf"):
+            raise ValueError("query_token_lr must be finite and positive")
+        args.protocol_token_lr = args.query_token_lr
+        args.projector_lr = None
+        if (
+            not args.until_converged
+            or args.convergence_min_epochs is None
+            or args.convergence_min_epochs < 2
+            or args.convergence_patience_epochs != 2
+            or args.convergence_min_relative_improvement != 0.01
+        ):
+            raise ValueError(
+                "global_query_only requires CLS convergence with min_epochs>=2, "
+                "patience=2 and relative_improvement=0.01"
+            )
     if full_language:
         if "--lora" in (argv if argv is not None else sys.argv[1:]):
             raise ValueError("full_language is incompatible with --lora")
@@ -247,7 +291,7 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
             value = getattr(args, name)
             if value is not None and not 0 < value < float("inf"):
                 raise ValueError(f"{name} must be finite and positive")
-    if stage == "query" and not full_language:
+    if stage == "query" and not full_language and not global_query_only:
         if args.query_token_lr is None:
             args.query_token_lr = 5e-5
         if args.protocol_token_lr is None:
@@ -298,6 +342,7 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
 
         query_config = QueryAlignmentConfig(
             grid_size=args.grid_size,
+            include_global_token=args.include_global_token,
             projector_hidden_dim=args.projector_hidden_dim,
             weight_lm=args.weight_lm,
             weight_dino=args.weight_dino,
@@ -306,9 +351,9 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
             raise ValueError(
                 "query alignment uses online tokenization and its explicit DINO cache"
             )
-        if args.latent_token_count != query_config.grid_tokens:
+        if args.latent_token_count != query_config.state_tokens:
             raise ValueError(
-                "query token count must equal the DINO spatial grid size squared"
+                "query token count must equal spatial grid tokens plus the global token"
             )
     if stage == "query":
         args.latent_query_mode = resolve_latent_query_mode(

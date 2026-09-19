@@ -92,3 +92,25 @@ def test_frozen_dino_grid_targets_encode_in_memory_rollout_images() -> None:
             ]
         )
     torch.testing.assert_close(encoded, expected)
+
+
+def test_frozen_dino_state_targets_append_real_cls_not_patch_mean() -> None:
+    model = _DINO()
+    targets = FrozenDINOGridTargets(
+        model=model,
+        image_processor=_ImageProcessor(),
+        identity=DINOIdentity(
+            source="fake",
+            revision="fake",
+            processor_fingerprint="fake",
+            hidden_size=2,
+        ),
+        grid_size=2,
+        include_cls=True,
+    )
+    encoded = targets.load_images(
+        [Image.new("RGB", (4, 4))], device=torch.device("cpu")
+    )
+    assert encoded.shape == (1, 5, 2)
+    torch.testing.assert_close(encoded[0, -1], torch.tensor([-1.0, -1.0]))
+    assert not torch.equal(encoded[0, -1], encoded[0, :4].mean(0))

@@ -135,6 +135,64 @@ def residual_runtime_and_batch():
     return runtime, batch
 
 
+def fixed2d_global_runtime_and_batch():
+    from nimloth.wm.grid import (
+        GridPredictorConfig,
+        GridWorldModel,
+        ResidualTemporalSpatialGridPredictor,
+        SharedSlotProjector,
+    )
+
+    runtime, batch = runtime_and_batch()
+    runtime.agent.backbone = GridTensorBackbone()
+    runtime.agent.wm = GridWorldModel(
+        state_proj=SharedSlotProjector(4, 4, hidden_dim=8, grid_tokens=5),
+        wm_predictor=ResidualTemporalSpatialGridPredictor(
+            GridPredictorConfig(
+                grid_tokens=5,
+                spatial_grid_size=2,
+                global_tokens=1,
+                position_encoding="fixed_2d_sincos_v1",
+                emb_dim=4,
+                action_dim=3,
+                history_size=1,
+                depth=1,
+                heads=1,
+                dim_head=4,
+                mlp_dim=8,
+                dropout=0.0,
+            )
+        ),
+        value_head=nn.Linear(4, 3, bias=False),
+    )
+    batch.inputs.tensors["hidden"] = batch.inputs.tensors["hidden"][
+        :, None
+    ].repeat(1, 5, 1)
+    batch.observed_dino_target = batch.observed_dino_target[:, None].repeat(
+        1, 5, 1
+    )
+    batch.dino_grid_target = batch.dino_grid_target[:, :, None].repeat(
+        1, 1, 5, 1
+    )
+    return runtime, batch
+
+
+def test_spatial_cls_losses_are_separate_sums_without_global_token_dilution():
+    runtime, batch = fixed2d_global_runtime_and_batch()
+    output = algorithm(wm_value_backbone_grad=False).evaluation_step(runtime, batch)
+    metrics = output.metrics
+    assert metrics["wm_mse"] == pytest.approx(
+        metrics["wm_spatial_mse"] + metrics["wm_cls_mse"]
+    )
+    assert metrics["dino_grid_mse"] == pytest.approx(
+        metrics["dino_spatial_mse"] + metrics["dino_cls_mse"]
+    )
+    assert metrics["predicted_dino_grid_mse"] == pytest.approx(
+        metrics["predicted_dino_spatial_mse"]
+        + metrics["predicted_dino_cls_mse"]
+    )
+
+
 @pytest.mark.parametrize("loss_name", ["wm", "value"])
 def test_residual_copy_and_later_value_cannot_bypass_stop(loss_name):
     runtime, batch = residual_runtime_and_batch()

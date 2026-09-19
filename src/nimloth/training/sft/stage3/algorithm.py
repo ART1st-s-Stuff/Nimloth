@@ -11,7 +11,10 @@ from nimloth.agent.model import AgentStateOutput
 from nimloth.training.common.value_semantics import SFT2_VALUE_OBJECTIVE
 from nimloth.training.sft.stage3.batch import Stage3TrajectoryBatch
 from nimloth.training.sft.stage3.runtime import SFT2ModelRuntime
-from nimloth.training.sft.stage3.sigreg import gather_global_sigreg_states, shared_sigreg_rng
+from nimloth.training.sft.stage3.sigreg import (
+    gather_global_sigreg_states,
+    shared_sigreg_rng,
+)
 from nimloth.wm import LatentWMPredictor, SequenceSIGReg
 
 
@@ -186,7 +189,19 @@ class SFT2Algorithm:
         if predicted.shape != expected.shape:
             raise ValueError("WM predictions must exactly match future target states")
         weights = batch.sample_weights
-        wm = _window_mean((predicted - expected).square(), weights)
+        layout = getattr(runtime.agent.wm, "state_layout", None)
+        if layout is not None:
+            wm_spatial = _window_mean(
+                (layout.spatial(predicted) - layout.spatial(expected)).square(), weights
+            )
+            wm_global = _window_mean(
+                (layout.global_state(predicted) - layout.global_state(expected)).square(),
+                weights,
+            )
+            wm = wm_spatial + wm_global
+        else:
+            wm_spatial = wm_global = None
+            wm = _window_mean((predicted - expected).square(), weights)
         selected_values = rollout.action_values.gather(-1, batch.action_sequences.unsqueeze(-1)).squeeze(-1)
         if selected_values.shape != batch.value_targets.shape:
             raise ValueError("outgoing action values and MC targets must have identical shapes")
@@ -195,13 +210,30 @@ class SFT2Algorithm:
         if batch.observed_dino_target is not None:
             if online_states.shape != batch.observed_dino_target.shape:
                 raise ValueError("DINO target shape must exactly match all observed online states")
-            dino = _window_mean(
-                (online_states.float() - batch.observed_dino_target.detach().float()).square(),
-                batch.observed_state_weights)
+            observed_target = batch.observed_dino_target.detach().float()
+            if layout is not None:
+                dino_spatial = _window_mean(
+                    (layout.spatial(online_states.float()) - layout.spatial(observed_target)).square(),
+                    batch.observed_state_weights,
+                )
+                dino_global = _window_mean(
+                    (layout.global_state(online_states.float()) - layout.global_state(observed_target)).square(),
+                    batch.observed_state_weights,
+                )
+                dino = dino_spatial + dino_global
+            else:
+                dino_spatial = dino_global = None
+                dino = _window_mean(
+                    (online_states.float() - observed_target).square(),
+                    batch.observed_state_weights)
         elif self.dino_grid_weight:
             raise ValueError("positive DINO-grid weight requires a DINO-grid target")
         head = getattr(runtime.agent.wm, "outcome_head", None)
-        logits = head(predicted) if head is not None else None
+        logits = (
+            runtime.agent.wm.predict_outcome_logits(predicted)
+            if head is not None and hasattr(runtime.agent.wm, "predict_outcome_logits")
+            else (head(predicted) if head is not None else None)
+        )
         outcome = self._outcome_loss(batch, logits)
         total = wm_weight * wm + self.value_weight * value + self.ce_weight * lm_loss
         if dino is not None:
@@ -219,12 +251,34 @@ class SFT2Algorithm:
                    "current_batch_size": float(count), "total_loss": float(total.detach())}
         if dino is not None:
             metrics["dino_grid_mse"] = float(dino.detach())
+            if dino_spatial is not None:
+                metrics["dino_spatial_mse"] = float(dino_spatial.detach())
+                metrics["dino_cls_mse"] = float(dino_global.detach())
+        if wm_spatial is not None:
+            metrics["wm_spatial_mse"] = float(wm_spatial.detach())
+            metrics["wm_cls_mse"] = float(wm_global.detach())
         if batch.dino_grid_target is not None:
             if predicted.shape != batch.dino_grid_target.shape:
                 raise ValueError("future DINO diagnostic target shape mismatch")
             with torch.no_grad():
-                metrics["predicted_dino_grid_mse"] = float(_window_mean(
-                    (predicted.float() - batch.dino_grid_target.float()).square(), weights))
+                future_dino = batch.dino_grid_target.float()
+                if layout is None:
+                    predicted_dino = _window_mean(
+                        (predicted.float() - future_dino).square(), weights
+                    )
+                else:
+                    predicted_dino_spatial = _window_mean(
+                        (layout.spatial(predicted.float()) - layout.spatial(future_dino)).square(),
+                        weights,
+                    )
+                    predicted_dino_global = _window_mean(
+                        (layout.global_state(predicted.float()) - layout.global_state(future_dino)).square(),
+                        weights,
+                    )
+                    predicted_dino = predicted_dino_spatial + predicted_dino_global
+                    metrics["predicted_dino_spatial_mse"] = float(predicted_dino_spatial)
+                    metrics["predicted_dino_cls_mse"] = float(predicted_dino_global)
+                metrics["predicted_dino_grid_mse"] = float(predicted_dino)
         if outcome is not None:
             metrics["outcome_bce"] = float(outcome.detach())
             metrics["outcome_count"] = float((batch.outcome_mask & (weights[:, None] > 0)).sum())

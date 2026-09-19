@@ -34,6 +34,7 @@ from transformers import (
 from nimloth.latent import (
     add_special_tokens,
     initialize_extra_latent_token_embeddings,
+    initialize_global_query_token_embedding,
     latent_state_block,
     latent_state_tokens,
     special_token_ids,
@@ -53,8 +54,13 @@ from .checkpoint import (
     validate_resume_state,
 )
 from .cli import parse_args
+from .continuation import (
+    continuation_provenance,
+    replay_convergence,
+    restart_schedule,
+    validate_epoch_continuation,
+)
 from .convergence import ConvergencePolicy, ConvergenceState
-from .continuation import (validate_epoch_continuation, restart_schedule, replay_convergence, continuation_provenance)
 from .data import (
     CACHE_SCHEMA,
     FORMAT_OBJECTIVE,
@@ -72,9 +78,9 @@ from .fsdp import (
     generation_model,
     is_fsdp,
     load_optimizer_state,
-    wrap_fsdp,
     prepare_embedding_masters,
     restore_exported_embedding_masters,
+    wrap_fsdp,
 )
 from .loss import resolve_action_token_ids, training_loss
 
@@ -226,13 +232,15 @@ def prepare_query_vocabulary(
     latent_token_count: int | None,
 ) -> None:
     """Extend a base model without resetting trained query rows on full resume."""
-    vocabulary_grows = model.get_input_embeddings().weight.shape[0] < vocabulary_size
+    previous_vocabulary_size = model.get_input_embeddings().weight.shape[0]
+    vocabulary_grows = previous_vocabulary_size < vocabulary_size
     resize_token_embeddings_and_sync_vocab(model, vocabulary_size)
     if latent_token_count is not None and added_tokens > 0 and vocabulary_grows:
         initialize_extra_latent_token_embeddings(
             model,
             token_id_map,
             latent_token_count=latent_token_count,
+            minimum_new_token_id=previous_vocabulary_size,
         )
 
 
@@ -272,7 +280,7 @@ def evaluate(
     *, return_components: bool = False, weight_lm: float = 1.0, weight_dino: float = 1.0,
 ) -> float | dict[str, float]:
     model.eval()
-    total = torch.zeros(2 if return_components else 1, device=device)
+    total = torch.zeros(4 if return_components else 1, device=device)
     count = torch.zeros_like(total)
     for i, batch in enumerate(loader):
         if max_batches > 0 and i >= max_batches:
@@ -280,8 +288,38 @@ def evaluate(
         batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
         output = model(**batch)
         if return_components:
-            total += torch.stack([output.lm_loss_sum.detach(), output.dino_loss_sum.detach()])
-            count += torch.stack([output.lm_answer_count, output.answer_count])
+            spatial_loss = getattr(output, "dino_spatial_loss", None)
+            cls_loss = getattr(output, "dino_cls_loss", None)
+            cls_sum = (
+                cls_loss.detach() * output.answer_count
+                if cls_loss is not None
+                else output.dino_loss_sum.detach().new_zeros(())
+            )
+            spatial_sum = (
+                spatial_loss.detach() * output.answer_count
+                if spatial_loss is not None
+                else output.dino_loss_sum.detach().new_zeros(())
+            )
+            total += torch.stack(
+                [
+                    output.lm_loss_sum.detach(),
+                    output.dino_loss_sum.detach(),
+                    spatial_sum,
+                    cls_sum,
+                ]
+            )
+            count += torch.stack(
+                [
+                    output.lm_answer_count,
+                    output.answer_count,
+                    output.answer_count
+                    if spatial_loss is not None
+                    else output.answer_count.new_zeros(()),
+                    output.answer_count
+                    if cls_loss is not None
+                    else output.answer_count.new_zeros(()),
+                ]
+            )
         else:
             total += output.loss.detach()
             count += 1
@@ -289,17 +327,27 @@ def evaluate(
         dist.all_reduce(total, op=dist.ReduceOp.SUM)
         dist.all_reduce(count, op=dist.ReduceOp.SUM)
     model.train()
-    if count[-1].item() == 0:
+    if (count[1] if return_components else count[0]).item() == 0:
         raise ValueError("validation loader produced no monitored loss")
     means = total / count.clamp_min(1)
     if return_components:
-        lm, dino = means.tolist()
-        return {"validation_total_loss": weight_lm * lm + weight_dino * dino,
-                "validation_lm_loss": lm, "validation_dino_loss": dino}
+        lm, dino, spatial, cls = means.tolist()
+        result = {
+            "validation_total_loss": weight_lm * lm + weight_dino * dino,
+            "validation_lm_loss": lm,
+            "validation_dino_loss": dino,
+        }
+        if count[2].item() > 0:
+            result["validation_dino_spatial_loss"] = spatial
+        if count[3].item() > 0:
+            result["validation_dino_cls_loss"] = cls
+        return result
     return means.item()
 
 
-def convergence_monitor(stage: str) -> str:
+def convergence_monitor(stage: str, tuning_mode: str | None = None) -> str:
+    if stage == "query" and tuning_mode == "global_query_only":
+        return "validation_dino_cls_loss"
     return "validation_total_loss" if stage == "query" else "validation_lm_loss"
 
 
@@ -316,12 +364,20 @@ def build_optimizer(
         raise ValueError("query and protocol token row learning rates must be configured together")
     selected = None
     if query_token_lr is not None:
-        from nimloth.training.sft.stage2.selected_token_rows import selected_row_parameters
+        from nimloth.training.sft.stage2.selected_token_rows import (
+            INPUT_QUERY_ROW_SCHEMA,
+            selected_row_parameters,
+        )
 
         selected = selected_row_parameters(model)
         selected_ids = {id(p) for values in selected.values() for p in values}
+        input_query_only = (
+            getattr(model.config, "nimloth_token_row_schema", None)
+            == INPUT_QUERY_ROW_SCHEMA
+        )
     else:
         selected_ids = set()
+        input_query_only = False
     embed_lr = embedding_lr if embedding_lr is not None else lr
     embed_keys = ("embed_tokens", "lm_head")
     embed_params: list[torch.nn.Parameter] = []
@@ -348,6 +404,11 @@ def build_optimizer(
             raise ValueError("projector_lr requires trainable projector parameters")
         groups.append({"params": projector_params, "lr": projector_lr})
     if selected is not None:
+        if input_query_only:
+            if base_params or embed_params or projector_params:
+                raise ValueError("global-query-only alignment must freeze all non-row parameters")
+            groups = [{"params": selected["query"], "lr": query_token_lr, "weight_decay": 0.0}]
+            return torch.optim.AdamW(groups, weight_decay=0.0, foreach=False)
         if projector_lr is None or not base_params or not projector_params:
             raise ValueError("Stage2 selected rows require trainable LoRA and projector groups")
         # Keep five explicit Stage2 groups: LoRA, projector, query rows, and
@@ -499,7 +560,7 @@ def _resume_identity(
         identity["distributed_strategy"] = "fsdp_full_shard_orig_params_v1"
     if getattr(args, "until_converged", False):
         identity["convergence"] = {
-            "monitor": convergence_monitor(stage),
+            "monitor": convergence_monitor(stage, getattr(args, "tuning_mode", None)),
             "min_epochs": args.convergence_min_epochs,
             "patience_epochs": args.convergence_patience_epochs,
             "min_relative_improvement": args.convergence_min_relative_improvement,
@@ -514,6 +575,10 @@ def _resume_identity(
                 "projector_hidden_dim": args.projector_hidden_dim,
                 "weight_lm": args.weight_lm,
                 "weight_dino": args.weight_dino,
+                "include_global_token": bool(
+                    getattr(args, "include_global_token", False)
+                ),
+                "evaluation_only": bool(getattr(args, "evaluation_only", False)),
                 "query_batching": "full_trajectory_success_lm_all_dino_v2",
                 "token_row_training": {
                     "schema": "selected_rows_v1",
@@ -528,6 +593,25 @@ def _resume_identity(
                 },
             }
         )
+    if (
+        stage == "query"
+        and getattr(args, "tuning_mode", "selected_lora") == "global_query_only"
+    ):
+        identity["tuning_mode"] = "global_query_only"
+        identity["token_row_training"] = {
+            "schema": "input_query_row_only_v1",
+            "query_token_ids": [int(args.query_token_ids[-1])],
+            "initialization_ids": [
+                int(value) for value in args.query_token_ids[:-1]
+            ],
+            "query_token_lr": args.query_token_lr,
+            "protocol_token_ids": [],
+            "unselected_rows": "bitwise_frozen",
+            "master_dtype": "float32",
+            "forward_dtype": "bfloat16",
+            "tables": ["input_embeddings"],
+            "parent_checkpoint": str(Path(args.model).resolve()),
+        }
     if stage == "query" and getattr(args, "tuning_mode", "selected_lora") == "full_language":
         identity["tuning_mode"] = "full_language"
         identity["token_row_training"] = {
@@ -758,11 +842,13 @@ def main(*, stage: str = "format") -> int:
             identity=DINOV2_LARGE_IDENTITY,
             grid_size=query_config.grid_size,
         )
+        if targets.include_cls != query_config.include_global_token:
+            raise ValueError("Stage2 objective and DINO cache global-token schema mismatch")
         args.dino_cache_fingerprint = targets.cache_fingerprint
         train_collate = QueryAlignmentCollator(
             processor,
             args.max_length,
-            query_config.grid_tokens,
+            query_config.state_tokens,
             targets,
             mask_latent_query_labels=args.mask_latent_query_labels,
         )
@@ -870,6 +956,18 @@ def main(*, stage: str = "format") -> int:
         added_tokens=added,
         latent_token_count=args.latent_token_count,
     )
+    if getattr(args, "tuning_mode", None) == "global_query_only":
+        if added != 1:
+            raise ValueError(
+                "global_query_only requires exactly one newly registered query token"
+            )
+        global_query_id = initialize_global_query_token_embedding(
+            model,
+            token_id_map,
+            spatial_token_count=query_config.grid_tokens,
+        )
+        if global_query_id != args.query_token_ids[-1]:
+            raise ValueError("global query must be the last ordered query token")
 
     if (args.resume or continuing) and resume_ckpt is not None and resume_ckpt.exists() and resume_lora:
         if not args.lora:
@@ -892,16 +990,51 @@ def main(*, stage: str = "format") -> int:
         from nimloth.training.sft.stage2.model import QueryAlignmentModel
 
         model = QueryAlignmentModel.build(model, processor.tokenizer, query_config)
+        model.evaluation_only = bool(getattr(args, "evaluation_only", False))
+        model.dino_cache_fingerprint = args.dino_cache_fingerprint
+        model.parent_checkpoint = (
+            str(args.model.resolve()) if model.evaluation_only else None
+        )
         if resume_dir is not None:
             model.restore_projector(resume_dir, allow_dino_weight_change=continuing and args.continue_with_dino_weight_change)
         elif (args.model / "grid_state_config.json").is_file():
-            model.restore_projector(args.model)
+            model.restore_projector(
+                args.model,
+                allow_global_extension=(
+                    getattr(args, "tuning_mode", None) == "global_query_only"
+                ),
+            )
     # Build the projector in the original BF16 dtype before promoting PEFT copies.
     language_model = model.language_model if query_config is not None else model
     prepare_embedding_masters(language_model, getattr(args, "embedding_master_dtype", "bfloat16"))
     if (args.resume or continuing) and resume_ckpt is not None and resume_ckpt.exists() and resume_lora:
         load_lora_adapter_state(language_model, resume_dir)
-    if query_config is not None and getattr(args, "tuning_mode", None) == "full_language":
+    if query_config is not None and getattr(args, "tuning_mode", None) == "global_query_only":
+        from nimloth.training.sft.stage2.selected_token_rows import (
+            install_input_query_row,
+        )
+
+        model.requires_grad_(False)
+        install_input_query_row(
+            language_model,
+            args.query_token_ids[-1],
+            initialize_from_ids=args.query_token_ids[:-1],
+        )
+        if resume_dir is not None:
+            from nimloth.training.sft.stage2.selected_token_rows import (
+                restore_selected_rows,
+            )
+
+            row_path = resume_dir / "selected_token_rows.pt"
+            if not row_path.is_file():
+                raise FileNotFoundError(
+                    "global-query-only resume requires selected_token_rows.pt"
+                )
+            restore_selected_rows(
+                language_model,
+                torch.load(row_path, map_location="cpu", weights_only=True),
+            )
+    elif query_config is not None and getattr(args, "tuning_mode", None) == "full_language":
         from nimloth.training.sft.stage2.full_tuning import prepare_full_language
 
         tuning_scope = prepare_full_language(
@@ -912,7 +1045,9 @@ def main(*, stage: str = "format") -> int:
         if is_main():
             print(json.dumps(tuning_scope))
     elif query_config is not None:
-        from nimloth.training.sft.stage2.selected_token_rows import install_selected_token_rows
+        from nimloth.training.sft.stage2.selected_token_rows import (
+            install_selected_token_rows,
+        )
 
         install_selected_token_rows(language_model, args.query_token_ids, args.protocol_token_ids)
     model.config.nimloth_training_stage = stage
@@ -1017,7 +1152,12 @@ def main(*, stage: str = "format") -> int:
                     resume_dir.parent / "validation_metrics.jsonl", int(state["epoch"]),
                     args.weight_lm, args.weight_dino)
             else:
-                convergence, history = replay_convergence(resume_dir.parent / "validation_metrics.jsonl", int(state["epoch"]), convergence_policy, convergence_monitor(stage))
+                convergence, history = replay_convergence(
+                    resume_dir.parent / "validation_metrics.jsonl",
+                    int(state["epoch"]),
+                    convergence_policy,
+                    convergence_monitor(stage, getattr(args, "tuning_mode", None)),
+                )
             if is_main():
                 (args.output_dir / "validation_metrics.jsonl").write_text("".join(json.dumps(row) + "\n" for row in history))
         elif continuing:
@@ -1239,7 +1379,7 @@ def main(*, stage: str = "format") -> int:
                                     "train/query_token_lr": scheduler.get_last_lr()[2],
                                     "train/protocol_token_lr": scheduler.get_last_lr()[3],
                                 }
-                                if stage == "query" and getattr(args, "tuning_mode", "selected_lora") != "full_language"
+                                if stage == "query" and getattr(args, "tuning_mode", "selected_lora") == "selected_lora"
                                 else {
                                     "train/embedding_lr": scheduler.get_last_lr()[1]
                                     if len(scheduler.get_last_lr()) > 1
@@ -1366,7 +1506,9 @@ def main(*, stage: str = "format") -> int:
                 model, val_loader, device, args.max_val_batches, return_components=True,
                 weight_lm=args.weight_lm, weight_dino=args.weight_dino,
             )
-            val_loss = val_metrics["validation_total_loss"]
+            val_loss = val_metrics[
+                convergence_monitor(stage, getattr(args, "tuning_mode", None))
+            ]
         else:
             val_loss = evaluate(model, val_loader, device, args.max_val_batches)
             val_metrics = {"validation_lm_loss": val_loss}
@@ -1392,7 +1534,9 @@ def main(*, stage: str = "format") -> int:
             with (args.output_dir / "validation_metrics.jsonl").open("a") as f:
                 f.write(json.dumps({
                     "epoch": epoch, "global_step": global_step,
-                    "monitor": convergence_monitor(stage), **val_metrics,
+                    "monitor": convergence_monitor(
+                        stage, getattr(args, "tuning_mode", None)
+                    ), **val_metrics,
                 }) + "\n")
             with log_path.open("a", newline="") as f:
                 csv.writer(f).writerow(
@@ -1521,7 +1665,9 @@ def main(*, stage: str = "format") -> int:
     if is_main():
         if convergence_policy is not None:
             (args.output_dir / "CONVERGED.json").write_text(
-                json.dumps({"monitor": convergence_monitor(stage), "policy": convergence_policy.state_dict(),
+                json.dumps({"monitor": convergence_monitor(
+                                stage, getattr(args, "tuning_mode", None)),
+                            "policy": convergence_policy.state_dict(),
                             "state": convergence.state_dict(), "global_step": global_step}) + "\n",
                 encoding="utf-8",
             )

@@ -11,12 +11,30 @@ python -m nimloth.training.sft.stage2 \
 
 ## 配置与训练参数
 
-`--grid-size` 接受任意正整数，查询位置数 K 统一由 `grid_size²` 推导，因此 `--latent-token-count` 必须与它相等；默认 4×4 网格对应 K=16。独立 DINO 缓存构建、输入审计、容量门禁和训练必须传入相同的 grid size，不同 grid size 的缓存不能混用。损失权重由 `--weight-lm` 和 `--weight-dino` 指定，二者均须为正；`--projector-hidden-dim` 指定投影维度。YAML 可通过 `query_alignment` 提供这些参数，其余训练设置复用 SFT1。
+`--grid-size` 接受任意正整数。普通训练的查询位置数 K 为 `grid_size²`，因此 `--latent-token-count` 必须与它相等；默认 4×4 网格对应 K=16。独立 DINO 缓存构建、输入审计、容量门禁和训练必须传入相同的 grid size，不同 grid size 的缓存不能混用。损失权重由 `--weight-lm` 和 `--weight-dino` 指定，二者均须为正；`--projector-hidden-dim` 指定投影维度。YAML 可通过 `query_alignment` 提供这些参数，其余训练设置复用 SFT1。
+
+从既有 K64 checkpoint 增补 DINO CLS 的评估训练必须同时指定
+`--tuning-mode global_query_only --include-global-token --evaluation-only`，并使用
+`build_dino_cache.py --include-cls --build-commit <40-hex>` 生成的 v2 cache。
+该模式要求 `--distributed-strategy ddp --embedding-master-dtype bfloat16`：冻结的
+dense embedding/LM head 保持 BF16，只有新增 input row 使用 FP32 master；避免把整张
+词表为了一个新行提升到 FP32。收敛参数固定为至少2轮、patience 2、相对改善1%。
+该模式把新全局 Query 放在已有空间 Query 后，只保留它的 input embedding
+FP32 master 可训练；旧 K64、backbone、LM head 和共享 projector 全部冻结。
+新行用旧空间 Query input rows 的 FP32 均值初始化，checkpoint 另存精确的
+`selected_token_rows.pt` 以避免恢复时 BF16 舍入。空间与 CLS DINO MSE 分别
+归一化再相加，验证日志分别记录两项。输出 metadata 标记
+`evaluation_only=true`、`formal_stage2=false`、父 checkpoint、v2 cache identity
+和显式 K64+CLS layout；它不能作为正式 Stage2 结果。正式训练可通过普通
+Stage2 路径从 epoch1 设置 `include_global_token`，无需依赖 epoch16 扩展逻辑。
 
 默认 `--tuning-mode selected_lora` 保留 LoRA 和选定 token 行训练。显式 `--tuning-mode full_language` 训练语言 transformer、完整 embedding/LM head 和共享 slot projector；整个 Qwen visual（包含原生 merger）冻结，DINO 目标保持固定。该模式要求 FSDP、独立 embedding/head，所有可训练参数保留 FP32 master、前向 BF16。`full_tuning.py` 定义冻结范围并打印参数数量。全量模式通过 `--lr`、`--embedding-lr`、`--projector-lr` 配置三组学习率（本次实验均为 2e-5）；不使用 query/protocol 行优化器。恢复身份区分全量和选行模式，完整 checkpoint 以 dense 权重保存，FP32 加载避免恢复时舍入。
 新建 projector 使用语言模型输入 embedding 的 dtype/device（BF16 模型不会新建 FP32 projector 参数）。多卡可指定 `--distributed-strategy fsdp`；语言模型和 projector 均参与分片、完整保存与恢复。
 
 可使用 `--until-converged --convergence-min-epochs 2 --convergence-patience-epochs 2 --convergence-min-relative-improvement 0.01` 训练至收敛，不能同时指定固定 `--epochs`，也不能限制验证批次数。每轮以完整验证的加权总损失 `weight_lm * LM + weight_dino * DINO` 对比上一轮，连续两轮改善不足 1% 且达到最少轮数后停止；`best` 始终选择总损失最低的 checkpoint。预热后学习率保持不变，运行时限不代表收敛。
+evaluation-only `global_query_only` 是例外：它按独立的验证 CLS DINO MSE
+应用同一 patience/1% 规则并选择 best，同时继续记录总损失、空间 DINO、LM、格式与
+rollout 门禁，避免空间常量项掩盖新增全局 Query 的收敛。
 有限 GPU 检查可指定 `--max-optimizer-steps N`，在绝对第 N 步保存完整恢复 checkpoint 并以 75 退出，不声明收敛；正式续训移除该预算参数。
 
 `validation_metrics.jsonl`、每轮日志与 W&B 分别记录未加权的 LM、DINO 分量和加权总损失。LM 只以成功轨迹的回答计数，DINO 以全部回答计数，分别跨 batch、梯度累积和 rank 求和归约；分布式 sampler 的补齐项仍计入均值。旧 CSV 的 `val_loss` 在 query 阶段表示总损失。模型返回的均值指标已 detach；两个可微分量之和分别用于各自分母的反向传播。
@@ -35,7 +53,7 @@ dataset 保持以完整轨迹为样本，因此 `--batch-size` 按轨迹计数�
 
 Checkpoint 保存 `training_stage=query`、语言模型或 adapter，以及 `slot_projector.pt` 和 `grid_state_config.json`。配置记录 teacher 身份、query token ID、projector 维度和目标权重；恢复或从 query checkpoint 初始化时先严格校验，再恢复 projector。
 
-LoRA 合并导出保留 projector 文件及阶段元数据，SFT3 使用同一 projector 格式。完整恢复包含优化器、调度器、epoch/微批次游标、每 rank 随机数状态及收敛历史；query 收敛监控身份为 `validation_total_loss`。CPU 测试覆盖标签、梯度、空间对齐、收敛与导出接口，不作为真实 GPU 训练或 rollout 质量证据。
+LoRA 合并导出保留 projector 文件及阶段元数据，SFT3 使用同一 projector 格式。完整恢复包含优化器、调度器、epoch/微批次游标、每 rank 随机数状态及收敛历史；普通 query 收敛监控身份为 `validation_total_loss`，evaluation-only CLS alignment 为 `validation_dino_cls_loss`。CPU 测试覆盖标签、梯度、空间对齐、收敛与导出接口，不作为真实 GPU 训练或 rollout 质量证据。
 
 从已提交 epoch 提高 projector 学习率时，必须同时使用
 `--continue-with-projector-lr-change`。该显式门禁仅允许

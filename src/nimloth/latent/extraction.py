@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Mapping, Sequence
 
 import torch
 from torch import Tensor
@@ -184,6 +184,7 @@ def initialize_extra_latent_token_embeddings(
     *,
     latent_token_count: int = 1,
     tokens: LatentActionTokens = LatentActionTokens(),
+    minimum_new_token_id: int | None = None,
 ) -> None:
     """Initialize extra latent query token embeddings from slot 0.
 
@@ -200,6 +201,10 @@ def initialize_extra_latent_token_embeddings(
     latent_tokens = latent_state_tokens(count, tokens)
     source_id = int(token_ids[latent_tokens[0]])
     dest_ids = [int(token_ids[token]) for token in latent_tokens[1:]]
+    if minimum_new_token_id is not None:
+        dest_ids = [token_id for token_id in dest_ids if token_id >= minimum_new_token_id]
+    if not dest_ids:
+        return
 
     def _copy_rows(weight: torch.Tensor) -> None:
         with torch.no_grad():
@@ -217,6 +222,34 @@ def initialize_extra_latent_token_embeddings(
     if output_weight is not None:
         if input_weight is None or output_weight.data_ptr() != input_weight.data_ptr():
             _copy_rows(output_weight)
+
+
+def initialize_global_query_token_embedding(
+    model,
+    token_ids: Mapping[str, int],
+    *,
+    spatial_token_count: int,
+    tokens: LatentActionTokens = LatentActionTokens(),
+) -> int:
+    """Initialize the appended global query row from the spatial-query mean."""
+
+    if spatial_token_count < 1:
+        raise ValueError("spatial_token_count must be positive")
+    names = latent_state_tokens(spatial_token_count + 1, tokens)
+    spatial_ids = [int(token_ids[name]) for name in names[:spatial_token_count]]
+    global_id = int(token_ids[names[-1]])
+
+    def _copy_mean(weight: torch.Tensor) -> None:
+        with torch.no_grad():
+            mean = weight[spatial_ids].detach().float().mean(dim=0)
+            weight[global_id].copy_(mean.to(device=weight.device, dtype=weight.dtype))
+
+    input_weight = model.get_input_embeddings().weight
+    _copy_mean(input_weight)
+    output = model.get_output_embeddings()
+    if output is not None and output.weight.data_ptr() != input_weight.data_ptr():
+        _copy_mean(output.weight)
+    return global_id
 
 
 def find_all_latent_state_blocks(
@@ -450,7 +483,7 @@ class LatentActionExtractor:
         tokens: LatentActionTokens = LatentActionTokens(),
         *,
         latent_token_count: int = 1,
-    ) -> "LatentActionExtractor":
+    ) -> LatentActionExtractor:
         add_special_tokens(tokenizer, tokens, latent_token_count=latent_token_count)
         return cls(tokenizer=tokenizer, tokens=tokens, latent_token_count=latent_token_count)
 

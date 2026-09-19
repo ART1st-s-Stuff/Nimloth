@@ -217,7 +217,10 @@ def _save_full_pretrained(module, path, full_weights):
         _save_query_full_pretrained(module, path, full_weights)
         return
     from peft import get_peft_model
-    from nimloth.training.sft.stage2.selected_token_rows import materialize_selected_state_dict
+
+    from nimloth.training.sft.stage2.selected_token_rows import (
+        materialize_selected_state_dict,
+    )
 
     if getattr(module.config, "nimloth_token_row_schema", None):
         full_weights = materialize_selected_state_dict(full_weights)
@@ -258,6 +261,17 @@ def _save_query_full_pretrained(module, path, full_weights):
         else:
             raise ValueError(f"unexpected query FSDP full-state key: {key}")
     metadata = module.grid_metadata()
+    row_state = {
+        key: value.detach().cpu().clone()
+        for key, value in language_weights.items()
+        if key.rsplit(".", 1)[-1]
+        in {
+            "nimloth_query_rows",
+            "nimloth_protocol_rows",
+            "nimloth_query_ids",
+            "nimloth_protocol_ids",
+        }
+    }
     with torch.device("meta"):
         projector = SharedSlotProjector(
             input_dim=metadata["qwen_hidden_dim"],
@@ -273,5 +287,7 @@ def _save_query_full_pretrained(module, path, full_weights):
             raise ValueError(f"query FSDP projector tensor is incomplete: {key}")
     _save_full_pretrained(module.language_model, path, language_weights)
     path = Path(path)
+    if row_state:
+        torch.save(row_state, path / "selected_token_rows.pt")
     torch.save(projector_weights, path / "slot_projector.pt")
     (path / "grid_state_config.json").write_text(json.dumps(metadata, indent=2) + "\n")

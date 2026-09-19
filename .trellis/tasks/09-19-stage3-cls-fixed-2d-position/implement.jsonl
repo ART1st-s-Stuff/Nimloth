@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/domains/sft-stages.md", "reason": "Stage2/Stage3 state, loss, checkpoint and evaluation contracts"}
+{"file": ".trellis/spec/domains/world-model-and-training.md", "reason": "WM ownership, temporal alignment, gradient and checkpoint contracts"}
+{"file": ".trellis/spec/python/configuration-and-interfaces.md", "reason": "Typed configuration and module ownership boundaries"}
+{"file": ".trellis/tasks/09-19-stage3-cls-fixed-2d-position/research/current-interface-audit-20260919.md", "reason": "Current DINO, query, WM, head and reconstruction interface evidence"}

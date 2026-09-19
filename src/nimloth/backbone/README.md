@@ -19,4 +19,13 @@ records answer-to-image split lineage and the fixed teacher identity, and requir
 a matching `COMPLETED` marker. They do not claim a compact Qwen cache parent.
 The Stage 2 `build_dino_cache` CLI builds these targets using the same frozen encoder.
 
+The evaluation-only CLS path uses the separate `dino_spatial_cls_images_v2`
+schema. Each shard stores row-major spatial features and the teacher's real
+`last_hidden_state[:, 0]` in separate tensors. Its manifest also requires the
+processor fingerprint, exact build commit, parent-data fingerprint, K64+CLS
+layout and all source/image/shard hashes. The loader returns ordered
+`[spatial_00, ..., spatial_63, dino_cls]` targets and rejects old spatial-only
+caches when a global state is configured. Patch means and state means are not
+accepted as CLS targets.
+
 `selected_token_rows.py` owns shared FP32 Query/protocol input and output row masters, materialized dense export and exact row-state restoration. Stage2 compatibility imports delegate here.

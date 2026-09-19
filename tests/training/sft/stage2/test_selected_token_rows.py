@@ -5,6 +5,7 @@ from torch import nn
 
 from nimloth.training.sft.stage1.trainer import build_optimizer
 from nimloth.training.sft.stage2.selected_token_rows import (
+    install_input_query_row,
     install_selected_token_rows,
     materialize_selected_state_dict,
 )
@@ -102,3 +103,39 @@ def test_materialization_exports_standard_dense_state_and_optimizer_round_trips(
         restored.embed_tokens.modules_to_save["default"].nimloth_query_rows,
         model.embed_tokens.modules_to_save["default"].nimloth_query_rows,
     )
+
+
+def test_input_global_query_row_is_the_only_trainable_parameter():
+    class InputOnlyModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed = nn.Embedding(16, 4)
+            self.head = nn.Linear(4, 16, bias=False)
+            self.config = SimpleNamespace()
+
+        def get_input_embeddings(self):
+            return self.embed
+
+        def get_output_embeddings(self):
+            return self.head
+
+    model = InputOnlyModel()
+    expected = model.embed.weight.detach()[[1, 2, 3]].float().mean(0)
+    install_input_query_row(model, 15, initialize_from_ids=[1, 2, 3])
+    optimizer = build_optimizer(
+        model,
+        1e-6,
+        None,
+        0.01,
+        projector_lr=None,
+        query_token_lr=5e-5,
+        protocol_token_lr=5e-5,
+    )
+    trainable = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    assert trainable == [model.embed.nimloth_query_rows]
+    torch.testing.assert_close(model.embed.nimloth_query_rows[0], expected)
+    assert optimizer.param_groups[0]["lr"] == 5e-5
+    before = model.embed.weight.detach().clone()
+    model.embed(torch.tensor([[15, 1]])).sum().backward()
+    optimizer.step()
+    assert torch.equal(model.embed.weight, before)

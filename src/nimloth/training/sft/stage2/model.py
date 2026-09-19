@@ -17,6 +17,7 @@ from nimloth.backbone.qwen25vl.latent import (
 )
 from nimloth.latent import latent_state_tokens
 from nimloth.wm.grid import SharedSlotProjector
+from nimloth.wm.layout import GridStateLayout
 
 from .config import QueryAlignmentConfig
 
@@ -27,6 +28,8 @@ class QueryAlignmentOutput(CausalLMOutputWithPast):
     dino_loss: torch.Tensor | None = None
     lm_loss_sum: torch.Tensor | None = None
     dino_loss_sum: torch.Tensor | None = None
+    dino_spatial_loss: torch.Tensor | None = None
+    dino_cls_loss: torch.Tensor | None = None
     answer_count: torch.Tensor | None = None
     lm_answer_count: torch.Tensor | None = None
 
@@ -55,7 +58,7 @@ class QueryAlignmentModel(nn.Module):
             input_dim=text_config.hidden_size,
             output_dim=DINOV2_LARGE_IDENTITY.hidden_size,
             hidden_dim=objective.projector_hidden_dim,
-            grid_tokens=objective.grid_tokens,
+            grid_tokens=objective.state_tokens,
         )
         embedding = language_model.get_input_embeddings().weight
         # Exported FP32 embedding masters must not promote the DINO projector.
@@ -68,7 +71,7 @@ class QueryAlignmentModel(nn.Module):
         projector.to(device=embedding.device, dtype=projector_dtype)
         ids = [
             tokenizer.convert_tokens_to_ids(t)
-            for t in latent_state_tokens(objective.grid_tokens)
+            for t in latent_state_tokens(objective.state_tokens)
         ]
         return cls(language_model, projector, ids, objective)
 
@@ -93,7 +96,7 @@ class QueryAlignmentModel(nn.Module):
         answer_count = query_positions.shape[0]
         if lm_answer_mask.dtype != torch.bool or lm_answer_mask.shape != (answer_count,):
             raise ValueError("LM answer mask must be a boolean for every answer")
-        expected = (answer_count, self.objective.grid_tokens)
+        expected = (answer_count, self.objective.state_tokens)
         if tuple(query_positions.shape) != expected:
             raise ValueError(f"query position shape must be {expected}")
         if (
@@ -179,7 +182,23 @@ class QueryAlignmentModel(nn.Module):
                 0, owners, torch.ones_like(losses)
             )
         lm_by_answer = lm_sums / lm_counts.clamp_min(1)
-        dino_by_answer = (state.float() - target).square().flatten(1).mean(1)
+        if self.objective.include_global_token:
+            layout = GridStateLayout(
+                spatial_grid_size=self.objective.grid_size,
+                global_tokens=1,
+                global_role="dino_cls",
+            )
+            spatial_by_answer = (
+                layout.spatial(state.float()) - layout.spatial(target)
+            ).square().flatten(1).mean(1)
+            cls_by_answer = (
+                layout.global_state(state.float()) - layout.global_state(target)
+            ).square().flatten(1).mean(1)
+            dino_by_answer = spatial_by_answer + cls_by_answer
+        else:
+            spatial_by_answer = (state.float() - target).square().flatten(1).mean(1)
+            cls_by_answer = None
+            dino_by_answer = spatial_by_answer
         # Keep the head in the backward graph even for an all-failure batch.
         # An empty sum avoids touching any logits or introducing 0 * NaN.
         lm_loss_sum = lm_by_answer.sum() + output.logits[:0].float().sum()
@@ -191,6 +210,12 @@ class QueryAlignmentModel(nn.Module):
                   + self.objective.weight_dino * dino_loss_sum / count),
             lm_loss=(lm_loss_sum / lm_count.clamp_min(1)).detach(),
             dino_loss=(dino_loss_sum / count).detach(),
+            dino_spatial_loss=(spatial_by_answer.sum() / count).detach(),
+            dino_cls_loss=(
+                (cls_by_answer.sum() / count).detach()
+                if cls_by_answer is not None
+                else None
+            ),
             lm_loss_sum=lm_loss_sum,
             dino_loss_sum=dino_loss_sum,
             answer_count=count,
@@ -203,36 +228,113 @@ class QueryAlignmentModel(nn.Module):
             "lm_supervision": "successful_trajectory_answers_v1",
             "objective": asdict(self.objective),
             "dino_identity": asdict(DINOV2_LARGE_IDENTITY),
+            "dino_cache_fingerprint": getattr(
+                self, "dino_cache_fingerprint", None
+            ),
             "grid_tokens": self.projector.grid_tokens,
+            "spatial_tokens": self.objective.grid_tokens,
+            "global_tokens": int(self.objective.include_global_token),
+            "state_tokens": self.objective.state_tokens,
+            "state_layout": (
+                GridStateLayout(
+                    spatial_grid_size=self.objective.grid_size,
+                    global_tokens=1,
+                    global_role="dino_cls",
+                ).metadata()
+                if self.objective.include_global_token
+                else None
+            ),
             "qwen_hidden_dim": self.projector.input_dim,
             "state_dim": self.projector.output_dim,
             "projector_hidden_dim": self.projector.hidden_dim,
             "shared_slot_projector": True,
-            "ordering": "row_major",
+            "ordering": (
+                "row_major_spatial_then_global"
+                if self.objective.include_global_token
+                else "row_major"
+            ),
             "query_token_ids": list(self.query_ids),
+            "evaluation_only": bool(getattr(self, "evaluation_only", False)),
+            "formal_stage2": not bool(getattr(self, "evaluation_only", False)),
+            "parent_checkpoint": getattr(self, "parent_checkpoint", None),
         }
 
     def save_pretrained(self, directory, **kwargs):
-        from .selected_token_rows import materialize_selected_state_dict
+        from .selected_token_rows import (
+            materialize_selected_state_dict,
+            selected_rows_state,
+        )
 
         state = kwargs.pop("state_dict", None)
         if getattr(self.language_model.config, "nimloth_token_row_schema", None):
+            row_state = selected_rows_state(self.language_model)
             state = materialize_selected_state_dict(
                 self.language_model.state_dict() if state is None else state
             )
+        else:
+            row_state = None
         self.language_model.save_pretrained(directory, state_dict=state, **kwargs)
         directory = Path(directory)
+        if row_state:
+            torch.save(row_state, directory / "selected_token_rows.pt")
         torch.save(self.projector.state_dict(), directory / "slot_projector.pt")
         (directory / "grid_state_config.json").write_text(
             json.dumps(self.grid_metadata(), indent=2) + "\n"
         )
 
-    def restore_projector(self, directory, *, allow_dino_weight_change=False):
+    def restore_projector(
+        self,
+        directory,
+        *,
+        allow_dino_weight_change=False,
+        allow_global_extension=False,
+    ):
         directory = Path(directory)
         saved = json.loads((directory / "grid_state_config.json").read_text())
         expected = self.grid_metadata()
+        saved.setdefault("evaluation_only", False)
+        saved.setdefault("formal_stage2", True)
+        saved.setdefault("parent_checkpoint", None)
+        saved.setdefault(
+            "dino_cache_fingerprint",
+            (
+                expected["dino_cache_fingerprint"]
+                if not self.objective.include_global_token
+                else None
+            ),
+        )
+        saved_objective = dict(saved.get("objective", {}))
+        saved_objective.setdefault("include_global_token", False)
+        saved["objective"] = saved_objective
+        saved.setdefault("spatial_tokens", int(saved.get("grid_tokens", 0)))
+        saved.setdefault("global_tokens", 0)
+        saved.setdefault("state_tokens", int(saved.get("grid_tokens", 0)))
+        saved.setdefault("state_layout", None)
+        # Parent checkpoints predate evaluation-lineage metadata. These fields do
+        # not alter projector tensor compatibility and are validated separately.
+        if allow_global_extension:
+            saved["evaluation_only"] = expected["evaluation_only"]
+            saved["formal_stage2"] = expected["formal_stage2"]
+            saved["parent_checkpoint"] = expected["parent_checkpoint"]
+            saved["dino_cache_fingerprint"] = expected["dino_cache_fingerprint"]
         if allow_dino_weight_change:
             saved["objective"]["weight_dino"] = expected["objective"]["weight_dino"]
+        if allow_global_extension:
+            if not self.objective.include_global_token:
+                raise ValueError("global extension requires a global-token objective")
+            saved_objective = dict(saved.get("objective", {}))
+            saved_objective["include_global_token"] = True
+            saved["objective"] = saved_objective
+            saved["grid_tokens"] = expected["grid_tokens"]
+            saved["spatial_tokens"] = expected["spatial_tokens"]
+            saved["global_tokens"] = expected["global_tokens"]
+            saved["state_tokens"] = expected["state_tokens"]
+            saved["state_layout"] = expected["state_layout"]
+            saved["ordering"] = expected["ordering"]
+            old_ids = saved.get("query_token_ids", [])
+            if old_ids != expected["query_token_ids"][:-1]:
+                raise ValueError("global extension parent query-token identity mismatch")
+            saved["query_token_ids"] = expected["query_token_ids"]
         if saved != expected:
             raise ValueError(
                 "query checkpoint objective, teacher, token or projector configuration mismatch"

@@ -42,10 +42,27 @@ SIGReg 使用全部真实相邻 transition，按轨迹和时间位置去重，�
 每个微批跨卡形成统计组。起点 detach，梯度进入在线后继状态；与主损失联合反传。
 
 DINO grid 的 `grid.size` 与 `latent.token_count` 由配置显式给出，并要求
-`latent.token_count == grid.size ** 2`。训练启动时还会读取初始化 checkpoint 的
+普通空间模式下 `latent.token_count == grid.size ** 2`。训练启动时还会读取初始化 checkpoint 的
 `grid_state_config.json`，核对 grid 大小、slot 数、DINO identity、state 维度和
 row-major 顺序；因此 Stage 3 可以消费相符的 4×4/K16 或 8×8/K64 Stage 2
 checkpoint，但不会在两种 state 接口之间静默转换。
+
+CLS/固定二维位置的 evaluation-only 路径使用显式
+`spatial_grid_size=8, global_tokens=1, state_tokens=65` 合同，state 顺序固定为
+K64 row-major spatial 后接真实 DINO CLS。此时 `latent.token_count` 必须等于
+`grid.size ** 2 + grid.global_tokens`，初始化 checkpoint 必须来自带
+evaluation-only lineage 的 Stage2 CLS alignment，并与 v2 DINO cache fingerprint
+一致。`fixed_2d_sincos_v1` 给 K64 使用确定性的二维 sine-cosine persistent
+buffer，CLS 使用零空间位置；它不叠加旧的可训练 spatial position。Residual
+delta head 仍为零初始化，所以首个更新前 K65 逐值复制输入。
+
+K65 训练把 WM spatial/CLS MSE 和 observed-state DINO spatial/CLS MSE 分开
+归一化并分别记录，`lambda_dino` 同时乘到两个 DINO 分项，不做 65-token
+平均。ValueHead、OutcomeHead 与 SIGReg 通过 `GridStateLayout` 只读取 K64，
+保持既有 spatial mean-pooling 语义；这不修复两个 head 已知的汇聚限制。
+frozen CFM reconstruction 同样只接收 K64，CLS 只通过独立特征指标评估。
+配置样例为
+`configs/training/sft2/action_outcome_k64_cls_fixed2d_h1_t4_eval.yaml`。
 
 ## 验证、诊断和兼容
 

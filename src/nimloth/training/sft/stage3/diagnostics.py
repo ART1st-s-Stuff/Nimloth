@@ -12,6 +12,7 @@ import torch
 
 from nimloth.agent import Agent
 from nimloth.backbone import Backbone
+from nimloth.wm.layout import GridStateLayout
 
 
 def _file_sha256(path: Path) -> str:
@@ -34,6 +35,7 @@ class DINOFeatureWriter:
         rank: int,
         step: int | None = None,
         identity: dict | None = None,
+        state_layout: GridStateLayout | None = None,
     ) -> None:
         self.directory = Path(directory)
         self.directory.mkdir(parents=True, exist_ok=True)
@@ -43,6 +45,7 @@ class DINOFeatureWriter:
         self.batch_identities: list[dict] = []
         self.step = step
         self.identity = identity
+        self.state_layout = state_layout
         self.complete_path = self.directory / f"rank_{self.rank:03d}_COMPLETE.json"
         if self.complete_path.exists():
             raise FileExistsError(self.complete_path)
@@ -77,7 +80,11 @@ class DINOFeatureWriter:
                (predicted, dino, direct, online_direct, online_current, current_dino)):
             raise ValueError("non-finite feature grids")
         payload = {
-            "schema": self.schema,
+            "schema": (
+                "stage3_dino_spatial_cls_feature_batch_v2"
+                if self.state_layout is not None and self.state_layout.has_global
+                else self.schema
+            ),
             "rank": self.rank,
             "batch_index": self.batch_index,
             "keys": [tuple(key) for index, key in enumerate(batch.current_keys) if valid[index]],
@@ -88,6 +95,9 @@ class DINOFeatureWriter:
             "online_current": online_current[valid],
             "dino": dino.reshape(shape)[valid],
             "current_dino": current_dino[valid],
+            "state_layout": (
+                self.state_layout.metadata() if self.state_layout is not None else None
+            ),
         }
         path = self.directory / f"rank_{self.rank:03d}_batch_{self.batch_index:04d}.pt"
         if path.exists():

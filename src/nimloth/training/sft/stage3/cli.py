@@ -5,8 +5,12 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from nimloth.latent import LATENT_QUERY_MODES, query_labels_are_masked, resolve_latent_query_mode
 from nimloth.config.sft2 import apply_sft2_yaml_defaults
+from nimloth.latent import (
+    LATENT_QUERY_MODES,
+    query_labels_are_masked,
+    resolve_latent_query_mode,
+)
 
 
 def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentParser:
@@ -60,6 +64,12 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--emb-dim", type=int, default=1024)
     ap.add_argument("--grid-size", type=int, default=4)
     ap.add_argument("--grid-predictor-kind", choices=("direct", "residual"), default="direct")
+    ap.add_argument("--grid-global-tokens", type=int, choices=(0, 1), default=0)
+    ap.add_argument(
+        "--grid-position-encoding",
+        choices=("learned_v1", "fixed_2d_sincos_v1"),
+        default="learned_v1",
+    )
     ap.add_argument("--grid-wm-depth", type=int, default=6)
     ap.add_argument("--grid-wm-heads", type=int, default=16)
     ap.add_argument("--grid-wm-dim-head", type=int, default=64)
@@ -312,6 +322,11 @@ def parse_sft2_args(argv: list[str] | None = None) -> argparse.Namespace:
         ap.error("outcome head requires dino_grid objective")
     if args.grid_predictor_kind == "residual" and args.objective != "dino_grid":
         ap.error("residual grid predictor requires dino_grid objective")
+    if args.grid_global_tokens:
+        if args.objective != "dino_grid" or args.grid_position_encoding != "fixed_2d_sincos_v1":
+            ap.error("global grid token requires dino_grid and fixed_2d_sincos_v1")
+        if args.grid_predictor_kind != "residual":
+            ap.error("global grid token evaluation requires the residual predictor")
     if bool(args.diagnostic_steps) != (args.diagnostic_dir is not None):
         ap.error("diagnostic-steps and diagnostic-dir must be supplied together")
     if args.diagnostic_steps:

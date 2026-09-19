@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import itertools
 import json
-from nimloth.training.sft.stage3.early_stop import initialize_early_stop, update_early_stop
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -14,19 +13,26 @@ import torch.distributed as dist
 
 from nimloth.config.sft2 import SFT2LoopConfig
 from nimloth.training.common.activation_offload import saved_activation_context
+from nimloth.training.sft.stage3.algorithm import SFT2Algorithm
 from nimloth.training.sft.stage3.batch import SFT2BatchBuilder
 from nimloth.training.sft.stage3.checkpoint import (
     SFT2CheckpointRuntime,
     resume_epoch_and_micro_step,
 )
-from nimloth.training.sft.stage3.algorithm import SFT2Algorithm
-from nimloth.training.sft.stage3.evaluate import evaluate, distributed_metric_averages
+from nimloth.training.sft.stage3.early_stop import (
+    initialize_early_stop,
+    update_early_stop,
+)
+from nimloth.training.sft.stage3.evaluate import distributed_metric_averages, evaluate
+from nimloth.training.sft.stage3.reporting import SFT2Reporter
 from nimloth.training.sft.stage3.runtime import (
     SFT2ModelRuntime,
     SFT2OptimizationRuntime,
 )
-from nimloth.training.sft.stage3.reporting import SFT2Reporter
-from nimloth.training.sft.stage3.utils import global_sigreg_seed, seed_training_micro_step
+from nimloth.training.sft.stage3.utils import (
+    global_sigreg_seed,
+    seed_training_micro_step,
+)
 from nimloth.util.distributed import is_main
 from nimloth.util.metrics import MetricAccumulator
 from nimloth.util.profiling import StepTimer
@@ -99,7 +105,9 @@ def load_sft2_loop_state(
     if saved_state.get("optimizer") is not None:
         state = saved_state["optimizer"]
         if agent is not None:
-            from nimloth.training.sft.stage3.fsdp_checkpoint import optimizer_state_to_load
+            from nimloth.training.sft.stage3.fsdp_checkpoint import (
+                optimizer_state_to_load,
+            )
             state = optimizer_state_to_load(agent, optimizer, state)
         optimizer.load_state_dict(state)
 
@@ -218,6 +226,7 @@ class SFT2TrainingLoop:
                     else self.state.global_step
                 ),
                 identity=self.feature_export_identity,
+                state_layout=getattr(self.model_runtime.agent.wm, "state_layout", None),
             )
         elif self.frozen_wm_cache_dir is not None:
             from nimloth.training.sft.stage3.diagnostics import FrozenWMTrajectoryWriter
@@ -404,7 +413,9 @@ class SFT2TrainingLoop:
         batch = self.batch_builder.prepare(batch_samples)
         if (getattr(self.config, "diagnose_outcome_gradients", False)
                 and self.state.global_step == 0 and micro_step == 1):
-            from nimloth.training.sft.stage3.diagnostics import outcome_gradient_diagnostic
+            from nimloth.training.sft.stage3.diagnostics import (
+                outcome_gradient_diagnostic,
+            )
             diagnostic = outcome_gradient_diagnostic(self.algorithm, self.model_runtime, batch, wm_weight=lambda_wm)
             diagnostic.update(rank=self.rank, epoch=epoch, micro_step=micro_step)
             path = self.checkpoint_runtime.manager.output_dir / f"outcome_gradients_rank_{self.rank:03d}.json"
