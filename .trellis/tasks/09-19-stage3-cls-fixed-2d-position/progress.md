@@ -238,3 +238,26 @@
 - 新增 identity/绑定 LR/CLI 互斥回归测试。本地 `compileall`、AST、`git diff --check` 和
   不依赖 torch 的 continuation smoke 通过；本地运行 pytest 受环境缺少 `pytest`/`torch`
   阻塞，尚未启动或修改任何远程 GPU 训练。
+
+## 2026-09-19 Stage2 CLS Query LR 1e-4 continuation launch
+
+- 实现提交 `c57bcc9f356c81c2a024ae6873f57af8d8b8ca10` 已同步到 a100-1 专用 worktree；
+  远端真实依赖环境的 continuation/convergence 聚焦回归为 `19 passed`，相关文件
+  `compileall`、Ruff（若环境提供）与提交范围 `git diff --check` 通过。独立检查修复了初版
+  门禁会额外允许 warmup/convergence/protocol LR 改变以及直接调用可组合多个例外的问题；
+  最终门禁只放开 `token_row_training.query_token_lr`。
+- 用户明确要求将 CLS Query LR 调为 `1e-4` 并继续训练。本次从原 evaluation-only Stage2
+  `epoch_005` / global step135 的 `COMMITTED` 边界继续；父 `training_state.pt` SHA256 为
+  `363eec155d41e4c1db2c3351989ae4b0c9270836953bdb5905a519ccd79f4785`。原 optimizer
+  moments、8份 rank RNG、epoch 数据边界与1--5轮验证/收敛历史均恢复；其余模型、数据、
+  cache、冻结范围、loss、batch、seed、warmup和收敛规则不变。
+- 唯一输出目录为
+  `/mnt/nimloth/outputs/experiments/stage3-cls-fixed2d/20260919_stage2_cls_alignment_eval_r2_querylr1e4_continue`；
+  launch contract 和脚本位于实验组根目录同名 `.contract.json` / `run_*.sh`。8卡DDP
+  controller PID `1541394` 于 2026-09-19T17:20Z 启动，12小时仅为中断上限，每10步保存、
+  只保留最新epoch并保留best，禁止自动进入Stage3。
+- `continuation.json` 核验旧/新 Query LR 为 `5e-5 -> 1e-4`、start epoch6、global step135、
+  旧 best CLS MSE `1.9153741598`。首两个 update 为 step136/137，train loss
+  `5.2453547 -> 5.2139006`，CSV LR均为 `1e-4`；8卡利用率95--100%，未见 NaN/OOM/
+  traceback。heartbeat `stage3-dino2` 已改为每5分钟只读监控本续训，只在新验证轮、完成、
+  失败、磁盘危险或需要用户处理时通知，禁止自动重启、改参、删除或进入Stage3。
