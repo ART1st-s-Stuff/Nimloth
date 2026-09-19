@@ -89,10 +89,19 @@
   launcher 退出码合同需记录 torchrun 包装语义，不能把顶层1误报为训练失败或顶层75。
 - 随后在固定轨迹 `vagen-step60/000006`（3个回答）比较 epoch16 K64 与 r3 K65 的
   observed spatial state。删除3个新增 global token 后，两边完整 input IDs逐值一致；首个
-  回答的64个 hidden/state逐值一致，但第二、第三个回答会读取历史回答中的 global token：
-  state max abs分别 `0.30025995`、`0.24371362`，总体 MSE `0.0002898332`、cosine
-  `0.99983722`，严格 identity gate失败。详细 artifact 位于 r3
+  回答的64个 hidden/state逐值一致，第二、第三个回答发生偏移：state max abs分别
+  `0.30025995`、`0.24371362`，总体 MSE `0.0002898332`、cosine `0.99983722`。该测试加载
+  已完成1次更新的 child，只足以判定训练期间的严格 identity gate失败，不能单独证明
+  零更新时已经偏移或把机制唯一归因于历史 global attention。详细 artifact 位于 r3
   `spatial_identity_detailed/metrics.json`，标记为 `FAILED_GATE`。
-- 这证实当前“每个回答都在 action 前插入 CLS Query”的普通因果 attention 不可能同时
-  保证后续回答的旧 K64 完全不变。长 Stage2/Stage3 暂不启动，frozen reconstruction
-  identity 也不作为通过项；需要先审查 history 中 global token 的 attention/表示合同。
+- 补充零更新对照：把新增 CLS input row 精确恢复为旧64个 Query row均值，不创建或执行
+  optimizer。首个回答仍逐值一致；第二、第三个回答在训练前已经偏移，state MSE分别
+  `0.0003507754`、`0.0004839910`，总体 MSE `0.0002782555`、cosine `0.99984491`。
+  step0 到 step1 的额外增量总体 state MSE 为 `0.0001126327`、cosine `0.99993956`。
+  artifacts 为 `spatial_identity_zero_update_init/metrics.json` 与
+  `step0_vs_step1_metrics.json`。
+- 因此，当前 prompt 中插入 global Query 本身已经破坏跨回答的严格 K64 identity；一次
+  更新会继续改变它，但不是偏移出现的必要条件。现有诊断仍未分离两种插入效应：后续
+  token 可读取新增 global KV，以及后续 Query 的 position ids 从 `2091/2755` 变为
+  `2092/2757`。长 Stage2/Stage3 暂不启动，frozen reconstruction identity 也不作为通过项；
+  需要先决定是否保留严格 identity 合同，再决定做 attention/position ablation 或修改设计。
