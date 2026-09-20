@@ -9,6 +9,7 @@ import torch
 
 from nimloth.training.sft.stage3.cli import parse_sft2_args
 from nimloth.training.sft.stage3.trainer import (
+    _frozen_wm_representation_identity,
     _load_rl_eval_grid_world_model,
     _validate_rl_eval_checkpoint_contract,
 )
@@ -91,6 +92,32 @@ def test_rl_eval_cli_requires_eval_only_and_same_qwen_root(tmp_path: Path) -> No
                 str(root),
             ]
         )
+
+
+def test_frozen_wm_cache_binds_actual_stage3_resume_checkpoint(tmp_path: Path) -> None:
+    root = tmp_path / "epoch_005"
+    (root / "wm_predictor").mkdir(parents=True)
+    for relative in (
+        "training_state.pt",
+        "state_proj.pt",
+        "wm_predictor/config.json",
+        "wm_predictor/predictor.pt",
+    ):
+        (root / relative).write_bytes(relative.encode())
+
+    identity = _frozen_wm_representation_identity(
+        SimpleNamespace(model=tmp_path / "stage2"),
+        root,
+    )
+
+    assert identity["representation_checkpoint"] == str(root.resolve())
+    assert identity["representation_checkpoint_kind"] == "stage3_resume"
+    assert set(identity["representation_checkpoint_files"]) == {
+        "training_state.pt",
+        "state_proj.pt",
+        "wm_predictor/config.json",
+        "wm_predictor/predictor.pt",
+    }
 
 
 def test_rl_eval_cli_rejects_component_and_resume_mixing(tmp_path: Path) -> None:

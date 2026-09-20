@@ -201,6 +201,62 @@ def test_wm_only_training_resume_is_deterministic_and_counts_updates(
     assert all(torch.equal(left[key], right[key]) for key in left)
 
 
+def test_wm_only_training_can_initialize_from_production_predictor(tmp_path: Path) -> None:
+    from nimloth.wm.grid import ResidualTemporalSpatialGridPredictor
+
+    train_dir = _export(tmp_path, "train", ("train-a", "train-b"))
+    eval_dir = _export(tmp_path, "eval", ("eval-a", "eval-b"), offset=10)
+    predictor_config = GridPredictorConfig(
+        grid_tokens=4,
+        emb_dim=8,
+        action_dim=8,
+        history_size=1,
+        depth=1,
+        heads=2,
+        dim_head=4,
+        mlp_dim=16,
+        dropout=0.0,
+    )
+    initialized = ResidualTemporalSpatialGridPredictor(predictor_config)
+    with torch.no_grad():
+        initialized.delta_head.bias.fill_(0.125)
+    source = tmp_path / "production" / "wm_predictor"
+    initialized.save_checkpoint(source)
+
+    output = tmp_path / "initialized"
+    train(
+        FrozenTrajectoryCache(train_dir),
+        FrozenTrajectoryCache(eval_dir),
+        output,
+        config=DiagnosticConfig(
+            mode="stage2_state",
+            predictor_kind="residual",
+            steps=1,
+            effective_batch=2,
+            trajectory_microbatch=1,
+            learning_rate=1e-30,
+            checkpoint_steps=(1,),
+        ),
+        device=torch.device("cpu"),
+        initial_predictor_checkpoint=source,
+    )
+
+    identity = json.loads((output / "run.json").read_text())
+    assert identity["predictor_config"] == json.loads(
+        (source / "config.json").read_text()
+    )["predictor"]
+    assert identity["trainable_modules"] == [
+        "ResidualTemporalSpatialGridPredictor"
+    ]
+    assert identity["initialization"]["checkpoint"] == str(source.resolve())
+    assert identity["initialization"]["optimizer"] == "fresh_adamw"
+    assert json.loads((output / "initial_metrics.json").read_text())["mode"] == (
+        "stage2_state"
+    )
+    saved = torch.load(output / "step_000001" / "predictor.pt", weights_only=True)
+    torch.testing.assert_close(saved["delta_head.bias"], initialized.delta_head.bias)
+
+
 def test_training_rejects_train_eval_overlap(tmp_path: Path) -> None:
     train_dir = _export(tmp_path, "train", ("same", "train-b"))
     eval_dir = _export(tmp_path, "eval", ("same", "eval-b"), offset=10)

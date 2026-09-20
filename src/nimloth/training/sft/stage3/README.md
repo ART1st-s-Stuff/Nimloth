@@ -94,6 +94,12 @@ states; it is consumed by `render_dino_feature_comparison.py` for matched target
 PCA figures. Stage2 direct reconstruction sees the target observation, while Stage3
 WM predicts its features from an earlier state and actions; these tasks differ.
 
+`--eval-only --frozen-wm-cache-dir` exports ordered state/DINO/action sequences for
+the offline WM-only diagnostic. When evaluation resumes a Stage3 checkpoint, the
+cache identity hashes that checkpoint's `training_state.pt`, `state_proj.pt`, and
+WM config/weights; the underlying Stage2 initialization alone is not accepted as
+the representation identity.
+
 `evaluate.py` 负责离线 loss 验证，`mcts_evaluation.py` 提供 MCTS checkpoint 及 value 语义校验；真实环境评估统一由 [`../evaluation/`](../evaluation/README.md) 提供。
 
 专项 canary、动作头修复、特征定位审计和 packed/KV 研究原型位于 `experiments/training/sft/diagnosis/`。这些工具可调用训练组件，训练组件不依赖实验工具。

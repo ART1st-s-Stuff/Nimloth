@@ -142,3 +142,21 @@ copy、checkpoint round-trip、K64 fail-closed、CFM spatial/CLS routing 与消�
 production-shaped 单步 GPU canary。正式训练预计超过10分钟，canary 后需提交包含精确
 commit、输入、资源、预算、保存策略、停止规则和输出路径的最终 launch contract，并取得
 单独启动批准。
+
+## 10. Frozen-representation WM continuation
+
+追加诊断不再执行 Qwen 前向训练。先从选定 Stage3 checkpoint 对完整 train/eval split
+分别导出一次不可变的 K65 state、真实 DINO target 和动作序列；cache identity 同时绑定
+实际生成表示的 Stage3 `training_state.pt`、`state_proj.pt` 与 WM config/weights，避免只
+记录底层 Stage2 初始化而误认来源。
+
+离线训练只实例化 production residual fixed-2D WM，并从 Stage3 `wm_predictor` 权重加载。
+optimizer 是新的 AdamW，参数集合必须逐项等于 WM 参数集合；Qwen、vision、Query、
+projector、ValueHead、OutcomeHead 不进入该进程。训练采用原 WM LR `3e-4`、有效 batch64、
+H1/T4 和相同轨迹划分，以每个完整 epoch 的 validation WM MSE 观察趋势；保存点按 WM-only
+update 重新从1计数，不能与原 Stage3 global step 混用。
+
+表示质量与动力学质量分开报告。cache 上 observed state 对 observed DINO，以及冻结 CFM
+对 observed state 的 reconstruction 是固定 ceiling；WM-only 更新后只允许 predicted
+state 指标变化。最终至少比较 H1--H4 的 model、input-copy、DINO-space readout和
+reconstruction，若仍未超过 copy baseline，才把扩大容量作为后续候选实验。

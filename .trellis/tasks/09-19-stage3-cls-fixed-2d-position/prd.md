@@ -98,6 +98,19 @@ RL 起点。
 - 本次评估训练预计超过10分钟；代码与 canary 通过后，必须给出最终 launch contract
   并取得单独启动批准。提交后监控到完成、失败、取消或暂停并记录终态。
 
+### R5. Frozen-representation WM continuation diagnostic
+
+- 用户追加批准从本轮 Stage3 checkpoint 的现有 WM 权重开始，只继续训练 WM；Qwen、
+  vision、Query、projector、ValueHead 与 OutcomeHead 均不加载进 optimizer。该诊断使用
+  从同一 Stage3 checkpoint 冻结导出的完整 train/eval state cache，不能退回 Stage2 state
+  cache 冒充当前表示。
+- continuation 只继承 WM 权重和结构，使用新的 WM-only AdamW optimizer；不得声称忠实
+  恢复原多模块 optimizer。运行身份必须固定 Stage3 checkpoint、state projector、WM
+  config/weights、cache manifest 和代码 commit。
+- 结果同时报告 WM 相对 input-copy 的 H1--H4 改善，以及不随 WM 训练变化的 observed
+  state-to-DINO / observed reconstruction ceiling。若 WM 改善但表示 ceiling 仍明显落后
+  DINO oracle，应分别归因于动力学学习和 Query/projector 表示瓶颈。
+
 ## Acceptance Criteria
 
 - [ ] AC1: 新缓存逐图提供真实 DINO CLS 与 K64 grid，schema、shape、teacher identity、
@@ -111,6 +124,9 @@ RL 起点。
 - [ ] AC5: 固定数据报告分别回答 CLS 对齐、空间对齐、WM-vs-copy skill 及 observed/
   predicted spatial+CLS reconstruction；正确/零/打乱 CLS 使用相同样本、空间 state、
   噪声与采样设置，不以总 loss、单张重建图片或 mean-pooling head 指标宣称策略提升。
+- [ ] AC6: WM-only continuation 从精确 Stage3 predictor 权重初始化，cache 绑定实际 Stage3
+  表示 checkpoint，optimizer 只含 WM；报告 WM-vs-copy 与固定表示 ceiling，不把两者混为
+  WM 容量结论。
 
 ## Out of Scope
 
@@ -118,7 +134,8 @@ RL 起点。
 - 不把 CLS 直接加入 CFM 的二维网格，不修改 Stage2/Stage3 参数来优化 reconstruction，
   也不把 post-hoc CFM 指标解释为策略或动力学质量。CFM 可从头训练，但只消费冻结导出的
   state 与对应图像；CLS 的增量作用须通过正确/零/打乱 CLS 的配对评估检验。
-- 不在本轮同时修改 history size、prediction horizon、WM depth/width、loss 系数或 RL 策略。
+- 不在本轮同时修改 history size、prediction horizon、WM depth/width、loss 系数或 RL 策略；
+  R5 仅延长现有容量 WM 在冻结表示上的训练。
 - 不在本轮实现 K64 action-conditioned attention pooling，也不声称修复 ValueHead 或
   OutcomeHead 的 mean-pooling 缺陷。
 - 正式训练完成前不进入 RL；本实验结果不自动授权后续 RL。

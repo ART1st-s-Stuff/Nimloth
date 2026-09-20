@@ -86,6 +86,46 @@ def _rl_eval_checkpoint_root(args: Any) -> Path | None:
     return Path(checkpoint).resolve() if checkpoint is not None else None
 
 
+def _frozen_wm_representation_identity(
+    args: Any,
+    resume_ckpt_dir: Path | None,
+) -> dict[str, Any]:
+    """Bind an offline state cache to the checkpoint that produced its states."""
+
+    from nimloth.eval.stage3_outcome import file_sha256
+
+    root = (resume_ckpt_dir or Path(args.model)).resolve()
+    if resume_ckpt_dir is not None:
+        relative_paths = (
+            "training_state.pt",
+            "state_proj.pt",
+            "wm_predictor/config.json",
+            "wm_predictor/predictor.pt",
+        )
+        kind = "stage3_resume"
+    else:
+        relative_paths = (
+            "config.json",
+            "training_state.pt",
+            "grid_state_config.json",
+            "slot_projector.pt",
+        )
+        kind = "stage2_initialization"
+    missing = [name for name in relative_paths if not (root / name).is_file()]
+    if missing:
+        raise FileNotFoundError(
+            "frozen-WM representation checkpoint is incomplete: "
+            f"root={root}, missing={missing}"
+        )
+    return {
+        "representation_checkpoint": str(root),
+        "representation_checkpoint_kind": kind,
+        "representation_checkpoint_files": {
+            name: file_sha256(root / name) for name in relative_paths
+        },
+    }
+
+
 def _validate_rl_eval_checkpoint_contract(args: Any) -> tuple[Path, dict[str, Any]]:
     """Validate the self-contained RL artifact before allocating model weights."""
 
@@ -1211,6 +1251,9 @@ def _train_sft2_impl(args=None) -> int:
                 ["git", "rev-parse", "HEAD"], text=True
             ).strip(),
         }
+        frozen_wm_cache_identity.update(
+            _frozen_wm_representation_identity(args, resume_ckpt_dir)
+        )
     feature_export_step = int(loop_state.global_step)
     diagnostic_identity = {
         "run_output": str(Path(args.output_dir).resolve()),

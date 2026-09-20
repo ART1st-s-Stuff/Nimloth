@@ -671,6 +671,7 @@ def train(
     resume: Path | None = None,
     predictor_config: GridPredictorConfig | None = None,
     continue_from: Path | None = None,
+    initial_predictor_checkpoint: Path | None = None,
     walltime_seconds: float = 3600,
 ) -> dict:
     if (config.mode not in MODES or config.predictor_kind not in PREDICTOR_TYPES
@@ -701,6 +702,9 @@ def train(
         "state_dim",
         "action_dim",
         "source_commit",
+        "representation_checkpoint",
+        "representation_checkpoint_kind",
+        "representation_checkpoint_files",
     )
     provenance_mismatches = {
         field: (
@@ -716,6 +720,31 @@ def train(
             f"train/eval frozen-WM cache provenance mismatch: {provenance_mismatches}"
         )
 
+    predictor_type = PREDICTOR_TYPES[config.predictor_kind]
+    initialized_predictor = None
+    initialization = None
+    if initial_predictor_checkpoint is not None:
+        initial_predictor_checkpoint = Path(initial_predictor_checkpoint).resolve()
+        config_path = initial_predictor_checkpoint / "config.json"
+        state_path = initial_predictor_checkpoint / "predictor.pt"
+        if not config_path.is_file() or not state_path.is_file():
+            raise FileNotFoundError(
+                "incomplete production WM predictor checkpoint: "
+                f"{initial_predictor_checkpoint}"
+            )
+        initialized_predictor = predictor_type.load_checkpoint(
+            initial_predictor_checkpoint,
+            map_location="cpu",
+        )
+        initialization = {
+            "schema": "production_wm_predictor_initialization_v1",
+            "checkpoint": str(initial_predictor_checkpoint),
+            "config_sha256": file_sha256(config_path),
+            "predictor_sha256": file_sha256(state_path),
+            "optimizer": "fresh_adamw",
+            "step_origin": "wm_only_update_1",
+        }
+
     default_predictor = GridPredictorConfig(
         grid_tokens=int(train_cache.manifest["grid_tokens"]),
         emb_dim=int(train_cache.manifest["state_dim"]),
@@ -727,6 +756,15 @@ def train(
         mlp_dim=2048,
         dropout=0.1,
     )
+    if initialized_predictor is not None:
+        if (
+            predictor_config is not None
+            and predictor_config != initialized_predictor.config
+        ):
+            raise ValueError(
+                "explicit predictor config differs from the production WM checkpoint"
+            )
+        predictor_config = initialized_predictor.config
     predictor_config = predictor_config or default_predictor
     if (predictor_config.grid_tokens != default_predictor.grid_tokens
             or predictor_config.emb_dim != default_predictor.emb_dim):
@@ -742,7 +780,6 @@ def train(
     # Preserve exact identities of existing direct runs for faithful resume.
     if config.predictor_kind == "direct":
         config_identity.pop("predictor_kind")
-    predictor_type = PREDICTOR_TYPES[config.predictor_kind]
     run_identity = {
         "schema": RUN_SCHEMA,
         "config": config_identity,
@@ -754,6 +791,8 @@ def train(
         "dtype": "float32",
         "schedule": "production_python_shuffle_effective_batch_v1",
     }
+    if initialization is not None:
+        run_identity["initialization"] = initialization
 
     source_identity = run_identity
     convergence = None
@@ -790,6 +829,8 @@ def train(
     predictor = predictor_type(predictor_config).to(
         device=device, dtype=torch.float32
     )
+    if initialized_predictor is not None:
+        predictor.load_state_dict(initialized_predictor.state_dict(), strict=True)
     optimizer = torch.optim.AdamW(predictor.parameters(), lr=config.learning_rate)
     optimized = {id(parameter) for group in optimizer.param_groups for parameter in group["params"]}
     if optimized != {id(parameter) for parameter in predictor.parameters()}:
@@ -821,6 +862,22 @@ def train(
             "dino_mean_sha256": hashlib.sha256(means["dino"].numpy().tobytes()).hexdigest(),
         },
     ) if resume is None else None
+    if (
+        resume is None
+        and continue_from is None
+        and initialized_predictor is not None
+    ):
+        atomic_json(
+            output / "initial_metrics.json",
+            evaluate_predictor(
+                predictor,
+                eval_cache,
+                mode=config.mode,
+                means=means,
+                device=device,
+                seed=config.seed,
+            ),
+        )
 
     log_path = output / "train_steps.jsonl"
     if resume is not None:
@@ -974,6 +1031,14 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--device", default="cuda")
     run.add_argument("--resume", type=Path)
     run.add_argument("--continue-from", type=Path)
+    run.add_argument(
+        "--initial-predictor-checkpoint",
+        type=Path,
+        help=(
+            "Initialize WM weights/config from an existing production wm_predictor "
+            "checkpoint; all non-WM modules remain absent and the optimizer starts fresh."
+        ),
+    )
     run.add_argument("--walltime-seconds", type=float, default=3600)
     return parser
 
@@ -1005,6 +1070,7 @@ def main(argv: list[str] | None = None) -> int:
         device=torch.device(args.device),
         resume=args.resume,
         continue_from=args.continue_from,
+        initial_predictor_checkpoint=args.initial_predictor_checkpoint,
         walltime_seconds=args.walltime_seconds,
     )
     print(json.dumps(metrics, indent=2))

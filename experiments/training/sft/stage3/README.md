@@ -53,9 +53,11 @@ from representation learning. It does not change formal Stage3 defaults.
 Run the production Stage3 entry point in `--eval-only` mode with
 `--frozen-wm-cache-dir` and explicit `--frozen-wm-cache-split train|eval`
 once for the official train split and once for the
-official eval split. The export stores each trajectory's ordered Stage2 state
+official eval split. The export stores each trajectory's ordered checkpoint state
 grids, real DINO grids, and actions once; overlapping T=4 windows are derived
-later by index. Seal each fresh directory before training:
+later by index. When the export resumes a Stage3 checkpoint, its manifest binds
+the actual `training_state.pt`, state projector, and WM files in addition to the
+underlying Stage2 initialization. Seal each fresh directory before training:
 
 ```bash
 python experiments/training/sft/stage3/frozen_wm_diagnostic.py seal-cache \
@@ -67,7 +69,9 @@ Run the two explicit diagnostics in separate fresh output directories:
 ```bash
 python experiments/training/sft/stage3/frozen_wm_diagnostic.py train \
   --train-cache /path/to/train-cache --eval-cache /path/to/eval-cache \
-  --output /path/to/fresh/output --mode stage2_state
+  --output /path/to/fresh/output --mode stage2_state \
+  --predictor-kind residual \
+  --initial-predictor-checkpoint /path/to/stage3/epoch_005/wm_predictor
 
 python experiments/training/sft/stage3/frozen_wm_diagnostic.py train \
   --train-cache /path/to/train-cache --eval-cache /path/to/eval-cache \
@@ -82,6 +86,13 @@ keeps each optimizer update equal to the global mean over its 64-trajectory
 group. Only the predictor exists in the optimizer. Checkpoints at steps
 1/5/10/final contain predictor, optimizer, RNG, immutable cache identities, and
 resume position.
+
+`--initial-predictor-checkpoint` continues the production WM weights and exact
+predictor config with a fresh WM-only AdamW optimizer. It does not restore the
+original multi-module optimizer, and the diagnostic update counter restarts at
+one. The path and hashes of both production predictor files are part of the
+immutable run identity. `initial_metrics.json` evaluates those weights before
+the first WM-only update, so later checkpoints have an exact offline baseline.
 
 Metrics are reported per horizon against the fixed mode target and real DINO.
 Baselines include the per-horizon train-window mean, current mode input copy,
