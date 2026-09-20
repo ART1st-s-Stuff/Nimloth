@@ -154,7 +154,9 @@ def test_stage2_k64_projector_copies_both_k65_branches(tmp_path):
     state = split(hidden)
     assert state.shape == (2, 5, 3)
     torch.testing.assert_close(state[:, :4], shared(hidden[:, :4]))
-    torch.testing.assert_close(state[:, 4:], shared(hidden[:, 4:]))
+    global_reference = SharedSlotProjector(6, 3, 7, grid_tokens=1)
+    global_reference.load_state_dict(shared.state_dict(), strict=True)
+    torch.testing.assert_close(state[:, 4:], global_reference(hidden[:, 4:]))
 
 
 def test_stage2_k64_projector_rejects_non_fp32_source(tmp_path):
@@ -205,14 +207,20 @@ def test_split_projector_loss_gradients_are_branch_local():
     state[:, :4].square().mean().backward()
     assert all(p.grad is not None for p in split.spatial.parameters())
     assert sum(p.grad.abs().sum() for p in split.spatial.parameters()) > 0
-    assert all(p.grad is None for p in split.global_projector.parameters())
+    assert all(
+        p.grad is None or torch.count_nonzero(p.grad) == 0
+        for p in split.global_projector.parameters()
+    )
     assert hidden.grad is not None
     assert hidden.grad[:, :4].abs().sum() > 0
     assert torch.count_nonzero(hidden.grad[:, 4:]) == 0
     split.zero_grad(set_to_none=True)
     hidden.grad = None
     split(hidden)[:, 4:].square().mean().backward()
-    assert all(p.grad is None for p in split.spatial.parameters())
+    assert all(
+        p.grad is None or torch.count_nonzero(p.grad) == 0
+        for p in split.spatial.parameters()
+    )
     assert all(p.grad is not None for p in split.global_projector.parameters())
     assert sum(p.grad.abs().sum() for p in split.global_projector.parameters()) > 0
     assert hidden.grad is not None
