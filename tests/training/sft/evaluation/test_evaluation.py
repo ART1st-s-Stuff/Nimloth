@@ -42,7 +42,9 @@ def test_direct_and_wm_share_episode_generation_and_stop_contract(tmp_path):
     assert direct_args.num_episodes == 6
     assert not direct_args.planner_enabled
     assert direct_args.wm_checkpoint is None
+    assert direct_args.credit_assignment == "turn"
     assert wm_args.planner_enabled
+    assert wm_args.credit_assignment == "action"
     assert wm_args.planning_horizon == 4
     assert wm_args.planning_search_mode == "mcts"
     assert wm_args.wm_checkpoint == contract.wm_checkpoint

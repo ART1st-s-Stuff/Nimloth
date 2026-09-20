@@ -93,7 +93,9 @@ def build_rollout_argv(
         "--top-p",
         str(args.top_p),
         "--credit-assignment",
-        "action",
+        # Direct evaluation must generate and persist the model's real CoT and
+        # action response.  WM evaluation supplies an action-level planner.
+        "turn" if args.mode == "direct" else "action",
         "--max-response-tokens",
         str(args.max_response_tokens),
         "--tensor-parallel-size",
