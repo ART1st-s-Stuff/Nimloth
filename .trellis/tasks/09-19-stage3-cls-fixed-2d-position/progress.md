@@ -509,3 +509,14 @@
   projector把验证MSE从`0.736140`降到`0.559734`（best epoch12），说明projector结构本身
   不存在固定的`0.58--0.59`下限；但来源checkpoint不同，不能回答当前K65 joint目标是否
   冲突。新增R7要求以step180做匹配的projector gradient与spatial-only probe。
+- spatial plateau诊断实现于提交`2dc9a18d`：复用既有cache入口冻结step180的K65 Query
+  hidden和DINO targets，分别计算K64 spatial/K1 CLS基线与共享projector梯度，再只用
+  spatial loss拟合同一projector；聚焦远程回归`11 passed`。首个1+1轨迹canary因无法构造
+  cross-seed错误配对而fail-closed；没有放宽指标要求。
+- 8 train + 8 val轨迹的机制canary r2完整结束，输出为
+  `20260920_spatial_plateau_canary_r2`，占用186 MiB，结束后GPU全部释放。基线spatial/CLS
+  MSE为`0.562035/0.575791`；共享projector上的sample-weighted梯度范数分别为
+  `0.590512/2.099593`，dot=`-0.0246124`、cosine=`-0.0198513`。两轮spatial-only拟合
+  未超过epoch0，最终spatial MSE为`0.577805`，按patience停止。该小样本canary只证明
+  数据切片、梯度诊断、训练、早停和产物链路可运行；单batch梯度与8条验证轨迹不足以
+  判断总体梯度冲突或representation ceiling，不能据此调整正式损失权重。
