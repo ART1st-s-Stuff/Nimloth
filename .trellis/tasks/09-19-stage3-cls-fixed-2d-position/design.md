@@ -98,23 +98,29 @@ conditioned predicted successor 计算 BCE。为保持旧 K64 读出语义，两
 
 ## 7. Reconstruction 与固定评估
 
-现有 `spatial_grid_v1` CFM decoder 保持冻结，只接收 layout 的64个 spatial slots。它不
-读取 CLS，也不在本任务重训。固定评估使用与近期 Stage3 epoch5 完全相同的样本身份、
-future horizon、decoder checkpoint、noise seed、采样步数和渲染尺度，分别报告：
+从冻结导出的 K65 state 与对应图像从头训练 `spatial_cls_grid_v1` CFM。它显式拆分
+`[spatial_00...spatial_63, global_cls]`：空间分支保持 `8x8` row-major 和固定坐标的逐尺度
+注入；CLS 经独立 LayerNorm/MLP 形成 global condition，与空间分支的 global summary
+合成后进入时间/残差条件，不占据二维格点。整个 CFM 可训练，但 Qwen、projector、WM、
+Value/Outcome 均冻结且不进入 reconstruction optimizer。
 
-1. epoch16 与 CLS-aligned Stage2 的 observed spatial reconstruction；两者应一致；
-2. Stage3 的真实 future state reconstruction，作为 decoder/目标参照；
-3. Stage3 predicted spatial state reconstruction，按 H1--H4 与真实 future image 比较；
-4. copy-current spatial baseline；
-5. observed/predicted spatial 到 DINO grid 的 MSE、cosine、centered variation 与配对优势；
-6. observed/predicted global 到 DINO CLS 的 MSE、cosine、跨场景变化与错误配对优势。
+decoder fitting 只使用 reconstruction train split；validation 图像完全隔离。固定评估使用
+相同样本身份、future horizon、noise seed、采样步数和渲染尺度，分别报告：
+
+1. CLS-aligned Stage2 与 Stage3 observed K65 reconstruction；
+2. Stage3 的真实 future K65 state reconstruction，作为 decoder/目标参照；
+3. Stage3 WM-predicted K65 state reconstruction，按 H1--H4 与真实 future image比较；
+4. copy-current K65 baseline；
+5. 相同空间 state 下正确 CLS、零 CLS、跨样本打乱 CLS 的配对指标与图片；
+6. observed/predicted spatial 到 DINO grid，以及 global 到 DINO CLS 的 MSE、cosine、
+   centered variation 与错误配对优势。
 
 展示图只保留原图、真实 future、copy baseline、真实 future state reconstruction 与模型
 predicted reconstruction，并写清 horizon 和列名。实验用的均值图、误差热图等诊断列不
 混入最终展示；完整诊断仍保存在机器可读 artifact 中。
 
-因为 frozen decoder 不消费 CLS，图像改善只能说明 global/二维位置经 WM 改善了 predicted
-spatial state，不能说明 decoder 直接利用了 CLS。Value/Outcome 指标不参与 reconstruction
+正确 CLS 相对零/打乱 CLS 的配对改善，只说明这个 post-hoc decoder 能利用 CLS 中与图像
+有关的信息；它不证明 WM 动力学或策略改善。Value/Outcome 指标不参与 reconstruction
 结论。
 
 ## 8. Checkpoint、兼容与回滚
@@ -132,7 +138,7 @@ resolved config、固定评估 artifact 和结果摘要。原 Stage2 epoch16、�
 ## 9. 启动门禁
 
 实现先通过 schema、shape/order、固定编码、grad reachability、head spatial slicing、residual
-copy、checkpoint round-trip、K64 fail-closed 与固定 reconstruction identity 测试；随后运行
+copy、checkpoint round-trip、K64 fail-closed、CFM spatial/CLS routing 与消融 identity测试；随后运行
 production-shaped 单步 GPU canary。正式训练预计超过10分钟，canary 后需提交包含精确
 commit、输入、资源、预算、保存策略、停止规则和输出路径的最终 launch contract，并取得
 单独启动批准。

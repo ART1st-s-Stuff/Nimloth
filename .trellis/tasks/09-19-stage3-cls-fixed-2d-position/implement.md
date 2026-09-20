@@ -44,11 +44,14 @@
 
 1. 泛化现有 fixed-probe exporter，使其同时导出 spatial/global observed、target、predicted、
    copy baseline 与 identity manifest。
-2. reconstruction evaluator 显式切出 K64，拒绝把 K65 reshape 为二维 grid；固定 decoder、
-   sample ids、noise、steps和图像预处理。
-3. 输出 H1--H4 定量指标、DINO feature/CLS 指标和精简可视化；保留机器可读完整诊断。
-4. 加入 observed K64 identity gate：epoch16 与 CLS-aligned Stage2 的 state/reconstruction
-   必须在规定容差内一致。
+2. 新增 `spatial_cls_grid_v1` CFM：显式切出 K64 spatial 与 K1 CLS，空间分支保持二维逐尺度
+   注入，CLS 只进入独立 global condition；禁止把 K65 reshape 为二维 grid。
+3. 从头训练完整 CFM，但冻结所有 state source 组件；训练/验证图像按既定 split 隔离，保存
+   完整 decoder checkpoint、optimizer、RNG、cache identity 与 best validation状态。
+4. evaluator 固定 sample ids、noise、steps和图像预处理，输出正确/零/打乱 CLS 的配对
+   定量指标与 observed/WM-predicted H1--H4 精简可视化。
+5. 加入 observed K64 identity gate：epoch16 与 CLS-aligned Stage2 的 spatial state 必须在
+   规定容差内一致；同时记录 CLS 消融不能证明策略或动力学改善的边界。
 
 ## 6. 本地与远端验证
 
@@ -87,8 +90,8 @@ git diff --check
    不以两个 head 的变化决定本轮成功。
 5. 结束、失败、暂停或取消时使用 `on-experiment-end`；核验进程/GPU释放、checkpoint完整性、
    best/last语义与可恢复位置。
-6. 用固定数据生成最终 reconstruction/DINO 报告，明确 evaluation-only、无 RL、decoder不读
-   CLS、无 head 架构对照及不能单因果归因等限制。
+6. 用固定数据生成最终 reconstruction/DINO 报告，明确 evaluation-only、无 RL、CFM
+   post-hoc、无 head 架构对照及不能把 CLS decoder收益解释为策略/动力学提升等限制。
 
 ## 风险与回滚点
 
@@ -96,6 +99,6 @@ git diff --check
   在加载前拒绝。
 - CLS 加入会改变 Qwen 后续 action logits；Stage2 格式与 rollout 门禁失败时不进入 Stage3。
 - Value/Outcome 仍使用已知有缺陷的 mean pooling；它们照常训练，但不据此下质量结论。
-- frozen CFM 不读取 CLS；若 predicted reconstruction 不变，只能说明当前 WM 未把新增全局
-  信息转化为空间预测收益，不能据此断言 CLS 没有信息。
+- spatial+CLS CFM 是重新拟合的 post-hoc decoder；若正确 CLS 优于零/打乱 CLS，只能说明
+  CLS 对该 decoder 有增量图像信息。跨 decoder 的绝对画质差异不能单独归因于 CLS。
 - 旧 checkpoint 与新 K65 schema 不兼容；回滚使用原 K64 分支与产物，不做权重拼接。

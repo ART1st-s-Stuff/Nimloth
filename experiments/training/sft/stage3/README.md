@@ -87,3 +87,30 @@ Metrics are reported per horizon against the fixed mode target and real DINO.
 Baselines include the per-horizon train-window mean, current mode input copy,
 and current real-DINO copy. Donor perturbations use a different trajectory ID
 but are not task-matched because the frozen cache contains no task metadata.
+
+## Spatial+CLS reconstruction decoder
+
+`cfm_decoder_probe.py` can fit a post-hoc reconstruction decoder from a sealed
+K65 cache without loading or updating Qwen, the state projector, world model,
+ValueHead, or OutcomeHead. Select the explicit layout with
+`--decoder-family spatial_cls_grid_v1`; the default remains the legacy K64
+`spatial_grid_v1` family. The K65 family always interprets rows 0--63 as the
+row-major `8x8` spatial grid and row 64 as the DINO CLS token. It rejects K64
+caches instead of padding or pooling a replacement global token. The sealed
+cache must also record the exact `row_major_spatial_then_global` state layout;
+K65 shape alone is not accepted as proof of slot ordering.
+
+Train independent state and DINO decoders with the same `--steps`, `--batch`,
+`--seed`, train/eval caches, and split JSONL files. Each run writes `latest.pt`,
+`final.pt`, and the lowest validation correct-CLS flow-loss checkpoint as
+`best.pt`; only the decoder parameters are optimized. Validation logs matched
+correct, zero, and cross-sample shuffled CLS conditions under the same flow
+noise and time.
+
+`evaluate_cfm_decoder_probe.py` infers the decoder layout from both checkpoint
+schemas and requires them to agree. For the K65 family it reports the ordinary
+reconstruction metrics plus paired correct/zero/shuffled-CLS metrics for every
+decoded state source. The image report shows these ablations for observed and
+WM-predicted state while holding spatial state and sampling noise fixed. This
+measures whether the post-hoc decoder uses CLS; it is not rollout success or
+evidence that the world model itself improved.

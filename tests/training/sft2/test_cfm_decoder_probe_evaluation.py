@@ -7,10 +7,13 @@ from pathlib import Path
 
 import torch
 
+from experiments.training.sft.stage3.cfm_decoder_probe import CLS_SCHEMA, SCHEMA
 from experiments.training.sft.stage3.evaluate_cfm_decoder_probe import (
     aligned_rows,
+    decoder_family_for_checkpoints,
     image_metrics,
     paired_noise,
+    summarize_cls_ablations,
     validate_decoder_identity,
 )
 from experiments.training.sft.stage3.render_continuation_features import (
@@ -90,6 +93,33 @@ class CFMProbeEvaluationTests(unittest.TestCase):
         )
         self.assertEqual(rows[0]["aligned_observed"].shape, (65, 1024))
         self.assertEqual(rows[0]["baseline_observed"].shape, (64, 1024))
+
+    def test_cache_alignment_rejects_inconsistent_k65_cls_target(self):
+        spatial = torch.zeros(5, 64, 3)
+        cls = torch.ones(5, 1, 3)
+        full = torch.cat((spatial, cls), dim=1)
+        cached = {
+            "a": {
+                "dino": full,
+                "states": full + 1,
+                "actions": torch.tensor([1, 2, 3, 4]),
+            }
+        }
+        item = {
+            "actions": torch.tensor([1, 2, 3, 4]),
+            "current_dino": full[0].clone(),
+            "dino": full[1:].clone(),
+            "online_direct": full[1:] + 2,
+            "predicted": full[1:] + 3,
+            "online_current": full[0] + 2,
+        }
+        changed = copy.deepcopy(item)
+        changed["dino"][0, 64] += 1
+        with self.assertRaisesRegex(ValueError, "successor DINO CLS mismatch"):
+            aligned_rows(
+                {"baseline": {("a", 0): item}, "changed": {("a", 0): changed}},
+                cached,
+            )
 
     def test_feature_matching_allows_k64_baseline_against_k65_cls_probe(self):
         actions = torch.tensor([1, 2, 3, 4])
@@ -249,7 +279,7 @@ class CFMProbeEvaluationTests(unittest.TestCase):
         evaluation = {"condition": "state", "split": "eval", "split_sha256": "right"}
         identity = {"train": {"condition": "state"}, "eval": evaluation, "steps": 4000,
                     "batch": 32, "seed": 20260921, "decoder_family": "spatial_grid_v1"}
-        payload = {"step": 4000, "identity": identity}
+        payload = {"schema": SCHEMA, "step": 4000, "identity": identity}
         normalized = validate_decoder_identity(payload, evaluation, "state")
         with self.assertRaisesRegex(ValueError, "family/evaluation"):
             validate_decoder_identity(payload, evaluation, "dino")
@@ -260,6 +290,60 @@ class CFMProbeEvaluationTests(unittest.TestCase):
         other["identity"]["eval"]["split_sha256"] = "wrong"
         with self.assertRaisesRegex(ValueError, "family/evaluation"):
             validate_decoder_identity(other, evaluation, "dino", normalized)
+
+    def test_decoder_checkpoint_contract_selects_one_layout_family(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            spatial = root / "spatial.pt"
+            cls = root / "cls.pt"
+            torch.save(
+                {
+                    "schema": SCHEMA,
+                    "identity": {"decoder_family": "spatial_grid_v1"},
+                },
+                spatial,
+            )
+            torch.save(
+                {
+                    "schema": CLS_SCHEMA,
+                    "identity": {"decoder_family": "spatial_cls_grid_v1"},
+                },
+                cls,
+            )
+            self.assertEqual(
+                decoder_family_for_checkpoints((cls, cls)),
+                "spatial_cls_grid_v1",
+            )
+            with self.assertRaisesRegex(ValueError, "families differ"):
+                decoder_family_for_checkpoints((spatial, cls))
+
+    def test_cls_ablation_summary_uses_paired_per_image_deltas(self):
+        rows = [
+            {"horizon_step": 1},
+            {"horizon_step": 2},
+            {"horizon_step": 3},
+            {"horizon_step": 4},
+        ]
+        correct = {
+            "mse": torch.tensor([1.0, 2.0, 3.0, 4.0]),
+            "ssim": torch.tensor([0.8, 0.7, 0.6, 0.5]),
+        }
+        values = {
+            "correct": correct,
+            "zero_cls": {key: value + 0.1 for key, value in correct.items()},
+            "shuffled_cls": {key: value - 0.2 for key, value in correct.items()},
+        }
+        summary = summarize_cls_ablations(values, rows)
+        self.assertAlmostEqual(
+            summary["variant_minus_correct"]["zero_cls"]["all"]["mse"],
+            0.1,
+            places=6,
+        )
+        self.assertAlmostEqual(
+            summary["variant_minus_correct"]["shuffled_cls"]["all"]["ssim"],
+            -0.2,
+            places=6,
+        )
 
 
 if __name__ == "__main__":

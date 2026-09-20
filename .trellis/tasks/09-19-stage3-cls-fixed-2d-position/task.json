@@ -5,7 +5,7 @@
   "description": "为 Stage3 state/WM 增加 DINO CLS 全局 token 和固定二维空间编码，并与现有 K64 基线做可比实验",
   "status": "in_progress",
   "dev_type": null,
-  "scope": "DINO spatial+CLS cache, K64+CLS state/query interface, evaluation-only Stage2 alignment, fixed-2D residual Stage3, Value/Outcome spatial-only compatibility, frozen reconstruction evaluation, configs/checkpoints/tests/remote ablation",
+  "scope": "DINO spatial+CLS cache, K64+CLS state/query interface, evaluation-only Stage2 alignment, fixed-2D residual Stage3, Value/Outcome spatial-only compatibility, retrained spatial+CLS CFM reconstruction evaluation, configs/checkpoints/tests/remote ablation",
   "package": null,
   "priority": "P2",
   "creator": "ARTI5T",

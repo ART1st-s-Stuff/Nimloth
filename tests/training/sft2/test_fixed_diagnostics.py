@@ -1,6 +1,6 @@
-from types import SimpleNamespace
 import json
 import random
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -21,11 +21,13 @@ def test_probe_preserves_rng_and_mixed_modes_on_error():
     random.seed(123)
     np.random.seed(123)
     torch.manual_seed(123)
-    with pytest.raises(RuntimeError, match="probe"):
-        with probes.preserve_probe_state([model]):
-            assert not any(module.training for module in model.modules())
-            random.random(), np.random.rand(), torch.rand(12)
-            raise RuntimeError("probe failed")
+    with (
+        pytest.raises(RuntimeError, match="probe"),
+        probes.preserve_probe_state([model]),
+    ):
+        assert not any(module.training for module in model.modules())
+        random.random(), np.random.rand(), torch.rand(12)
+        raise RuntimeError("probe failed")
     assert model.training and not model[0].training and model[1].training
     assert random.random() == expected[0]
     assert np.random.rand() == expected[1]
@@ -35,7 +37,7 @@ def test_probe_preserves_rng_and_mixed_modes_on_error():
 def test_fixed_probe_dispatch_manifest_resume_and_tamper(tmp_path, monkeypatch):
     calls = []
     class Writer:
-        def __init__(self, directory, *, rank):
+        def __init__(self, directory, *, rank, state_layout=None):
             directory.mkdir(parents=True, exist_ok=True)
             self.paths = [directory / f"rank_{rank:03d}_batch_0000.pt"]
             self.paths[0].write_bytes(b"features")
@@ -49,7 +51,10 @@ def test_fixed_probe_dispatch_manifest_resume_and_tamper(tmp_path, monkeypatch):
         diagnostic_dir=tmp_path / "probes", diagnostic_steps=(0, 1, 5),
         diagnostic_identity={"run": "B"}, state=SimpleNamespace(global_step=0),
         rank=0, val_loader=["first", "second"], algorithm=None, batch_builder=None,
-        model_runtime=SimpleNamespace(agent=SimpleNamespace(trainable_modules=[torch.nn.Linear(1, 1)])),
+        model_runtime=SimpleNamespace(agent=SimpleNamespace(
+            trainable_modules=[torch.nn.Linear(1, 1)],
+            wm=SimpleNamespace(state_layout=None),
+        )),
     )
     SFT2TrainingLoop._run_fixed_diagnostic(loop)
     SFT2TrainingLoop._run_fixed_diagnostic(loop)

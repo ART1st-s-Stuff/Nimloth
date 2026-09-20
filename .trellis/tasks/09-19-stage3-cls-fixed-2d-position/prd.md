@@ -3,8 +3,9 @@
 ## Goal
 
 为世界模型提供 DINOv2 CLS 全局视觉目标及固定二维空间位置编码，优先检验显式全局
-场景信息与二维几何是否能改善未来空间 state/DINO 预测及其 reconstruction。现有 K64
-residual WM 与冻结 reconstruction decoder 用于保持评估口径；本任务不增加新的
+场景信息与二维几何是否能改善未来空间 state/DINO 预测及其 reconstruction。Stage3 完成后
+从头训练一个显式 K64 spatial + K1 CLS 双分支 CFM，并以 CLS 消融确认 decoder 是否使用
+全局槽位；本任务不增加新的
 ValueHead/OutcomeHead pooling 对照。训练结果只作为评估证据，不作为正式模型或后续
 RL 起点。
 
@@ -28,9 +29,9 @@ RL 起点。
 - 最近可比 Stage3 基线从同一 Stage2 epoch16 fresh start，使用 K64/grid8、H1/T4、
   residual WM、DINO2、Outcome BCE1、SIGReg0；WM/Value/Outcome 梯度在 Qwen hidden
   处停止但允许更新 projector。对照配置和固定数据评估口径沿用该基线。
-- 当前固定 reconstruction 使用的 `spatial_grid_v1` CFM 已按 row-major 将 K64 恢复为
-  `8x8`，并注入固定 `(x,y)` 坐标。它只能直接读取 K64；若新 state 为 K65，评估时应
-  明确只把 64 个空间槽位送入既有 decoder，CLS 另作特征指标，不能伪装成同一输入。
+- 当前 `spatial_grid_v1` CFM 按 row-major 将 K64 恢复为 `8x8`，并注入固定 `(x,y)`
+  坐标；它不能把第65个 CLS 伪装成空间格点。本轮新增双分支 CFM：前64槽沿用空间
+  conditioning，最后1槽经独立 global conditioning 注入，decoder 从头训练。
 - 当前 ValueHead 与 OutcomeHead 都在进入非线性读出前对空间槽位做 mean pooling，无法
   区分均值相同而空间布局不同的 state。用户已明确该问题早于 CLS 接口，但本轮主要关心
   reconstruction，暂不增加 action-conditioned attention pooling 对照；该缺陷不得在本轮
@@ -81,9 +82,10 @@ RL 起点。
   65 个 token 的朴素平均而让 CLS 只占 `1/65`，也不得把两个分项的尺度变化隐藏在总损失。
 - 固定数据评估至少报告 observed spatial/CLS 到对应 DINO target、WM predicted 到真实
   future state、WM predicted spatial/CLS 到 future DINO、copy baseline、H1-H4、
-  centered variation及现有 reconstruction。重建只读取空间64槽位，并与相同冻结
-  decoder、相同输入样本、相同噪声的现有 K64 结果比较。observed K64 reconstruction
-  与 predicted K64 reconstruction 必须分开，不能把后者的变化归因于 decoder。
+  centered variation及 spatial+CLS reconstruction。CFM 必须明确拆分64个空间槽位和1个
+  CLS，不得把 K65 reshape 为二维网格。训练只使用 reconstruction train split，验证图像
+  不进入拟合。评估使用相同输入样本、噪声与采样设置，分别比较正确 CLS、零 CLS、
+  跨样本打乱 CLS；observed reconstruction 与 WM-predicted reconstruction 必须分开。
 - 本次评估训练的代码路径必须同时支持未来 fresh Stage2：CLS token/schema 不能作为
   epoch16 resume 的临时补丁，正式训练时可从 Stage2 epoch1 与空间 Query 一起启用。
 
@@ -107,15 +109,15 @@ RL 起点。
 - [ ] AC4: 与近期 K64 baseline 的除实验变量外配置差异审计通过，evaluation-only Stage2
   与 Stage3 产生完整可恢复 checkpoint 和逐轮验证指标，元数据明确禁止当作正式模型。
 - [ ] AC5: 固定数据报告分别回答 CLS 对齐、空间对齐、WM-vs-copy skill 及 observed/
-  predicted spatial reconstruction；明确现有 decoder 不读取 CLS，不以总 loss、单张
-  重建图片或 mean-pooling head 指标宣称策略提升。
+  predicted spatial+CLS reconstruction；正确/零/打乱 CLS 使用相同样本、空间 state、
+  噪声与采样设置，不以总 loss、单张重建图片或 mean-pooling head 指标宣称策略提升。
 
 ## Out of Scope
 
 - 不改变 DINO teacher 权重、图像预处理、训练/验证任务划分或环境奖励。
-- 不把 CLS 直接加入现有 CFM 的二维网格，也不训练新的 CLS-conditioned reconstruction
-  decoder；本轮沿用冻结 K64 CFM，以相同 decoder、样本和噪声比较空间 state 的可重建性。
-  CLS 的直接可用性通过 DINO CLS 对齐和跨场景变化指标评估。
+- 不把 CLS 直接加入 CFM 的二维网格，不修改 Stage2/Stage3 参数来优化 reconstruction，
+  也不把 post-hoc CFM 指标解释为策略或动力学质量。CFM 可从头训练，但只消费冻结导出的
+  state 与对应图像；CLS 的增量作用须通过正确/零/打乱 CLS 的配对评估检验。
 - 不在本轮同时修改 history size、prediction horizon、WM depth/width、loss 系数或 RL 策略。
 - 不在本轮实现 K64 action-conditioned attention pooling，也不声称修复 ValueHead 或
   OutcomeHead 的 mean-pooling 缺陷。

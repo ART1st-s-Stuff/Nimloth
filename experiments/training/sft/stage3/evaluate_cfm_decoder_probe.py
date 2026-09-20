@@ -19,7 +19,7 @@ from experiments.training.sft.stage3.render_continuation_features import (
 from experiments.training.sft.stage3.render_dino_feature_comparison import (
     select_page_rows,
 )
-from nimloth.recon.cfm.flow import sample_euler
+from nimloth.recon.cfm.flow import sample_euler, spatial_cls_condition_variants
 from nimloth.wm.layout import GridStateLayout
 
 SEEDS = (20260931, 20260932, 20260933)
@@ -86,11 +86,9 @@ def _same_dino_observation(left, right):
         or right.shape[-2] not in allowed
     ):
         return False
-    if left.shape == right.shape:
-        return torch.equal(left, right)
     if left.shape[:-2] != right.shape[:-2] or left.shape[-1] != right.shape[-1]:
         return False
-    if {left.shape[-2], right.shape[-2]} != allowed:
+    if left.shape[-2] not in allowed or right.shape[-2] not in allowed:
         return False
     return torch.equal(_spatial_state(left), _spatial_state(right))
 
@@ -116,11 +114,28 @@ def aligned_rows(probes, cache_records):
             item["current_dino"], cached["dino"][start].float()
         ):
             raise ValueError("cached current DINO differs from probe")
+        cached_current_dino = cached["dino"][start].float()
+        for label, probe in probes.items():
+            source_current = probe[key]["current_dino"]
+            if (
+                source_current.shape[-2] == _STATE_LAYOUT.state_tokens
+                and cached_current_dino.shape[-2] == _STATE_LAYOUT.state_tokens
+                and not torch.equal(source_current, cached_current_dino)
+            ):
+                raise ValueError(f"probe {label} current DINO CLS mismatch")
         for horizon in range(1, 5):
             observation = start+horizon
             target_dino = cached["dino"][observation].float()
             if not _same_dino_observation(item["dino"][horizon - 1], target_dino):
                 raise ValueError("cached successor DINO differs from probe")
+            for label, probe in probes.items():
+                source_target = probe[key]["dino"][horizon - 1]
+                if (
+                    source_target.shape[-2] == _STATE_LAYOUT.state_tokens
+                    and target_dino.shape[-2] == _STATE_LAYOUT.state_tokens
+                    and not torch.equal(source_target, target_dino)
+                ):
+                    raise ValueError(f"probe {label} successor DINO CLS mismatch")
             row = {"trajectory": trajectory, "window_start": start, "horizon_step": horizon,
                    "observation": observation, "gt_state": cached["states"][observation].float(), "gt_dino": target_dino}
             for label, probe in probes.items():
@@ -142,13 +157,44 @@ def summarize(values, rows):
     return result
 
 
+def summarize_cls_ablations(variant_values, rows):
+    """Summarize matched CLS variants and their per-image deltas."""
+
+    correct = variant_values["correct"]
+    result = {
+        "variants": {
+            name: summarize(values, rows) for name, values in variant_values.items()
+        },
+        "variant_minus_correct": {},
+    }
+    for name in ("zero_cls", "shuffled_cls"):
+        result["variant_minus_correct"][name] = summarize(
+            {
+                metric: variant_values[name][metric] - correct[metric]
+                for metric in correct
+            },
+            rows,
+        )
+    return result
+
+
 def validate_decoder_identity(payload, dataset_identity, family, previous=None):
     identity = payload["identity"]
     expected_eval = {**dataset_identity, "condition": family}
     if identity.get("eval") != expected_eval or identity.get("train", {}).get("condition") != family:
         raise ValueError("decoder family/evaluation dataset identity mismatch")
+    from experiments.training.sft.stage3.cfm_decoder_probe import (
+        decoder_family_from_payload,
+    )
+
+    decoder_family = decoder_family_from_payload(payload)
+    if decoder_family not in {"spatial_grid_v1", "spatial_cls_grid_v1"}:
+        raise ValueError("unsupported decoder family")
+    dataset_family = dataset_identity.get("decoder_family", "spatial_grid_v1")
+    if dataset_family != decoder_family:
+        raise ValueError("decoder/cache layout family mismatch")
     if (payload.get("step") != 4000 or identity.get("steps") != 4000 or identity.get("batch") != 32
-            or identity.get("seed") != 20260921 or identity.get("decoder_family") != "spatial_grid_v1"):
+            or identity.get("seed") != 20260921):
         raise ValueError("decoder must use approved final4000 matched budget")
     normalized = json.loads(json.dumps(identity))
     for split in ("train", "eval"):
@@ -206,15 +252,63 @@ def render(rows, originals, outputs, output, labels):
         canvas.save(output / f"dino_horizon_{horizon}.png")
 
 
+def render_cls_ablations(rows, originals, outputs, output, labels):
+    """Render paired CLS variants for observed and WM-predicted state inputs."""
+
+    identity_index = {
+        (row["trajectory"], row["window_start"], row["horizon_step"]): index
+        for index, row in enumerate(rows)
+    }
+    variants = ("correct", "zero_cls", "shuffled_cls")
+    for label in labels:
+        for horizon in range(1, 5):
+            selected = select_page_rows(rows, horizon, limit=8)
+            columns = (
+                "raw",
+                *(f"state_{label}_observed_{variant}" for variant in variants),
+                *(f"state_{label}_predicted_{variant}" for variant in variants),
+            )
+            draw_probe = ImageDraw.Draw(Image.new("RGB", (1, 1)))
+            offsets, width = column_layout(draw_probe, columns)
+            canvas = Image.new("RGB", (width, 48 + len(selected) * 154), "white")
+            draw = ImageDraw.Draw(canvas)
+            for offset, column_label in zip(offsets, columns, strict=True):
+                draw.text((offset + 3, 8), column_label, fill="black")
+            draw.text(
+                (3, 28),
+                f"H{horizon}; matched spatial state/noise; only CLS changes",
+                fill="black",
+            )
+            for row_index, row in enumerate(selected):
+                position = identity_index[
+                    (row["trajectory"], row["window_start"], horizon)
+                ]
+                y = 48 + row_index * 154
+                for offset, name in zip(offsets, columns, strict=True):
+                    image = originals[position] if name == "raw" else outputs[name][position]
+                    canvas.paste(pil_rgb(image), (offset, y))
+                draw.text(
+                    (3, y + 130),
+                    f"{row['trajectory']} start={row['window_start']}",
+                    fill="black",
+                )
+            canvas.save(output / f"state_{label}_cls_ablation_horizon_{horizon}.png")
+
+
 @torch.inference_mode()
 def decode_rows(model, rows, field, seed, *, device, batch_size):
     """Deduplicate identical condition+observation-noise pairs before decoder calls."""
     indices, conditions, keys, seen = [], [], [], {}
     for row in rows:
         feature = row[field].contiguous().float()
-        feature = _spatial_state(feature)
-        if feature.shape != (_STATE_LAYOUT.spatial_tokens, 1024) or not torch.isfinite(feature).all():
-            raise ValueError("decoder condition must be finite K64 spatial state")
+        if model.decoder_family == "spatial_grid_v1":
+            feature = _spatial_state(feature)
+            expected = (_STATE_LAYOUT.spatial_tokens, 1024)
+        else:
+            _STATE_LAYOUT.validate(feature, name="spatial+CLS decoder state")
+            expected = (_STATE_LAYOUT.state_tokens, 1024)
+        if feature.shape != expected or not torch.isfinite(feature).all():
+            raise ValueError(f"decoder condition must be finite {expected} state")
         observation = (row["trajectory"], row["observation"])
         key = (*observation, hashlib.sha256(feature.numpy().tobytes()).hexdigest())
         if key not in seen:
@@ -226,6 +320,71 @@ def decode_rows(model, rows, field, seed, *, device, batch_size):
     noise = paired_noise(keys, seed)
     images = sample_euler(model, condition, noise, steps=50, device=device, chunk_size=batch_size)
     return images[torch.tensor(indices)], len(conditions)
+
+
+@torch.inference_mode()
+def decode_rows_cls_variants(model, rows, field, seed, *, device, batch_size):
+    """Decode paired conditions that differ only in the non-spatial CLS slot."""
+
+    if model.decoder_family != "spatial_cls_grid_v1":
+        raise ValueError("CLS variants require a spatial_cls_grid_v1 decoder")
+    indices, conditions, keys, seen = [], [], [], {}
+    for row in rows:
+        feature = row[field].contiguous().float()
+        _STATE_LAYOUT.validate(feature, name="spatial+CLS decoder state")
+        if not torch.isfinite(feature).all():
+            raise ValueError("decoder condition contains non-finite values")
+        observation = (row["trajectory"], row["observation"])
+        key = (*observation, hashlib.sha256(feature.numpy().tobytes()).hexdigest())
+        if key not in seen:
+            seen[key] = len(conditions)
+            conditions.append(feature)
+            keys.append(observation)
+        indices.append(seen[key])
+    condition = torch.stack(conditions)
+    variants = spatial_cls_condition_variants(
+        condition,
+        spatial_token_count=model.config.spatial_token_count,
+        global_token_count=model.config.global_token_count,
+        token_dim=model.config.token_dim,
+    )
+    noise = paired_noise(keys, seed)
+    expanded_indices = torch.tensor(indices)
+    outputs = {
+        name: sample_euler(
+            model,
+            value.flatten(1),
+            noise,
+            steps=50,
+            device=device,
+            chunk_size=batch_size,
+        )[expanded_indices]
+        for name, value in variants.items()
+    }
+    donor_rows = [keys[index] for index in torch.roll(torch.arange(len(keys)), 1)]
+    donor_digest = hashlib.sha256(
+        json.dumps(
+            list(zip(keys, donor_rows, strict=True)), separators=(",", ":")
+        ).encode()
+    ).hexdigest()
+    return outputs, len(conditions), donor_digest
+
+
+def decoder_family_for_checkpoints(checkpoints):
+    """Read lightweight checkpoint contracts before selecting the cache layout."""
+
+    from experiments.training.sft.stage3.cfm_decoder_probe import (
+        decoder_family_from_payload,
+    )
+
+    families = []
+    for checkpoint in checkpoints:
+        payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        families.append(decoder_family_from_payload(payload))
+        del payload
+    if len(set(families)) != 1:
+        raise ValueError("state/DINO decoder families differ")
+    return families[0]
 
 
 def main(argv=None):
@@ -265,7 +424,16 @@ def main(argv=None):
     labels = tuple(paths)
     probe_manifests = validate_manifests(paths)
     probes = {epoch: load_probe(path) for epoch, path in paths.items()}
-    dataset = PairedObservationDataset(args.eval_cache, args.eval_jsonl, "eval", condition="state")
+    decoder_family = decoder_family_for_checkpoints(
+        (args.state_checkpoint, args.dino_checkpoint)
+    )
+    dataset = PairedObservationDataset(
+        args.eval_cache,
+        args.eval_jsonl,
+        "eval",
+        condition="state",
+        decoder_family=decoder_family,
+    )
     cache = FrozenTrajectoryCache(args.eval_cache)
     wanted = {key[0] for key in next(iter(probes.values()))}
     records = {str(entry["trajectory_id"]): cache.load(index) for index, entry in enumerate(cache.records)
@@ -304,12 +472,17 @@ def main(argv=None):
     originals = torch.stack([dataset.images[image_lookup[(r["trajectory"], r["observation"])]] for r in rows]).float()/127.5-1
     for row in rows:
         condition = dataset.conditions[image_lookup[(row["trajectory"], row["observation"])]]
-        gt_spatial = _spatial_state(row["gt_state"])
-        if not torch.equal(condition.float(), gt_spatial):
+        expected_state = (
+            _spatial_state(row["gt_state"])
+            if decoder_family == "spatial_grid_v1"
+            else row["gt_state"]
+        )
+        if not torch.equal(condition.float(), expected_state):
             raise ValueError("paired RGB dataset state differs from frozen cache")
     args.output.mkdir(parents=True, exist_ok=False)
     device = torch.device(args.device)
     results, display, counts = {}, {}, {}
+    cls_donor_digests = {}
     identity_reconstructions = {}
     decoder_identity = None
     for family, checkpoint in (("state", args.state_checkpoint), ("dino", args.dino_checkpoint)):
@@ -323,8 +496,36 @@ def main(argv=None):
         for label, field in fields.items():
             name = f"{family}_{label}"
             seed_metrics, all_values, decoded_counts = {}, [], []
+            seed_ablation_values = {}
             for seed in SEEDS:
-                images, count = decode_rows(model, rows, field, seed, device=device, batch_size=args.batch_size)
+                if decoder_family == "spatial_cls_grid_v1":
+                    variant_images, count, donor_digest = decode_rows_cls_variants(
+                        model,
+                        rows,
+                        field,
+                        seed,
+                        device=device,
+                        batch_size=args.batch_size,
+                    )
+                    images = variant_images["correct"]
+                    variant_values = {
+                        variant: image_metrics(value, originals)
+                        for variant, value in variant_images.items()
+                    }
+                    seed_ablation_values[str(seed)] = variant_values
+                    cls_donor_digests.setdefault(name, set()).add(donor_digest)
+                    if seed == SEEDS[0]:
+                        for variant, value in variant_images.items():
+                            display[f"{name}_{variant}"] = value
+                else:
+                    images, count = decode_rows(
+                        model,
+                        rows,
+                        field,
+                        seed,
+                        device=device,
+                        batch_size=args.batch_size,
+                    )
                 if family == "state" and identity_pair is not None:
                     reference_name = f"{identity_pair[0]}_observed"
                     candidate_name = f"{identity_pair[1]}_observed"
@@ -360,6 +561,24 @@ def main(argv=None):
                     display[name] = images
             mean_values = {key: torch.stack([value[key] for value in all_values]).mean(0) for key in all_values[0]}
             results[name] = {"seed_average": summarize(mean_values, rows), "per_seed": seed_metrics}
+            if seed_ablation_values:
+                per_seed = {
+                    seed: summarize_cls_ablations(values, rows)
+                    for seed, values in seed_ablation_values.items()
+                }
+                averaged = {
+                    variant: {
+                        metric: torch.stack(
+                            [values[variant][metric] for values in seed_ablation_values.values()]
+                        ).mean(0)
+                        for metric in next(iter(seed_ablation_values.values()))[variant]
+                    }
+                    for variant in ("correct", "zero_cls", "shuffled_cls")
+                }
+                results[name]["cls_ablation"] = {
+                    "seed_average": summarize_cls_ablations(averaged, rows),
+                    "per_seed": per_seed,
+                }
             counts[name] = decoded_counts
             (args.output / "progress.json").write_text(json.dumps({"completed_columns": list(results)}, indent=2))
         del model
@@ -370,6 +589,8 @@ def main(argv=None):
         if device.type == "cuda":
             torch.cuda.empty_cache()
     render(rows, originals, display, args.output, labels)
+    if decoder_family == "spatial_cls_grid_v1":
+        render_cls_ablations(rows, originals, display, args.output, labels)
     (args.output / "metrics.json").write_text(json.dumps(results, indent=2, allow_nan=False))
     manifest = {"schema": "matched_cfm_named_stage3_probe_evaluation_v2", "probe_labels": list(labels), "checkpoints": {
         str(path): digest(path) for path in (args.state_checkpoint, args.dino_checkpoint)},
@@ -383,7 +604,15 @@ def main(argv=None):
         "image_transform": "full RGB image bicubic128, no crop; identical to decoder training",
         "scope": "frozen decoder readout diagnostic, not rollout success; Stage2 encoder exposure remains; DINO-decoder WM inputs cross distribution",
         "spatial_identity_gate": identity_result,
-        "condition_shuffle": "not measured by this reconstruction evaluator; separate decoder training sensitivity metrics are required",
+        "condition_shuffle": {
+            "variants": ["correct", "zero_cls", "shuffled_cls"],
+            "invariant": "same spatial state, observation-keyed noise, sampling steps, and image target; only the final CLS slot changes",
+            "donor_mapping_sha256": {
+                name: sorted(values) for name, values in cls_donor_digests.items()
+            },
+        }
+        if decoder_family == "spatial_cls_grid_v1"
+        else "not measured for the spatial-only decoder",
         "artifacts": {p.name: digest(p) for p in sorted([*args.output.glob("*.png"), args.output / "metrics.json"])}}
     (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2, allow_nan=False))
     (args.output / "COMPLETE").write_text(digest(args.output / "manifest.json")+"\n")

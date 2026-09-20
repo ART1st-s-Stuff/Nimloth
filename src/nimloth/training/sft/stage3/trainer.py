@@ -1202,6 +1202,11 @@ def _train_sft2_impl(args=None) -> int:
             "grid_tokens": args.latent_token_count,
             "state_dim": args.emb_dim,
             "action_dim": 8,
+            "state_layout": (
+                agent.wm.state_layout.metadata()
+                if getattr(agent.wm, "state_layout", None) is not None
+                else None
+            ),
             "source_commit": subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], text=True
             ).strip(),
