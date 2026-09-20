@@ -520,3 +520,13 @@
   未超过epoch0，最终spatial MSE为`0.577805`，按patience停止。该小样本canary只证明
   数据切片、梯度诊断、训练、早停和产物链路可运行；单batch梯度与8条验证轨迹不足以
   判断总体梯度冲突或representation ceiling，不能据此调整正式损失权重。
+- 用户审核并批准完整1709 train / 193 val轨迹诊断合同。首次正式启动目录
+  `20260920_step180_spatial_plateau_probe_r1`在任何cache写入前失败：8个rank均因启动脚本
+  缺少仓库`src`的`PYTHONPATH`而报`ModuleNotFoundError: nimloth`，无GPU占用、无有效结果；
+  原始FAILED、rank日志与启动合同保留，没有将其计作实验结果。
+- 修正仅限启动环境后，同范围r2于远端commit `2dc9a18d`启动，输出
+  `20260920_step180_spatial_plateau_probe_r2`，controller shell PID `1721961`。缓存阶段8个
+  rank PID `1721969--1721976`分别绑定8张GPU；输入仍为step180 COMMITTED checkpoint、
+  原train/eval JSONL与同一DINO cache。缓存完成后自动转GPU0的shared-projector完整梯度
+  诊断和K64 spatial-only拟合；空间下限30 GiB，原Stage2保持暂停，不进入Stage3或RL。
+  5分钟heartbeat `stage2`已改为监控本r2，只有阶段变化、失败、完成或需处理时通知。
