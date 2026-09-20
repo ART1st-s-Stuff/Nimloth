@@ -1,5 +1,34 @@
 # Progress
 
+## 2026-09-20 Stage2 epoch16 → K65 split-projector canary and formal run
+
+- 最终实现提交`397202e1fab45fff6d17e800595cfe3c7c83754a`已同步到a100-1；远端
+  split migration/query alignment/selected-row/convergence focused tests为`55 passed`。
+  测试期间修复两项被真实依赖环境发现的问题：`GridStateLayout`测试fixture位置参数错误，
+  以及global CLS分支在送入K1 projector前缺少singleton slot axis；补充完整输出shape、
+  spatial/global独立等价初始化和有效梯度隔离回归。
+- 8卡单步canary
+  `20260920_stage2_epoch16_k65_split_canary1`从原K64 Stage2 `epoch_016` fresh迁移；step1
+  loss `6.2458367`，随后实际从完整checkpoint恢复数据游标并完成step2，loss
+  `5.6888185`。`resume_step_00000001`与`resume_step_00000002`均有COMMITTED；恢复时
+  tokenizer新增数为0，读取step1的`next_micro_batch=8`、optimizer与8-rank RNG。
+- step1只读审计确认：65个Query FP32 master行相对初始化全部非零更新，L2范围
+  `0.00452264..0.00452545`；spatial/global projector相对共同K64初始化的整体L2分别
+  `0.1950383/0.2000231`；checkpoint LM-head 65行逐值等于冻结初始化。optimizer仅有
+  `state_proj_spatial(8e-5,wd=.01)`、`state_proj_global(8e-5,wd=.01)`、
+  `query_rows(1e-4,wd=0)`三个组。
+- `torchrun`会把rank0计划退出75包装成launcher exit1；canary最初controller因此误标
+  failed，但checkpoint、日志及独立审计均证明step1成功。resumecheck显式识别该包装语义，
+  成功写入`stage2_epoch16_k65_split_resumecheck1.controller_complete`，没有自动重提。
+- 正式evaluation-only运行于`2026-09-20T18:07:39Z`启动：controller PID `1744995`，
+  输出`/mnt/nimloth/outputs/experiments/stage3-cls-fixed2d/
+  20260920_stage2_epoch16_k65_split_dino2_r1`，日志同组根目录
+  `stage2_epoch16_k65_split_dino2_r1.log`。8卡DDP、有效batch64、LM1+DINO2、
+  Query LR `1e-4`、两个projector LR `8e-5`、每10步恢复点；完整验证spatial+CLS DINO
+  MSE至少2轮、连续2轮相对改善不足1%停止，保留最新epoch与独立best。启动commit仍为
+  `397202e1`，24小时仅为controller中断上限，不视为收敛。启动后8个rank均持续消耗CPU
+  完成模型/数据初始化，未见Traceback/OOM；后续按该PID、输出和日志监控。
+
 ## 2026-09-20 Stage2 epoch16 → K65 split-projector implementation
 
 - 按用户最新纠正停止使用任何Stage3 replay/checkpoint；新入口
