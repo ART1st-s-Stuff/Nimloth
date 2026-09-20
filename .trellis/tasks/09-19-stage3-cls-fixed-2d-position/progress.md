@@ -569,3 +569,29 @@
   `codex/stage3-k64-replay-20260920`，HEAD精确为`84d7fae583b785253f866749b720546dfbf0be03`，
   tracked状态干净。八卡空闲；`/mnt`仅剩约38GiB，未执行任何删除或启动训练。正式重放前
   仍需按精确目录取得清理授权并恢复至少原合同120GiB空间门槛。
+
+## 2026-09-20 K64 replay启动与K64→K65迁移门禁
+
+- 用户明确批准同步实现提交及清理被K64方案取代的K65产物。a100-1已删除旧K65 Stage2
+  diagnostic的`best/epoch_006/resume_step_170/resume_step_180`、旧K65 Stage3 r4的
+  `final/epoch_005`、step180 spatial probe cache及单步canary；保留各运行根目录日志、指标和
+  probe结果。`/mnt`可用空间由约38GiB恢复至136GiB，满足K64 replay的120GiB门槛。
+- K64→K65实现与独立修复最终提交为`ca0d36d8`。远端真实依赖环境专项回归
+  `tests/training/sft/test_stage3_k64_k65_migration.py`为`7 passed`。修复包括精确FP32
+  selected-row扩展、shared→split projector复制初始化、K64 learned-position residual WM
+  到K65 fixed2D的严格白名单迁移、fresh optimizer、checkpoint schema，以及迁移来源在普通
+  resume后的持久保留和缺失/篡改拒绝。
+- K64 replay首次尝试PID `1732919`在训练前导入阶段失败：隔离worktree的LeWM submodule
+  未初始化，8个rank均缺少`external/le-wm/module.py`；没有optimizer update、checkpoint或
+  GPU残留。原始日志、PID和`attempt1_result.json`保存在运行根目录，未覆盖为有效实验结果。
+- 随后从原Stage3 worktree本地复用精确LeWM commit
+  `8edfeb336732b5f3ce7b8b210d0ba370a09e2cac`，`module.py` SHA256为
+  `0b258a9e8dc24c29fcb1e8c50a09ec78b8ea85aeb79e21dd8adf712396646620`；未访问网络。
+  修复后入口导入、八卡空闲、端口、数据哈希和136GiB空间均通过预检。
+- replay第二次尝试于约`2026-09-20T16:00:51Z`启动，controller PID `1733839`，输出为
+  `/mnt/nimloth/outputs/experiments/stage3-action-outcome-ablation/20260920_k64_replay_epoch2_to5_r1`。
+  源码commit精确为`84d7fae5`，从保留的K64 epoch2/step46恢复；日志确认start epoch3、
+  global step46、micro-step0、best val WM MSE `0.2353451314`。8卡均100%利用率，显存约
+  36--39GiB；1453条有效train轨迹、101条validation轨迹，与旧运行一致。目标仍是按原
+  `wm_mse` 1%/patience2合同重建epoch5；该重放不能宣称bitwise identical。完成后才进入
+  `ca0d36d8`的K64→K65迁移，不自动进入RL。
