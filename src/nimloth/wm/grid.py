@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -241,6 +241,13 @@ def load_k64_stage2_projector_for_k65_migration(
     }
     if not isinstance(state, dict) or set(state) != required:
         raise ValueError("K64 Stage2 source is not a strict SharedSlotProjector state")
+    if any(
+        not isinstance(value, torch.Tensor)
+        or value.dtype != torch.float32
+        or not torch.isfinite(value).all()
+        for value in state.values()
+    ):
+        raise ValueError("K64 Stage2 projector source must contain finite FP32 tensors")
     first, last = state["net.0.weight"], state["net.3.weight"]
     if first.shape[1] != qwen_hidden_dim or last.shape[0] != state_dim:
         raise ValueError("K64 Stage2 projector dimensions do not match K65 target")

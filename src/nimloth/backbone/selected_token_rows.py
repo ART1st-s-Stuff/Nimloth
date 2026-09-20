@@ -260,6 +260,7 @@ def dense_full_language_rows_state(
     if (
         not query_ids
         or len(set((*query_ids, *protocol_ids))) != len(query_ids) + len(protocol_ids)
+        or min((*query_ids, *protocol_ids), default=0) < 0
         or max((*query_ids, *protocol_ids), default=-1) >= input_leaf.weight.shape[0]
         or input_leaf.weight.shape != output_leaf.weight.shape
     ):
@@ -513,6 +514,11 @@ def migrate_full_language_rows_to_input_query_rows(
 
     input_queries, input_protocol = checked(input_prefix)
     output_queries, output_protocol = checked(output_prefix)
+    if (
+        output_queries.shape != input_queries.shape
+        or output_protocol.shape != input_protocol.shape
+    ):
+        raise ValueError("source input/output selected-row shapes do not match")
     target_ids = expected[target_prefix + ".nimloth_query_ids"]
     target_rows = expected[target_prefix + ".nimloth_query_rows"].clone()
     if tuple(map(int, target_ids.tolist())) != target_query_ids:

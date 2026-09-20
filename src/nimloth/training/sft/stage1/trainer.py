@@ -253,6 +253,20 @@ def enable_gradient_checkpointing(model) -> None:
     )
 
 
+def validate_split_migration_tokenizer_delta(
+    added_tokens: int, *, resuming: bool
+) -> None:
+    """Require a K64 tokenizer for migration and the saved K65 tokenizer for resume."""
+
+    expected = 0 if resuming else 1
+    if added_tokens != expected:
+        phase = "resume" if resuming else "fresh migration"
+        raise ValueError(
+            f"split_projector_migration {phase} requires exactly {expected} "
+            f"newly registered CLS Query tokens, got {added_tokens}"
+        )
+
+
 def apply_lora(model: Qwen2_5_VLForConditionalGeneration, args: argparse.Namespace):
     from peft import LoraConfig, get_peft_model
 
@@ -768,7 +782,28 @@ def main(*, stage: str = "format") -> int:
         raise ValueError("epoch continuation is supported only for Stage2")
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
-    processor = AutoProcessor.from_pretrained(args.model, trust_remote_code=True)
+    # A split-projector resume owns a committed K65 tokenizer.  Load that
+    # tokenizer directly so resume validates an already-complete vocabulary
+    # (added == 0), while the one-time K64 migration still proves that exactly
+    # one CLS Query token is appended (added == 1).
+    resume_dir: Path | None = (
+        args.continue_from_epoch
+        if continuing
+        else (find_latest_resume_dir(args.output_dir) if args.resume else None)
+    )
+    split_migration = (
+        stage == "query"
+        and getattr(args, "tuning_mode", None) == "split_projector_migration"
+    )
+    if split_migration and args.resume and resume_dir is None:
+        raise FileNotFoundError(
+            "split_projector_migration --resume requires a committed K65 checkpoint"
+        )
+    processor_path = (
+        resume_dir if split_migration and resume_dir is not None else args.model
+    )
+
+    processor = AutoProcessor.from_pretrained(processor_path, trust_remote_code=True)
     processor.tokenizer.padding_side = "right"
     processor.image_processor.min_pixels = args.min_pixels
     processor.image_processor.max_pixels = args.max_pixels
@@ -1003,9 +1038,6 @@ def main(*, stage: str = "format") -> int:
     )
 
     base_model_path = args.model
-    resume_dir: Path | None = (
-        args.continue_from_epoch if continuing else (find_latest_resume_dir(args.output_dir) if args.resume else None)
-    )
     resume_ckpt = resume_dir / "training_state.pt" if resume_dir is not None else None
     if continuing and not resume_ckpt.is_file():
         raise FileNotFoundError("continuation checkpoint training_state.pt is missing")
@@ -1062,13 +1094,9 @@ def main(*, stage: str = "format") -> int:
             )
         )
 
-    split_migration = (
-        stage == "query"
-        and getattr(args, "tuning_mode", None) == "split_projector_migration"
-    )
-    if split_migration and added != 1:
-        raise ValueError(
-            "split_projector_migration requires exactly one newly registered CLS Query token"
+    if split_migration:
+        validate_split_migration_tokenizer_delta(
+            added, resuming=resume_dir is not None
         )
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         load_path,
@@ -1081,6 +1109,25 @@ def main(*, stage: str = "format") -> int:
     )
     if getattr(args, "embedding_master_dtype", "bfloat16") == "float32":
         restore_exported_embedding_masters(model, load_path)
+    migration_rows = None
+    if split_migration and resume_dir is None:
+        # Capture the authoritative K64 rows before vocabulary resize or BF16
+        # conversion.  Only the new CLS rows may be constructed during this
+        # migration; every inherited selected row comes from this snapshot.
+        from nimloth.backbone.selected_token_rows import (
+            dense_full_language_rows_state,
+        )
+
+        row_path = args.stage2_k64_migration_checkpoint / "selected_token_rows.pt"
+        migration_rows = (
+            torch.load(row_path, map_location="cpu", weights_only=True)
+            if row_path.is_file()
+            else dense_full_language_rows_state(
+                model,
+                args.query_token_ids[:-1],
+                args.protocol_token_ids[:-1],
+            )
+        )
     if args.gradient_checkpointing:
         enable_gradient_checkpointing(model)
     source_vocabulary_size = model.get_input_embeddings().weight.shape[0]
@@ -1258,23 +1305,14 @@ def main(*, stage: str = "format") -> int:
             restore_selected_rows_subset,
         )
         from nimloth.backbone.selected_token_rows import (
-            dense_full_language_rows_state,
             migrate_full_language_rows_to_input_query_rows,
         )
 
         model.requires_grad_(False)
-        migration_rows = None
         if split_migration and resume_dir is None:
+            if migration_rows is None:
+                raise RuntimeError("K64 selected rows were not captured before resize")
             row_path = args.stage2_k64_migration_checkpoint / "selected_token_rows.pt"
-            migration_rows = (
-                torch.load(row_path, map_location="cpu", weights_only=True)
-                if row_path.is_file()
-                else dense_full_language_rows_state(
-                    language_model,
-                    args.query_token_ids[:-1],
-                    args.protocol_token_ids[:-1],
-                )
-            )
             row_digest = hashlib.sha256()
             for key, value in sorted(migration_rows.items()):
                 row_digest.update(key.encode("utf-8"))

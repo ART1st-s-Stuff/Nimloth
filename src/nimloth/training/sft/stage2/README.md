@@ -93,7 +93,9 @@ Query与protocol rows，非FP32源直接拒绝。新增 CLS input/output row分�
 checkpoint写入 `split_spatial_global_v1`、源路径及 projector/config hash、迁移规则、
 K65 cache identity、`evaluation_only=true` 与 `fresh_adamw_v1`。普通 `--resume` 只能恢复
 同一 split schema和完整迁移 provenance；shared K64/K65、缺失来源或cache/layout变化均
-拒绝。该模式不读取 Stage3 checkpoint，也不允许 `--continue-from-epoch`。
+拒绝。恢复时 tokenizer 直接从已提交的 K65 checkpoint 加载，并要求不再新增 token；首次
+K64→K65 迁移则必须恰好新增一个 CLS Query token。该模式不读取 Stage3 checkpoint，也不允许
+`--continue-from-epoch`。
 
 LoRA 合并导出保留 projector 文件及阶段元数据，SFT3 使用同一 projector 格式。完整恢复包含优化器、调度器、epoch/微批次游标、每 rank 随机数状态及收敛历史；普通 query 收敛监控身份为 `validation_total_loss`，evaluation-only CLS alignment 为 `validation_dino_cls_loss`。CPU 测试覆盖标签、梯度、空间对齐、收敛与导出接口，不作为真实 GPU 训练或 rollout 质量证据。
 
