@@ -141,6 +141,48 @@ class PairedObservationDataset:
         return (self.conditions[indices].flatten(1).to(device),
                 self.images[indices].to(device=device, dtype=torch.float32).div(127.5).sub(1.))
 
+    def exclude_image_hashes(self, excluded: set[str]) -> dict:
+        """Remove train rows whose RGB target is byte-identical to validation."""
+
+        matched = sorted(set(self.image_hashes) & set(excluded))
+        keep = torch.tensor(
+            [value not in excluded for value in self.image_hashes], dtype=torch.bool
+        )
+        excluded_rows = int((~keep).sum())
+        if excluded_rows == 0:
+            return {
+                "policy": "exclude_train_rows_matching_eval_rgb_sha256",
+                "excluded_observation_count": 0,
+                "excluded_unique_hash_count": 0,
+                "excluded_hashes_sha256": hashlib.sha256(b"").hexdigest(),
+            }
+        if not torch.any(keep):
+            raise ValueError("RGB overlap filtering removed every training observation")
+        original_count = len(self.keys)
+        kept_indices = keep.nonzero(as_tuple=False).flatten().tolist()
+        self.keys = [self.keys[index] for index in kept_indices]
+        self.image_hashes = tuple(self.image_hashes[index] for index in kept_indices)
+        self.conditions = self.conditions[keep].contiguous()
+        self.images = self.images[keep].contiguous()
+        rows = list(zip(self.keys, self.image_hashes, strict=True))
+        exclusion = {
+            "policy": "exclude_train_rows_matching_eval_rgb_sha256",
+            "unfiltered_observation_count": original_count,
+            "excluded_observation_count": excluded_rows,
+            "excluded_unique_hash_count": len(matched),
+            "excluded_hashes_sha256": hashlib.sha256(
+                json.dumps(matched, separators=(",", ":")).encode()
+            ).hexdigest(),
+        }
+        self.identity.update({
+            "observation_count": len(self.keys),
+            "rows_sha256": hashlib.sha256(
+                json.dumps(rows, separators=(",", ":")).encode()
+            ).hexdigest(),
+            "rgb_overlap_filter": exclusion,
+        })
+        return exclusion
+
 
 def validate_pair(train: PairedObservationDataset, evaluation: PairedObservationDataset):
     if train.identity['provenance'] != evaluation.identity['provenance']:
@@ -212,13 +254,6 @@ def save_decoder(
 
 
 def train(args):
-    train_set = PairedObservationDataset(
-        args.train_cache,
-        args.train_jsonl,
-        'train',
-        args.condition,
-        args.decoder_family,
-    )
     eval_set = PairedObservationDataset(
         args.eval_cache,
         args.eval_jsonl,
@@ -226,14 +261,23 @@ def train(args):
         args.condition,
         args.decoder_family,
     )
-    overlap = validate_pair(train_set, eval_set)
-    if (
-        args.decoder_family == 'spatial_cls_grid_v1'
-        and overlap['shared_image_hashes']
-    ):
-        raise ValueError(
-            "spatial+CLS decoder train/eval splits contain identical RGB images"
-        )
+    train_set = PairedObservationDataset(
+        args.train_cache,
+        args.train_jsonl,
+        'train',
+        args.condition,
+        args.decoder_family,
+    )
+    overlap_before = validate_pair(train_set, eval_set)
+    exclusion = train_set.exclude_image_hashes(set(eval_set.image_hashes))
+    overlap_after = validate_pair(train_set, eval_set)
+    if overlap_after['shared_image_hashes']:
+        raise ValueError("RGB overlap remains after deterministic train-row filtering")
+    overlap = {
+        "before_filter": overlap_before,
+        "after_filter": overlap_after,
+        "train_filter": exclusion,
+    }
     identity = {'train': train_set.identity, 'eval': eval_set.identity, 'seed': args.seed,
         'steps': args.steps, 'batch': args.batch, 'lr': 1e-4, 'weight_decay': 1e-4,
         'clip_grad_norm': 1., 'overlap': overlap,

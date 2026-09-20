@@ -99,6 +99,10 @@ row-major `8x8` spatial grid and row 64 as the DINO CLS token. It rejects K64
 caches instead of padding or pooling a replacement global token. The sealed
 cache must also record the exact `row_major_spatial_then_global` state layout;
 K65 shape alone is not accepted as proof of slot ordering.
+If a train observation is byte-identical to any validation RGB target, the
+loader removes that row from decoder fitting, records the exclusion count and
+canonical hash-set digest, and verifies that no RGB overlap remains. The
+validation split is never altered.
 
 Train independent state and DINO decoders with the same `--steps`, `--batch`,
 `--seed`, train/eval caches, and split JSONL files. Each run writes `latest.pt`,

@@ -48,14 +48,17 @@ that training command.
 - K64 or non-1024 cache -> reject the spatial+CLS decoder request.
 - Missing, malformed, or different `state_layout` -> reject; never infer CLS by shape.
 - Cache/JSONL split hash mismatch or missing provenance -> reject.
-- Shared RGB hashes between reconstruction train and eval -> reject.
+- Shared RGB hashes between reconstruction train and eval -> deterministically exclude
+  every matching row from decoder fitting on the train side, record the excluded row
+  count and canonical hash-set digest, then reject if any overlap remains.
 - Checkpoint schema and decoder-family mismatch -> reject.
 - Resume identity, checkpoint step, or metric-log continuity mismatch -> reject.
 
 ### 5. Good / Base / Bad Cases
 
-- Good: sealed K65 caches with explicit layout, disjoint RGB images, and two matched
-  state/DINO decoder runs.
+- Good: sealed K65 caches with explicit layout, an eval-preserving train-side RGB
+  exclusion that leaves disjoint fitted/validation images, and two matched state/DINO
+  decoder runs.
 - Base: historical K64 spatial checkpoints remain loadable only as
   `spatial_grid_v1`; they do not gain an inferred CLS branch.
 - Bad: append an arbitrary 65th vector to a K64 cache, flatten K65 as one condition, or

@@ -1,4 +1,5 @@
 import json
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -144,6 +145,32 @@ def test_spatial_cls_trainer_preflight_binds_frozen_upstream_modules(tmp_path):
     ]
     assert identity['train']['state_layout']['state_tokens'] == 65
     assert identity['eval']['state_layout']['global_role'] == 'dino_cls'
+
+
+def test_spatial_cls_trainer_excludes_train_rgb_duplicates_from_eval(tmp_path):
+    train_cache, train_jsonl = export(tmp_path, 'train', tokens=65)
+    eval_cache, eval_jsonl = export(tmp_path, 'eval', tokens=65)
+    train_record = json.loads(train_jsonl.read_text())
+    eval_record = json.loads(eval_jsonl.read_text())
+    shutil.copyfile(train_record['image_paths'][0], eval_record['image_paths'][0])
+    args = SimpleNamespace(
+        train_cache=train_cache,
+        train_jsonl=train_jsonl,
+        eval_cache=eval_cache,
+        eval_jsonl=eval_jsonl,
+        condition='state',
+        decoder_family='spatial_cls_grid_v1',
+        seed=20260921,
+        steps=4000,
+        batch=32,
+        preflight_only=True,
+    )
+    identity = train(args)
+    assert identity['overlap']['before_filter']['shared_image_hashes'] == 1
+    assert identity['overlap']['after_filter']['shared_image_hashes'] == 0
+    assert identity['overlap']['train_filter']['excluded_observation_count'] == 1
+    assert identity['train']['observation_count'] == 4
+    assert identity['eval']['observation_count'] == 5
 
 
 def test_exact_architecture_size_and_spatial_order():
