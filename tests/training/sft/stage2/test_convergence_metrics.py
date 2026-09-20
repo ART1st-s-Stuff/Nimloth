@@ -28,6 +28,10 @@ def test_query_convergence_cli_requires_full_validation_and_no_epoch_cap():
         convergence_monitor("query", "global_query_only")
         == "validation_dino_cls_loss"
     )
+    assert (
+        convergence_monitor("query", "query_projector_only")
+        == "validation_dino_loss"
+    )
     assert convergence_monitor("format") == "validation_lm_loss"
     with pytest.raises(ValueError, match="full validation"):
         parse_args(argv + ["--max-val-batches", "1"], stage="query")
@@ -101,6 +105,34 @@ def test_query_lr_continuation_requires_explicit_epoch_boundary_and_exclusive_ch
             ],
             stage="query",
         )
+
+
+def test_query_projector_only_requires_reviewed_scope_and_dino_convergence():
+    argv = [
+        "--model", "/model", "--train-jsonl", "/train", "--val-jsonl", "/val",
+        "--output-dir", "/output", "--dino-cache-root", "/dino",
+        "--tuning-mode", "query_projector_only", "--include-global-token",
+        "--evaluation-only", "--grid-size", "2", "--latent-token-count", "5",
+        "--distributed-strategy", "ddp", "--embedding-master-dtype", "bfloat16",
+        "--projector-lr", "8e-5", "--query-token-lr", "1e-4",
+        "--until-converged", "--convergence-min-epochs", "2",
+        "--convergence-patience-epochs", "2",
+        "--convergence-min-relative-improvement", "0.01",
+    ]
+    args, objective = parse_args(argv, stage="query")
+    assert objective.include_global_token and objective.state_tokens == 5
+    assert args.lora is False
+    assert args.query_token_lr == pytest.approx(1e-4)
+    assert args.projector_lr == pytest.approx(8e-5)
+    assert args.protocol_token_lr == pytest.approx(1e-4)
+
+    with pytest.raises(ValueError, match="requires --include-global-token"):
+        parse_args(
+            [value for value in argv if value != "--include-global-token"],
+            stage="query",
+        )
+    with pytest.raises(ValueError, match="does not train protocol"):
+        parse_args(argv + ["--protocol-token-lr", "1e-5"], stage="query")
 
 
 def test_component_means_share_total_reduction_and_format_api(monkeypatch):

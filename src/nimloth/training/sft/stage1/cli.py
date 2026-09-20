@@ -30,7 +30,12 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     if stage == "query":
         ap.add_argument(
             "--tuning-mode",
-            choices=("selected_lora", "full_language", "global_query_only"),
+            choices=(
+                "selected_lora",
+                "full_language",
+                "global_query_only",
+                "query_projector_only",
+            ),
             default="selected_lora",
         )
         ap.add_argument("--dino-cache-root", type=Path, required=True)
@@ -281,6 +286,9 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     ) > 1:
         raise ValueError("change only one continuation identity field at a time")
     global_query_only = stage == "query" and args.tuning_mode == "global_query_only"
+    query_projector_only = (
+        stage == "query" and args.tuning_mode == "query_projector_only"
+    )
     full_language = stage == "query" and args.tuning_mode == "full_language"
     if global_query_only:
         if not args.include_global_token or not args.evaluation_only:
@@ -315,6 +323,45 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
                 "global_query_only requires CLS convergence with min_epochs>=2, "
                 "patience=2 and relative_improvement=0.01"
             )
+    if query_projector_only:
+        if not args.include_global_token or not args.evaluation_only:
+            raise ValueError(
+                "query_projector_only requires --include-global-token and --evaluation-only"
+            )
+        if args.distributed_strategy != "ddp":
+            raise ValueError(
+                "query_projector_only uses DDP so frozen BF16 tables stay separate "
+                "from FP32 Query rows and projector"
+            )
+        if args.embedding_master_dtype != "bfloat16":
+            raise ValueError(
+                "query_projector_only keeps dense embedding/head tables BF16"
+            )
+        args.lora = False
+        if args.query_token_lr is None:
+            args.query_token_lr = 1e-4
+        if args.protocol_token_lr is not None:
+            raise ValueError("query_projector_only does not train protocol token rows")
+        # build_optimizer keeps the legacy paired argument interface, while the
+        # input-only schema proves there are no protocol parameters.
+        args.protocol_token_lr = args.query_token_lr
+        if args.projector_lr is None:
+            raise ValueError("query_projector_only requires projector_lr")
+        for name in ("query_token_lr", "projector_lr"):
+            value = getattr(args, name)
+            if not 0 < value < float("inf"):
+                raise ValueError(f"{name} must be finite and positive")
+        if (
+            not args.until_converged
+            or args.convergence_min_epochs is None
+            or args.convergence_min_epochs < 2
+            or args.convergence_patience_epochs != 2
+            or args.convergence_min_relative_improvement != 0.01
+        ):
+            raise ValueError(
+                "query_projector_only requires DINO convergence with min_epochs>=2, "
+                "patience=2 and relative_improvement=0.01"
+            )
     if full_language:
         if "--lora" in (argv if argv is not None else sys.argv[1:]):
             raise ValueError("full_language is incompatible with --lora")
@@ -329,7 +376,12 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
             value = getattr(args, name)
             if value is not None and not 0 < value < float("inf"):
                 raise ValueError(f"{name} must be finite and positive")
-    if stage == "query" and not full_language and not global_query_only:
+    if (
+        stage == "query"
+        and not full_language
+        and not global_query_only
+        and not query_projector_only
+    ):
         if args.query_token_lr is None:
             args.query_token_lr = 5e-5
         if args.protocol_token_lr is None:

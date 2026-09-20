@@ -160,3 +160,22 @@ update 重新从1计数，不能与原 Stage3 global step 混用。
 对 observed state 的 reconstruction 是固定 ceiling；WM-only 更新后只允许 predicted
 state 指标变化。最终至少比较 H1--H4 的 model、input-copy、DINO-space readout和
 reconstruction，若仍未超过 copy baseline，才把扩大容量作为后续候选实验。
+
+## 11. Stage2 Query/projector-only representation diagnostic
+
+增加独立 `query_projector_only` tuning mode。它复用 Stage2 一次整轨迹前向与既有K65
+spatial/CLS目标，不增加另一套loss实现。加载 epoch8 的普通HF权重与 projector 后，冻结
+完整模型，再为65个 Query input embedding rows建立FP32 master，并只重新开放 projector。
+projector保留FP32 master，前向时由现有 `SharedSlotProjector` 显式转换BF16 hidden。
+
+epoch8 的 `selected_token_rows.pt` 只包含CLS精确FP32行；安装65行master后按token ID做
+严格子集恢复，使CLS不经BF16 round-trip，空间行则忠实使用epoch8实际保存的dense权重。
+该子集恢复只接受同一input table、ID子集、空protocol行及匹配dtype/维度；任何不一致均
+拒绝。保存时继续物化普通HF dense权重并附带全部65行的精确sidecar。
+
+optimizer固定为两个互斥参数组：projector `8e-5` 与Query rows `1e-4`，不包含Qwen、LM
+head、vision或protocol rows。参数集合变化使旧单行optimizer不可恢复，因此从epoch8仅
+初始化权重并重置optimizer、scheduler与收敛历史。收敛监控使用
+`validation_dino_loss = validation_dino_spatial_loss + validation_dino_cls_loss`；语言loss、
+格式及后续direct success仅作为保持门禁。运行metadata保留直接初始化checkpoint和原始
+Stage2 parent，明确evaluation-only及旧split暴露边界。

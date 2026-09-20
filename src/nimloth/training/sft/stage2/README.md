@@ -28,6 +28,15 @@ FP32 master 可训练；旧 K64、backbone、LM head 和共享 projector 全部�
 和显式 K64+CLS layout；它不能作为正式 Stage2 结果。正式训练可通过普通
 Stage2 路径从 epoch1 设置 `include_global_token`，无需依赖 epoch16 扩展逻辑。
 
+冻结表示的诊断续训使用 `--tuning-mode query_projector_only --include-global-token
+--evaluation-only`。它从已有 K65 checkpoint 初始化权重，但因可训练参数集合改变而使用
+新的 optimizer：全部65个 Query 只训练 input embedding FP32 master rows，共享 projector
+以 FP32 master 训练；Qwen、vision、LM head和protocol rows冻结。若初始化checkpoint带有
+旧的 input-only `selected_token_rows.pt`，按token ID严格恢复其中的精确行，其他 Query行
+使用该checkpoint实际导出的dense权重。收敛监控为完整验证集的 spatial+CLS DINO分项之
+和；LM、格式和direct success是保持门禁。该模式只用于 evaluation-only诊断，不构成正式
+Stage2，也不允许加载旧单行optimizer冒充原样续训。
+
 默认 `--tuning-mode selected_lora` 保留 LoRA 和选定 token 行训练。显式 `--tuning-mode full_language` 训练语言 transformer、完整 embedding/LM head 和共享 slot projector；整个 Qwen visual（包含原生 merger）冻结，DINO 目标保持固定。该模式要求 FSDP、独立 embedding/head，所有可训练参数保留 FP32 master、前向 BF16。`full_tuning.py` 定义冻结范围并打印参数数量。全量模式通过 `--lr`、`--embedding-lr`、`--projector-lr` 配置三组学习率（本次实验均为 2e-5）；不使用 query/protocol 行优化器。恢复身份区分全量和选行模式，完整 checkpoint 以 dense 权重保存，FP32 加载避免恢复时舍入。
 新建 projector 使用语言模型输入 embedding 的 dtype/device（BF16 模型不会新建 FP32 projector 参数）。多卡可指定 `--distributed-strategy fsdp`；语言模型和 projector 均参与分片、完整保存与恢复。
 
@@ -37,6 +46,8 @@ Stage2 路径从 epoch1 设置 `include_global_token`，无需依赖 epoch16 扩
 evaluation-only `global_query_only` 是例外：它按独立的验证 CLS DINO MSE
 应用同一 patience/1% 规则并选择 best，同时继续记录总损失、空间 DINO、LM、格式与
 rollout 门禁，避免空间常量项掩盖新增全局 Query 的收敛。
+`query_projector_only` 则按 `validation_dino_loss`（分别归一化后的 spatial 与 CLS之和）
+应用同一规则。
 有限 GPU 检查可指定 `--max-optimizer-steps N`，在绝对第 N 步保存完整恢复 checkpoint 并以 75 退出，不声明收敛；正式续训移除该预算参数。
 
 `validation_metrics.jsonl`、每轮日志与 W&B 分别记录未加权的 LM、DINO 分量和加权总损失。LM 只以成功轨迹的回答计数，DINO 以全部回答计数，分别跨 batch、梯度累积和 rank 求和归约；分布式 sampler 的补齐项仍计入均值。旧 CSV 的 `val_loss` 在 query 阶段表示总损失。模型返回的均值指标已 detach；两个可微分量之和分别用于各自分母的反向传播。

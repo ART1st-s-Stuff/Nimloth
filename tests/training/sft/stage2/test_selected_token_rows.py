@@ -1,13 +1,17 @@
 from types import SimpleNamespace
 
+import pytest
 import torch
 from torch import nn
 
 from nimloth.training.sft.stage1.trainer import build_optimizer
 from nimloth.training.sft.stage2.selected_token_rows import (
     install_input_query_row,
+    install_input_query_rows,
     install_selected_token_rows,
     materialize_selected_state_dict,
+    restore_selected_rows_subset,
+    selected_rows_state,
 )
 
 
@@ -179,3 +183,107 @@ def test_input_global_query_row_casts_frozen_parameters_but_preserves_buffers():
     output.float().sum().backward()
     assert model.embed.nimloth_query_rows.grad is not None
     assert model.embed.nimloth_query_rows.grad.dtype == torch.float32
+
+
+def test_query_projector_only_updates_all_query_rows_and_projector():
+    class Language(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed = nn.Embedding(16, 4)
+            self.head = nn.Linear(4, 16, bias=False)
+            self.config = SimpleNamespace(torch_dtype=torch.float32)
+
+        def get_input_embeddings(self):
+            return self.embed
+
+        def get_output_embeddings(self):
+            return self.head
+
+    source = Language()
+    install_input_query_row(source, 15)
+    with torch.no_grad():
+        source.embed.nimloth_query_rows.fill_(3.25)
+    source_rows = selected_rows_state(source)
+
+    class Alignment(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.language_model = Language()
+            self.projector = nn.Linear(4, 3)
+
+        @property
+        def config(self):
+            return self.language_model.config
+
+    model = Alignment()
+    model.requires_grad_(False)
+    install_input_query_rows(
+        model.language_model,
+        (12, 13, 14, 15),
+        forward_dtype=torch.bfloat16,
+    )
+    restore_selected_rows_subset(model.language_model, source_rows)
+    model.projector.float().requires_grad_(True)
+    torch.testing.assert_close(
+        model.language_model.embed.nimloth_query_rows[-1],
+        torch.full((4,), 3.25),
+    )
+    optimizer = build_optimizer(
+        model,
+        1e-6,
+        None,
+        0.01,
+        projector_lr=8e-5,
+        query_token_lr=1e-4,
+        protocol_token_lr=1e-4,
+    )
+    assert [group["lr"] for group in optimizer.param_groups] == [8e-5, 1e-4]
+    members = {
+        id(parameter)
+        for group in optimizer.param_groups
+        for parameter in group["params"]
+    }
+    assert members == {
+        id(parameter) for parameter in model.parameters() if parameter.requires_grad
+    }
+    assert members == {
+        *(id(parameter) for parameter in model.projector.parameters()),
+        id(model.language_model.embed.nimloth_query_rows),
+    }
+    dense_before = {
+        name: parameter.detach().clone()
+        for name, parameter in model.named_parameters()
+        if not parameter.requires_grad
+    }
+    rows_before = model.language_model.embed.nimloth_query_rows.detach().clone()
+    hidden = model.language_model.embed(torch.tensor([[12, 13, 14, 15]])).float()
+    model.projector(hidden).sum().backward()
+    optimizer.step()
+    assert not torch.equal(
+        model.language_model.embed.nimloth_query_rows, rows_before
+    )
+    for name, before in dense_before.items():
+        assert torch.equal(dict(model.named_parameters())[name], before)
+
+
+def test_selected_row_subset_restore_rejects_unknown_token():
+    class Language(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed = nn.Embedding(16, 4)
+            self.head = nn.Linear(4, 16, bias=False)
+            self.config = SimpleNamespace()
+
+        def get_input_embeddings(self):
+            return self.embed
+
+        def get_output_embeddings(self):
+            return self.head
+
+    source = Language()
+    install_input_query_row(source, 15)
+    target = Language()
+    install_input_query_rows(target, (12, 13, 14))
+
+    with pytest.raises(ValueError, match="absent from target"):
+        restore_selected_rows_subset(target, selected_rows_state(source))

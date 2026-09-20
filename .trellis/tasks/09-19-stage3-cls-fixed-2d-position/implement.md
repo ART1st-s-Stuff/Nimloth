@@ -93,6 +93,18 @@ git diff --check
 6. 用固定数据生成最终 reconstruction/DINO 报告，明确 evaluation-only、无 RL、CFM
    post-hoc、无 head 架构对照及不能把 CLS decoder收益解释为策略/动力学提升等限制。
 
+## 8. Stage2 表示续训诊断
+
+1. 增加 `query_projector_only` CLI、全部Query input-row FP32 master与旧CLS sidecar子集恢复；
+   optimizer只包含Query rows和projector。
+2. 增加CLI、梯度/冻结、optimizer参数集合、sidecar恢复、导出与收敛指标测试；更新Stage2
+   README和任务设计，不改变普通selected-LoRA/full-language/global-query-only合同。
+3. 在远程真实依赖环境跑focused tests与单步production canary，核验参数更新集合、dtype、
+   checkpoint完整性和新运行身份。
+4. 从evaluation-only Stage2 epoch8权重初始化，使用新optimizer训练至DINO收敛；保留最新
+   可续训epoch、独立best、逐步日志和固定评估。完成后先报告表示与语言/策略门禁，不自动
+   启动Stage3、CFM重训或RL。
+
 ## 风险与回滚点
 
 - cache 或 state layout 错位会让监督静默失真，因此任何缺失/shape/order/identity 差异都

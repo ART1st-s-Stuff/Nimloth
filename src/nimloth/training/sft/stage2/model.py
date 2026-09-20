@@ -257,6 +257,9 @@ class QueryAlignmentModel(nn.Module):
             "evaluation_only": bool(getattr(self, "evaluation_only", False)),
             "formal_stage2": not bool(getattr(self, "evaluation_only", False)),
             "parent_checkpoint": getattr(self, "parent_checkpoint", None),
+            "initialization_checkpoint": getattr(
+                self, "initialization_checkpoint", None
+            ),
         }
 
     def save_pretrained(self, directory, **kwargs):
@@ -295,6 +298,7 @@ class QueryAlignmentModel(nn.Module):
         saved.setdefault("evaluation_only", False)
         saved.setdefault("formal_stage2", True)
         saved.setdefault("parent_checkpoint", None)
+        saved.setdefault("initialization_checkpoint", None)
         saved.setdefault(
             "dino_cache_fingerprint",
             (

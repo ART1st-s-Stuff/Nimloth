@@ -10,6 +10,7 @@ from torch.nn import functional as F
 TOKEN_ROW_SCHEMA = "selected_rows_v1"
 FULL_LANGUAGE_SELECTED_ROW_SCHEMA = "full_language_selected_rows_v1"
 INPUT_QUERY_ROW_SCHEMA = "input_query_row_only_v1"
+INPUT_QUERY_PROJECTOR_SCHEMA = "input_query_rows_projector_v1"
 
 def _active_saved_leaf(module: nn.Module) -> nn.Module:
     copies = getattr(module, "modules_to_save", None)
@@ -127,23 +128,13 @@ def install_input_query_row(
     trip through the frozen dense table.
     """
 
-    language_model.requires_grad_(False)
-    if forward_dtype is not None:
-        if forward_dtype not in (torch.float16, torch.bfloat16):
-            raise ValueError("global-query-only forward dtype must be FP16 or BF16")
-        # The parent Stage2 checkpoint stores FP32 masters. FSDP used to cast
-        # those parameters for BF16 forwards, but this DDP-only mode has no
-        # FSDP mixed-precision wrapper. Cast frozen parameters explicitly while
-        # preserving FP32 buffers such as rotary frequencies. The selected row
-        # master is installed below, after this conversion, and remains FP32.
-        for parameter in language_model.parameters():
-            parameter.data = parameter.data.to(dtype=forward_dtype)
-        language_model.config.torch_dtype = forward_dtype
+    install_input_query_rows(
+        language_model,
+        (int(query_id),),
+        forward_dtype=forward_dtype,
+        schema=INPUT_QUERY_ROW_SCHEMA,
+    )
     input_leaf = language_model.get_input_embeddings()
-    output_leaf = language_model.get_output_embeddings()
-    if input_leaf.weight is output_leaf.weight:
-        raise ValueError("global-query-only alignment requires untied input/output tables")
-    _install_leaf(input_leaf, (int(query_id),), ())
     if initialize_from_ids is not None:
         source_ids = tuple(int(value) for value in initialize_from_ids)
         if (
@@ -161,7 +152,40 @@ def install_input_query_row(
         with torch.no_grad():
             source = input_leaf.weight.detach()[list(source_ids)].float()
             input_leaf.nimloth_query_rows.copy_(source.mean(dim=0, keepdim=True))
-    language_model.config.nimloth_token_row_schema = INPUT_QUERY_ROW_SCHEMA
+
+
+def install_input_query_rows(
+    language_model: nn.Module,
+    query_ids: Sequence[int],
+    *,
+    forward_dtype: torch.dtype | None = None,
+    schema: str = INPUT_QUERY_PROJECTOR_SCHEMA,
+) -> None:
+    """Freeze the language model and expose FP32 input-only Query rows."""
+
+    query_ids = tuple(int(value) for value in query_ids)
+    if not query_ids or len(set(query_ids)) != len(query_ids):
+        raise ValueError("input Query token IDs must be nonempty and distinct")
+    if schema not in {INPUT_QUERY_ROW_SCHEMA, INPUT_QUERY_PROJECTOR_SCHEMA}:
+        raise ValueError(f"unsupported input Query row schema: {schema}")
+    language_model.requires_grad_(False)
+    if forward_dtype is not None:
+        if forward_dtype not in (torch.float16, torch.bfloat16):
+            raise ValueError("input-only Query forward dtype must be FP16 or BF16")
+        # The parent Stage2 checkpoint stores FP32 masters. FSDP used to cast
+        # those parameters for BF16 forwards, but this DDP-only mode has no
+        # FSDP mixed-precision wrapper. Cast frozen parameters explicitly while
+        # preserving FP32 buffers such as rotary frequencies. The selected row
+        # master is installed below, after this conversion, and remains FP32.
+        for parameter in language_model.parameters():
+            parameter.data = parameter.data.to(dtype=forward_dtype)
+        language_model.config.torch_dtype = forward_dtype
+    input_leaf = language_model.get_input_embeddings()
+    output_leaf = language_model.get_output_embeddings()
+    if input_leaf.weight is output_leaf.weight:
+        raise ValueError("input-only Query alignment requires untied input/output tables")
+    _install_leaf(input_leaf, query_ids, ())
+    language_model.config.nimloth_token_row_schema = schema
 
 def selected_row_parameters(model: nn.Module) -> dict[str, list[nn.Parameter]]:
     result = {"query": [], "protocol": []}
@@ -173,9 +197,9 @@ def selected_row_parameters(model: nn.Module) -> dict[str, list[nn.Parameter]]:
             result["query"].append(module.nimloth_query_rows)
             result["protocol"].append(module.nimloth_protocol_rows)
     schema = getattr(getattr(model, "config", None), "nimloth_token_row_schema", None)
-    if schema == INPUT_QUERY_ROW_SCHEMA:
+    if schema in {INPUT_QUERY_ROW_SCHEMA, INPUT_QUERY_PROJECTOR_SCHEMA}:
         if len(result["query"]) != 1 or len(result["protocol"]) != 1:
-            raise ValueError("expected one input-only query row master")
+            raise ValueError("expected one input-only Query row table")
     elif len(result["query"]) != 2 or len(result["protocol"]) != 2:
         raise ValueError("expected selected rows for input embedding and independent LM head")
     return result
@@ -231,3 +255,65 @@ def restore_selected_rows(model: nn.Module, state: Mapping[str, torch.Tensor]) -
         if not torch.isfinite(restored).all():
             raise ValueError(f"non-finite selected-row resume: {key}")
     model.load_state_dict(dict(state), strict=False)
+
+
+def restore_selected_rows_subset(
+    model: nn.Module, state: Mapping[str, torch.Tensor]
+) -> None:
+    """Restore exact input-only rows whose token IDs are a subset of this model."""
+
+    expected = selected_rows_state(model)
+    suffixes = (
+        ".nimloth_query_rows",
+        ".nimloth_protocol_rows",
+        ".nimloth_query_ids",
+        ".nimloth_protocol_ids",
+    )
+
+    def one_prefix(values: Mapping[str, torch.Tensor]) -> str:
+        prefixes = {
+            key[: -len(suffix)]
+            for key in values
+            for suffix in suffixes
+            if key.endswith(suffix)
+        }
+        if len(prefixes) != 1:
+            raise ValueError("selected-row subset restore requires one input table")
+        return next(iter(prefixes))
+
+    expected_prefix = one_prefix(expected)
+    source_prefix = one_prefix(state)
+    if expected_prefix != source_prefix:
+        raise ValueError("selected-row subset table identity mismatch")
+    required = {expected_prefix + suffix for suffix in suffixes}
+    if set(expected) != required or set(state) != required:
+        raise ValueError("selected-row subset restore keys do not match input-only schema")
+    source_protocol_ids = state[expected_prefix + ".nimloth_protocol_ids"]
+    source_protocol_rows = state[expected_prefix + ".nimloth_protocol_rows"]
+    if source_protocol_ids.numel() or source_protocol_rows.shape[0]:
+        raise ValueError("selected-row subset source must not contain protocol rows")
+    source_ids = state[expected_prefix + ".nimloth_query_ids"]
+    source_rows = state[expected_prefix + ".nimloth_query_rows"]
+    target_ids = expected[expected_prefix + ".nimloth_query_ids"]
+    target_rows = expected[expected_prefix + ".nimloth_query_rows"].clone()
+    if (
+        source_ids.dtype != target_ids.dtype
+        or source_rows.dtype != target_rows.dtype
+        or source_rows.ndim != 2
+        or target_rows.ndim != 2
+        or source_rows.shape[0] != source_ids.numel()
+        or source_rows.shape[1:] != target_rows.shape[1:]
+        or not torch.isfinite(source_rows).all()
+    ):
+        raise ValueError("selected-row subset shape or dtype mismatch")
+    positions = {int(token_id): index for index, token_id in enumerate(target_ids)}
+    if len(positions) != target_ids.numel():
+        raise ValueError("target selected-row token IDs are not unique")
+    for source_index, token_id in enumerate(source_ids):
+        target_index = positions.get(int(token_id))
+        if target_index is None:
+            raise ValueError("selected-row subset token ID is absent from target")
+        target_rows[target_index].copy_(source_rows[source_index])
+    merged = dict(expected)
+    merged[expected_prefix + ".nimloth_query_rows"] = target_rows
+    restore_selected_rows(model, merged)

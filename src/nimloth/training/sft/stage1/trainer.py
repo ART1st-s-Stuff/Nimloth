@@ -349,6 +349,8 @@ def evaluate(
 def convergence_monitor(stage: str, tuning_mode: str | None = None) -> str:
     if stage == "query" and tuning_mode == "global_query_only":
         return "validation_dino_cls_loss"
+    if stage == "query" and tuning_mode == "query_projector_only":
+        return "validation_dino_loss"
     return "validation_total_loss" if stage == "query" else "validation_lm_loss"
 
 
@@ -366,6 +368,7 @@ def build_optimizer(
     selected = None
     if query_token_lr is not None:
         from nimloth.training.sft.stage2.selected_token_rows import (
+            INPUT_QUERY_PROJECTOR_SCHEMA,
             INPUT_QUERY_ROW_SCHEMA,
             selected_row_parameters,
         )
@@ -376,9 +379,14 @@ def build_optimizer(
             getattr(model.config, "nimloth_token_row_schema", None)
             == INPUT_QUERY_ROW_SCHEMA
         )
+        input_query_projector = (
+            getattr(model.config, "nimloth_token_row_schema", None)
+            == INPUT_QUERY_PROJECTOR_SCHEMA
+        )
     else:
         selected_ids = set()
         input_query_only = False
+        input_query_projector = False
     embed_lr = embedding_lr if embedding_lr is not None else lr
     embed_keys = ("embed_tokens", "lm_head")
     embed_params: list[torch.nn.Parameter] = []
@@ -410,6 +418,20 @@ def build_optimizer(
                 raise ValueError("global-query-only alignment must freeze all non-row parameters")
             groups = [{"params": selected["query"], "lr": query_token_lr, "weight_decay": 0.0}]
             return torch.optim.AdamW(groups, weight_decay=0.0, foreach=False)
+        if input_query_projector:
+            if base_params or embed_params or not projector_params:
+                raise ValueError(
+                    "query-projector-only alignment must train only Query rows and projector"
+                )
+            groups = [
+                {"params": projector_params, "lr": projector_lr},
+                {
+                    "params": selected["query"],
+                    "lr": query_token_lr,
+                    "weight_decay": 0.0,
+                },
+            ]
+            return torch.optim.AdamW(groups, weight_decay=weight_decay, foreach=False)
         if projector_lr is None or not base_params or not projector_params:
             raise ValueError("Stage2 selected rows require trainable LoRA and projector groups")
         # Keep five explicit Stage2 groups: LoRA, projector, query rows, and
@@ -612,6 +634,25 @@ def _resume_identity(
             "forward_dtype": "bfloat16",
             "tables": ["input_embeddings"],
             "parent_checkpoint": str(Path(args.model).resolve()),
+        }
+    if (
+        stage == "query"
+        and getattr(args, "tuning_mode", "selected_lora") == "query_projector_only"
+    ):
+        identity["tuning_mode"] = "query_projector_only"
+        identity["token_row_training"] = {
+            "schema": "input_query_rows_projector_v1",
+            "query_token_ids": list(args.query_token_ids),
+            "query_token_lr": args.query_token_lr,
+            "protocol_token_ids": [],
+            "protocol_token_lr": None,
+            "unselected_rows": "bitwise_frozen",
+            "master_dtype": "float32",
+            "forward_dtype": "bfloat16",
+            "tables": ["input_embeddings"],
+            "initialization_checkpoint": str(Path(args.model).resolve()),
+            "parent_checkpoint": getattr(args, "stage2_parent_checkpoint", None),
+            "optimizer_initialization": "fresh_parameter_set_v1",
         }
     if stage == "query" and getattr(args, "tuning_mode", "selected_lora") == "full_language":
         identity["tuning_mode"] = "full_language"
@@ -1001,6 +1042,7 @@ def main(*, stage: str = "format") -> int:
     elif is_main() and getattr(args, "tuning_mode", None) not in {
         "full_language",
         "global_query_only",
+        "query_projector_only",
     }:
         print(
             json.dumps(
@@ -1016,9 +1058,22 @@ def main(*, stage: str = "format") -> int:
         model = QueryAlignmentModel.build(model, processor.tokenizer, query_config)
         model.evaluation_only = bool(getattr(args, "evaluation_only", False))
         model.dino_cache_fingerprint = args.dino_cache_fingerprint
-        model.parent_checkpoint = (
-            str(args.model.resolve()) if model.evaluation_only else None
-        )
+        source_grid = None
+        if (args.model / "grid_state_config.json").is_file():
+            source_grid = json.loads(
+                (args.model / "grid_state_config.json").read_text(encoding="utf-8")
+            )
+        model.parent_checkpoint = None
+        if model.evaluation_only:
+            model.parent_checkpoint = str(args.model.resolve())
+            if source_grid and source_grid.get("evaluation_only"):
+                model.parent_checkpoint = source_grid.get("parent_checkpoint")
+        args.stage2_parent_checkpoint = model.parent_checkpoint
+        if (
+            resume_dir is not None
+            and getattr(args, "tuning_mode", None) == "query_projector_only"
+        ):
+            model.initialization_checkpoint = str(args.model.resolve())
         if resume_dir is not None:
             model.restore_projector(resume_dir, allow_dino_weight_change=continuing and args.continue_with_dino_weight_change)
         elif (args.model / "grid_state_config.json").is_file():
@@ -1028,6 +1083,8 @@ def main(*, stage: str = "format") -> int:
                     getattr(args, "tuning_mode", None) == "global_query_only"
                 ),
             )
+        if getattr(args, "tuning_mode", None) == "query_projector_only":
+            model.initialization_checkpoint = str(args.model.resolve())
     # Build the projector in the original BF16 dtype before promoting PEFT copies.
     language_model = model.language_model if query_config is not None else model
     prepare_embedding_masters(language_model, getattr(args, "embedding_master_dtype", "bfloat16"))
@@ -1059,6 +1116,29 @@ def main(*, stage: str = "format") -> int:
                 language_model,
                 torch.load(row_path, map_location="cpu", weights_only=True),
             )
+    elif query_config is not None and getattr(args, "tuning_mode", None) == "query_projector_only":
+        from nimloth.training.sft.stage2.selected_token_rows import (
+            INPUT_QUERY_PROJECTOR_SCHEMA,
+            install_input_query_rows,
+            restore_selected_rows_subset,
+        )
+
+        model.requires_grad_(False)
+        install_input_query_rows(
+            language_model,
+            args.query_token_ids,
+            forward_dtype=torch.bfloat16,
+            schema=INPUT_QUERY_PROJECTOR_SCHEMA,
+        )
+        row_source = resume_dir if resume_dir is not None else args.model
+        row_path = row_source / "selected_token_rows.pt"
+        if row_path.is_file():
+            restore_selected_rows_subset(
+                language_model,
+                torch.load(row_path, map_location="cpu", weights_only=True),
+            )
+        model.projector.to(dtype=torch.float32)
+        model.projector.requires_grad_(True)
     elif query_config is not None and getattr(args, "tuning_mode", None) == "full_language":
         from nimloth.training.sft.stage2.full_tuning import prepare_full_language
 

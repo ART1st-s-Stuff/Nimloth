@@ -111,6 +111,22 @@ RL 起点。
   state-to-DINO / observed reconstruction ceiling。若 WM 改善但表示 ceiling 仍明显落后
   DINO oracle，应分别归因于动力学学习和 Query/projector 表示瓶颈。
 
+### R6. Evaluation-only Stage2 representation continuation
+
+- 冻结表示 WM 已证明现有 predictor 能超过 input-copy 后，允许从本任务 evaluation-only
+  Stage2 epoch8 权重初始化一轮新的表示诊断。该诊断只训练全部65个 Query 的 input
+  embedding FP32 master rows 与共享 projector；Qwen backbone、vision、LM head、action/
+  format token rows均冻结，不加载 Stage3 WM、ValueHead或OutcomeHead。
+- 由于训练参数集合从“仅CLS Query一行”变成“全部Query行+projector”，不得冒充旧
+  optimizer的原样续训。使用新的 AdamW，并在运行身份中同时保存直接初始化 checkpoint、
+  原始 Stage2 parent、精确行ID、Query/projector LR和冻结集合。
+- 本轮沿用 epoch8 的 train/eval JSONL、K65 DINO cache、DINO系数2、有效batch64、seed与
+  完整验证口径；Query LR为 `1e-4`，projector LR为 `8e-5`。以验证集 spatial+CLS DINO
+  分项之和为收敛指标，至少2轮，连续2轮相对改善不足1%停止；LM、格式与direct-policy
+  success作为策略保持门禁，不并入DINO收敛指标。
+- 该运行仍标记 `evaluation_only=true`、`formal_stage2=false`，沿用已知发生过上游暴露的
+  原划分，只能回答当前表示是否还能继续改善，不能晋升为正式Stage2或未见场景泛化证据。
+
 ## Acceptance Criteria
 
 - [ ] AC1: 新缓存逐图提供真实 DINO CLS 与 K64 grid，schema、shape、teacher identity、
@@ -127,6 +143,9 @@ RL 起点。
 - [x] AC6: WM-only continuation 从精确 Stage3 predictor 权重初始化，cache 绑定实际 Stage3
   表示 checkpoint，optimizer 只含 WM；报告 WM-vs-copy 与固定表示 ceiling，不把两者混为
   WM 容量结论。
+- [ ] AC7: evaluation-only Stage2 representation continuation 只更新65个 Query input rows与
+  projector，使用新的 optimizer 并严格记录 epoch8 初始化 lineage；完整验证分别报告
+  spatial/CLS DINO与语言门禁，收敛后不自动进入Stage3或RL。
 
 ## Out of Scope
 
@@ -140,4 +159,5 @@ RL 起点。
   OutcomeHead 的 mean-pooling 缺陷。
 - 正式训练完成前不进入 RL；本实验结果不自动授权后续 RL。
 - 本任务不执行正式 Stage2/Stage3 重训；正式 Stage2 的具体 Stage1 基座、预算和启动合同
-  后续单独规划，但必须从 epoch1 启用 CLS。本次 Stage2 初始化固定为当前 epoch16。
+  后续单独规划，但必须从 epoch1 启用 CLS。R6 只是从当前 evaluation-only epoch8 初始化
+  的表示诊断，不能替代正式训练。
