@@ -375,12 +375,15 @@ def build_optimizer(
 
         selected = selected_row_parameters(model)
         selected_ids = {id(p) for values in selected.values() for p in values}
+        config = getattr(model, "config", None)
+        if config is None and hasattr(model, "language_model"):
+            config = getattr(model.language_model, "config", None)
         input_query_only = (
-            getattr(model.config, "nimloth_token_row_schema", None)
+            getattr(config, "nimloth_token_row_schema", None)
             == INPUT_QUERY_ROW_SCHEMA
         )
         input_query_projector = (
-            getattr(model.config, "nimloth_token_row_schema", None)
+            getattr(config, "nimloth_token_row_schema", None)
             == INPUT_QUERY_PROJECTOR_SCHEMA
         )
     else:
