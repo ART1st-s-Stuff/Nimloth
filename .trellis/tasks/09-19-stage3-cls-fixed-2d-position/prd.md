@@ -124,7 +124,7 @@ RL 起点。
 - [ ] AC5: 固定数据报告分别回答 CLS 对齐、空间对齐、WM-vs-copy skill 及 observed/
   predicted spatial+CLS reconstruction；正确/零/打乱 CLS 使用相同样本、空间 state、
   噪声与采样设置，不以总 loss、单张重建图片或 mean-pooling head 指标宣称策略提升。
-- [ ] AC6: WM-only continuation 从精确 Stage3 predictor 权重初始化，cache 绑定实际 Stage3
+- [x] AC6: WM-only continuation 从精确 Stage3 predictor 权重初始化，cache 绑定实际 Stage3
   表示 checkpoint，optimizer 只含 WM；报告 WM-vs-copy 与固定表示 ceiling，不把两者混为
   WM 容量结论。
 

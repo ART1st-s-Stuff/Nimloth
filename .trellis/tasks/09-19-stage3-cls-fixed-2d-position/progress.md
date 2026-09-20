@@ -439,3 +439,6 @@
   结果。有效 r2 产物位于 `wm_only_reconstruction_r2`，本地副本和每轮 metrics 位于
   `.local/artifacts/stage3_cls_frozen_wm_20260920/`。观察图与数值一致：final predicted 比
   copy 有小幅局部改善，但共同的平滑/模糊结构仍明显，不能认为 DINO 细节已充分保留。
+- 收尾修复 `fe09acf4` 移除 frozen-WM 可视化工具对46步终点的硬编码，同时仍要求
+  `run.json`、终点目录、training state 和 COMPLETE 严格一致；最终相关回归为
+  `13 passed`。本轮 AC6 已满足，但没有改变正式 Stage3 或授权进入 RL。
