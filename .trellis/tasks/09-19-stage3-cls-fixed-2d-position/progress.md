@@ -442,3 +442,36 @@
 - 收尾修复 `fe09acf4` 移除 frozen-WM 可视化工具对46步终点的硬编码，同时仍要求
   `run.json`、终点目录、training state 和 COMPLETE 严格一致；最终相关回归为
   `13 passed`。本轮 AC6 已满足，但没有改变正式 Stage3 或授权进入 RL。
+
+## 2026-09-20 Stage2 Query/projector-only representation diagnostic
+
+- 冻结表示 WM 的5轮结果证明现有 residual WM 能超过 input-copy，但固定 observed
+  representation ceiling 仍为 spatial DINO MSE `0.599746`、CLS DINO MSE `1.392217`；
+  用户据此批准优先继续 Stage2，而不是扩大 WM。新增 `query_projector_only`：只训练65个
+  Query input embedding FP32 rows与共享FP32 projector，冻结Qwen、vision、LM head及
+  protocol rows；从evaluation-only Stage2 epoch8初始化，但因参数集合变化使用fresh AdamW。
+- 实现提交 `b207dd99`，随后远程回归暴露 optimizer 对外层wrapper `.config` 的既有假设；
+  `d814dcb4` 改为兼容 `model.config` 与 `model.language_model.config`。a100-1 聚焦回归
+  `50 passed`，扩大Stage2与continuation回归（排除现有tests namespace导入问题）为
+  `81 passed`。全目录唯一collection阻塞是 `test_dino_cache_reuse.py` 把无package marker的
+  本仓库 `tests` 解析成环境同名包，与本轮逻辑无关，未通过修改环境或跳过断言冒充通过。
+- 8卡DDP production canary 从epoch8运行1次optimizer update，有效trajectory batch64、
+  DINO2、Query LR `1e-4`、projector LR `8e-5`。`2026-09-20T11:35:34Z--11:37:54Z`
+  完成step1，train loss `5.1596984863`，完整恢复点为
+  `20260920_stage2_epoch8_query_projector_only_canary1/resume_step_00000001`，随后8卡释放。
+- 参数逐值审计确认65/65 Query rows均改变，最大绝对位移范围
+  `1.220703125e-4--2.44140625e-4`；projector全部6个tensor改变；除input Query rows外的
+  Qwen/vision/LM head tensor无一改变。optimizer只有projector与Query两个group，LR分别为
+  `8e-5/1e-4`、共7个state参数；sidecar为FP32 `[65,2048]`。证据保存在canary目录的
+  `parameter_scope_audit.json`。
+- canary主体已成功并按计划保存后返回75；`torchrun` 将该rank退出包装成
+  `ChildFailedError`/controller exit1，旧wrapper因此写了`controller_failed`。这只是控制器
+  对计划暂停的误分类，原始标记保留作来源，单独的result记录明确区分核心训练与wrapper。
+  canary只验证机制与恢复性，不构成收敛、表示质量、rollout success或正式Stage2结论。
+- 用户批准后，正式diagnostic于 `2026-09-20T11:43:17Z` 在a100-1启动，controller PID
+  `1709664`，远端clean worktree HEAD=`d814dcb4`。输出为
+  `20260920_stage2_epoch8_query_projector_only_dino2_r1`；从原epoch8权重而非canary step1
+  初始化fresh optimizer，8卡DDP、27 updates/epoch、有效batch64、DINO2、Query LR
+  `1e-4`、projector LR `8e-5`。以完整验证 `validation_dino_loss` 收敛，至少2轮且连续2轮
+  相对改善不足1%停止；12小时仅为可恢复暂停上限。每10步保存恢复点，只保留最新完整epoch
+  与独立best；禁止自动进入Stage3或RL。
