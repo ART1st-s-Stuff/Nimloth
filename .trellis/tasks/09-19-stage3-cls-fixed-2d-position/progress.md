@@ -488,3 +488,7 @@
   当前线程已创建5分钟heartbeat `stage2`，无实质变化时保持安静，仅在新验证、失败、
   暂停或完成时通知；收敛后按同一固定口径继续representation ceiling、DINO feature/
   reconstruction与success-rate评估，不自动进入Stage3或RL。
+- epoch4 / step108验证完成：`DINO total/spatial/CLS/LM =
+  1.295848/0.591341/0.704507/0.445368`。合成DINO较epoch3继续改善`5.05%`，CLS改善
+  `8.28%`，spatial亦改善`0.88%`并已略优于原epoch8起点；LM仍稳定，格式通过率100%。
+  仍高于1%阈值，训练正常进入下一轮。
