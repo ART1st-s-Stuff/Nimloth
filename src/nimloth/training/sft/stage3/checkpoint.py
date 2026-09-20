@@ -704,6 +704,27 @@ def load_world_model_checkpoint(
                     f"checkpoint split-projector metadata mismatch for {key}: "
                     f"checkpoint={metadata.get(key)!r}, current={expected.get(key)!r}"
                 )
+        invariants = training_state.get("training_invariants") or {}
+        migration = invariants.get("k64_stage3_migration")
+        expected_source = (
+            migration.get("source") if isinstance(migration, dict) else None
+        )
+        for key in (
+            "initialization_source",
+            "spatial_initialization_source",
+            "global_initialization_source",
+        ):
+            if metadata.get(key) != expected_source:
+                raise ValueError(
+                    "checkpoint split-projector migration provenance mismatch "
+                    f"for {key}: checkpoint={metadata.get(key)!r}, "
+                    f"training_invariants={expected_source!r}"
+                )
+        if metadata.get("global_initialization") != "copy_of_spatial_v1":
+            raise ValueError(
+                "checkpoint split-projector global initialization mismatch: "
+                f"{metadata.get('global_initialization')!r}"
+            )
     proj.load_state_dict(
         torch.load(sp_path, map_location=device, weights_only=True), strict=True
     )

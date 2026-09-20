@@ -108,6 +108,11 @@ class SplitSpatialGlobalProjector(nn.Module):
         )
 
     def metadata(self, *, initialization_source: str | None = None) -> dict[str, object]:
+        source = (
+            str(initialization_source)
+            if initialization_source is not None
+            else None
+        )
         return {
             "projector_layout": self.schema,
             "ordering": "row_major_spatial_then_global",
@@ -115,7 +120,9 @@ class SplitSpatialGlobalProjector(nn.Module):
             "qwen_hidden_dim": self.input_dim,
             "state_dim": self.output_dim,
             "projector_hidden_dim": self.hidden_dim,
-            "spatial_initialization_source": initialization_source,
+            "initialization_source": source,
+            "spatial_initialization_source": source,
+            "global_initialization_source": source,
             "global_initialization": "copy_of_spatial_v1",
         }
 

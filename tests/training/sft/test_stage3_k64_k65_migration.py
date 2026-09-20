@@ -276,6 +276,8 @@ def test_split_checkpoint_records_strict_migration_provenance(tmp_path) -> None:
     )
     assert state["projector_layout"] == "split_spatial_global_v1"
     assert state["projector_metadata"]["initialization_source"] == str(source)
+    assert state["projector_metadata"]["spatial_initialization_source"] == str(source)
+    assert state["projector_metadata"]["global_initialization_source"] == str(source)
     assert metadata["migration"] == invariants["k64_stage3_migration"]
     assert metadata["dino_cache_fingerprint"] == "cache-sha"
     assert metadata["feature_space_fingerprint"] == "feature-sha"
@@ -291,3 +293,10 @@ def test_split_checkpoint_records_strict_migration_provenance(tmp_path) -> None:
     )
     for key, value in projector.state_dict().items():
         torch.testing.assert_close(restored.state_proj.state_dict()[key], value)
+
+    state["projector_metadata"]["global_initialization_source"] = "wrong-source"
+    torch.save(state, tmp_path / "saved" / "training_state.pt")
+    with pytest.raises(ValueError, match="migration provenance mismatch"):
+        load_world_model_checkpoint(
+            tmp_path / "saved", restored, torch.device("cpu")
+        )
