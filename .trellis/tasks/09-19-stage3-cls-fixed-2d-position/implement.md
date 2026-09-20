@@ -1,6 +1,18 @@
 # 实施计划
 
-## 2026-09-20 修订批次：K64续训重建与split projector
+## 2026-09-20 最新批次：Stage2 epoch16 → K65 split projector
+
+- [ ] 实现Stage2专用K64 `slot_projector.pt`→K65 split projector严格迁移；两个分支从源权重
+  逐值复制，普通resume保持严格同构加载。
+- [ ] 实现full-language双表FP32 sidecar→input-only K65 selected rows迁移：保留64行、追加
+  FP32均值CLS行，并核验冻结output/protocol rows。
+- [ ] Stage2 model/checkpoint metadata支持split projector、迁移provenance和严格round-trip。
+- [ ] optimizer固定为spatial/global/query三个互斥参数组，使用`8e-5/8e-5/1e-4`；其余冻结。
+- [ ] 增加初始化等价、分支梯度隔离、loss路由、参数集合、tamper拒绝和resume回归测试。
+- [ ] 通过独立trellis-check、远端真实依赖focused tests和8卡单步canary。
+- [ ] canary通过后展示正式Stage2长训练合同；本批次不启动Stage3、CFM或RL。
+
+## 2026-09-20 已被覆盖批次：K64续训重建与split projector
 
 - [ ] 核验并记录旧K64 epoch2恢复文件、旧epoch3--5日志/诊断、远端GPU/磁盘和新输出身份。
 - [ ] 增加K64 Stage3 HF→K65 model/token显式转换，复用既有CLS Query初始化合同，保存父权重/

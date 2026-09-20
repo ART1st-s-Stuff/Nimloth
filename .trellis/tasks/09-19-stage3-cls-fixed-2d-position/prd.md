@@ -1,5 +1,27 @@
 # Stage3 CLS 与固定二维位置编码实验
 
+## 2026-09-20 最新人类修订：Stage2 epoch16 → K65 split projector
+
+本节覆盖下文“重放 K64 Stage3 epoch3--5”以及更早的“只训练新增 CLS row”方案。已停止的
+K64 Stage3 replay 及其 `step_000070` 不作为本轮输入，也不继续执行。
+
+- 唯一初始化来源是现存 K64 Stage2 `epoch_016`：
+  `/mnt/nimloth/outputs/experiments/sft2-deepsight-full/20260914_epoch15_projector_lr8e5_continue/train/epoch_016`。
+  本轮是权重谱系上的 Stage2 续训，但因词表和 projector 拓扑改变，使用 fresh optimizer、
+  scheduler、数据游标、RNG 和收敛历史，不能称为精确 optimizer resume。
+- 将 K64 扩展为 K65：保留并从 FP32 sidecar 精确恢复原64个 spatial Query input rows，新增
+  唯一 CLS Query row并以64行FP32均值初始化；其余 Qwen、vision、LM head、action/format/
+  protocol rows冻结。
+- Stage2 使用两个互不共享的同构 projector：`spatial`处理前64个 Query，`global`只处理最后
+  1个 CLS Query。`spatial`严格加载 epoch16 的 `slot_projector.pt`，`global`从相同权重逐值
+  复制初始化；两分支分别接受 DINO spatial/CLS loss。
+- 训练范围固定为全部65个 Query input rows和两个 projector。Query LR沿用 `1e-4`，两个
+  projector均沿用 `8e-5`；DINO系数2、有效batch64、原 answer-view train/eval split及K65
+  DINO cache保持不变。optimizer包含三个互斥命名参数组并从头初始化。
+- 收敛仍监控完整验证集 `spatial MSE + CLS MSE`，至少2轮、连续2轮相对改善不足1%停止；
+  spatial/CLS分项、LM、格式与后续success rate分别报告。该运行仍是evaluation-only，不进入
+  Stage3、CFM或RL，直到人类审核Stage2结果。
+
 ## Goal
 
 为世界模型提供 DINOv2 CLS 全局视觉目标及固定二维空间位置编码，优先检验显式全局
@@ -9,7 +31,7 @@
 ValueHead/OutcomeHead pooling 对照。训练结果只作为评估证据，不作为正式模型或后续
 RL 起点。
 
-## 2026-09-20 人类修订：从上一轮 K64 Stage3 续训链继续
+## 2026-09-20 已被覆盖的修订：从上一轮 K64 Stage3 续训链继续
 
 本节覆盖本文后面仍写作“从 Stage2 epoch16 增补 CLS、Stage3 fresh start”的旧实验起点；
 旧段落保留为历史方案，不再作为本轮启动合同。

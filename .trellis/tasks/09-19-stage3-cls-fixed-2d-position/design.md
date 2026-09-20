@@ -1,6 +1,28 @@
 # Stage3 CLS、固定二维位置与 reconstruction 设计
 
-## 0. 2026-09-20 起点与 projector 修订
+## 2026-09-20 最新设计：从 Stage2 epoch16 迁移到 K65 split projector
+
+本轮只实现并运行 Stage2。旧 K64 Stage3 replay已经停止，`step_000070`不参与初始化；后续
+Stage3、WM、reconstruction和RL均不自动启动。
+
+1. 输入为K64 Stage2 epoch16完整HF/checkpoint目录。显式迁移入口要求源checkpoint为K64
+   shared projector、64个Query token、完整FP32 selected-row sidecar；普通resume不得隐式
+   接受该结构变化。
+2. tokenizer/model只追加一个CLS Query。目标K65 input-only FP32 master逐值复制源64个Query
+   input rows并追加其FP32均值；同时核对冻结的源output/protocol rows与sidecar一致，禁止从
+   BF16 dense权重静默恢复精确值。
+3. `SplitSpatialGlobalProjector`保持`(B,65,H)->(B,65,1024)`接口。`spatial`严格加载源
+   `slot_projector.pt`，`global`从相同state dict复制；两分支参数互不共享。现有layout切片和
+   spatial/CLS独立MSE继续使用，validation总DINO为两项之和。
+4. fresh AdamW仅含`state_proj_spatial`、`state_proj_global`和`query_rows`三个互斥组，LR分别
+   为`8e-5/8e-5/1e-4`。Qwen、vision、LM head、action/format/protocol rows和DINO teacher冻结。
+5. checkpoint保存split schema、slot ordering、两个分支初始化来源、epoch16路径与hash、
+   selected-row迁移规则、K65 cache identity及`fresh_adamw_v1`。之后同结构resume必须严格恢复
+   三组optimizer、65行sidecar、RNG、cursor和收敛历史；来源缺失或被篡改时fail closed。
+6. 数据、K65 DINO cache、DINO2、有效batch64和收敛规则沿用最近K65 Stage2 diagnostic，避免
+   同时引入额外变量。先做CPU/focused regression及8卡单步canary，再提交正式长训练合同。
+
+## 0. 已被覆盖的起点与 projector 修订
 
 本节覆盖后文以 Stage2/K65 fresh-start 为起点的旧设计。
 

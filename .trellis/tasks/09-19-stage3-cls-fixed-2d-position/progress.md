@@ -604,3 +604,14 @@
   step77之后；checkpoint-latest-only已将epoch3替换为最后完整`step_000070`，该目录约43GiB，
   含四个Qwen shard、training state/optimizer、selected rows、projector、WM、Value/Outcome与
   vision EMA，可作为最新恢复边界。当前磁盘余量约92GiB。K65迁移未启动；5分钟监控已删除。
+
+## 2026-09-20 用户纠正为 Stage2 epoch16 → K65 split projector
+
+- 用户明确指出“从这里续训”指现存K64 Stage2 epoch16，而不是重建或使用任何K64 Stage3
+  checkpoint。已停止的replay及其step70只作为历史证据保留，不进入新实验谱系。
+- 新目标是从Stage2 epoch16迁移到K65并继续Stage2：全部65个Query input rows可训练，K64
+  spatial与K1 CLS使用两个独立projector；spatial严格继承旧projector，global复制初始化。
+  其他Qwen/vision/LM head/token rows冻结，fresh optimizer使用Query `1e-4`、两个projector
+  各`8e-5`，其余数据、K65 cache、DINO2、有效batch64及收敛标准保持最近diagnostic口径。
+- 只读代码研究已记录在`research/stage2-k64-epoch16-to-k65-split-projector.md`。下一步先实现
+  Stage2专用selected-row与projector迁移、checkpoint/resume和测试，不启动Stage3或RL。
