@@ -6,11 +6,11 @@
 Stage3、WM、reconstruction和RL均不自动启动。
 
 1. 输入为K64 Stage2 epoch16完整HF/checkpoint目录。显式迁移入口要求源checkpoint为K64
-   shared projector、64个Query token、完整FP32 selected-row sidecar；普通resume不得隐式
+   shared projector、64个Query token、untied完整FP32 dense input/output tables；普通resume不得隐式
    接受该结构变化。
 2. tokenizer/model只追加一个CLS Query。目标K65 input-only FP32 master逐值复制源64个Query
-   input rows并追加其FP32均值；同时核对冻结的源output/protocol rows与sidecar一致，禁止从
-   BF16 dense权重静默恢复精确值。
+   input rows并追加其FP32均值；冻结的output Query/protocol rows从同一FP32 dense checkpoint
+   提取，新增output CLS row以64个output Query均值初始化。非FP32或tied dense源直接拒绝。
 3. `SplitSpatialGlobalProjector`保持`(B,65,H)->(B,65,1024)`接口。`spatial`严格加载源
    `slot_projector.pt`，`global`从相同state dict复制；两分支参数互不共享。现有layout切片和
    spatial/CLS独立MSE继续使用，validation总DINO为两项之和。

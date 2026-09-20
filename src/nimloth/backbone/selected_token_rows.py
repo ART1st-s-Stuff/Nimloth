@@ -242,6 +242,42 @@ def selected_rows_state(model: nn.Module) -> dict[str, torch.Tensor]:
     }
 
 
+def dense_full_language_rows_state(
+    model: nn.Module,
+    query_ids: Sequence[int],
+    protocol_ids: Sequence[int],
+) -> dict[str, torch.Tensor]:
+    """Capture authoritative selected rows from untied FP32 dense tables."""
+
+    query_ids = tuple(map(int, query_ids))
+    protocol_ids = tuple(map(int, protocol_ids))
+    input_leaf = model.get_input_embeddings()
+    output_leaf = model.get_output_embeddings()
+    if input_leaf.weight is output_leaf.weight:
+        raise ValueError("dense selected-row migration requires untied token tables")
+    if input_leaf.weight.dtype != torch.float32 or output_leaf.weight.dtype != torch.float32:
+        raise ValueError("dense selected-row migration requires authoritative FP32 tables")
+    if (
+        not query_ids
+        or len(set((*query_ids, *protocol_ids))) != len(query_ids) + len(protocol_ids)
+        or max((*query_ids, *protocol_ids), default=-1) >= input_leaf.weight.shape[0]
+        or input_leaf.weight.shape != output_leaf.weight.shape
+    ):
+        raise ValueError("dense selected-row migration token identity or table shape mismatch")
+    query_tensor = torch.tensor(query_ids, dtype=torch.long)
+    protocol_tensor = torch.tensor(protocol_ids, dtype=torch.long)
+    return {
+        "embed_tokens.nimloth_query_ids": query_tensor,
+        "embed_tokens.nimloth_query_rows": input_leaf.weight.detach()[list(query_ids)].cpu().clone(),
+        "embed_tokens.nimloth_protocol_ids": protocol_tensor,
+        "embed_tokens.nimloth_protocol_rows": input_leaf.weight.detach()[list(protocol_ids)].cpu().clone(),
+        "lm_head.nimloth_query_ids": query_tensor.clone(),
+        "lm_head.nimloth_query_rows": output_leaf.weight.detach()[list(query_ids)].cpu().clone(),
+        "lm_head.nimloth_protocol_ids": protocol_tensor.clone(),
+        "lm_head.nimloth_protocol_rows": output_leaf.weight.detach()[list(protocol_ids)].cpu().clone(),
+    }
+
+
 def restore_selected_rows(model: nn.Module, state: Mapping[str, torch.Tensor]) -> None:
     expected = selected_rows_state(model)
     if not expected or set(state) != set(expected):
@@ -400,3 +436,133 @@ def restore_selected_rows_subset(
     merged = dict(expected)
     merged[expected_prefix + ".nimloth_query_rows"] = target_rows
     restore_selected_rows(model, merged)
+
+
+def migrate_full_language_rows_to_input_query_rows(
+    model: nn.Module,
+    state: Mapping[str, torch.Tensor],
+    *,
+    source_query_ids: Sequence[int],
+    target_query_ids: Sequence[int],
+    protocol_ids: Sequence[int],
+) -> None:
+    """Migrate a two-table K64 FP32 sidecar to one input-only K65 master.
+
+    The sidecar, rather than the serialized dense BF16 tables, is authoritative.
+    Frozen dense input/output protocol rows and output Query rows are restored
+    from it as well, so the vocabulary extension never silently accepts rounded
+    or incompatible source rows.
+    """
+
+    source_query_ids = tuple(map(int, source_query_ids))
+    target_query_ids = tuple(map(int, target_query_ids))
+    protocol_ids = tuple(map(int, protocol_ids))
+    if (
+        len(target_query_ids) != len(source_query_ids) + 1
+        or target_query_ids[:-1] != source_query_ids
+        or len(set(target_query_ids)) != len(target_query_ids)
+    ):
+        raise ValueError("K64 to K65 selected-row migration must append one Query ID")
+    expected = selected_rows_state(model)
+    suffixes = (
+        ".nimloth_query_rows", ".nimloth_protocol_rows",
+        ".nimloth_query_ids", ".nimloth_protocol_ids",
+    )
+    target_prefixes = {
+        key[: -len(suffix)] for key in expected for suffix in suffixes
+        if key.endswith(suffix)
+    }
+    source_prefixes = {
+        key[: -len(suffix)] for key in state for suffix in suffixes
+        if key.endswith(suffix)
+    }
+    if len(target_prefixes) != 1 or len(source_prefixes) != 2:
+        raise ValueError("migration requires one target input table and two source tables")
+    target_prefix = next(iter(target_prefixes))
+    input_candidates = [p for p in source_prefixes if "embed" in p]
+    output_candidates = [p for p in source_prefixes if "lm_head" in p]
+    if len(input_candidates) != 1 or len(output_candidates) != 1:
+        raise ValueError("cannot identify source input embedding and LM head sidecars")
+    input_prefix, output_prefix = input_candidates[0], output_candidates[0]
+    required = {p + s for p in source_prefixes for s in suffixes}
+    if set(state) != required:
+        raise ValueError("source selected-row sidecar is incomplete or has unknown keys")
+
+    def checked(prefix: str) -> tuple[torch.Tensor, torch.Tensor]:
+        query_ids = state[prefix + ".nimloth_query_ids"]
+        query_rows = state[prefix + ".nimloth_query_rows"]
+        saved_protocol_ids = state[prefix + ".nimloth_protocol_ids"]
+        protocol_rows = state[prefix + ".nimloth_protocol_rows"]
+        if (
+            query_ids.dtype != torch.long
+            or tuple(map(int, query_ids.tolist())) != source_query_ids
+            or saved_protocol_ids.dtype != torch.long
+            or tuple(map(int, saved_protocol_ids.tolist())) != protocol_ids
+            or query_rows.dtype != torch.float32
+            or protocol_rows.dtype != torch.float32
+            or query_rows.ndim != 2
+            or protocol_rows.ndim != 2
+            or query_rows.shape[0] != len(source_query_ids)
+            or protocol_rows.shape[0] != len(protocol_ids)
+            or query_rows.shape[1:] != protocol_rows.shape[1:]
+            or not torch.isfinite(query_rows).all()
+            or not torch.isfinite(protocol_rows).all()
+        ):
+            raise ValueError("source selected-row IDs, FP32 dtype, shape, or values mismatch")
+        return query_rows, protocol_rows
+
+    input_queries, input_protocol = checked(input_prefix)
+    output_queries, output_protocol = checked(output_prefix)
+    target_ids = expected[target_prefix + ".nimloth_query_ids"]
+    target_rows = expected[target_prefix + ".nimloth_query_rows"].clone()
+    if tuple(map(int, target_ids.tolist())) != target_query_ids:
+        raise ValueError("target input-only Query IDs do not match K65 ordering")
+    if target_rows.dtype != torch.float32 or target_rows.shape[1:] != input_queries.shape[1:]:
+        raise ValueError("target input-only Query master shape/dtype mismatch")
+    target_rows[:-1].copy_(input_queries)
+    target_rows[-1].copy_(input_queries.mean(dim=0))
+    merged = dict(expected)
+    merged[target_prefix + ".nimloth_query_rows"] = target_rows
+    restore_selected_rows(model, merged)
+
+    input_leaf = model.get_input_embeddings()
+    output_leaf = model.get_output_embeddings()
+    if input_leaf.weight is output_leaf.weight:
+        raise ValueError("K64 to K65 migration requires untied input/output tables")
+    with torch.no_grad():
+        input_leaf.weight[list(protocol_ids)].copy_(
+            input_protocol.to(device=input_leaf.weight.device, dtype=input_leaf.weight.dtype)
+        )
+        output_leaf.weight[list(source_query_ids)].copy_(
+            output_queries.to(device=output_leaf.weight.device, dtype=output_leaf.weight.dtype)
+        )
+        output_leaf.weight[target_query_ids[-1]].copy_(
+            output_queries.mean(dim=0).to(
+                device=output_leaf.weight.device, dtype=output_leaf.weight.dtype
+            )
+        )
+        output_leaf.weight[list(protocol_ids)].copy_(
+            output_protocol.to(device=output_leaf.weight.device, dtype=output_leaf.weight.dtype)
+        )
+    checks = (
+        (
+            input_leaf.weight.detach()[list(protocol_ids)],
+            input_protocol.to(device=input_leaf.weight.device, dtype=input_leaf.weight.dtype),
+        ),
+        (
+            output_leaf.weight.detach()[list(source_query_ids)],
+            output_queries.to(device=output_leaf.weight.device, dtype=output_leaf.weight.dtype),
+        ),
+        (
+            output_leaf.weight.detach()[target_query_ids[-1]],
+            output_queries.mean(dim=0).to(
+                device=output_leaf.weight.device, dtype=output_leaf.weight.dtype
+            ),
+        ),
+        (
+            output_leaf.weight.detach()[list(protocol_ids)],
+            output_protocol.to(device=output_leaf.weight.device, dtype=output_leaf.weight.dtype),
+        ),
+    )
+    if any(not torch.equal(actual, wanted) for actual, wanted in checks):
+        raise ValueError("dense frozen rows do not match authoritative FP32 migration source")

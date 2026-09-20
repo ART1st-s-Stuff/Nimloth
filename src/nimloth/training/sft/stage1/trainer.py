@@ -39,6 +39,7 @@ from nimloth.latent import (
     latent_state_tokens,
     special_token_ids,
 )
+from nimloth.wm.layout import GridStateLayout
 
 from .checkpoint import (
     RESUME_SCHEMA,
@@ -349,7 +350,9 @@ def evaluate(
 def convergence_monitor(stage: str, tuning_mode: str | None = None) -> str:
     if stage == "query" and tuning_mode == "global_query_only":
         return "validation_dino_cls_loss"
-    if stage == "query" and tuning_mode == "query_projector_only":
+    if stage == "query" and tuning_mode in {
+        "query_projector_only", "split_projector_migration"
+    }:
         return "validation_dino_loss"
     return "validation_total_loss" if stage == "query" else "validation_lm_loss"
 
@@ -426,14 +429,38 @@ def build_optimizer(
                 raise ValueError(
                     "query-projector-only alignment must train only Query rows and projector"
                 )
-            groups = [
-                {"params": projector_params, "lr": projector_lr},
-                {
-                    "params": selected["query"],
-                    "lr": query_token_lr,
-                    "weight_decay": 0.0,
-                },
+            spatial = [
+                p for name, p in model.named_parameters()
+                if p.requires_grad and ".projector.spatial." in f".{name}"
             ]
+            global_projector = [
+                p for name, p in model.named_parameters()
+                if p.requires_grad and ".projector.global_projector." in f".{name}"
+            ]
+            if spatial or global_projector:
+                if (
+                    not spatial or not global_projector
+                    or {id(p) for p in (*spatial, *global_projector)}
+                    != {id(p) for p in projector_params}
+                ):
+                    raise ValueError("split projector optimizer membership is incomplete")
+                groups = [
+                    {"name": "state_proj_spatial", "params": spatial, "lr": projector_lr},
+                    {"name": "state_proj_global", "params": global_projector, "lr": projector_lr},
+                    {
+                        "name": "query_rows", "params": selected["query"],
+                        "lr": query_token_lr, "weight_decay": 0.0,
+                    },
+                ]
+            else:
+                groups = [
+                    {"params": projector_params, "lr": projector_lr},
+                    {
+                        "params": selected["query"],
+                        "lr": query_token_lr,
+                        "weight_decay": 0.0,
+                    },
+                ]
             return torch.optim.AdamW(groups, weight_decay=weight_decay, foreach=False)
         if projector_lr is None or not base_params or not projector_params:
             raise ValueError("Stage2 selected rows require trainable LoRA and projector groups")
@@ -656,6 +683,38 @@ def _resume_identity(
             "initialization_checkpoint": str(Path(args.model).resolve()),
             "parent_checkpoint": getattr(args, "stage2_parent_checkpoint", None),
             "optimizer_initialization": "fresh_parameter_set_v1",
+        }
+    if (
+        stage == "query"
+        and getattr(args, "tuning_mode", "selected_lora")
+        == "split_projector_migration"
+    ):
+        source = Path(args.stage2_k64_migration_checkpoint).resolve()
+        identity["tuning_mode"] = "split_projector_migration"
+        identity["stage2_k64_to_k65_migration"] = getattr(
+            args, "stage2_migration_provenance", None
+        ) or {
+            "schema": "stage2_k64_to_k65_split_projector_v1",
+            "source_checkpoint": str(source),
+            "source_query_tokens": len(args.query_token_ids) - 1,
+            "target_query_tokens": len(args.query_token_ids),
+            "projector_layout": "split_spatial_global_v1",
+            "projector_initialization": "copy_shared_to_both_branches_v1",
+            "selected_row_initialization": "append_fp32_input_output_mean_v1",
+            "optimizer_initialization": "fresh_adamw_v1",
+        }
+        identity["token_row_training"] = {
+            "schema": "input_query_rows_projector_v1",
+            "query_token_ids": list(args.query_token_ids),
+            "query_token_lr": args.query_token_lr,
+            "protocol_token_ids": [],
+            "protocol_token_lr": None,
+            "unselected_rows": "bitwise_frozen",
+            "master_dtype": "float32",
+            "forward_dtype": "bfloat16",
+            "tables": ["input_embeddings"],
+            "parent_checkpoint": str(source),
+            "optimizer_initialization": "fresh_adamw_v1",
         }
     if stage == "query" and getattr(args, "tuning_mode", "selected_lora") == "full_language":
         identity["tuning_mode"] = "full_language"
@@ -1003,9 +1062,19 @@ def main(*, stage: str = "format") -> int:
             )
         )
 
+    split_migration = (
+        stage == "query"
+        and getattr(args, "tuning_mode", None) == "split_projector_migration"
+    )
+    if split_migration and added != 1:
+        raise ValueError(
+            "split_projector_migration requires exactly one newly registered CLS Query token"
+        )
     model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         load_path,
-        torch_dtype=(torch.float32 if getattr(args, "tuning_mode", None) == "full_language"
+        torch_dtype=(torch.float32 if getattr(args, "tuning_mode", None) in {
+                         "full_language", "split_projector_migration"
+                     }
                      else (torch.bfloat16 if torch.cuda.is_available() else torch.float32)),
         attn_implementation=args.attn_implementation,
         trust_remote_code=True,
@@ -1014,6 +1083,7 @@ def main(*, stage: str = "format") -> int:
         restore_exported_embedding_masters(model, load_path)
     if args.gradient_checkpointing:
         enable_gradient_checkpointing(model)
+    source_vocabulary_size = model.get_input_embeddings().weight.shape[0]
     prepare_query_vocabulary(
         model,
         len(processor.tokenizer),
@@ -1021,6 +1091,14 @@ def main(*, stage: str = "format") -> int:
         added_tokens=added,
         latent_token_count=args.latent_token_count,
     )
+    if (
+        split_migration
+        and resume_dir is None
+        and source_vocabulary_size != len(processor.tokenizer) - 1
+    ):
+        raise ValueError(
+            "split projector source vocabulary must be K64 and gain exactly one token"
+        )
     if getattr(args, "tuning_mode", None) == "global_query_only":
         if added != 1:
             raise ValueError(
@@ -1046,6 +1124,7 @@ def main(*, stage: str = "format") -> int:
         "full_language",
         "global_query_only",
         "query_projector_only",
+        "split_projector_migration",
     }:
         print(
             json.dumps(
@@ -1058,7 +1137,12 @@ def main(*, stage: str = "format") -> int:
     if query_config is not None:
         from nimloth.training.sft.stage2.model import QueryAlignmentModel
 
-        model = QueryAlignmentModel.build(model, processor.tokenizer, query_config)
+        model = QueryAlignmentModel.build(
+            model,
+            processor.tokenizer,
+            query_config,
+            split_projector=split_migration,
+        )
         model.evaluation_only = bool(getattr(args, "evaluation_only", False))
         model.dino_cache_fingerprint = args.dino_cache_fingerprint
         source_grid = None
@@ -1077,7 +1161,53 @@ def main(*, stage: str = "format") -> int:
             and getattr(args, "tuning_mode", None) == "query_projector_only"
         ):
             model.initialization_checkpoint = str(args.model.resolve())
-        if resume_dir is not None:
+        if split_migration:
+            from nimloth.wm.grid import load_k64_stage2_projector_for_k65_migration
+
+            if resume_dir is not None:
+                saved_grid = json.loads(
+                    (resume_dir / "grid_state_config.json").read_text(encoding="utf-8")
+                )
+                model.parent_checkpoint = saved_grid.get("parent_checkpoint")
+                model.initialization_checkpoint = saved_grid.get("initialization_checkpoint")
+                model.migration_provenance = saved_grid.get("migration")
+                model.optimizer_initialization = saved_grid.get("optimizer_initialization")
+                if not model.migration_provenance:
+                    raise ValueError("split Stage2 resume is missing migration provenance")
+                model.restore_projector(resume_dir)
+            else:
+                if not source_grid:
+                    raise ValueError("K64 Stage2 migration source lacks grid metadata")
+                if (
+                    source_grid.get("shared_slot_projector") is not True
+                    or source_grid.get("ordering") != "row_major"
+                    or source_grid.get("query_token_ids")
+                    != list(args.query_token_ids[:-1])
+                    or bool(source_grid.get("objective", {}).get("include_global_token", False))
+                ):
+                    raise ValueError(
+                        "K64 Stage2 migration source Query IDs or shared-projector schema mismatch"
+                    )
+                layout = GridStateLayout(
+                    spatial_grid_size=query_config.grid_size,
+                    global_tokens=1,
+                    global_role="dino_cls",
+                )
+                model.projector = load_k64_stage2_projector_for_k65_migration(
+                    args.stage2_k64_migration_checkpoint,
+                    qwen_hidden_dim=model.projector.input_dim,
+                    state_dim=model.projector.output_dim,
+                    state_layout=layout,
+                    dtype=torch.float32,
+                )
+                model.parent_checkpoint = str(
+                    args.stage2_k64_migration_checkpoint.resolve()
+                )
+                model.initialization_checkpoint = model.parent_checkpoint
+                model.migration_provenance = model.projector.migration_provenance
+                model.optimizer_initialization = "fresh_adamw_v1"
+            args.stage2_migration_provenance = model.migration_provenance
+        elif resume_dir is not None:
             model.restore_projector(resume_dir, allow_dino_weight_change=continuing and args.continue_with_dino_weight_change)
         elif (args.model / "grid_state_config.json").is_file():
             model.restore_projector(
@@ -1119,14 +1249,52 @@ def main(*, stage: str = "format") -> int:
                 language_model,
                 torch.load(row_path, map_location="cpu", weights_only=True),
             )
-    elif query_config is not None and getattr(args, "tuning_mode", None) == "query_projector_only":
+    elif query_config is not None and getattr(args, "tuning_mode", None) in {
+        "query_projector_only", "split_projector_migration"
+    }:
         from nimloth.training.sft.stage2.selected_token_rows import (
             INPUT_QUERY_PROJECTOR_SCHEMA,
             install_input_query_rows,
             restore_selected_rows_subset,
         )
+        from nimloth.backbone.selected_token_rows import (
+            dense_full_language_rows_state,
+            migrate_full_language_rows_to_input_query_rows,
+        )
 
         model.requires_grad_(False)
+        migration_rows = None
+        if split_migration and resume_dir is None:
+            row_path = args.stage2_k64_migration_checkpoint / "selected_token_rows.pt"
+            migration_rows = (
+                torch.load(row_path, map_location="cpu", weights_only=True)
+                if row_path.is_file()
+                else dense_full_language_rows_state(
+                    language_model,
+                    args.query_token_ids[:-1],
+                    args.protocol_token_ids[:-1],
+                )
+            )
+            row_digest = hashlib.sha256()
+            for key, value in sorted(migration_rows.items()):
+                row_digest.update(key.encode("utf-8"))
+                row_digest.update(str(value.dtype).encode("ascii"))
+                row_digest.update(str(tuple(value.shape)).encode("ascii"))
+                row_digest.update(
+                    value.detach().cpu().contiguous().view(torch.uint8).numpy().tobytes()
+                )
+            model.migration_provenance.update(
+                {
+                    "selected_row_source": (
+                        "full_language_selected_rows_v1"
+                        if row_path.is_file()
+                        else "untied_dense_fp32_tables_v1"
+                    ),
+                    "selected_rows_sha256": row_digest.hexdigest(),
+                    "selected_row_initialization": "append_fp32_input_output_mean_v1",
+                }
+            )
+            args.stage2_migration_provenance = model.migration_provenance
         install_input_query_rows(
             language_model,
             args.query_token_ids,
@@ -1135,7 +1303,15 @@ def main(*, stage: str = "format") -> int:
         )
         row_source = resume_dir if resume_dir is not None else args.model
         row_path = row_source / "selected_token_rows.pt"
-        if row_path.is_file():
+        if split_migration and resume_dir is None:
+            migrate_full_language_rows_to_input_query_rows(
+                language_model,
+                migration_rows,
+                source_query_ids=args.query_token_ids[:-1],
+                target_query_ids=args.query_token_ids,
+                protocol_ids=args.protocol_token_ids[:-1],
+            )
+        elif row_path.is_file():
             restore_selected_rows_subset(
                 language_model,
                 torch.load(row_path, map_location="cpu", weights_only=True),

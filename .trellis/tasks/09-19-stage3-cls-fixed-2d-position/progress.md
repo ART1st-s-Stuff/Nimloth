@@ -1,5 +1,22 @@
 # Progress
 
+## 2026-09-20 Stage2 epoch16 → K65 split-projector implementation
+
+- 按用户最新纠正停止使用任何Stage3 replay/checkpoint；新入口
+  `split_projector_migration`只接受显式K64 Stage2 epoch16来源，使用fresh optimizer，
+  普通resume只接受同一K65 split schema。
+- 实现Stage2 `slot_projector.pt`严格迁移：K64 shared权重逐值复制到独立spatial/global
+  两分支，并记录source config/projector hash、layout、copy rule和optimizer provenance。
+- 远端live audit确认epoch16没有`selected_token_rows.pt`，但untied input/output dense tables
+  均为完整FP32。实现仅接受该FP32 dense来源（若未来存在双表FP32 sidecar则优先使用），
+  精确保留64个input Query master，新增input/output CLS均按各自64行FP32均值初始化，冻结
+  output/protocol及全部dense Qwen参数；非FP32/tied/reordered来源fail closed。
+- optimizer固定三个命名互斥组：`state_proj_spatial`、`state_proj_global`、`query_rows`；
+  checkpoint metadata与training identity均保存迁移provenance和K65 cache identity。
+- 新增focused tests覆盖dense FP32迁移、BF16拒绝、双分支等价初始化、梯度隔离、三组optimizer、
+  split metadata resume/tamper拒绝及CLI门禁。本地`compileall`、AST parse和`git diff --check`
+  通过；本地环境缺少torch/transformers/pytest，真实依赖测试仍须在远端venv执行。
+
 ## 2026-09-19 planning
 
 - 用户批准 evaluation-only K64+CLS Stage2/Stage3 实验方案：真实 DINO CLS、固定二维

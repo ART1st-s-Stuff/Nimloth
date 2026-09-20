@@ -2,12 +2,12 @@
 
 ## 2026-09-20 最新批次：Stage2 epoch16 → K65 split projector
 
-- [ ] 实现Stage2专用K64 `slot_projector.pt`→K65 split projector严格迁移；两个分支从源权重
+- [x] 实现Stage2专用K64 `slot_projector.pt`→K65 split projector严格迁移；两个分支从源权重
   逐值复制，普通resume保持严格同构加载。
-- [ ] 实现full-language双表FP32 sidecar→input-only K65 selected rows迁移：保留64行、追加
-  FP32均值CLS行，并核验冻结output/protocol rows。
-- [ ] Stage2 model/checkpoint metadata支持split projector、迁移provenance和严格round-trip。
-- [ ] optimizer固定为spatial/global/query三个互斥参数组，使用`8e-5/8e-5/1e-4`；其余冻结。
+- [x] 实现epoch16 untied FP32 dense input/output tables→input-only K65 selected rows迁移：保留
+  64行、追加FP32均值CLS行，并精确恢复冻结output/protocol rows；非FP32源fail closed。
+- [x] Stage2 model/checkpoint metadata支持split projector、迁移provenance和严格round-trip。
+- [x] optimizer固定为spatial/global/query三个互斥参数组，使用`8e-5/8e-5/1e-4`；其余冻结。
 - [ ] 增加初始化等价、分支梯度隔离、loss路由、参数集合、tamper拒绝和resume回归测试。
 - [ ] 通过独立trellis-check、远端真实依赖focused tests和8卡单步canary。
 - [ ] canary通过后展示正式Stage2长训练合同；本批次不启动Stage3、CFM或RL。

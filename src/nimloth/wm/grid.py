@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -194,6 +195,80 @@ def load_k64_projector_for_k65_migration(
     module = SplitSpatialGlobalProjector.from_k64_shared(
         shared, state_layout=state_layout
     )
+    if dtype is not None:
+        module.to(dtype=dtype)
+    return module
+
+
+def load_k64_stage2_projector_for_k65_migration(
+    checkpoint: str | Path,
+    *,
+    qwen_hidden_dim: int,
+    state_dim: int,
+    state_layout: GridStateLayout,
+    map_location: str | torch.device = "cpu",
+    dtype: torch.dtype | None = None,
+) -> SplitSpatialGlobalProjector:
+    """Strictly copy a K64 Stage2 shared projector into two K65 branches."""
+
+    checkpoint = Path(checkpoint)
+    config_path = checkpoint / "grid_state_config.json"
+    state_path = checkpoint / "slot_projector.pt"
+    if not config_path.is_file() or not state_path.is_file():
+        raise FileNotFoundError(
+            f"incomplete K64 Stage2 split-projector migration source: {checkpoint}"
+        )
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    expected = {
+        "training_stage": "query",
+        "grid_tokens": state_layout.spatial_tokens,
+        "qwen_hidden_dim": int(qwen_hidden_dim),
+        "state_dim": int(state_dim),
+        "shared_slot_projector": True,
+        "ordering": "row_major",
+    }
+    mismatches = {
+        key: (config.get(key), value)
+        for key, value in expected.items()
+        if config.get(key) != value
+    }
+    if mismatches or config.get("global_tokens", 0) not in (None, 0):
+        raise ValueError(f"K64 Stage2 projector migration source mismatch: {mismatches}")
+    state = torch.load(state_path, map_location=map_location, weights_only=True)
+    required = {
+        "net.0.weight", "net.0.bias", "net.1.weight", "net.1.bias",
+        "net.3.weight", "net.3.bias",
+    }
+    if not isinstance(state, dict) or set(state) != required:
+        raise ValueError("K64 Stage2 source is not a strict SharedSlotProjector state")
+    first, last = state["net.0.weight"], state["net.3.weight"]
+    if first.shape[1] != qwen_hidden_dim or last.shape[0] != state_dim:
+        raise ValueError("K64 Stage2 projector dimensions do not match K65 target")
+    shared = SharedSlotProjector(
+        qwen_hidden_dim,
+        state_dim,
+        int(first.shape[0]),
+        grid_tokens=state_layout.spatial_tokens,
+    )
+    shared.load_state_dict(state, strict=True)
+    module = SplitSpatialGlobalProjector.from_k64_shared(
+        shared, state_layout=state_layout
+    )
+    hashes = {}
+    for name, path in (
+        ("grid_state_config", config_path),
+        ("slot_projector", state_path),
+    ):
+        hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    module.migration_provenance = {
+        "schema": "stage2_k64_to_k65_split_projector_v1",
+        "source_checkpoint": str(checkpoint.resolve()),
+        "source_hashes": hashes,
+        "source_projector_layout": "shared_k64_v1",
+        "target_projector_layout": SplitSpatialGlobalProjector.schema,
+        "projector_initialization": "copy_shared_to_both_branches_v1",
+        "optimizer_initialization": "fresh_adamw_v1",
+    }
     if dtype is not None:
         module.to(dtype=dtype)
     return module

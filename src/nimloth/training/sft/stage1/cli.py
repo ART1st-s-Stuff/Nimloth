@@ -35,6 +35,7 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
                 "full_language",
                 "global_query_only",
                 "query_projector_only",
+                "split_projector_migration",
             ),
             default="selected_lora",
         )
@@ -44,6 +45,12 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         ap.add_argument("--weight-lm", type=float, default=1.0)
         ap.add_argument("--weight-dino", type=float, default=1.0)
         ap.add_argument("--include-global-token", action="store_true")
+        ap.add_argument(
+            "--stage2-k64-migration-checkpoint",
+            type=Path,
+            default=None,
+            help="Explicit K64 Stage2 source for evaluation-only K65 split-projector migration.",
+        )
         ap.add_argument(
             "--evaluation-only",
             action="store_true",
@@ -289,6 +296,9 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
     query_projector_only = (
         stage == "query" and args.tuning_mode == "query_projector_only"
     )
+    split_projector_migration = (
+        stage == "query" and args.tuning_mode == "split_projector_migration"
+    )
     full_language = stage == "query" and args.tuning_mode == "full_language"
     if global_query_only:
         if not args.include_global_token or not args.evaluation_only:
@@ -362,6 +372,46 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
                 "query_projector_only requires DINO convergence with min_epochs>=2, "
                 "patience=2 and relative_improvement=0.01"
             )
+    if split_projector_migration:
+        if not args.include_global_token or not args.evaluation_only:
+            raise ValueError(
+                "split_projector_migration requires --include-global-token and --evaluation-only"
+            )
+        if args.stage2_k64_migration_checkpoint is None:
+            raise ValueError(
+                "split_projector_migration requires --stage2-k64-migration-checkpoint"
+            )
+        if args.model.resolve() != args.stage2_k64_migration_checkpoint.resolve():
+            raise ValueError("--model must be the explicit K64 Stage2 migration source")
+        if args.continue_from_epoch is not None:
+            raise ValueError("split projector migration is a fresh-optimizer run, not epoch continuation")
+        if args.distributed_strategy != "ddp" or args.embedding_master_dtype != "bfloat16":
+            raise ValueError(
+                "split_projector_migration requires DDP with frozen BF16 dense tables"
+            )
+        args.lora = False
+        if args.query_token_lr is None:
+            args.query_token_lr = 1e-4
+        if args.protocol_token_lr is not None:
+            raise ValueError("split_projector_migration does not train protocol rows")
+        args.protocol_token_lr = args.query_token_lr
+        if args.projector_lr is None:
+            raise ValueError("split_projector_migration requires projector_lr")
+        for name in ("query_token_lr", "projector_lr"):
+            value = getattr(args, name)
+            if not 0 < value < float("inf"):
+                raise ValueError(f"{name} must be finite and positive")
+        if (
+            not args.until_converged
+            or args.convergence_min_epochs is None
+            or args.convergence_min_epochs < 2
+            or args.convergence_patience_epochs != 2
+            or args.convergence_min_relative_improvement != 0.01
+        ):
+            raise ValueError(
+                "split_projector_migration requires DINO convergence with min_epochs>=2, "
+                "patience=2 and relative_improvement=0.01"
+            )
     if full_language:
         if "--lora" in (argv if argv is not None else sys.argv[1:]):
             raise ValueError("full_language is incompatible with --lora")
@@ -381,6 +431,7 @@ def parse_args(argv: list[str] | None = None, *, stage: str = "format"):
         and not full_language
         and not global_query_only
         and not query_projector_only
+        and not split_projector_migration
     ):
         if args.query_token_lr is None:
             args.query_token_lr = 5e-5

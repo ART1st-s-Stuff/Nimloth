@@ -16,7 +16,7 @@ from nimloth.backbone.qwen25vl.latent import (
     reset_model_rope_state,
 )
 from nimloth.latent import latent_state_tokens
-from nimloth.wm.grid import SharedSlotProjector
+from nimloth.wm.grid import SharedSlotProjector, SplitSpatialGlobalProjector
 from nimloth.wm.layout import GridStateLayout
 
 from .config import QueryAlignmentConfig
@@ -38,7 +38,7 @@ class QueryAlignmentModel(nn.Module):
     def __init__(
         self,
         language_model: nn.Module,
-        projector: SharedSlotProjector,
+        projector: SharedSlotProjector | SplitSpatialGlobalProjector,
         query_ids: list[int],
         objective: QueryAlignmentConfig,
     ) -> None:
@@ -50,16 +50,31 @@ class QueryAlignmentModel(nn.Module):
 
     @classmethod
     def build(
-        cls, language_model: nn.Module, tokenizer, objective: QueryAlignmentConfig
+        cls, language_model: nn.Module, tokenizer, objective: QueryAlignmentConfig,
+        *, split_projector: bool = False,
     ):
         config = language_model.config
         text_config = getattr(config, "text_config", config)
-        projector = SharedSlotProjector(
-            input_dim=text_config.hidden_size,
-            output_dim=DINOV2_LARGE_IDENTITY.hidden_size,
-            hidden_dim=objective.projector_hidden_dim,
-            grid_tokens=objective.state_tokens,
-        )
+        if split_projector:
+            if not objective.include_global_token:
+                raise ValueError("split Stage2 projector requires a global token")
+            projector = SplitSpatialGlobalProjector(
+                input_dim=text_config.hidden_size,
+                output_dim=DINOV2_LARGE_IDENTITY.hidden_size,
+                hidden_dim=objective.projector_hidden_dim,
+                state_layout=GridStateLayout(
+                    spatial_grid_size=objective.grid_size,
+                    global_tokens=1,
+                    global_role="dino_cls",
+                ),
+            )
+        else:
+            projector = SharedSlotProjector(
+                input_dim=text_config.hidden_size,
+                output_dim=DINOV2_LARGE_IDENTITY.hidden_size,
+                hidden_dim=objective.projector_hidden_dim,
+                grid_tokens=objective.state_tokens,
+            )
         embedding = language_model.get_input_embeddings().weight
         # Exported FP32 embedding masters must not promote the DINO projector.
         if getattr(config, "nimloth_tuning_mode", None) == "full_language":
@@ -223,7 +238,8 @@ class QueryAlignmentModel(nn.Module):
         )
 
     def grid_metadata(self):
-        return {
+        split = isinstance(self.projector, SplitSpatialGlobalProjector)
+        metadata = {
             "training_stage": "query",
             "lm_supervision": "successful_trajectory_answers_v1",
             "objective": asdict(self.objective),
@@ -247,7 +263,10 @@ class QueryAlignmentModel(nn.Module):
             "qwen_hidden_dim": self.projector.input_dim,
             "state_dim": self.projector.output_dim,
             "projector_hidden_dim": self.projector.hidden_dim,
-            "shared_slot_projector": True,
+            "shared_slot_projector": not split,
+            "projector_layout": (
+                SplitSpatialGlobalProjector.schema if split else "shared_slot_v1"
+            ),
             "ordering": (
                 "row_major_spatial_then_global"
                 if self.objective.include_global_token
@@ -260,7 +279,18 @@ class QueryAlignmentModel(nn.Module):
             "initialization_checkpoint": getattr(
                 self, "initialization_checkpoint", None
             ),
+            "migration": getattr(self, "migration_provenance", None),
+            "optimizer_initialization": getattr(
+                self, "optimizer_initialization", None
+            ),
         }
+        if split:
+            metadata["projector_branches"] = {
+                "spatial_tokens": self.projector.state_layout.spatial_tokens,
+                "global_tokens": self.projector.state_layout.global_tokens,
+                "global_initialization": "copy_of_spatial_v1",
+            }
+        return metadata
 
     def save_pretrained(self, directory, **kwargs):
         from .selected_token_rows import (
@@ -299,6 +329,9 @@ class QueryAlignmentModel(nn.Module):
         saved.setdefault("formal_stage2", True)
         saved.setdefault("parent_checkpoint", None)
         saved.setdefault("initialization_checkpoint", None)
+        saved.setdefault("projector_layout", "shared_slot_v1")
+        saved.setdefault("migration", None)
+        saved.setdefault("optimizer_initialization", None)
         saved.setdefault(
             "dino_cache_fingerprint",
             (
@@ -344,7 +377,6 @@ class QueryAlignmentModel(nn.Module):
                 "query checkpoint objective, teacher, token or projector configuration mismatch"
             )
         self.projector.load_state_dict(
-            torch.load(
-                directory / "slot_projector.pt", map_location="cpu", weights_only=True
-            )
+            torch.load(directory / "slot_projector.pt", map_location="cpu", weights_only=True),
+            strict=True,
         )

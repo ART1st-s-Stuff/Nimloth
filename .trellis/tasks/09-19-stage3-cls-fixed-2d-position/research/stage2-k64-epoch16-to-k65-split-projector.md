@@ -1,5 +1,16 @@
 # Research: Stage2 K64 epoch16 to K65 split-projector continuation
 
+## 2026-09-20 live artifact correction
+
+Live inspection found that epoch16 has no `selected_token_rows.pt`. Its untied
+`model.embed_tokens.weight` and `lm_head.weight` tensors are both FP32 with shape
+`[151739, 2048]`, and K64 Query IDs are `151675..151738`. These dense FP32 tables
+are therefore the authoritative migration source. The implementation must reject
+BF16/tied dense fallback, extract the K64 input/output Query and protocol rows
+exactly, append the respective FP32 means as CLS input/output rows, and freeze the
+output table. The older sidecar assumptions below are retained as research history
+and do not govern this checkpoint.
+
 - Query: Inspect how to initialize a K65 Stage2 continuation directly from the retained K64 Stage2 epoch16 while replacing the shared projector with independent spatial and CLS projectors; do not replay or consume Stage3.
 - Scope: internal
 - Date: 2026-09-20

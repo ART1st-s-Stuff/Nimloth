@@ -9,8 +9,9 @@ K64 Stage3 replay 及其 `step_000070` 不作为本轮输入，也不继续执�
   `/mnt/nimloth/outputs/experiments/sft2-deepsight-full/20260914_epoch15_projector_lr8e5_continue/train/epoch_016`。
   本轮是权重谱系上的 Stage2 续训，但因词表和 projector 拓扑改变，使用 fresh optimizer、
   scheduler、数据游标、RNG 和收敛历史，不能称为精确 optimizer resume。
-- 将 K64 扩展为 K65：保留并从 FP32 sidecar 精确恢复原64个 spatial Query input rows，新增
-  唯一 CLS Query row并以64行FP32均值初始化；其余 Qwen、vision、LM head、action/format/
+- 将 K64 扩展为 K65：epoch16没有selected-row sidecar，因此只允许从checkpoint内untied、
+  完整FP32 dense input/output tables精确提取原64个 spatial Query rows；新增唯一 CLS Query
+  input/output row分别以对应64行FP32均值初始化；其余 Qwen、vision、LM head、action/format/
   protocol rows冻结。
 - Stage2 使用两个互不共享的同构 projector：`spatial`处理前64个 Query，`global`只处理最后
   1个 CLS Query。`spatial`严格加载 epoch16 的 `slot_projector.pt`，`global`从相同权重逐值

@@ -74,6 +74,27 @@ dataset 保持以完整轨迹为样本，因此 `--batch-size` 按轨迹计数�
 
 Checkpoint 保存 `training_stage=query`、语言模型或 adapter，以及 `slot_projector.pt` 和 `grid_state_config.json`。配置记录 teacher 身份、query token ID、projector 维度和目标权重；恢复或从 query checkpoint 初始化时先严格校验，再恢复 projector。
 
+### K64 epoch16 到 K65 双 projector 迁移
+
+评估用迁移必须显式选择 `--tuning-mode split_projector_migration`，并令
+`--model` 与 `--stage2-k64-migration-checkpoint` 都指向同一个 K64 Stage2 epoch16。
+它是模型权重 lineage continuation，不是 optimizer resume：只追加一个 CLS Query，
+使用新的 AdamW，从零开始记录 epoch/step、scheduler、数据游标和收敛历史。
+
+源 `slot_projector.pt` 必须是严格 K64 shared projector。目标使用互不共享的
+`spatial` 与 `global` 分支，两者逐值复制源权重初始化；训练时 optimizer 参数组固定为
+`state_proj_spatial`、`state_proj_global`、`query_rows`。前两组使用 projector LR，
+全部65个 input Query FP32 master rows使用 Query LR；Qwen、vision、LM head及
+action/format/protocol rows冻结。源若有双表 `selected_token_rows.pt` 则以它为准；历史
+epoch16没有该 sidecar时，只允许从 untied、完整 FP32 dense input/output tables提取64个
+Query与protocol rows，非FP32源直接拒绝。新增 CLS input/output row分别由对应64行FP32
+均值初始化，output row保持冻结。
+
+checkpoint写入 `split_spatial_global_v1`、源路径及 projector/config hash、迁移规则、
+K65 cache identity、`evaluation_only=true` 与 `fresh_adamw_v1`。普通 `--resume` 只能恢复
+同一 split schema和完整迁移 provenance；shared K64/K65、缺失来源或cache/layout变化均
+拒绝。该模式不读取 Stage3 checkpoint，也不允许 `--continue-from-epoch`。
+
 LoRA 合并导出保留 projector 文件及阶段元数据，SFT3 使用同一 projector 格式。完整恢复包含优化器、调度器、epoch/微批次游标、每 rank 随机数状态及收敛历史；普通 query 收敛监控身份为 `validation_total_loss`，evaluation-only CLS alignment 为 `validation_dino_cls_loss`。CPU 测试覆盖标签、梯度、空间对齐、收敛与导出接口，不作为真实 GPU 训练或 rollout 质量证据。
 
 从已提交 epoch 提高 projector 学习率时，必须同时使用
