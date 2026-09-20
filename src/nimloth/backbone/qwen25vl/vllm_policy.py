@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import math
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Literal, Protocol
@@ -155,23 +156,42 @@ class QwenVLLMAgentPolicy:
                 "nimloth.backbone.qwen25vl.vllm_hidden."
                 "PolicyStateCaptureWorkerExtension"
             )
-        engine = LLM(
-            model=model_path,
-            trust_remote_code=True,
-            tensor_parallel_size=int(tensor_parallel_size),
-            dtype="bfloat16",
-            max_model_len=int(max_model_len),
-            gpu_memory_utilization=float(gpu_memory_utilization),
-            limit_mm_per_prompt={"image": int(max_images)},
+        llm_kwargs: dict[str, Any] = {
+            "model": model_path,
+            "trust_remote_code": True,
+            "tensor_parallel_size": int(tensor_parallel_size),
+            "dtype": "bfloat16",
+            "max_model_len": int(max_model_len),
+            "gpu_memory_utilization": float(gpu_memory_utilization),
+            "limit_mm_per_prompt": {"image": int(max_images)},
             # Cache behavior is an explicit rollout setting because vLLM
             # version/model combinations must be parity-tested before enabling it.
-            enable_prefix_caching=bool(enable_prefix_caching),
-            mm_processor_cache_gb=float(mm_processor_cache_gb),
-            # PPO 保存实际 temperature/top-p behavior 分布，不保存 raw logits 分布。
-            logprobs_mode="processed_logprobs",
-            enforce_eager=bool(enforce_eager),
+            "enable_prefix_caching": bool(enable_prefix_caching),
+            "enforce_eager": bool(enforce_eager),
             **engine_kwargs,
-        )
+        }
+        try:
+            from vllm.engine.arg_utils import EngineArgs
+
+            engine_parameters = set(inspect.signature(EngineArgs).parameters)
+        except (ImportError, TypeError, ValueError):
+            # Unit-test doubles and newer vLLM builds accept the current API.
+            engine_parameters = None
+        if engine_parameters is None or "mm_processor_cache_gb" in engine_parameters:
+            llm_kwargs["mm_processor_cache_gb"] = float(mm_processor_cache_gb)
+        elif float(mm_processor_cache_gb) == 0.0:
+            if "disable_mm_preprocessor_cache" not in engine_parameters:
+                raise RuntimeError("installed vLLM cannot disable its multimodal cache")
+            llm_kwargs["disable_mm_preprocessor_cache"] = True
+        else:
+            raise RuntimeError(
+                "installed vLLM does not support a sized multimodal processor cache"
+            )
+        # PPO stores the actual temperature/top-p behavior distribution.  Older
+        # vLLM releases expose processed log-probabilities as their only mode.
+        if engine_parameters is None or "logprobs_mode" in engine_parameters:
+            llm_kwargs["logprobs_mode"] = "processed_logprobs"
+        engine = LLM(**llm_kwargs)
         return cls(
             engine=engine,
             processor=processor,
