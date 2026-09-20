@@ -120,11 +120,27 @@ def save_checkpoint(
 ) -> None:
     if is_fsdp_agent(agent) and collected_state is None:
         raise ValueError("FSDP save requires all-rank collected state")
-    out_dir.mkdir(parents=True, exist_ok=True)
     state_proj = agent.wm.state_proj
     wm_predictor = agent.wm.wm_predictor
     value_head = agent.wm.value_head
     proj = state_proj.module if hasattr(state_proj, "module") else state_proj
+    migration_metadata = (
+        (training_invariants or {}).get("k64_stage3_migration")
+        if training_invariants is not None
+        else None
+    )
+    if isinstance(proj, SplitSpatialGlobalProjector):
+        migration_source = (
+            migration_metadata.get("source")
+            if isinstance(migration_metadata, dict)
+            else None
+        )
+        if not isinstance(migration_source, str) or not migration_source:
+            raise ValueError(
+                "split-projector checkpoint requires non-empty "
+                "k64_stage3_migration.source provenance"
+            )
+    out_dir.mkdir(parents=True, exist_ok=True)
     metadata = {
         "nimloth_latent_token_count": int(getattr(proj, "latent_token_count", 1)),
         "nimloth_latent_query_mode": latent_query_mode,
@@ -157,11 +173,6 @@ def save_checkpoint(
     if state_proj_input_dim is None:
         net_layers = getattr(getattr(proj, "net", None), "net", None)
         state_proj_input_dim = getattr(net_layers[0], "in_features", -1) if net_layers else -1
-    migration_metadata = (
-        (training_invariants or {}).get("k64_stage3_migration")
-        if training_invariants is not None
-        else None
-    )
     state: dict[str, Any] = {
         "step": step,
         "epoch": epoch,
@@ -709,6 +720,11 @@ def load_world_model_checkpoint(
         expected_source = (
             migration.get("source") if isinstance(migration, dict) else None
         )
+        if not isinstance(expected_source, str) or not expected_source:
+            raise ValueError(
+                "split-projector checkpoint requires non-empty "
+                "k64_stage3_migration.source provenance"
+            )
         for key in (
             "initialization_source",
             "spatial_initialization_source",
@@ -725,6 +741,7 @@ def load_world_model_checkpoint(
                 "checkpoint split-projector global initialization mismatch: "
                 f"{metadata.get('global_initialization')!r}"
             )
+        proj.migration_provenance = dict(migration)
     proj.load_state_dict(
         torch.load(sp_path, map_location=device, weights_only=True), strict=True
     )

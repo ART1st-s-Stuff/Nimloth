@@ -291,6 +291,7 @@ def test_split_checkpoint_records_strict_migration_provenance(tmp_path) -> None:
     load_world_model_checkpoint(
         tmp_path / "saved", restored, torch.device("cpu")
     )
+    assert restored.state_proj.migration_provenance == invariants["k64_stage3_migration"]
     for key, value in projector.state_dict().items():
         torch.testing.assert_close(restored.state_proj.state_dict()[key], value)
 
@@ -300,3 +301,50 @@ def test_split_checkpoint_records_strict_migration_provenance(tmp_path) -> None:
         load_world_model_checkpoint(
             tmp_path / "saved", restored, torch.device("cpu")
         )
+
+    state["projector_metadata"]["global_initialization_source"] = str(source)
+    del state["training_invariants"]["k64_stage3_migration"]
+    torch.save(state, tmp_path / "saved" / "training_state.pt")
+    with pytest.raises(ValueError, match="requires non-empty.*provenance"):
+        load_world_model_checkpoint(
+            tmp_path / "saved", restored, torch.device("cpu")
+        )
+
+
+def test_split_checkpoint_rejects_missing_migration_provenance(tmp_path) -> None:
+    class _Backbone:
+        def save_pretrained(self, directory, *, metadata):
+            Path(directory, "config.json").write_text(json.dumps(metadata))
+
+    class _Processor:
+        def save_pretrained(self, directory):
+            Path(directory, "processor_config.json").write_text("{}")
+
+    predictor = ResidualTemporalSpatialGridPredictor(
+        GridPredictorConfig(
+            grid_tokens=5, spatial_grid_size=2, global_tokens=1,
+            position_encoding="fixed_2d_sincos_v1", emb_dim=8,
+            action_dim=3, history_size=1, depth=1, heads=2,
+            dim_head=4, mlp_dim=16, dropout=0.0,
+        )
+    )
+    agent = SimpleNamespace(
+        backbone=_Backbone(),
+        wm=GridWorldModel(
+            state_proj=SplitSpatialGlobalProjector(
+                6, 8, 12, state_layout=_layout()
+            ),
+            wm_predictor=predictor,
+            value_head=ValueHead(8),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="requires non-empty.*provenance"):
+        save_checkpoint(
+            agent,
+            tmp_path / "missing-provenance",
+            processor=_Processor(),
+            vision_ema=None,
+            training_invariants={"evaluation_only": True},
+        )
+    assert not (tmp_path / "missing-provenance").exists()

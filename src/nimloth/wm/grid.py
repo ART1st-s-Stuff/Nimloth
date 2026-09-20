@@ -79,6 +79,7 @@ class SplitSpatialGlobalProjector(nn.Module):
         self.state_layout = state_layout
         self.grid_tokens = state_layout.state_tokens
         self.latent_token_count = self.grid_tokens
+        self.migration_provenance: dict[str, object] | None = None
         self.spatial = SharedSlotProjector(
             input_dim,
             output_dim,

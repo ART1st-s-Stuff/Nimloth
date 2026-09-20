@@ -1256,6 +1256,19 @@ def _train_sft2_impl(args=None) -> int:
             ),
             "optimizer": "fresh_adamw_v1",
         }
+    elif isinstance(proj, SplitSpatialGlobalProjector):
+        resume_migration = proj.migration_provenance
+        resume_source = (
+            resume_migration.get("source")
+            if isinstance(resume_migration, dict)
+            else None
+        )
+        if not isinstance(resume_source, str) or not resume_source:
+            raise ValueError(
+                "split-projector resume requires non-empty "
+                "k64_stage3_migration.source provenance"
+            )
+        checkpoint_invariants["k64_stage3_migration"] = dict(resume_migration)
     # Preserve historical direct identities; residual resumes require explicit identity.
     if getattr(args, "grid_predictor_kind", "direct") != "direct":
         checkpoint_invariants["grid_predictor_kind"] = args.grid_predictor_kind
