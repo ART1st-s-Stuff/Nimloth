@@ -6,9 +6,12 @@ from nimloth.training.sft.stage3.history_cache import OnlineHistoryStateCache
 from nimloth.wm.grid import (
     GridPredictorConfig,
     GridWorldModel,
+    ResidualTemporalSpatialGridPredictor,
     SharedSlotProjector,
+    SplitSpatialGlobalProjector,
     TemporalSpatialGridPredictor,
 )
+from nimloth.wm.layout import GridStateLayout
 
 
 def _open_attention_gate(predictor: TemporalSpatialGridPredictor) -> None:
@@ -147,6 +150,58 @@ def test_sft1_slot_projector_remains_trainable_in_sft2() -> None:
     assert hidden.grad is not None
     assert torch.count_nonzero(hidden.grad) > 0
     assert any(parameter.grad is not None for parameter in projector.parameters())
+
+
+def test_split_projector_copies_k64_weights_and_isolates_branch_gradients() -> None:
+    torch.manual_seed(4)
+    layout = GridStateLayout(2, global_tokens=1, global_role="dino_cls")
+    shared = SharedSlotProjector(6, 8, 12, grid_tokens=4)
+    split = SplitSpatialGlobalProjector.from_k64_shared(
+        shared, state_layout=layout
+    )
+    hidden = torch.randn(3, 5, 6)
+
+    output = split(hidden)
+    torch.testing.assert_close(output[:, :4], shared(hidden[:, :4]))
+    torch.testing.assert_close(output[:, 4:], shared(hidden[:, 4:]))
+    assert split.metadata()["projector_layout"] == "split_spatial_global_v1"
+
+    output[:, :4].square().mean().backward()
+    assert all(parameter.grad is not None for parameter in split.spatial.parameters())
+    assert all(
+        parameter.grad is None
+        for parameter in split.global_projector.parameters()
+    )
+
+
+def test_residual_k64_to_k65_migration_rebuilds_only_position(tmp_path) -> None:
+    torch.manual_seed(7)
+    source_config = GridPredictorConfig(
+        grid_tokens=4, emb_dim=8, action_dim=3, history_size=1,
+        depth=1, heads=2, dim_head=4, mlp_dim=16, dropout=0.0,
+    )
+    source = ResidualTemporalSpatialGridPredictor(source_config)
+    with torch.no_grad():
+        source.delta_head.weight.normal_()
+        source.delta_head.bias.normal_()
+    source.save_checkpoint(tmp_path)
+    target_config = GridPredictorConfig(
+        grid_tokens=5, spatial_grid_size=2, global_tokens=1,
+        position_encoding="fixed_2d_sincos_v1", emb_dim=8, action_dim=3,
+        history_size=1, depth=1, heads=2, dim_head=4, mlp_dim=16, dropout=0.0,
+    )
+
+    migrated, report = ResidualTemporalSpatialGridPredictor.migrate_k64_learned_to_k65_fixed(
+        tmp_path, target_config=target_config
+    )
+
+    assert report["rebuilt_keys"] == ["body.spatial_position"]
+    assert "delta_head.weight" in report["inherited_keys"]
+    torch.testing.assert_close(migrated.delta_head.weight, source.delta_head.weight)
+    torch.testing.assert_close(migrated.body.spatial_position[:, -1], torch.zeros(1, 8))
+    inputs = torch.randn(2, 5, 8)
+    actions = torch.tensor([0, 1])
+    assert migrated(inputs, actions).shape == inputs.shape
 
 
 def test_online_history_cache_round_trips_grid_states(tmp_path) -> None:

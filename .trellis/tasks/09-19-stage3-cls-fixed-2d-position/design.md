@@ -1,5 +1,38 @@
 # Stage3 CLS、固定二维位置与 reconstruction 设计
 
+## 0. 2026-09-20 起点与 projector 修订
+
+本节覆盖后文以 Stage2/K65 fresh-start 为起点的旧设计。
+
+执行分为两个有证据边界的阶段。阶段A从仍完整的旧 K64 Stage3 epoch2/step46 恢复，使用
+旧代码语义重放至epoch5/step115。它不引入CLS或新projector，只恢复已经被清理的续训终点；
+保存新的完整checkpoint及与旧 `train_step_log.csv`、固定诊断的比较结果。
+
+阶段B把阶段A的K64 checkpoint迁移到K65：
+
+1. 先执行显式、可审计的model/token转换：以阶段A的K64 Stage3 HF目录为唯一Qwen来源，
+   注册一个CLS Query token，按本任务已经验收的全局Query初始化合同生成其embedding row，
+   并逐值证明原64个Query与action/boundary rows未改变。转换产物写入独立目录，保存父checkpoint
+   与新CLS cache identity；不得借用当前K65 Stage2 checkpoint中的Qwen或token rows。
+2. `SplitSpatialGlobalProjector` 对外保持 `(B,65,H)->(B,65,1024)`，内部包含
+   `spatial`（64槽共享MLP）和`global`（1槽MLP）两个互不共享的模块。
+3. `spatial`严格加载K64 `state_proj.pt`；`global`从同一权重复制初始化，使迁移时新增分支
+   与旧映射处于相同坐标系，同时在第一次更新后允许独立适配DINO CLS。
+4. checkpoint metadata显式记录 `projector_layout=split_spatial_global_v1`、slot ordering、两个
+   分支的维度和初始化来源。旧单projector checkpoint仅允许通过显式K64→K65 migration入口
+   加载；普通resume必须结构严格一致，禁止自动宽松加载。
+5. optimizer为两个projector分支使用独立命名参数组；两组默认沿用原projector LR。保存/
+   恢复必须覆盖两组optimizer state，且参数审计分别证明 spatial/global 均更新、未授权参数
+   保持不变。
+6. WM迁移只加载shape-compatible的body、action conditioning和residual delta head。
+   `spatial_position`不加载；新predictor由fixed `8x8` sin-cos buffer和global zero buffer构造。
+   迁移必须fail closed报告missing/unexpected keys白名单，其他差异均拒绝。
+
+阶段B的训练loss仍分别报告`DINO spatial`、`DINO CLS`、`WM spatial`、`WM CLS`、LM、value、
+outcome和总loss。总DINO沿用两项相加的既有K65口径，但拆分projector确保CLS的大梯度不会
+直接写入spatial projector。Value/Outcome现有读出保持本任务已经批准的K65行为；本轮主要
+验收reconstruction，不用head结果证明CLS表征质量。
+
 ## 1. 实验边界
 
 本任务从包含近期 Outcome+BCE Stage3 与评估修复的

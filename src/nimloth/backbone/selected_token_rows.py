@@ -257,6 +257,89 @@ def restore_selected_rows(model: nn.Module, state: Mapping[str, torch.Tensor]) -
     model.load_state_dict(dict(state), strict=False)
 
 
+def restore_selected_rows_with_appended_query(
+    model: nn.Module,
+    state: Mapping[str, torch.Tensor],
+) -> None:
+    """Restore an exact selected-row state while appending one Query row.
+
+    K64 -> K65 migration must not recover the old selected rows from the
+    materialized HF table: that table may have been serialized at the model
+    dtype, while ``selected_token_rows.pt`` is the authoritative FP32 master.
+    The source Query IDs must be the exact prefix of the target IDs and the
+    protocol IDs must be unchanged.  The only newly constructed row is the
+    final Query row, initialized from the FP32 source Query mean independently
+    for the input embedding and LM head.
+    """
+
+    expected = selected_rows_state(model)
+    suffixes = (
+        ".nimloth_query_rows",
+        ".nimloth_protocol_rows",
+        ".nimloth_query_ids",
+        ".nimloth_protocol_ids",
+    )
+
+    def prefixes(values: Mapping[str, torch.Tensor]) -> set[str]:
+        return {
+            key[: -len(suffix)]
+            for key in values
+            for suffix in suffixes
+            if key.endswith(suffix)
+        }
+
+    target_prefixes = prefixes(expected)
+    source_prefixes = prefixes(state)
+    if target_prefixes != source_prefixes or len(target_prefixes) != 2:
+        raise ValueError(
+            "selected-row Query expansion requires the same input/output tables"
+        )
+    required = {
+        prefix + suffix for prefix in target_prefixes for suffix in suffixes
+    }
+    if set(expected) != required or set(state) != required:
+        raise ValueError("selected-row Query expansion keys do not match full schema")
+
+    merged = dict(expected)
+    for prefix in sorted(target_prefixes):
+        query_ids_key = prefix + ".nimloth_query_ids"
+        query_rows_key = prefix + ".nimloth_query_rows"
+        protocol_ids_key = prefix + ".nimloth_protocol_ids"
+        protocol_rows_key = prefix + ".nimloth_protocol_rows"
+        source_query_ids = state[query_ids_key]
+        target_query_ids = expected[query_ids_key]
+        source_query_rows = state[query_rows_key]
+        target_query_rows = expected[query_rows_key]
+        source_protocol_ids = state[protocol_ids_key]
+        target_protocol_ids = expected[protocol_ids_key]
+        source_protocol_rows = state[protocol_rows_key]
+        target_protocol_rows = expected[protocol_rows_key]
+        if (
+            target_query_ids.numel() != source_query_ids.numel() + 1
+            or not torch.equal(target_query_ids[:-1].cpu(), source_query_ids.cpu())
+            or not torch.equal(target_protocol_ids.cpu(), source_protocol_ids.cpu())
+        ):
+            raise ValueError(
+                "selected-row Query expansion must append exactly one Query ID "
+                "and preserve all protocol IDs"
+            )
+        if (
+            source_query_rows.dtype != target_query_rows.dtype
+            or source_query_rows.shape != target_query_rows[:-1].shape
+            or source_protocol_rows.dtype != target_protocol_rows.dtype
+            or source_protocol_rows.shape != target_protocol_rows.shape
+            or not torch.isfinite(source_query_rows).all()
+            or not torch.isfinite(source_protocol_rows).all()
+        ):
+            raise ValueError("selected-row Query expansion shape/dtype mismatch")
+        expanded_query_rows = target_query_rows.clone()
+        expanded_query_rows[:-1].copy_(source_query_rows)
+        expanded_query_rows[-1].copy_(source_query_rows.float().mean(dim=0))
+        merged[query_rows_key] = expanded_query_rows
+        merged[protocol_rows_key] = source_protocol_rows.clone()
+    restore_selected_rows(model, merged)
+
+
 def restore_selected_rows_subset(
     model: nn.Module, state: Mapping[str, torch.Tensor]
 ) -> None:

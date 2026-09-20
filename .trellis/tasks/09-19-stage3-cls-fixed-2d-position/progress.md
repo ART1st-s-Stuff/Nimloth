@@ -547,3 +547,25 @@
 - 本诊断沿用原seed split且上游数据存在既知暴露，只用于同checkpoint机制判断，不作为
   独立场景泛化或success-rate证据；probe best不能直接替换正式Stage2 checkpoint，因为其
   CLS已显著退化且未共同更新Query/语言路径。原Stage2仍暂停，未启动Stage3或RL。
+
+## 2026-09-20 K64 Stage3续训重建与split-projector修订
+
+- 用户纠正本轮起点：不从当前K65 Stage2 step180或旧Stage2 epoch16开始，而从上一轮
+  K64 Stage3续训链继续，并为新增CLS使用独立projector。远端核验确认原续训r2的
+  epoch5/step115权重已经清理，只剩`training_complete.json`、训练日志和step46/69/92/115
+  固定诊断；a100-2及a100-1其他路径均没有该epoch5副本。
+- 仍完整保留的精确来源是a100-1
+  `runs_residual_dino2_backbone_stopgrad_20260916/formal/epoch_002`：K64 epoch2/step46，
+  约43.28GiB，含Qwen、selected rows、state projector、residual WM、Value/Outcome、vision EMA
+  和optimizer。原续训合同commit=`84d7fae5`，DINO2、SIGReg0、WM/value不回传Qwen、
+  schedule_total_steps46；旧r2在epoch3/4/5的val WM MSE为
+  `0.1730959293/0.1718177346/0.2136085471`并按patience停止。
+- 用户批准先从epoch2重放epoch3--5，再把重建epoch5迁移到K65：保留K64 spatial
+  projector，新增独立CLS projector并从spatial权重复制初始化；WM保留shape-compatible
+  body/delta/action权重，但重建fixed2D+global-zero位置接口。PRD/design/implement已增加
+  覆盖旧fresh-start方案的修订合同。
+- a100-1已创建隔离重放worktree
+  `/mnt/nimloth/.worktree/stage3-k64-replay-20260920`，分支
+  `codex/stage3-k64-replay-20260920`，HEAD精确为`84d7fae583b785253f866749b720546dfbf0be03`，
+  tracked状态干净。八卡空闲；`/mnt`仅剩约38GiB，未执行任何删除或启动训练。正式重放前
+  仍需按精确目录取得清理授权并恢复至少原合同120GiB空间门槛。

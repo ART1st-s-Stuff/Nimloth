@@ -27,6 +27,15 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--model", type=Path, required=True, help="Init HF dir (SFT1 hf_merged or resume best/)")
     ap.add_argument("--wm-predictor-checkpoint", type=Path, default=None)
     ap.add_argument(
+        "--k64-stage3-migration-checkpoint",
+        type=Path,
+        default=None,
+        help=(
+            "Explicit one-time K64 Stage3 source for K65 split-projector/fixed-2D "
+            "migration. This is initialization, not optimizer resume."
+        ),
+    )
+    ap.add_argument(
         "--objective",
         choices=("latent", "dino_grid"),
         default="latent",

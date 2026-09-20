@@ -24,6 +24,7 @@ from nimloth.util.distributed import is_main
 from nimloth.training.sft.stage3.fsdp_checkpoint import (
     collect_fsdp_checkpoint, is_fsdp_agent, save_collected_backbone,
 )
+from nimloth.wm.grid import SplitSpatialGlobalProjector
 from nimloth.wm.model import WorldModel
 from nimloth.wm.value_head import ValueHead
 
@@ -156,6 +157,11 @@ def save_checkpoint(
     if state_proj_input_dim is None:
         net_layers = getattr(getattr(proj, "net", None), "net", None)
         state_proj_input_dim = getattr(net_layers[0], "in_features", -1) if net_layers else -1
+    migration_metadata = (
+        (training_invariants or {}).get("k64_stage3_migration")
+        if training_invariants is not None
+        else None
+    )
     state: dict[str, Any] = {
         "step": step,
         "epoch": epoch,
@@ -165,6 +171,26 @@ def save_checkpoint(
         "query_tune": query_tune,
         "qwen_hidden_dim": int(getattr(proj, "qwen_hidden_dim", -1)),
         "state_proj_input_dim": int(state_proj_input_dim),
+        "projector_layout": (
+            SplitSpatialGlobalProjector.schema
+            if isinstance(proj, SplitSpatialGlobalProjector)
+            else "shared_slot_v1"
+        ),
+        "projector_metadata": (
+            proj.metadata(
+                initialization_source=(
+                    migration_metadata.get("source")
+                    if isinstance(migration_metadata, dict)
+                    else None
+                )
+            )
+            if isinstance(proj, SplitSpatialGlobalProjector)
+            else {
+                "projector_layout": "shared_slot_v1",
+                "ordering": "row_major",
+                "grid_tokens": int(getattr(proj, "grid_tokens", 1)),
+            }
+        ),
         "best_val_wm_mse": best_val_wm_mse,
         "best_val": best_val_wm_mse,
         "lora": lora,
@@ -186,6 +212,38 @@ def save_checkpoint(
         state["optimizer"] = (collected_state["optimizer"] if collected_state is not None
                               else optimizer.state_dict())
     torch.save(state, out_dir / "training_state.pt")
+    if isinstance(proj, SplitSpatialGlobalProjector):
+        invariants = training_invariants or {}
+        grid_metadata = {
+            **proj.metadata(
+                initialization_source=(
+                    migration_metadata.get("source")
+                    if isinstance(migration_metadata, dict)
+                    else None
+                )
+            ),
+            "training_stage": "stage3",
+            "grid_tokens": proj.grid_tokens,
+            "spatial_tokens": proj.state_layout.spatial_tokens,
+            "global_tokens": proj.state_layout.global_tokens,
+            "state_tokens": proj.state_layout.state_tokens,
+            "shared_slot_projector": False,
+            "dino_identity": invariants.get("dino_identity"),
+            "dino_cache_fingerprint": invariants.get("dino_cache_fingerprint"),
+            "feature_space_fingerprint": (invariants.get("dino_cache_audit") or {}).get(
+                "feature_space_fingerprint"
+            ),
+            "evaluation_only": bool(invariants.get("evaluation_only", True)),
+            "formal_stage3": bool(invariants.get("formal_stage3", False)),
+            "migration": migration_metadata,
+            "optimizer_initialization": (
+                "fresh_adamw_v1" if migration_metadata is not None else "resume"
+            ),
+        }
+        (out_dir / "grid_state_config.json").write_text(
+            json.dumps(grid_metadata, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
 
 @dataclass(frozen=True)
@@ -620,7 +678,35 @@ def load_world_model_checkpoint(
             "checkpoint state_proj_input_dim mismatch: "
             f"checkpoint={saved_input_dim}, current={getattr(proj, 'input_dim', -1)}"
         )
-    proj.load_state_dict(torch.load(sp_path, map_location=device, weights_only=True))
+    current_layout = (
+        SplitSpatialGlobalProjector.schema
+        if isinstance(proj, SplitSpatialGlobalProjector)
+        else "shared_slot_v1"
+    )
+    saved_layout = training_state.get("projector_layout", "shared_slot_v1")
+    if saved_layout != current_layout:
+        raise ValueError(
+            "checkpoint projector layout mismatch; use the explicit K64->K65 "
+            f"migration entrypoint instead of resume: checkpoint={saved_layout}, "
+            f"current={current_layout}"
+        )
+    if isinstance(proj, SplitSpatialGlobalProjector):
+        metadata = training_state.get("projector_metadata")
+        expected = proj.metadata()
+        if not isinstance(metadata, dict):
+            raise ValueError("split-projector checkpoint is missing projector metadata")
+        for key in (
+            "projector_layout", "ordering", "state_layout", "qwen_hidden_dim",
+            "state_dim", "projector_hidden_dim",
+        ):
+            if metadata.get(key) != expected.get(key):
+                raise ValueError(
+                    f"checkpoint split-projector metadata mismatch for {key}: "
+                    f"checkpoint={metadata.get(key)!r}, current={expected.get(key)!r}"
+                )
+    proj.load_state_dict(
+        torch.load(sp_path, map_location=device, weights_only=True), strict=True
+    )
 
     pred_path = ckpt_dir / "wm_predictor"
     pred = wm_predictor.module if hasattr(wm_predictor, "module") else wm_predictor
@@ -652,3 +738,39 @@ def load_world_model_checkpoint(
         outcome.load_state_dict(payload["state_dict"])
     elif outcome_path.exists():
         raise ValueError("outcome checkpoint requires configured outcome head")
+
+
+def load_k64_auxiliary_heads_for_k65_migration(
+    ckpt_dir: Path,
+    wm: WorldModel,
+    device: torch.device,
+) -> None:
+    """Strictly inherit shape-compatible Value/Outcome heads for explicit migration."""
+
+    ckpt_dir = Path(ckpt_dir)
+    head = wm.value_head.module if hasattr(wm.value_head, "module") else wm.value_head
+    loaded_head = ValueHead.load_checkpoint(
+        ckpt_dir / "value_head",
+        emb_dim=head.net[0].in_features,
+        map_location=device,
+    )
+    head.load_state_dict(loaded_head.state_dict(), strict=True)
+
+    outcome = getattr(wm, "outcome_head", None)
+    outcome_path = ckpt_dir / "outcome_head.pt"
+    if outcome is None:
+        if outcome_path.exists():
+            raise ValueError("K64 migration source has OutcomeHead but target disabled it")
+        return
+    if not outcome_path.is_file():
+        raise FileNotFoundError("K64 migration target enables OutcomeHead but source lacks it")
+    outcome = outcome.module if hasattr(outcome, "module") else outcome
+    payload = torch.load(outcome_path, map_location=device, weights_only=True)
+    expected_keys = {"schema", "emb_dim", "available", "state_dict"}
+    if not isinstance(payload, dict) or set(payload) != expected_keys:
+        raise ValueError("invalid K64 OutcomeHead migration payload")
+    if payload["schema"] != outcome.schema or int(payload["emb_dim"]) != outcome.emb_dim:
+        raise ValueError("K64 OutcomeHead migration schema/dimension mismatch")
+    if bool(payload["available"]) != any(p.requires_grad for p in outcome.parameters()):
+        raise ValueError("K64 OutcomeHead migration capability mismatch")
+    outcome.load_state_dict(payload["state_dict"], strict=True)

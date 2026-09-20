@@ -9,6 +9,33 @@
 ValueHead/OutcomeHead pooling 对照。训练结果只作为评估证据，不作为正式模型或后续
 RL 起点。
 
+## 2026-09-20 人类修订：从上一轮 K64 Stage3 续训链继续
+
+本节覆盖本文后面仍写作“从 Stage2 epoch16 增补 CLS、Stage3 fresh start”的旧实验起点；
+旧段落保留为历史方案，不再作为本轮启动合同。
+
+- 指定来源是上一轮 K64 Stage3 联合续训链
+  `runs_residual_dino2_stopgrad_continue_epoch12_20260916_r2`，不是当前 K65 Stage2
+  step180，也不是 frozen-WM 诊断或后续 Outcome/RL checkpoint。
+- 远端核验发现该链的 epoch5/step115 权重已清理，仅保留完整 K64 epoch2/step46 和
+  epoch3--5 日志/诊断。因此先从 epoch2 按原数据顺序、optimizer/scheduler、随机状态、
+  DINO2、SIGReg0、WM/value 到 Qwen stop-gradient及原学习率重放 epoch3--5，生成新的
+  完整 epoch5；重放结果必须与原日志按 epoch 比较并明确数值偏差，不能宣称 bitwise 恢复。
+- 重建出的 K64 epoch5 是本轮 K64→K65 迁移的唯一来源。已有 K64 spatial Query、Qwen、
+  spatial projector、residual WM、ValueHead/OutcomeHead 能兼容的权重必须继承；新增 CLS
+  Query 和 CLS projector 是明确的新参数。Qwen/tokenizer必须由该K64 checkpoint显式转换，
+  按既有全局Query初始化合同新增唯一CLS row并证明原64 Query及protocol rows逐值不变；不得
+  借用当前K65 Stage2 checkpoint的Qwen或token rows。
+- K65 使用两个独立 projector：原 K64 shared-slot projector 只处理前64个 spatial Query；
+  新 CLS projector 只处理最后1个 CLS Query。两者结构相同，CLS projector 从 spatial
+  projector 权重逐值复制初始化，随后各自接受对应 DINO spatial/CLS loss，不再共享参数。
+  禁止用单一 projector、token mean 或 patch mean 替代该拆分。
+- residual WM 迁移保留所有 shape-compatible 的 Transformer、动作条件和 delta-head 权重；
+  旧 K64 learned spatial-position 参数不得伪装成新的固定二维位置编码。K65 使用本任务既定
+  fixed 2D spatial buffer + global zero-position，迁移报告必须列出继承、重建和拒绝的 key。
+- 本轮仍为 evaluation-only。K64 重放与 K65 续训使用独立输出目录；原 K64 epoch2、当前
+  K65 结果及其他保留 checkpoint 不得被覆盖。
+
 ## Confirmed facts
 
 - 当前 DINO teacher 只截取 patch tokens 并池化为 row-major `8x8x1024`；CLS 在缓存前

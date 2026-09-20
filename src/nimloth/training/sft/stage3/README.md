@@ -106,6 +106,14 @@ the representation identity.
 
 旧 `nimloth.training.sft2` Python 包已移除，代码调用者应使用 `nimloth.training.sft.stage3`。既有 `SFT2*` 类型名、配置字段和 `decision_state_executed_action_mc_v3` 仍描述相同 WM/value 目标，不会被新 Query 对齐阶段静默接受。历史产物不改写；通过实际 checkpoint 加载与恢复测试校验迁移。
 
+K64 Stage3 到 evaluation-only K65 的转换必须显式传入
+`--k64-stage3-migration-checkpoint`，并让 `--model` 指向同一个完整 K64 checkpoint。
+该入口只作一次性初始化：保留已有64个 Query 与协议 token 行，以64个 Query 行均值初始化
+新增 global Query；spatial projector 原样继承，global projector 从它逐值复制；residual WM
+只继承 shape-compatible 权重并重建 fixed-2D position。转换后使用新的 optimizer。普通
+`--resume` 只接受相同的 `split_spatial_global_v1` schema、layout 与 optimizer 参数组，不会
+自动执行 K64→K65 转换。
+
 ## 成功轨迹的 LM 监督
 
 训练数据必须包含成功和失败轨迹，不接受 `success_only` 过滤。`batch.py` 将完整轨迹的显式布尔 `success` 传入起点的 `lm_row_weights`；缺失标记拒绝。成功窗口的起点回答先独立计算 token CE 均值，再按成功窗口求平均。失败窗口保留全部真实输入、动作、回报及 WM/value/DINO 监督。全失败组 LM 为图连接的零。

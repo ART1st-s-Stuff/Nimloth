@@ -74,7 +74,9 @@ from nimloth.wm.grid import (
     GridWorldModel,
     ResidualTemporalSpatialGridPredictor,
     SharedSlotProjector,
+    SplitSpatialGlobalProjector,
     TemporalSpatialGridPredictor,
+    load_k64_projector_for_k65_migration,
     load_sft1_slot_projector,
 )
 from nimloth.wm.layout import GridStateLayout
@@ -312,6 +314,65 @@ def _validate_dino_grid_contract(args: Any) -> dict[str, Any]:
         )
         return {"rl_state": state, "wm_predictor": predictor_metadata}
 
+    migration_source = getattr(args, "k64_stage3_migration_checkpoint", None)
+    if migration_source is not None:
+        source = Path(migration_source).resolve()
+        if Path(args.model).resolve() != source:
+            raise ValueError(
+                "K64->K65 migration must load Qwen/tokenizer from the same K64 "
+                "Stage3 checkpoint named by --k64-stage3-migration-checkpoint"
+            )
+        required_source = (
+            source / "config.json",
+            source / "training_state.pt",
+            source / "state_proj.pt",
+            source / "wm_predictor" / "config.json",
+            source / "wm_predictor" / "predictor.pt",
+            source / "value_head" / "value_head.pt",
+            source / "selected_token_rows.pt",
+        )
+        missing = [str(path) for path in required_source if not path.is_file()]
+        if missing:
+            raise FileNotFoundError(f"incomplete K64 Stage3 migration source: {missing}")
+        source_state = torch.load(
+            source / "training_state.pt", map_location="cpu", weights_only=False
+        )
+        if source_state.get("query_tune") != "selected_rows" or args.query_tune != "selected_rows":
+            raise ValueError(
+                "K64->K65 migration requires selected_rows in both the source "
+                "checkpoint and target run so exact FP32 Query/protocol rows are preserved"
+            )
+        expected_spatial = int(args.grid_size) ** 2
+        if int(source_state.get("latent_token_count", -1)) != expected_spatial:
+            raise ValueError("K64 Stage3 source token count does not match target spatial grid")
+        if args.grid_global_tokens != 1:
+            raise ValueError("K64->K65 migration requires exactly one global token")
+        if args.grid_position_encoding != "fixed_2d_sincos_v1":
+            raise ValueError("K64->K65 migration requires fixed_2d_sincos_v1")
+        if args.grid_predictor_kind != "residual":
+            raise ValueError("K64->K65 migration requires a residual predictor")
+        cache = inspect_standalone_dino_cache(
+            args.dino_grid_cache,
+            identity=DINOV2_LARGE_IDENTITY,
+            grid_size=args.grid_size,
+        )
+        return {
+            "training_stage": "stage3_k64_to_k65_migration",
+            "source_checkpoint": str(source),
+            "source_latent_token_count": expected_spatial,
+            "grid_tokens": expected_spatial + 1,
+            "spatial_tokens": expected_spatial,
+            "global_tokens": 1,
+            "state_tokens": expected_spatial + 1,
+            "ordering": "row_major_spatial_then_global",
+            "projector_layout": SplitSpatialGlobalProjector.schema,
+            "dino_identity": asdict(DINOV2_LARGE_IDENTITY),
+            "dino_cache_fingerprint": cache.cache_fingerprint,
+            "feature_space_fingerprint": cache.feature_space_fingerprint,
+            "evaluation_only": True,
+            "formal_stage3": False,
+        }
+
     config_path = Path(args.model) / "grid_state_config.json"
     if not config_path.is_file():
         raise FileNotFoundError(
@@ -322,10 +383,11 @@ def _validate_dino_grid_contract(args: Any) -> dict[str, Any]:
     checkpoint_grid_size = (
         objective.get("grid_size") if isinstance(objective, dict) else None
     )
+    split_projector = config.get("projector_layout") == SplitSpatialGlobalProjector.schema
     expected = {
         "grid_tokens": int(args.latent_token_count),
         "state_dim": int(args.emb_dim),
-        "shared_slot_projector": True,
+        "shared_slot_projector": not split_projector,
         "ordering": (
             "row_major_spatial_then_global" if args.grid_global_tokens else "row_major"
         ),
@@ -335,7 +397,18 @@ def _validate_dino_grid_contract(args: Any) -> dict[str, Any]:
         for key, value in expected.items()
         if config.get(key) != value
     }
-    if checkpoint_grid_size != int(args.grid_size):
+    if split_projector:
+        saved_layout = GridStateLayout.from_metadata(config.get("state_layout") or {})
+        if saved_layout != GridStateLayout(
+            spatial_grid_size=args.grid_size,
+            global_tokens=args.grid_global_tokens,
+            global_role="dino_cls" if args.grid_global_tokens else "none",
+        ):
+            checkpoint_mismatches["state_layout"] = (
+                config.get("state_layout"),
+                "configured Stage3 layout",
+            )
+    elif checkpoint_grid_size != int(args.grid_size):
         checkpoint_mismatches["objective.grid_size"] = (
             checkpoint_grid_size,
             int(args.grid_size),
@@ -345,12 +418,16 @@ def _validate_dino_grid_contract(args: Any) -> dict[str, Any]:
             config.get("global_tokens"),
             int(args.grid_global_tokens),
         )
+    formal_marker = "formal_stage3" if split_projector else "formal_stage2"
     if args.grid_global_tokens and (
-        not config.get("evaluation_only") or config.get("formal_stage2") is not False
+        not config.get("evaluation_only") or config.get(formal_marker) is not False
     ):
         checkpoint_mismatches["evaluation_only"] = (
-            config.get("evaluation_only"),
-            True,
+            {
+                "evaluation_only": config.get("evaluation_only"),
+                formal_marker: config.get(formal_marker),
+            },
+            {"evaluation_only": True, formal_marker: False},
         )
     if config.get("dino_identity") != asdict(DINOV2_LARGE_IDENTITY):
         checkpoint_mismatches["dino_identity"] = (
@@ -455,23 +532,61 @@ def _build_world_model(
         # SFT1 已用 DINO grid 监督这个 projector；SFT2 从该权重继续训练，
         # 并让 WM 直接在同一个 DINO-aligned state 空间中预测。
         grid_dtype = torch.float32
-        state_proj = load_sft1_slot_projector(
-            args.model,
-            qwen_hidden_dim=int(model.config.hidden_size),
-            state_dim=args.emb_dim,
-            grid_tokens=args.latent_token_count,
-            map_location=world_model_device,
-            dtype=grid_dtype,
-            state_layout=(
-                GridStateLayout(
-                    spatial_grid_size=args.grid_size,
-                    global_tokens=1,
-                    global_role="dino_cls",
-                )
-                if args.grid_global_tokens
-                else None
-            ),
-        ).to(world_model_device)
+        migration_source = getattr(args, "k64_stage3_migration_checkpoint", None)
+        layout = (
+            GridStateLayout(
+                spatial_grid_size=args.grid_size,
+                global_tokens=1,
+                global_role="dino_cls",
+            )
+            if args.grid_global_tokens
+            else None
+        )
+        resume_projector_layout = None
+        if resume_ckpt_dir is not None:
+            resume_training_state = torch.load(
+                resume_ckpt_dir / "training_state.pt",
+                map_location="cpu",
+                weights_only=False,
+            )
+            resume_projector_layout = resume_training_state.get(
+                "projector_layout", "shared_slot_v1"
+            )
+        if migration_source is not None:
+            if args.resume:
+                raise ValueError("K64->K65 migration cannot be combined with --resume")
+            if layout is None:
+                raise ValueError("K64->K65 migration requires one K65 global slot")
+            state_proj = load_k64_projector_for_k65_migration(
+                migration_source,
+                qwen_hidden_dim=int(model.config.hidden_size),
+                state_dim=args.emb_dim,
+                state_layout=layout,
+                map_location=world_model_device,
+                dtype=grid_dtype,
+            ).to(world_model_device)
+        elif resume_projector_layout == SplitSpatialGlobalProjector.schema:
+            if layout is None:
+                raise ValueError("split-projector resume requires a global state layout")
+            saved_metadata = resume_training_state.get("projector_metadata")
+            if not isinstance(saved_metadata, dict):
+                raise ValueError("split-projector resume is missing projector metadata")
+            state_proj = SplitSpatialGlobalProjector(
+                input_dim=int(saved_metadata["qwen_hidden_dim"]),
+                output_dim=int(saved_metadata["state_dim"]),
+                hidden_dim=int(saved_metadata["projector_hidden_dim"]),
+                state_layout=layout,
+            ).to(device=world_model_device, dtype=grid_dtype)
+        else:
+            state_proj = load_sft1_slot_projector(
+                args.model,
+                qwen_hidden_dim=int(model.config.hidden_size),
+                state_dim=args.emb_dim,
+                grid_tokens=args.latent_token_count,
+                map_location=world_model_device,
+                dtype=grid_dtype,
+                state_layout=layout,
+            ).to(world_model_device)
         predictor_kind = getattr(args, "grid_predictor_kind", "direct")
         predictor_types = {
             "direct": TemporalSpatialGridPredictor,
@@ -479,8 +594,7 @@ def _build_world_model(
         }
         if predictor_kind not in predictor_types:
             raise ValueError(f"unsupported grid predictor kind: {predictor_kind}")
-        wm_predictor = predictor_types[predictor_kind](
-            GridPredictorConfig(
+        predictor_config = GridPredictorConfig(
                 grid_tokens=args.latent_token_count,
                 spatial_grid_size=(
                     args.grid_size
@@ -497,7 +611,20 @@ def _build_world_model(
                 mlp_dim=args.grid_wm_mlp_dim,
                 dropout=args.grid_wm_dropout,
             )
-        ).to(device=world_model_device, dtype=grid_dtype)
+        if migration_source is not None:
+            if predictor_kind != "residual":
+                raise ValueError("K64->K65 migration requires the residual predictor")
+            wm_predictor, migration_report = (
+                ResidualTemporalSpatialGridPredictor.migrate_k64_learned_to_k65_fixed(
+                    Path(migration_source) / "wm_predictor",
+                    target_config=predictor_config,
+                    map_location=world_model_device,
+                )
+            )
+            setattr(wm_predictor, "migration_report", migration_report)
+        else:
+            wm_predictor = predictor_types[predictor_kind](predictor_config)
+        wm_predictor = wm_predictor.to(device=world_model_device, dtype=grid_dtype)
         outcome_head = None
         if getattr(args, "outcome_head", False):
             outcome_head = ActionOutcomeHead(args.emb_dim).to(world_model_device)
@@ -511,6 +638,13 @@ def _build_world_model(
                 dtype=grid_dtype,
             ),
         )
+        if migration_source is not None:
+            from nimloth.training.sft.stage3.checkpoint import (
+                load_k64_auxiliary_heads_for_k65_migration,
+            )
+            load_k64_auxiliary_heads_for_k65_migration(
+                Path(migration_source), world_model, world_model_device
+            )
     else:
         if args.wm_predictor_checkpoint is not None:
             wm_predictor = LatentWMPredictor.load_checkpoint(
@@ -666,6 +800,28 @@ def _build_optimizer(
             raise ValueError("selected rows cannot coexist with Query delta adapter")
         selected_groups = selected_row_parameters(agent.backbone.model)
         selected_ids = {id(p) for group in selected_groups.values() for p in group}
+    state_proj = agent.wm.state_proj
+    state_proj = state_proj.module if hasattr(state_proj, "module") else state_proj
+    projector_groups = (
+        [
+            {
+                "params": [p for p in state_proj.spatial.parameters() if p.requires_grad],
+                "lr": args.state_proj_lr,
+                "name": "state_proj_spatial",
+            },
+            {
+                "params": [p for p in state_proj.global_projector.parameters() if p.requires_grad],
+                "lr": args.state_proj_lr,
+                "name": "state_proj_global",
+            },
+        ]
+        if isinstance(state_proj, SplitSpatialGlobalProjector)
+        else [{
+            "params": [p for p in state_proj.parameters() if p.requires_grad],
+            "lr": args.state_proj_lr,
+            "name": "state_proj",
+        }]
+    )
     parameter_groups: list[dict[str, Any]] = [
         {
             "params": [
@@ -677,15 +833,7 @@ def _build_optimizer(
             "lr": args.lr_qwen_start,
             "name": "qwen",
         },
-        {
-            "params": [
-                parameter
-                for parameter in agent.wm.state_proj.parameters()
-                if parameter.requires_grad
-            ],
-            "lr": args.state_proj_lr,
-            "name": "state_proj",
-        },
+        *projector_groups,
         {
             "params": agent.wm.value_head.parameters(),
             "lr": args.value_head_lr,
@@ -738,6 +886,11 @@ def _train_sft2_impl(args=None) -> int:
     args.query_tune = str(getattr(args, "query_tune", "freeze"))
     args.query_lr = float(getattr(args, "query_lr", 5e-5))
     args.objective = str(getattr(args, "objective", "latent"))
+    migration_source = getattr(args, "k64_stage3_migration_checkpoint", None)
+    if migration_source is not None:
+        args.k64_stage3_migration_checkpoint = Path(migration_source)
+        if getattr(args, "resume", False):
+            raise ValueError("K64->K65 migration is initialization and cannot use --resume")
     if args.objective not in {"latent", "dino_grid"}:
         raise ValueError(f"unsupported SFT2 objective: {args.objective!r}")
     if args.query_tune not in {"freeze", "adapter", "selected_rows"}:
@@ -761,7 +914,19 @@ def _train_sft2_impl(args=None) -> int:
     args.dino_cache_audit = None
     if args.objective == "dino_grid":
         stage2_grid_config = _validate_dino_grid_contract(args)
-        if args.grid_global_tokens and _rl_eval_checkpoint_root(args) is None:
+        if migration_source is not None:
+            args.dino_cache_audit = {
+                "migration_source": stage2_grid_config["source_checkpoint"],
+                "stage3_supervision_cache_root": str(Path(args.dino_grid_cache).resolve()),
+                "stage3_supervision_cache_fingerprint": stage2_grid_config[
+                    "dino_cache_fingerprint"
+                ],
+                "feature_space_fingerprint": stage2_grid_config[
+                    "feature_space_fingerprint"
+                ],
+                "lineage": "k64_stage3_to_k65_split_projector_v1",
+            }
+        elif args.grid_global_tokens and _rl_eval_checkpoint_root(args) is None:
             args.dino_cache_audit = _validate_stage2_stage3_dino_cache_contract(
                 args,
                 stage2_grid_config,
@@ -1071,6 +1236,26 @@ def _train_sft2_impl(args=None) -> int:
         "training_mode_contract": "online_train_teacher_eval_v1",
         "evaluation_state_contract": "online_policy_eval_target_visual_ema_v1",
     }
+    proj = agent.wm.state_proj
+    proj = proj.module if hasattr(proj, "module") else proj
+    checkpoint_invariants["projector_layout"] = (
+        SplitSpatialGlobalProjector.schema
+        if isinstance(proj, SplitSpatialGlobalProjector)
+        else "shared_slot_v1"
+    )
+    if migration_source is not None:
+        checkpoint_invariants["k64_stage3_migration"] = {
+            "source": str(Path(migration_source).resolve()),
+            "projector": "copy_shared_to_split_spatial_global_v1",
+            "wm": getattr(
+                agent.wm.wm_predictor.module
+                if hasattr(agent.wm.wm_predictor, "module")
+                else agent.wm.wm_predictor,
+                "migration_report",
+                None,
+            ),
+            "optimizer": "fresh_adamw_v1",
+        }
     # Preserve historical direct identities; residual resumes require explicit identity.
     if getattr(args, "grid_predictor_kind", "direct") != "direct":
         checkpoint_invariants["grid_predictor_kind"] = args.grid_predictor_kind

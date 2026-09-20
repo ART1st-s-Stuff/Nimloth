@@ -29,6 +29,7 @@ from nimloth.backbone.qwen25vl.vision_ema import VisionEncoderEMA
 from nimloth.latent import (
     LatentActionTokens,
     initialize_extra_latent_token_embeddings,
+    initialize_global_query_token_embedding,
     install_query_embedding_adapter,
     latent_state_tokens,
 )
@@ -150,12 +151,14 @@ def _configure_shape(
         model.gradient_checkpointing_enable(
             gradient_checkpointing_kwargs={"use_reentrant": False}
         )
+    previous_vocab_size = int(model.get_input_embeddings().weight.shape[0])
     model.resize_token_embeddings(len(processor.tokenizer))
     if added_count > 0:
         initialize_extra_latent_token_embeddings(
             model,
             token_id_map,
             latent_token_count=latent_token_count,
+            minimum_new_token_id=previous_vocab_size,
         )
     model.config.vocab_size = len(processor.tokenizer)
     if hasattr(model, "generation_config"):
@@ -220,6 +223,22 @@ def load_backbone(
         added_count,
         latent_token_count=latent_token_count,
     )
+    if getattr(args, "k64_stage3_migration_checkpoint", None) is not None:
+        spatial_tokens = int(getattr(args, "grid_size", 0)) ** 2
+        if latent_token_count != spatial_tokens + 1:
+            raise ValueError(
+                "K64->K65 backbone migration requires exactly one appended global Query"
+            )
+        if added_count != 1:
+            raise ValueError(
+                "K64->K65 backbone migration requires a genuine K64 tokenizer and "
+                f"must add exactly one new token, added={added_count}"
+            )
+        initialize_global_query_token_embedding(
+            model,
+            token_id_map,
+            spatial_token_count=spatial_tokens,
+        )
 
     saved = _resume_metadata(resume_state_path)
     if saved.get("base_model_path"):
@@ -279,6 +298,7 @@ def load_backbone(
         from nimloth.backbone.selected_token_rows import (
             install_full_language_selected_rows,
             restore_selected_rows,
+            restore_selected_rows_with_appended_query,
         )
         tokens = LatentActionTokens()
         install_full_language_selected_rows(
@@ -294,7 +314,19 @@ def load_backbone(
             elif torch.cuda.is_available():
                 parameter.data = parameter.data.to(torch.bfloat16)
         model.config.nimloth_fp32_master_bf16_forward = True
-        if can_resume:
+        migration_source = getattr(args, "k64_stage3_migration_checkpoint", None)
+        if migration_source is not None:
+            rows_path = Path(migration_source) / "selected_token_rows.pt"
+            if not rows_path.is_file():
+                raise ValueError(
+                    "K64->K65 migration requires the source's exact FP32 "
+                    "selected_token_rows.pt"
+                )
+            restore_selected_rows_with_appended_query(
+                model,
+                torch.load(rows_path, map_location="cpu", weights_only=True),
+            )
+        elif can_resume:
             rows_path = resume_dir / "selected_token_rows.pt"
             if not rows_path.is_file():
                 raise ValueError("selected_rows resume requires exact FP32 token-row state")

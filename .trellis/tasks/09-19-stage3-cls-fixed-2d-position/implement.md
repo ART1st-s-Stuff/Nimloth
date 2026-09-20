@@ -1,5 +1,20 @@
 # 实施计划
 
+## 2026-09-20 修订批次：K64续训重建与split projector
+
+- [ ] 核验并记录旧K64 epoch2恢复文件、旧epoch3--5日志/诊断、远端GPU/磁盘和新输出身份。
+- [ ] 增加K64 Stage3 HF→K65 model/token显式转换，复用既有CLS Query初始化合同，保存父权重/
+  cache provenance并逐值审计旧64 Query与protocol rows不变；改变参数集合后使用fresh optimizer。
+- [ ] 增加K64→K65显式迁移入口及`SplitSpatialGlobalProjector`，保持普通resume严格加载。
+- [ ] 增加split projector的保存、恢复、metadata、optimizer分组和DDP/FSDP兼容。
+- [ ] 增加residual WM的K64 learned-position→K65 fixed2D迁移，严格限定可跳过/重建的key。
+- [ ] 覆盖前向slot路由、初始化逐值相等、分支梯度隔离、checkpoint round-trip、旧K64迁移、
+  非白名单key拒绝及optimizer resume回归。
+- [ ] 通过trellis-check；提交代码并同步到a100-1专用worktree。
+- [ ] 在获得精确清理范围授权并达到空间门槛后，先重放K64 epoch3--5并比较旧日志；再以重建
+  epoch5执行一次K65迁移canary，证明初始spatial输出保持及两个projector实际更新。
+- [ ] canary证据通过后启动evaluation-only K65 Stage3正式训练；不自动进入RL。
+
 ## 1. 建立隔离实现环境
 
 1. 以 `codex/stage3-residual-rl` 的已核验 HEAD 为基点创建
