@@ -127,6 +127,21 @@ RL 起点。
 - 该运行仍标记 `evaluation_only=true`、`formal_stage2=false`，沿用已知发生过上游暴露的
   原划分，只能回答当前表示是否还能继续改善，不能晋升为正式Stage2或未见场景泛化证据。
 
+### R7. Stage2 spatial plateau diagnosis
+
+- 用户要求在继续训练前暂停 R6，并诊断 spatial DINO loss 改善显著慢于 CLS 的原因。
+  暂停必须在 optimizer boundary 保存完整 resume checkpoint；计划内退出码75不能被解释为
+  训练失败。
+- 诊断必须绑定同一个暂停 checkpoint、同一 train/eval JSONL 与 DINO cache，固定 Qwen、
+  Query hidden states 和 targets。先测 shared projector 上 spatial 与 CLS 梯度的范数、内积和
+  cosine，再从当前 projector 权重只用 K64 spatial target 拟合到收敛。
+- spatial-only probe 不得更新源 checkpoint、Qwen、Query 或 CLS target；必须保留原 joint
+  projector baseline、固定表示 lineage、逐轮验证 spatial MSE 与 best epoch。旧 K64 probe
+  只能作为背景证据，不能代替当前 K65 checkpoint 的匹配对照。
+- 若 spatial-only projector 明显优于 joint baseline，结论限于 shared-projector/联合目标的
+  优化取舍；若仍停在相近水平，才支持冻结 hidden representation 是主要瓶颈。仅凭 loss
+  权重、参数 cosine 或不同 checkpoint 的绝对 MSE 不得下因果结论。
+
 ## Acceptance Criteria
 
 - [ ] AC1: 新缓存逐图提供真实 DINO CLS 与 K64 grid，schema、shape、teacher identity、
@@ -146,6 +161,9 @@ RL 起点。
 - [ ] AC7: evaluation-only Stage2 representation continuation 只更新65个 Query input rows与
   projector，使用新的 optimizer 并严格记录 epoch8 初始化 lineage；完整验证分别报告
   spatial/CLS DINO与语言门禁，收敛后不自动进入Stage3或RL。
+- [ ] AC8: R6 在完整 optimizer-boundary checkpoint 暂停；同 checkpoint 的固定 hidden
+  spatial-only projector probe 与 spatial/CLS projector-gradient 诊断完成，来源、基线、
+  best epoch和解释边界可审计。
 
 ## Out of Scope
 

@@ -105,6 +105,17 @@ git diff --check
    可续训epoch、独立best、逐步日志和固定评估。完成后先报告表示与语言/策略门禁，不自动
    启动Stage3、CFM重训或RL。
 
+## 9. Stage2 spatial 平台诊断
+
+1. 使用 SIGUSR1 在 optimizer boundary 暂停 R6，核验退出码75、最新 `COMMITTED` resume、
+   GPU释放与精确恢复路径；暂停监控自动化并记录终态。
+2. 扩展冻结 Query-hidden projector probe，使 K65 cache 可按 layout 严格切出 K64 spatial；
+   零更新同时报告 spatial/CLS baseline，拒绝缺失或不匹配的 layout/lineage。
+3. 在固定 batches 上分别求 spatial/CLS 对 shared projector 的 sample-weighted gradient，输出
+   norm/dot/cosine与逐batch摘要；测试覆盖正交、同向、反向及 token slice。
+4. 从当前 projector 初始化 spatial-only FP32 probe，使用原 train/eval split训练至收敛，
+   保存 best/last 与逐轮 metrics；先做 CPU/focused tests 和小型 canary，再提交真实远程合同。
+
 ## 风险与回滚点
 
 - cache 或 state layout 错位会让监督静默失真，因此任何缺失/shape/order/identity 差异都

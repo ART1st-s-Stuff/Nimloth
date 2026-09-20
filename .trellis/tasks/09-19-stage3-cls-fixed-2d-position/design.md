@@ -179,3 +179,22 @@ head、vision或protocol rows。参数集合变化使旧单行optimizer不可恢
 `validation_dino_loss = validation_dino_spatial_loss + validation_dino_cls_loss`；语言loss、
 格式及后续direct success仅作为保持门禁。运行metadata保留直接初始化checkpoint和原始
 Stage2 parent，明确evaluation-only及旧split暴露边界。
+
+## 12. Stage2 spatial plateau diagnosis
+
+R6 使用边界暂停后，不再用 joint validation loss 的继续下降推断 spatial 表示仍在改善。
+以暂停 checkpoint 导出 train/eval 每个 answer 的65个 Query final hidden states与对应
+DINO targets；cache 绑定 checkpoint safetensors、projector、grid metadata、JSONL hash、
+DINO fingerprint、精度与 extraction world size，源 checkpoint 保持只读。
+
+诊断只消费冻结 cache。当前 shared projector 先作为零更新 baseline，分别报告 K64 spatial
+与 K1 CLS。随后在确定性的固定 train batches 上分别对 spatial MSE 与 CLS MSE求 projector
+梯度，累积 sample-weighted gradient 后报告 norm、dot、cosine及逐batch cosine摘要。该梯度
+只回答 shared projector 参数上的局部关系，不外推到已冻结的 Query 或 Qwen 梯度。
+
+spatial-only probe 从当前 shared projector 权重初始化，仍输出完整 K65，但 optimizer loss与
+验证指标只切取 layout 声明的 K64 spatial tokens；CLS输出不参与更新。projector FP32、
+AdamW、LR `2e-5`、batch64、至少2轮、连续2轮相对改善不足1%停止，最多20轮。保留 baseline、
+逐轮metrics、best/last projector和完成摘要；不得把probe权重写回训练 checkpoint或直接用于
+Stage3。若 spatial-only 显著优于 joint baseline，再设计 separate head/loss schedule；否则
+下一步才考虑以低LR开放Qwen表示。

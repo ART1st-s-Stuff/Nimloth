@@ -500,3 +500,12 @@
   1.194284/0.583489/0.610795/0.445507`；合成DINO较epoch5改善`3.79%`，CLS改善
   `6.59%`，spatial改善`0.68%`。spatial相对原epoch8起点累计只改善约`2.00%`，验证了
   总指标的主要收益仍来自CLS；训练继续进入epoch7以确定冻结主干下的最终平台。
+- 用户要求暂停并优先诊断 spatial 平台。`2026-09-20T13:17:46Z` 向rank0发送SIGUSR1，
+  所有rank在optimizer boundary一致停于epoch7 / global step180；
+  `resume_step_00000180/COMMITTED` 于`13:17:30Z`完成，8张GPU均释放。控制脚本将计划内
+  退出码75写成`controller_failed`，这是wrapper分类问题而非训练失败；精确恢复点有效。
+  5分钟heartbeat `stage2` 已暂停，未自动进入Stage3或RL。
+- 既有但非匹配的K64冻结hidden projector对照来自另一Stage2 epoch12：同原split上只训练
+  projector把验证MSE从`0.736140`降到`0.559734`（best epoch12），说明projector结构本身
+  不存在固定的`0.58--0.59`下限；但来源checkpoint不同，不能回答当前K65 joint目标是否
+  冲突。新增R7要求以step180做匹配的projector gradient与spatial-only probe。
