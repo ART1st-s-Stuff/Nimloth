@@ -475,3 +475,16 @@
   `1e-4`、projector LR `8e-5`。以完整验证 `validation_dino_loss` 收敛，至少2轮且连续2轮
   相对改善不足1%停止；12小时仅为可恢复暂停上限。每10步保存恢复点，只保留最新完整epoch
   与独立best；禁止自动进入Stage3或RL。
+- 截至 `2026-09-20T12:28Z`，正式diagnostic已完成3个epoch且继续运行。相同验证集上，
+  原Stage2 epoch8的 `DINO total/spatial/CLS/LM` 为
+  `2.465375/0.595424/1.869951/0.455927`；新运行epoch1、2、3依次为
+  `1.601785/0.612202/0.989583/0.445543`、
+  `1.447163/0.602156/0.845007/0.445468`、
+  `1.364714/0.596587/0.768127/0.445154`。到epoch3为止，合成DINO相对起点下降
+  `44.64%`，CLS下降`58.92%`，spatial仅比起点高约`0.20%`，LM未退化；epoch2和3
+  相邻改善分别为`9.65%`和`5.70%`，尚不满足1%收敛条件。
+- epoch4已开始；最近核验时到global step84，controller仍为PID `1709664`。每轮结束后
+  中间resume点已按合同清理，只保留最新完整epoch与独立best，空闲空间约70 GiB。
+  当前线程已创建5分钟heartbeat `stage2`，无实质变化时保持安静，仅在新验证、失败、
+  暂停或完成时通知；收敛后按同一固定口径继续representation ceiling、DINO feature/
+  reconstruction与success-rate评估，不自动进入Stage3或RL。
