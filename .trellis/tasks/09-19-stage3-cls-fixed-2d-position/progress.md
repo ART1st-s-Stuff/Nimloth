@@ -595,3 +595,12 @@
   36--39GiB；1453条有效train轨迹、101条validation轨迹，与旧运行一致。目标仍是按原
   `wm_mse` 1%/patience2合同重建epoch5；该重放不能宣称bitwise identical。完成后才进入
   `ca0d36d8`的K64→K65迁移，不自动进入RL。
+- 用户于`2026-09-20T16:29:48Z`要求停止。已向精确setsid进程组`1733839`发送TERM；
+  controller、launcher和8个rank全部退出，8张GPU显存与利用率归零。日志末尾的
+  `SignalException: signal 15`来自计划停止，不是训练故障；未见NaN/OOM。
+- 停止前已完成epoch3/step69验证：DINO MSE `0.5885944641`、WM MSE
+  `0.1730388489`、LM CE `0.2860995086`。相对旧epoch3的WM `0.1730959293`仅差约
+  `0.033%`，DINO亦近似一致，说明replay在该边界高度复现旧结果。停止发生于epoch4的
+  step77之后；checkpoint-latest-only已将epoch3替换为最后完整`step_000070`，该目录约43GiB，
+  含四个Qwen shard、training state/optimizer、selected rows、projector、WM、Value/Outcome与
+  vision EMA，可作为最新恢复边界。当前磁盘余量约92GiB。K65迁移未启动；5分钟监控已删除。
