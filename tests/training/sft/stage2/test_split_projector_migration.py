@@ -141,7 +141,11 @@ def test_stage2_k64_projector_copies_both_k65_branches(tmp_path):
         source,
         qwen_hidden_dim=6,
         state_dim=3,
-        state_layout=GridStateLayout(2, 1, "dino_cls"),
+        state_layout=GridStateLayout(
+            spatial_grid_size=2,
+            global_tokens=1,
+            global_role="dino_cls",
+        ),
     )
     for key, value in shared.state_dict().items():
         assert torch.equal(split.spatial.state_dict()[key], value)
@@ -173,13 +177,24 @@ def test_stage2_k64_projector_rejects_non_fp32_source(tmp_path):
             source,
             qwen_hidden_dim=6,
             state_dim=3,
-            state_layout=GridStateLayout(2, 1, "dino_cls"),
+            state_layout=GridStateLayout(
+                spatial_grid_size=2,
+                global_tokens=1,
+                global_role="dino_cls",
+            ),
         )
 
 
 def test_split_projector_loss_gradients_are_branch_local():
     split = SplitSpatialGlobalProjector(
-        6, 3, 7, state_layout=GridStateLayout(2, 1, "dino_cls")
+        6,
+        3,
+        7,
+        state_layout=GridStateLayout(
+            spatial_grid_size=2,
+            global_tokens=1,
+            global_role="dino_cls",
+        ),
     )
     hidden = torch.randn(2, 5, 6, requires_grad=True)
     state = split(hidden)
@@ -202,7 +217,14 @@ def test_split_optimizer_has_three_disjoint_named_groups():
         language, (10, 11, 12, 13, 14), schema=INPUT_QUERY_PROJECTOR_SCHEMA
     )
     projector = SplitSpatialGlobalProjector(
-        6, 3, 7, state_layout=GridStateLayout(2, 1, "dino_cls")
+        6,
+        3,
+        7,
+        state_layout=GridStateLayout(
+            spatial_grid_size=2,
+            global_tokens=1,
+            global_role="dino_cls",
+        ),
     ).float()
     model = Alignment(language, projector)
     optimizer = build_optimizer(
@@ -237,7 +259,14 @@ def test_split_projector_metadata_resume_is_strict(tmp_path):
         model = QueryAlignmentModel(
             TinyLanguage(),
             SplitSpatialGlobalProjector(
-                6, 1024, 7, state_layout=GridStateLayout(2, 1, "dino_cls")
+                6,
+                1024,
+                7,
+                state_layout=GridStateLayout(
+                    spatial_grid_size=2,
+                    global_tokens=1,
+                    global_role="dino_cls",
+                ),
             ),
             [10, 11, 12, 13, 14],
             objective,
