@@ -329,3 +329,21 @@
 - 清理并完成当前 checkpoint retention 后，`/mnt` 可用空间约121GiB；当前完整 Stage3
   checkpoint 约46.5GB，因此能够覆盖下一次原子写入的峰值并保留约74GB余量。训练仍健康，
   最新恢复点为 `step_000060`，核验时已推进至step63，无NaN/OOM/训练进程中断。
+
+## 2026-09-20 Stage3 K65 fixed-2D completion
+
+- a100-1 运行正常完成，`training_complete.json` 记录 epoch5、global step115、
+  `reason=epoch_limit`、最终 checkpoint `epoch_005`；共5轮、每轮23次参数更新。8张GPU已
+  全部释放，核验时显存与利用率均为0，`/mnt` 仍有约121GiB可用。
+- 验证 WM MSE 在 epoch1--5 依次为 `0.347746 / 0.212134 / 0.300553 /
+  0.175884 / 0.180235`，最低值为 epoch4；epoch5相对epoch1下降约48.2%，但相对epoch4
+  回升约2.47%。epoch5 spatial/CLS WM MSE 分别为 `0.151823 / 0.028412`。
+- epoch5 observed-state DINO total/spatial/CLS MSE 为 `1.991963 / 0.599746 /
+  1.392217`；predicted-state DINO total/spatial/CLS MSE 为 `2.167994 / 0.754778 /
+  1.413216`。同期 LM CE `0.289913`、Outcome BCE `0.656429`、Value MSE
+  `19.576427`。这些是既有 evaluation-only split 上的训练内验证结果，尚未包含重建图、
+  独立 rollout success 或正式 held-out 质量结论。
+- `epoch_005` 为约44GiB的完整可续训权重，包含 Qwen、WM、projector、Value/Outcome、
+  vision EMA 和 `training_state.pt`。`final/` 与它为同 inode 的硬链接视图，仅占约12KiB，
+  不是第二份权重。当前运行目录未采用旧版 `COMMITTED` 标记，而以
+  `training_complete.json` 与完整文件集合记录终态；未发现仍在运行的训练进程。
