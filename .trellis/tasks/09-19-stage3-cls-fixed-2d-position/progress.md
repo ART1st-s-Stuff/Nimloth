@@ -530,3 +530,20 @@
   原train/eval JSONL与同一DINO cache。缓存完成后自动转GPU0的shared-projector完整梯度
   诊断和K64 spatial-only拟合；空间下限30 GiB，原Stage2保持暂停，不进入Stage3或RL。
   5分钟heartbeat `stage2`已改为监控本r2，只有阶段变化、失败、完成或需处理时通知。
+- 完整r2于`2026-09-20T14:20:35Z`结束（总历时38分37秒），8个cache rank均完整，
+  projector probe在epoch13因连续两轮相对改善不足1%收敛；产物17 GiB，结束后8张GPU均
+  释放、磁盘剩余38 GiB。自动监控因其后连续3次SSH握手超时按既有约定暂停；重连后由
+  `COMPLETED`、`finished.json`和空闲GPU确认实际成功，网络失联不等于实验失败。
+- 固定step180 Query hidden与DINO targets时，只训练shared projector的K64 spatial目标，
+  validation spatial MSE从`0.581574`降到epoch13的`0.444182`（改善23.62%），cosine
+  `0.774416→0.832884`、centered cosine `0.553133→0.679026`、跨观测方差比
+  `31.89%→47.95%`。因此原`~0.58`平台不是当前hidden可读出的硬上限，projector目标/
+  参数共享是直接瓶颈之一；这不证明Query表示已经充分恢复全部DINO信息。
+- spatial-only优化同时使未监督CLS MSE从`0.590230`升至`1.308216`，显示两种读出在当前
+  shared projector中存在明显Pareto取舍。起点处32个batch、2048 answers的聚合梯度并非
+  反向冲突：spatial/CLS norm=`0.087184/0.404065`、dot=`0.006948`、cosine=`0.197220`；
+  但CLS梯度范数为spatial的4.63倍。故不能把原因简化成负梯度冲突，更准确的证据是CLS
+  主导共享参数更新，并把joint optimum限制在不利于spatial的区域。
+- 本诊断沿用原seed split且上游数据存在既知暴露，只用于同checkpoint机制判断，不作为
+  独立场景泛化或success-rate证据；probe best不能直接替换正式Stage2 checkpoint，因为其
+  CLS已显著退化且未共同更新Query/语言路径。原Stage2仍暂停，未启动Stage3或RL。
