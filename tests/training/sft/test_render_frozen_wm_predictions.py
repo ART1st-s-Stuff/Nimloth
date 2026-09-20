@@ -189,7 +189,10 @@ def test_render_contract_uses_two_raw_frames_nearest_grid_and_shared_error_scale
 
 
 @pytest.mark.parametrize("kind", [None, "direct", "residual"])
-def test_checkpoint_loader_dispatches_predictor_kind(tmp_path: Path, kind: str | None) -> None:
+@pytest.mark.parametrize("steps", [46, 115])
+def test_checkpoint_loader_dispatches_predictor_kind(
+    tmp_path: Path, kind: str | None, steps: int
+) -> None:
     from dataclasses import asdict
     from experiments.training.sft.stage3.frozen_wm_diagnostic import PREDICTOR_TYPES
     from experiments.training.sft.stage3.render_frozen_wm_predictions import _load_predictor
@@ -202,19 +205,19 @@ def test_checkpoint_loader_dispatches_predictor_kind(tmp_path: Path, kind: str |
     model_type = PREDICTOR_TYPES[kind or "direct"]
     run = {
         "schema": "frozen_wm_diagnostic_v1",
-        "config": {"mode": "dino", "steps": 46},
+        "config": {"mode": "dino", "steps": steps},
         "predictor_config": asdict(config),
         "trainable_modules": [model_type.__name__],
     }
     if kind is not None:
         run["config"]["predictor_kind"] = kind
-    checkpoint = tmp_path / "step_000046"
+    checkpoint = tmp_path / f"step_{steps:06d}"
     checkpoint.mkdir()
     (tmp_path / "run.json").write_text(json.dumps(run))
     (tmp_path / "COMPLETE").write_text(checkpoint.name)
     (checkpoint / "COMMITTED").write_text("complete")
     torch.save(model_type(config).state_dict(), checkpoint / "predictor.pt")
-    torch.save({"schema": run["schema"], "step": 46, "run_identity": run},
+    torch.save({"schema": run["schema"], "step": steps, "run_identity": run},
                checkpoint / "training_state.pt")
     model, _, _ = _load_predictor(checkpoint, expected_mode="dino", device=torch.device("cpu"))
     assert isinstance(model, model_type)

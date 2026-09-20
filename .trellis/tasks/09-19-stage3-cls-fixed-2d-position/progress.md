@@ -396,3 +396,46 @@
   策略保留情况，但不能证明 WM 提升了决策。CFM 的 train/eval RGB 已去重；上游 Stage2/
   Stage3 在更早训练中见过原划分中的部分内容，所以 reconstruction 结论限于本轮 frozen
   readout 与固定样本诊断，不能作为完全未见场景泛化结论。
+
+## 2026-09-20 Frozen-representation WM continuation
+
+- 用户批准从 Stage3 epoch5 继续只训练 WM，并单独判断 Query/projector 是否能保留足量
+  DINO 信息。提交 `4a9227f6` 增加 production residual WM 权重初始化、更新前
+  `initial_metrics.json`，并使 frozen cache manifest 绑定实际 Stage3 checkpoint 的
+  `training_state.pt`、`state_proj.pt` 和 WM config/weights 哈希。
+- a100-1 新运行 `20260920_stage3_epoch5_frozen_wm_continue` 于
+  `2026-09-20T10:08:03Z` 启动。源为 Stage3 epoch5 / step115；固定 Qwen、vision、Query、
+  projector、ValueHead、OutcomeHead，只用 fresh AdamW 更新现有 production residual WM。
+  LR `3e-4`、有效 trajectory batch64、microbatch8、H1/T4、原 0.1→1.0 cosine warmup，
+  先跑5个完整 WM-only epoch（23 updates/epoch），在23/46/69/92/115保存。
+- 本轮不复用来源字段不完整的旧 CFM cache；先用8卡从同一 Stage3 epoch5 重导 official
+  train/eval K65 cache并 seal。eval cache 已完成8/8 ranks；train cache 导出中。启动前
+  8卡均空闲，`/mnt` 可用109 GiB，远端 worktree clean 且 HEAD=`4a9227f6`。
+- 代码针对性测试为 `2 passed`。同一较大测试集合为 `19 passed, 1 failed`；唯一失败是既有
+  malformed outcome payload 测试期望 `ValueError`、实现抛出 `TypeError`，与本轮 cache/WM
+  路径无关，未据此削弱或跳过本轮新增测试。
+- 运行于 `2026-09-20T10:36:27Z` 正常完成，115/115 updates，5个 epoch checkpoint 均
+  写出，8张 GPU 随后全部释放。初始→epoch1→2→3→4→5 的 validation mean H1--H4
+  state MSE 为 `0.149895→0.082162→0.069345→0.064146→0.059483→0.055913`；固定
+  input-copy 为 `0.105774`，因此 epoch1 已超过 copy，epoch5 相对初始下降62.70%、相对
+  copy 下降47.14%。对应真实 DINO-space mean MSE 为
+  `0.764908→0.699588→0.685547→0.679624→0.674680→0.669715`，改善12.45%。
+- 固定 eval cache 上逐 observation 对齐的 observed state→DINO ceiling（101 trajectories、
+  1407 observations）为：全 K65 MSE `0.611938`、centered cosine `0.547397`、state/DINO
+  跨观测方差比27.67%；K64 spatial 分别为 `0.599746/0.552674/28.22%`；CLS 分别为
+  `1.392217/0.228127/4.35%`。WM-only 不能改变这些数；它说明 dynamics 已可学习，但
+  Query/projector 尤其 CLS 仍只保留较小的 DINO 跨观测变化。
+- 新旧 eval cache 的 manifest SHA 不同，因为新 cache 增加正确 Stage3 provenance；逐轨迹
+  对比两者 `states/dino/actions` 后，101条轨迹、1407个观测的张量均 bitwise 相等，证据在
+  `cache_content_equivalence.json`。首次 CFM readout 因 decoder 身份仍绑定旧 manifest 而
+  fail-closed；没有放宽检查，后续 readout 使用已证明张量等价的旧 manifest cache。
+- 同一固定8条 trajectories / 71 windows / 284 horizon positions、相同3个 keyed noise
+  seeds 和50-step CFM 下，WM-only epoch5 的 state-decoder reconstruction 为
+  `MSE 0.0368592 / SSIM 0.507135`；旧联合训练 WM 为 `0.0387353 / 0.488188`，copy 为
+  `0.0372889 / 0.495355`。新 WM 已略优于 copy，但仍落后 observed-state oracle
+  `0.0321322 / 0.531277`；DINO decoder 对新 predicted state 的 cross-distribution readout
+  为 `0.0367060 / 0.520537`，仍远落后 DINO oracle `0.00643995 / 0.750922`。
+- reconstruction 第一次用新 manifest cache 被 decoder identity gate 正确拒绝；没有纳入
+  结果。有效 r2 产物位于 `wm_only_reconstruction_r2`，本地副本和每轮 metrics 位于
+  `.local/artifacts/stage3_cls_frozen_wm_20260920/`。观察图与数值一致：final predicted 比
+  copy 有小幅局部改善，但共同的平滑/模糊结构仍明显，不能认为 DINO 细节已充分保留。

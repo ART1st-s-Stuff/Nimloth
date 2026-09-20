@@ -198,7 +198,7 @@ def _load_predictor(checkpoint: Path, *, expected_mode: str, device: torch.devic
             == (checkpoint.parent / terminal_name).resolve()
         )
     else:
-        valid_terminal = expected_step == 46 and terminal_name == checkpoint.name
+        valid_terminal = expected_step > 0 and terminal_name == checkpoint.name
     if (
         not valid_terminal
         or checkpoint.name != f"step_{expected_step:06d}"
