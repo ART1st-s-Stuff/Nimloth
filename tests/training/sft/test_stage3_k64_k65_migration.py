@@ -36,7 +36,11 @@ from nimloth.wm.value_head import ValueHead
 
 
 def _layout() -> GridStateLayout:
-    return GridStateLayout(2, global_tokens=1, global_role="dino_cls")
+    return GridStateLayout(
+        spatial_grid_size=2,
+        global_tokens=1,
+        global_role="dino_cls",
+    )
 
 
 class _EmbeddingModel(torch.nn.Module):
@@ -44,6 +48,7 @@ class _EmbeddingModel(torch.nn.Module):
         super().__init__()
         self.input = torch.nn.Embedding(rows, dim)
         self.output = torch.nn.Linear(dim, rows, bias=False)
+        self.config = SimpleNamespace()
 
     def get_input_embeddings(self):
         return self.input

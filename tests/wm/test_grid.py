@@ -154,7 +154,11 @@ def test_sft1_slot_projector_remains_trainable_in_sft2() -> None:
 
 def test_split_projector_copies_k64_weights_and_isolates_branch_gradients() -> None:
     torch.manual_seed(4)
-    layout = GridStateLayout(2, global_tokens=1, global_role="dino_cls")
+    layout = GridStateLayout(
+        spatial_grid_size=2,
+        global_tokens=1,
+        global_role="dino_cls",
+    )
     shared = SharedSlotProjector(6, 8, 12, grid_tokens=4)
     split = SplitSpatialGlobalProjector.from_k64_shared(
         shared, state_layout=layout
