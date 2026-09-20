@@ -347,3 +347,52 @@
   vision EMA 和 `training_state.pt`。`final/` 与它为同 inode 的硬链接视图，仅占约12KiB，
   不是第二份权重。当前运行目录未采用旧版 `COMMITTED` 标记，而以
   `training_complete.json` 与完整文件集合记录终态；未发现仍在运行的训练进程。
+
+## 2026-09-20 K65 CFM retraining and reconstruction evaluation
+
+- 按用户决定保留 CLS 并重训 CFM，而不是把第65个 token 丢弃或直接当空间 token。新增
+  `spatial_cls_grid_v1`：前64个 state 继续按 row-major 8x8 空间网格处理，最后一个 DINO
+  CLS 经独立归一化/MLP作为全局条件，不分配二维坐标。state decoder 与 DINO decoder
+  独立训练；4000 updates、batch32、LR `1e-4`、weight decay `1e-4`，每1000步验证/保存。
+- 原 train/eval JSONL 存在 RGB 内容重复。密封 cache 的有效子集中发现117个共享 RGB hash、
+  涉及723/19688个 train observations；保留 eval，按 canonical RGB hash 从 CFM train 中
+  确定性排除这些行后，train/eval RGB overlap 为0。密封 train cache 保留1453
+  trajectories、19688 observations，训练时有效使用其中18965个；eval 为101 trajectories、
+  1407 observations。该过滤只用于本轮
+  frozen CFM readout，不改变上游 Stage2/Stage3 已发生的数据暴露边界。
+- 两个 decoder 均正常完成且 best=step4000。cache-space flow MSE：state `0.0707978`，
+  DINO `0.0521872`；zero CLS 分别恶化约3.21%/12.61%，shuffled CLS 分别恶化约
+  10.89%/35.27%。这证明 CFM 在自身 held-out cache 输入上可以利用 CLS。
+- 对固定8条 validation trajectories、71 windows、284 horizon positions、95 unique
+  observations，用3个 observation-keyed noise seeds、50-step ordinary Euler 做配对 RGB
+  reconstruction。真实 Stage3 state 的 state decoder MSE/SSIM 为 `0.0321322/0.531277`；
+  epoch5 WM预测 state 为 `0.0387353/0.488188`，略差于复制当前 state 基线
+  `0.0372889/0.495355`。DINO oracle decoder 为 `0.00643995/0.750922`，但输入 epoch5 WM
+  predicted DINO readout 后为 `0.0395151/0.500410`，表明主要瓶颈在预测表示而非 decoder。
+- RGB 配对消融中，epoch5 WM predicted-state 的 zero CLS 使 MSE 上升15.11%，但 shuffled
+  CLS 只上升0.55%；DINO predicted readout 对应为14.55%/0.30%。因此该 reconstruction
+  decoder 需要非零全局条件，却几乎未显示样本特异 CLS 语义；不能把 zero 消融收益解释为
+  CLS 已学会场景级全局信息。完整结果位于
+  `20260920_stage3_epoch5_k65_cfm_retrain/reconstruction_eval`，本地可视化副本位于
+  `.local/artifacts/stage3_cls_cfm_20260920/`。
+- 代码提交 `a26e187b` 完成 K65 CFM 与 RGB-overlap fail-closed 过滤；随后 `ffdcde84`、
+  `e9a272b6`、`ade0768d` 分别补齐新旧 vLLM参数兼容、direct evaluation真实 CoT+action
+  合同和 vLLM 0.8 request-level logits约束。a100-1 上相关 request-level/评估回归为
+  `48 passed`；旧 vLLM 不含新版 V1 adapter模块，因此对应专用 adapter 测试文件不能在该
+  runtime 收集。
+- held-out direct-policy 评估已于 `2026-09-20T09:10:15Z` 正常完成，输出为
+  `20260920_stage3_epoch5_k65_direct_success_eval_r9_sharded`。使用同一 epoch5 checkpoint、
+  greedy decoding（temperature 0、top-p 1）、真实 CoT+action prompt、每条最多20步；Base 与
+  Common Sense 均覆盖 seed 1--60。8个 shard 均为 `ALL_OK`，两组各60个唯一 ID、无缺失
+  seed、无重复、无 trajectory attempt failure、OOM、Traceback 或 NaN，结束后8张 GPU
+  显存均已释放。Base 为 `23/60 = 38.33%`，平均 reward `2.9100`、平均步数
+  `14.7667`；Common Sense 为 `25/60 = 41.67%`，平均 reward `3.2267`、平均步数
+  `14.1333`；合计 `48/120 = 40.00%`，平均 reward `3.0683`、平均步数 `14.4500`。
+- 前8次启动没有混入正式结果：它们依次暴露并修复了未初始化 VAGEN checkout、旧版 vLLM
+  参数、fork 后 CUDA 初始化、action-only prompt、V1 request-level logits限制及 shard日志
+  目录问题；其中一次只完成2条 canary 后主动停止以切换8卡分片。最终 r9 使用已核验的
+  VAGEN commit `9f1e89eb8c9839a406b6e62aa75703494a79e5b5` 和 vLLM 0.8.5 V0/spawn。
+- 解释边界：success-rate 是直接语言策略评估，不使用 WM 规划，因此能检查加入 CLS 后的
+  策略保留情况，但不能证明 WM 提升了决策。CFM 的 train/eval RGB 已去重；上游 Stage2/
+  Stage3 在更早训练中见过原划分中的部分内容，所以 reconstruction 结论限于本轮 frozen
+  readout 与固定样本诊断，不能作为完全未见场景泛化结论。
