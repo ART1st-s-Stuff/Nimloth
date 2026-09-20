@@ -104,7 +104,9 @@ class SplitSpatialGlobalProjector(nn.Module):
         return torch.cat(
             (
                 self.spatial(self.state_layout.spatial(hidden)),
-                self.global_projector(self.state_layout.global_state(hidden)),
+                self.global_projector(
+                    self.state_layout.global_state(hidden).unsqueeze(-2)
+                ),
             ),
             dim=1,
         )
