@@ -157,8 +157,8 @@ def _validate_materialized_selected_rows(
         weights_only=True,
     )
     tables = {
-        "embed_tokens": model.get_input_embeddings().weight.detach().cpu(),
-        "lm_head": model.get_output_embeddings().weight.detach().cpu(),
+        "embed_tokens": model.get_input_embeddings().weight.detach(),
+        "lm_head": model.get_output_embeddings().weight.detach(),
     }
     for table_name, table in tables.items():
         prefixes = {
@@ -172,7 +172,10 @@ def _validate_materialized_selected_rows(
         for role in ("query", "protocol"):
             ids = saved[f"{prefix}.nimloth_{role}_ids"].long()
             rows = saved[f"{prefix}.nimloth_{role}_rows"].to(table.dtype)
-            if not torch.equal(table.index_select(0, ids), rows):
+            # Copy only the selected rows to CPU. Materializing each complete
+            # vocabulary table here creates a large per-rank host-memory spike.
+            actual_rows = table.index_select(0, ids.to(table.device)).cpu()
+            if not torch.equal(actual_rows, rows):
                 raise ValueError(
                     f"materialized {table_name} {role} rows differ from selected-row checkpoint"
                 )
