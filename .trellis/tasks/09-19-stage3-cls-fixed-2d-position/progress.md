@@ -711,3 +711,43 @@
   各`8e-5`，其余数据、K65 cache、DINO2、有效batch64及收敛标准保持最近diagnostic口径。
 - 只读代码研究已记录在`research/stage2-k64-epoch16-to-k65-split-projector.md`。下一步先实现
   Stage2专用selected-row与projector迁移、checkpoint/resume和测试，不启动Stage3或RL。
+
+## 2026-09-21 K65 fixed-2D Stage3 epoch5续训与早停
+
+- 正式Stage3评估运行
+  `20260921_stage3_k65_fixed2d_eval_r5_from_stage2_epoch25`从K65 Stage2 epoch25开始，
+  完成epoch5/step115。原控制器因错误假设`validation_metrics.jsonl`必然存在而在训练成功后
+  校验失败；已从五轮正式日志恢复逐epoch指标文件，并独立核验`training_complete.json`、
+  optimizer、模型shards、split projector、WM、Value/Outcome和vision EMA，最终checkpoint
+  `epoch_005`完整可恢复。该checkpoint约44GiB并继续保留。
+- epoch5验证为WM total/spatial/CLS=`0.549081/0.278047/0.271034`，真实state对DINO
+  total/spatial/CLS=`0.681178/0.445476/0.235702`，预测state对DINO
+  total/spatial/CLS=`1.281035/0.729151/0.551884`，Outcome BCE=`0.635883`，
+  LM CE=`0.287455`。五轮上限停止时，WM尚未满足连续两轮相对改善不足1%的收敛合同。
+- 用户批准继续训练。清理了两个重复`best`目录及旧canary checkpoint，共释放约23.2GiB；
+  保留Stage2 epoch25、Stage3 epoch5、预处理与DINO caches。续训使用现有SSH ControlMaster
+  socket `/workspace/remote2/nimloth/.local/a100-1-live.sock`，输出
+  `20260921_stage3_k65_fixed2d_eval_r6_continue_from_epoch5`，controller PID `1818189`。
+  日志确认从epoch6/step115、完整optimizer和best WM `0.5490813479`恢复；数据、损失、学习率、
+  K65/fixed-2D配置均不变，最大epoch20，WM MSE按1%/patience2早停，latest-only保存。
+- epoch6验证WM total/spatial/CLS=`0.588462/0.318014/0.270447`，相对epoch5总WM恶化
+  7.17%；Outcome BCE改善到`0.614914`，LM CE稳定为`0.287582`，早停计数1/2。
+  epoch7验证WM total/spatial/CLS=`0.605732/0.347025/0.258707`，总WM再次恶化2.93%；
+  Outcome BCE继续改善至`0.592907`，LM CE=`0.287491`。运行按合同在epoch7/step161早停，
+  `training_complete.json` reason=`early_stop`，controller完整性校验通过，GPU已释放。
+- 结论：继续联合训练继续改善Outcome，但明显破坏WM spatial；CLS在epoch7改善不足以抵消
+  spatial退化。当前WM最佳仍是保留的epoch5，而不是续训epoch7。该结果支持以epoch5进行
+  后续reconstruction评估；不把epoch7作为更优Stage3，也未自动进入reconstruction或RL。
+### 2026-09-21 epoch5 frozen-representation continuation preparation
+
+- Implemented and committed `a26e082c` for fresh Stage3 initialization from a complete checkpoint while freezing Qwen/vision/query/protocol rows and both split projectors; only WM predictor, ValueHead and OutcomeHead remain trainable.
+- Added `configs/training/sft2/action_outcome_k64_cls_fixed2d_h1_t4_frozen_representation_eval.yaml`; WM loss starts and remains at `1.0` because the source epoch5 had already completed its ramp. Local `compileall` and `git diff --check` passed. Remote focused tests and launch remain pending.
+- Source remains the complete a100-1 checkpoint `20260921_stage3_k65_fixed2d_eval_r5_from_stage2_epoch25/epoch_005`; do not delete it. The inferior full-joint epoch6/7 continuation is eligible for checkpoint cleanup after remote revalidation, while retaining logs and metrics.
+- At 2026-09-21 UTC the supplied control master `/workspace/remote2/nimloth/.local/a100-1-live.sock` reported alive but could not open a session, and a fresh connection through `/run/user/1000/gcr/ssh` was rejected by the jump host. No remote deletion, sync, test, or training launch was performed.
+
+### 2026-09-21 frozen WM/heads run
+
+- Remote focused tests passed (`25 passed`) at commit `4bbed8250f106aecd5dde16899864e11c2713256`.
+- The first two 8-GPU DDP launch attempts (`...r1`, `...r2`) were killed before any optimizer step because eight frozen full-Qwen replicas exceeded the runtime memory boundary. The selected-row validator was also corrected to copy only selected rows to CPU.
+- Active run: a100-1 `20260921_stage3_k65_fixed2d_frozen_heads_from_epoch5_r3_4gpu`, port 29753, four GPUs, gradient accumulation 16, effective batch 64. Source is complete Stage3 epoch5; optimizer is fresh; Qwen, vision, token rows and both projector branches are frozen. Only WM predictor, ValueHead and OutcomeHead train.
+- The run crossed its first optimizer update. Step 1 train WM MSE was 0.591296 (spatial 0.284952, CLS 0.306344); use epoch validation WM MSE, relative improvement 1% and patience 2 for convergence decisions rather than this single train batch.
