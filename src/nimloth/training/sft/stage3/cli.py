@@ -27,6 +27,15 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--model", type=Path, required=True, help="Init HF dir (SFT1 hf_merged or resume best/)")
     ap.add_argument("--wm-predictor-checkpoint", type=Path, default=None)
     ap.add_argument(
+        "--stage3-init-checkpoint",
+        type=Path,
+        default=None,
+        help=(
+            "Complete Stage3 checkpoint used only to initialize model weights. "
+            "Unlike --resume, optimizer, schedule, RNG and loop state start fresh."
+        ),
+    )
+    ap.add_argument(
         "--k64-stage3-migration-checkpoint",
         type=Path,
         default=None,
@@ -75,6 +84,12 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--lr-qwen-peak", type=float, default=5e-7)
     ap.add_argument("--qwen-lr-warmup-ratio", type=float, default=0.15)
     ap.add_argument("--state-proj-lr", type=float, default=1e-4)
+    ap.add_argument(
+        "--freeze-state-projector",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Freeze StateProjector parameters and exclude them from the optimizer.",
+    )
     ap.add_argument("--wm-predictor-lr", type=float, default=3e-4)
     ap.add_argument("--value-head-lr", type=float, default=3e-4)
     ap.add_argument("--weight-decay", type=float, default=0.01)
@@ -355,6 +370,10 @@ def parse_sft2_args(argv: list[str] | None = None) -> argparse.Namespace:
         ap.error("lambda_sigreg must be finite and nonnegative")
     if args.lambda_outcome > 0 and not args.outcome_head:
         ap.error("lambda_outcome > 0 requires --outcome-head")
+    if args.stage3_init_checkpoint is not None and args.resume:
+        ap.error("stage3_init_checkpoint is fresh initialization and cannot be combined with --resume")
+    if args.stage3_init_checkpoint is not None and Path(args.model).resolve() != Path(args.stage3_init_checkpoint).resolve():
+        ap.error("--model and --stage3-init-checkpoint must name the same complete checkpoint root")
     if args.outcome_head and args.objective != "dino_grid":
         ap.error("outcome head requires dino_grid objective")
     if args.grid_predictor_kind == "residual" and args.objective != "dino_grid":

@@ -88,6 +88,96 @@ def _rl_eval_checkpoint_root(args: Any) -> Path | None:
     return Path(checkpoint).resolve() if checkpoint is not None else None
 
 
+def _validate_stage3_initialization_checkpoint(
+    args: Any,
+) -> tuple[Path, dict[str, Any]] | None:
+    """Validate a complete Stage3 artifact used with a fresh optimizer."""
+
+    source = getattr(args, "stage3_init_checkpoint", None)
+    if source is None:
+        return None
+    root = Path(source).resolve()
+    if Path(args.model).resolve() != root:
+        raise ValueError("Stage3 initialization must load every component from one root")
+    required = [
+        root / "config.json",
+        root / "training_state.pt",
+        root / "state_proj.pt",
+        root / "wm_predictor" / "config.json",
+        root / "wm_predictor" / "predictor.pt",
+        root / "value_head" / "value_head.pt",
+        root / "selected_token_rows.pt",
+        root / "vision_ema.pt",
+    ]
+    if getattr(args, "outcome_head", False):
+        required.append(root / "outcome_head.pt")
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"incomplete Stage3 initialization checkpoint; missing: {missing}"
+        )
+    state = torch.load(root / "training_state.pt", map_location="cpu", weights_only=False)
+    if not isinstance(state, dict) or not bool(state.get("epoch_complete", False)):
+        raise ValueError("Stage3 initialization checkpoint must be an epoch-complete artifact")
+    if state.get("query_tune") != "selected_rows":
+        raise ValueError(
+            "frozen Stage3 initialization requires a selected_rows source checkpoint"
+        )
+    invariants = state.get("training_invariants")
+    if not isinstance(invariants, dict) or invariants.get("objective") != "dino_grid":
+        raise ValueError("Stage3 initialization checkpoint has invalid training invariants")
+    expected = {
+        "state_layout": GridStateLayout(
+            spatial_grid_size=int(args.grid_size),
+            global_tokens=int(args.grid_global_tokens),
+            global_role="dino_cls" if args.grid_global_tokens else "none",
+        ).metadata(),
+        "grid_position_encoding": str(args.grid_position_encoding),
+        "grid_tokens": int(args.latent_token_count),
+    }
+    mismatches = {
+        key: (invariants.get(key), value)
+        for key, value in expected.items()
+        if invariants.get(key) != value
+    }
+    if mismatches:
+        raise ValueError(f"Stage3 initialization structure mismatch: {mismatches}")
+    return root, state
+
+
+def _validate_materialized_selected_rows(
+    model: torch.nn.Module,
+    checkpoint: Path,
+) -> None:
+    """Verify the frozen dense token tables contain the checkpoint's exact rows."""
+
+    saved = torch.load(
+        Path(checkpoint) / "selected_token_rows.pt",
+        map_location="cpu",
+        weights_only=True,
+    )
+    tables = {
+        "embed_tokens": model.get_input_embeddings().weight.detach().cpu(),
+        "lm_head": model.get_output_embeddings().weight.detach().cpu(),
+    }
+    for table_name, table in tables.items():
+        prefixes = {
+            key.removesuffix(".nimloth_query_rows")
+            for key in saved
+            if key.endswith(".nimloth_query_rows") and table_name in key
+        }
+        if len(prefixes) != 1:
+            raise ValueError(f"selected-row checkpoint lacks one {table_name} table")
+        prefix = prefixes.pop()
+        for role in ("query", "protocol"):
+            ids = saved[f"{prefix}.nimloth_{role}_ids"].long()
+            rows = saved[f"{prefix}.nimloth_{role}_rows"].to(table.dtype)
+            if not torch.equal(table.index_select(0, ids), rows):
+                raise ValueError(
+                    f"materialized {table_name} {role} rows differ from selected-row checkpoint"
+                )
+
+
 def _frozen_wm_representation_identity(
     args: Any,
     resume_ckpt_dir: Path | None,
@@ -578,6 +668,7 @@ def _build_world_model(
     device: torch.device,
     pair_parallel: bool,
     resume_ckpt_dir: Path | None,
+    initialization_ckpt_dir: Path | None = None,
     train_wm_predictor: bool,
 ) -> tuple[WorldModel, torch.device]:
     """按 objective 构造并恢复 world-model 子模块。"""
@@ -617,9 +708,10 @@ def _build_world_model(
             else None
         )
         resume_projector_layout = None
-        if resume_ckpt_dir is not None:
+        restore_ckpt_dir = resume_ckpt_dir or initialization_ckpt_dir
+        if restore_ckpt_dir is not None:
             resume_training_state = torch.load(
-                resume_ckpt_dir / "training_state.pt",
+                restore_ckpt_dir / "training_state.pt",
                 map_location="cpu",
                 weights_only=False,
             )
@@ -758,14 +850,16 @@ def _build_world_model(
 
     if not train_wm_predictor:
         world_model.wm_predictor.requires_grad_(False)
-    resume_state = resume_ckpt_dir / "training_state.pt" if resume_ckpt_dir else None
-    if args.resume and resume_state is not None and resume_state.exists():
+    restore_ckpt_dir = resume_ckpt_dir or initialization_ckpt_dir
+    if restore_ckpt_dir is not None:
         load_world_model_checkpoint(
-            resume_ckpt_dir,
+            restore_ckpt_dir,
             world_model,
             world_model_device,
             latent_query_mode=args.latent_query_mode,
-            query_tune=args.query_tune,
+            # Fresh initialization intentionally converts authoritative
+            # materialized selected rows into a fully frozen dense table.
+            query_tune=(None if initialization_ckpt_dir is not None else args.query_tune),
         )
     return world_model, world_model_device
 
@@ -793,33 +887,38 @@ def _wrap_sft2_agent(
         raise ValueError("FSDP requires multi-rank single-device Qwen ranks")
     if world_size > 1:
         if distributed_strategy == "fsdp":
+            if not any(parameter.requires_grad for parameter in model.parameters()):
+                raise ValueError("FSDP is unsupported when the complete backbone is frozen")
             from nimloth.training.sft.stage3.fsdp import wrap_qwen_fsdp
             model = wrap_qwen_fsdp(model, device, granularity=fsdp_wrap_granularity)
         elif loaded.pair_parallel:
-            model = DDP(
-                model,
-                device_ids=None,
-                output_device=None,
-                find_unused_parameters=False,
-                static_graph=static_graph,
-            )
+            if any(parameter.requires_grad for parameter in model.parameters()):
+                model = DDP(
+                    model,
+                    device_ids=None,
+                    output_device=None,
+                    find_unused_parameters=False,
+                    static_graph=static_graph,
+                )
         else:
-            device_index = int(str(device).split(":")[-1])
-            model = DDP(
-                model,
-                device_ids=[device_index],
-                output_device=device_index,
+            if any(parameter.requires_grad for parameter in model.parameters()):
+                device_index = int(str(device).split(":")[-1])
+                model = DDP(
+                    model,
+                    device_ids=[device_index],
+                    output_device=device_index,
+                    find_unused_parameters=False,
+                    static_graph=static_graph,
+                )
+        world_model_device_index = int(str(world_model_device).split(":")[-1])
+        if any(parameter.requires_grad for parameter in state_proj.parameters()):
+            state_proj = DDP(
+                state_proj,
+                device_ids=[world_model_device_index],
+                output_device=world_model_device_index,
                 find_unused_parameters=False,
                 static_graph=static_graph,
             )
-        world_model_device_index = int(str(world_model_device).split(":")[-1])
-        state_proj = DDP(
-            state_proj,
-            device_ids=[world_model_device_index],
-            output_device=world_model_device_index,
-            find_unused_parameters=False,
-            static_graph=static_graph,
-        )
         value_head = DDP(
             value_head,
             device_ids=[world_model_device_index],
@@ -862,6 +961,64 @@ def _wrap_sft2_agent(
     )
 
 
+def _configure_frozen_representation_scope(
+    args: Any,
+    *,
+    backbone: torch.nn.Module,
+    world_model: WorldModel,
+    train_wm_predictor: bool,
+) -> None:
+    """Enforce the explicit WM/Value/Outcome-only training boundary."""
+
+    if not bool(getattr(args, "freeze_state_projector", False)):
+        return
+    required = {
+        "llm_tune": "freeze",
+        "vision_tune": "freeze",
+        "vision_ema": True,
+        "query_tune": "freeze",
+        "wm_value_backbone_grad": False,
+        "outcome_head": True,
+        "distributed_strategy": "ddp",
+    }
+    mismatches = {
+        name: (getattr(args, name, None), expected)
+        for name, expected in required.items()
+        if getattr(args, name, None) != expected
+    }
+    if not train_wm_predictor:
+        mismatches["train_wm_predictor"] = (False, True)
+    if world_model.outcome_head is None or not any(
+        parameter.requires_grad for parameter in world_model.outcome_head.parameters()
+    ):
+        mismatches["outcome_head_trainable"] = (False, True)
+    if mismatches:
+        raise ValueError(
+            "freeze_state_projector selects WM/Value/Outcome-only training and "
+            f"requires the complete frozen-representation contract: {mismatches}"
+        )
+    backbone.requires_grad_(False)
+    world_model.state_proj.requires_grad_(False)
+    allowed = {
+        id(parameter)
+        for module in (
+            world_model.wm_predictor,
+            world_model.value_head,
+            world_model.outcome_head,
+        )
+        for parameter in module.parameters()
+        if parameter.requires_grad
+    }
+    actual = {
+        id(parameter)
+        for module in (backbone, *world_model.trainable_modules)
+        for parameter in module.parameters()
+        if parameter.requires_grad
+    }
+    if actual != allowed:
+        raise RuntimeError("WM/Value/Outcome-only trainable parameter boundary mismatch")
+
+
 def _build_optimizer(
     args: Any,
     *,
@@ -902,17 +1059,21 @@ def _build_optimizer(
             "name": "state_proj",
         }]
     )
+    projector_groups = [group for group in projector_groups if group["params"]]
+    qwen_parameters = [
+        parameter
+        for parameter in agent.backbone.model.parameters()
+        if parameter.requires_grad and parameter is not query_parameter
+        and id(parameter) not in selected_ids
+    ]
     parameter_groups: list[dict[str, Any]] = [
-        {
+        *([{
             "params": [
-                parameter
-                for parameter in agent.backbone.model.parameters()
-                if parameter.requires_grad and parameter is not query_parameter
-                and id(parameter) not in selected_ids
+                *qwen_parameters
             ],
             "lr": args.lr_qwen_start,
             "name": "qwen",
-        },
+        }] if qwen_parameters else []),
         *projector_groups,
         {
             "params": agent.wm.value_head.parameters(),
@@ -966,6 +1127,7 @@ def _train_sft2_impl(args=None) -> int:
     args.query_tune = str(getattr(args, "query_tune", "freeze"))
     args.query_lr = float(getattr(args, "query_lr", 5e-5))
     args.objective = str(getattr(args, "objective", "latent"))
+    args.freeze_state_projector = bool(getattr(args, "freeze_state_projector", False))
     migration_source = getattr(args, "k64_stage3_migration_checkpoint", None)
     if migration_source is not None:
         args.k64_stage3_migration_checkpoint = Path(migration_source)
@@ -992,8 +1154,25 @@ def _train_sft2_impl(args=None) -> int:
         )
     stage2_grid_config = None
     args.dino_cache_audit = None
+    stage3_initialization_contract = _validate_stage3_initialization_checkpoint(args)
     if args.objective == "dino_grid":
-        stage2_grid_config = _validate_dino_grid_contract(args)
+        if stage3_initialization_contract is not None:
+            _init_root, init_state = stage3_initialization_contract
+            init_invariants = init_state["training_invariants"]
+            current_cache = inspect_standalone_dino_cache(
+                args.dino_grid_cache,
+                identity=DINOV2_LARGE_IDENTITY,
+                grid_size=args.grid_size,
+            )
+            saved_fingerprint = init_invariants.get("dino_cache_fingerprint")
+            if current_cache.cache_fingerprint != saved_fingerprint:
+                raise ValueError(
+                    "Stage3 initialization DINO cache mismatch: "
+                    f"checkpoint={saved_fingerprint}, current={current_cache.cache_fingerprint}"
+                )
+            args.dino_cache_audit = init_invariants.get("dino_cache_audit")
+        else:
+            stage2_grid_config = _validate_dino_grid_contract(args)
         if migration_source is not None:
             args.dino_cache_audit = {
                 "migration_source": stage2_grid_config["source_checkpoint"],
@@ -1006,7 +1185,11 @@ def _train_sft2_impl(args=None) -> int:
                 ],
                 "lineage": "k64_stage3_to_k65_split_projector_v1",
             }
-        elif args.grid_global_tokens and _rl_eval_checkpoint_root(args) is None:
+        elif (
+            args.grid_global_tokens
+            and _rl_eval_checkpoint_root(args) is None
+            and stage3_initialization_contract is None
+        ):
             args.dino_cache_audit = _validate_stage2_stage3_dino_cache_contract(
                 args,
                 stage2_grid_config,
@@ -1050,6 +1233,11 @@ def _train_sft2_impl(args=None) -> int:
         resume_ckpt_dir / "training_state.pt" if resume_ckpt_dir is not None else None
     )
     rl_eval_checkpoint_dir = _rl_eval_checkpoint_root(args)
+    initialization_ckpt_dir = (
+        Path(args.stage3_init_checkpoint).resolve()
+        if getattr(args, "stage3_init_checkpoint", None) is not None
+        else None
+    )
     if is_main():
         print(
             json.dumps(
@@ -1062,6 +1250,7 @@ def _train_sft2_impl(args=None) -> int:
                     "objective": args.objective,
                     "resume": args.resume,
                     "resume_from": str(resume_ckpt_dir) if resume_ckpt_dir is not None else None,
+                    "stage3_init_checkpoint": str(initialization_ckpt_dir) if initialization_ckpt_dir else None,
                     "rl_eval_checkpoint": (
                         str(rl_eval_checkpoint_dir)
                         if rl_eval_checkpoint_dir is not None
@@ -1108,12 +1297,24 @@ def _train_sft2_impl(args=None) -> int:
         resume_dir=resume_ckpt_dir,
         resume_state_path=resume_state_path,
     )
+    if initialization_ckpt_dir is not None:
+        _validate_materialized_selected_rows(
+            loaded.backbone.model,
+            initialization_ckpt_dir,
+        )
     world_model, world_model_device = _build_world_model(
         args,
         model=loaded.backbone.model,
         device=device,
         pair_parallel=loaded.pair_parallel,
         resume_ckpt_dir=resume_ckpt_dir,
+        initialization_ckpt_dir=initialization_ckpt_dir,
+        train_wm_predictor=train_wm_predictor,
+    )
+    _configure_frozen_representation_scope(
+        args,
+        backbone=loaded.backbone.model,
+        world_model=world_model,
         train_wm_predictor=train_wm_predictor,
     )
     agent, ddp_static_graph = _wrap_sft2_agent(
@@ -1131,8 +1332,8 @@ def _train_sft2_impl(args=None) -> int:
         vision_ema = build_fsdp_vision_ema(
             decay=args.vision_ema_decay, model=agent.backbone.model,
             resume_path=(
-                (resume_ckpt_dir or rl_eval_checkpoint_dir) / "vision_ema.pt"
-                if (resume_ckpt_dir or rl_eval_checkpoint_dir) is not None
+                (resume_ckpt_dir or initialization_ckpt_dir or rl_eval_checkpoint_dir) / "vision_ema.pt"
+                if (resume_ckpt_dir or initialization_ckpt_dir or rl_eval_checkpoint_dir) is not None
                 else None
             ),
         )
@@ -1142,8 +1343,8 @@ def _train_sft2_impl(args=None) -> int:
             decay=args.vision_ema_decay,
             llm=agent.backbone.model,
             resume_path=(
-                (resume_ckpt_dir or rl_eval_checkpoint_dir) / "vision_ema.pt"
-                if (resume_ckpt_dir or rl_eval_checkpoint_dir) is not None
+                (resume_ckpt_dir or initialization_ckpt_dir or rl_eval_checkpoint_dir) / "vision_ema.pt"
+                if (resume_ckpt_dir or initialization_ckpt_dir or rl_eval_checkpoint_dir) is not None
                 else None
             ),
             device=device,
@@ -1283,6 +1484,19 @@ def _train_sft2_impl(args=None) -> int:
         qwen_start_lr=args.lr_qwen_start,
         qwen_peak_lr=args.lr_qwen_peak,
     )
+    stage3_initialization = None
+    if initialization_ckpt_dir is not None:
+        stage3_initialization = {
+            "source": str(initialization_ckpt_dir),
+            "optimizer": "fresh_adamw_v1",
+        }
+    elif resume_state_path is not None:
+        saved_resume_state = torch.load(
+            resume_state_path, map_location="cpu", weights_only=False
+        )
+        saved_resume_invariants = saved_resume_state.get("training_invariants") or {}
+        stage3_initialization = saved_resume_invariants.get("stage3_initialization")
+
     checkpoint_invariants = {
         "schedule_total_steps": total_steps,
         "objective": args.objective,
@@ -1307,6 +1521,14 @@ def _train_sft2_impl(args=None) -> int:
         "sigreg_batch_scope": "global_unique_trajectory_transitions_v1",
         "lambda_sigreg": float(args.lambda_sigreg),
         "wm_value_backbone_grad": args.wm_value_backbone_grad,
+        "freeze_state_projector": args.freeze_state_projector,
+        "stage3_initialization": stage3_initialization,
+        "trainable_scope": (
+            "wm_value_outcome_only_v1"
+            if args.freeze_state_projector and llm_tune == "freeze" and vision_tune == "freeze"
+            and args.query_tune == "freeze"
+            else "configured_modules_v1"
+        ),
         "sample_ownership_version": "trajectory_windows_once_v1",
         "value_objective": SFT2_VALUE_OBJECTIVE,
         "lm_supervision": "successful_trajectory_window_mean_v1",

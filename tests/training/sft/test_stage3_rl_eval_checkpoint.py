@@ -94,6 +94,30 @@ def test_rl_eval_cli_requires_eval_only_and_same_qwen_root(tmp_path: Path) -> No
         )
 
 
+def test_stage3_initialization_cli_is_fresh_and_same_root(tmp_path: Path) -> None:
+    root = tmp_path / "epoch_005"
+    other = tmp_path / "other"
+    parsed = parse_sft2_args([
+        *_required_cli(root),
+        "--stage3-init-checkpoint", str(root),
+        "--freeze-state-projector",
+    ])
+    assert parsed.stage3_init_checkpoint == root
+    assert parsed.freeze_state_projector is True
+    assert parsed.resume is False
+    with pytest.raises(SystemExit):
+        parse_sft2_args([
+            *_required_cli(root),
+            "--stage3-init-checkpoint", str(root),
+            "--resume",
+        ])
+    with pytest.raises(SystemExit):
+        parse_sft2_args([
+            *_required_cli(other),
+            "--stage3-init-checkpoint", str(root),
+        ])
+
+
 def test_frozen_wm_cache_binds_actual_stage3_resume_checkpoint(tmp_path: Path) -> None:
     root = tmp_path / "epoch_005"
     (root / "wm_predictor").mkdir(parents=True)

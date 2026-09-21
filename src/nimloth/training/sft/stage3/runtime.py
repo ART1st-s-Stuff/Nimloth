@@ -28,7 +28,7 @@ class SFT2ModelRuntime:
     def set_training_mode(self) -> None:
         """Enable online training, including eval-loaded Qwen decoder/vision."""
         for module in self.agent.trainable_modules:
-            module.train(True)
+            module.train(any(parameter.requires_grad for parameter in module.parameters()))
 
     def encode_next_state(
         self,
@@ -103,11 +103,8 @@ class SFT2OptimizationRuntime:
             start_lr=self.qwen_start_lr,
             peak_lr=self.qwen_peak_lr,
         )
-        set_optimizer_group_lr(
-            self.optimization.optimizer,
-            "qwen",
-            qwen_lr,
-        )
+        if any(group.get("name") == "qwen" for group in self.optimization.optimizer.param_groups):
+            set_optimizer_group_lr(self.optimization.optimizer, "qwen", qwen_lr)
         self.optimization.step()
         return qwen_lr
 

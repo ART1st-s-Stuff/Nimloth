@@ -26,6 +26,7 @@ from nimloth.training.sft.stage3.checkpoint import (
 )
 from nimloth.training.sft.stage3.trainer import (
     _build_optimizer,
+    _configure_frozen_representation_scope,
     _load_stage2_state_projector,
     _validate_dino_grid_contract,
 )
@@ -38,6 +39,7 @@ from nimloth.wm.grid import (
     load_k64_projector_for_k65_migration,
 )
 from nimloth.wm.layout import GridStateLayout
+from nimloth.wm.outcome import ActionOutcomeHead
 from nimloth.wm.value_head import ValueHead
 
 
@@ -188,6 +190,67 @@ def test_split_projector_optimizer_groups_are_named_and_disjoint() -> None:
     spatial_ids = {id(p) for p in optimizer.param_groups[1]["params"]}
     global_ids = {id(p) for p in optimizer.param_groups[2]["params"]}
     assert spatial_ids and global_ids and spatial_ids.isdisjoint(global_ids)
+
+
+def test_frozen_representation_optimizer_contains_only_wm_and_heads() -> None:
+    projector = SplitSpatialGlobalProjector(6, 8, 12, state_layout=_layout())
+    predictor = ResidualTemporalSpatialGridPredictor(
+        GridPredictorConfig(
+            grid_tokens=5, spatial_grid_size=2, global_tokens=1,
+            position_encoding="fixed_2d_sincos_v1", emb_dim=8,
+            action_dim=3, history_size=1, depth=1, heads=2,
+            dim_head=4, mlp_dim=16, dropout=0.0,
+        )
+    )
+    backbone = torch.nn.Linear(6, 6)
+    outcome = ActionOutcomeHead(8)
+    world_model = GridWorldModel(
+        state_proj=projector,
+        wm_predictor=predictor,
+        value_head=ValueHead(8),
+        outcome_head=outcome,
+    )
+    agent = SimpleNamespace(
+        backbone=SimpleNamespace(model=backbone),
+        wm=world_model,
+    )
+    args = Namespace(
+        freeze_state_projector=True,
+        llm_tune="freeze", vision_tune="freeze", vision_ema=True,
+        distributed_strategy="ddp", query_tune="freeze",
+        wm_value_backbone_grad=False, outcome_head=True,
+        lr_qwen_start=1e-6, state_proj_lr=8e-5,
+        value_head_lr=1e-4, wm_predictor_lr=3e-4,
+        outcome_head_lr=1e-4, weight_decay=0.01,
+    )
+
+    _configure_frozen_representation_scope(
+        args,
+        backbone=backbone,
+        world_model=world_model,
+        train_wm_predictor=True,
+    )
+
+    optimizer = _build_optimizer(
+        args, agent=agent, query_adapter=None, train_wm_predictor=True
+    )
+
+    assert [group["name"] for group in optimizer.param_groups] == [
+        "value_head", "wm_predictor", "outcome_head",
+    ]
+    optimized = {
+        id(parameter)
+        for group in optimizer.param_groups
+        for parameter in group["params"]
+    }
+    expected = {
+        id(parameter)
+        for module in (predictor, world_model.value_head, outcome)
+        for parameter in module.parameters()
+    }
+    assert optimized == expected
+    assert all(not parameter.requires_grad for parameter in backbone.parameters())
+    assert all(not parameter.requires_grad for parameter in projector.parameters())
 
 
 def test_stage3_accepts_evaluation_only_split_projector_stage2(

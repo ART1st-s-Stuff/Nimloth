@@ -13,6 +13,7 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("objective", "name"): "objective",
     ("init", "sft1_checkpoint"): "model",
     ("init", "wm_predictor_checkpoint"): "wm_predictor_checkpoint",
+    ("init", "stage3_checkpoint"): "stage3_init_checkpoint",
     ("supervision", "dino_grid_cache"): "dino_grid_cache",
     ("supervision", "stage2_aligned_dino_cache"): "stage2_aligned_dino_cache",
     ("data", "train_jsonl"): "train_jsonl",
@@ -45,6 +46,7 @@ _YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("train", "lr_qwen_peak"): "lr_qwen_peak",
     ("train", "qwen_lr_warmup_ratio"): "qwen_lr_warmup_ratio",
     ("train", "state_proj_lr"): "state_proj_lr",
+    ("train", "freeze_state_projector"): "freeze_state_projector",
     ("train", "wm_predictor_lr"): "wm_predictor_lr",
     ("train", "value_head_lr"): "value_head_lr",
     ("train", "weight_decay"): "weight_decay",
@@ -176,6 +178,8 @@ def flatten_sft2_yaml_config(config: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("train.activation_offload must be a boolean")
     if "wm_value_backbone_grad" in flat and not isinstance(flat["wm_value_backbone_grad"], bool):
         raise ValueError("loss.wm_value_backbone_grad must be a boolean")
+    if "freeze_state_projector" in flat and not isinstance(flat["freeze_state_projector"], bool):
+        raise ValueError("train.freeze_state_projector must be a boolean")
     if "include_failed_rollouts" in flat:
         flat["success_only"] = not bool(flat.pop("include_failed_rollouts"))
     if "wandb_enabled" in flat:
