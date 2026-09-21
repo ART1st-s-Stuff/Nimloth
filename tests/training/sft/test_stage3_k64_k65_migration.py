@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+from dataclasses import asdict
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+from nimloth.backbone.dino_grid import DINOV2_LARGE_IDENTITY
 from nimloth.backbone.selected_token_rows import (
     install_full_language_selected_rows,
     restore_selected_rows_with_appended_query,
@@ -22,7 +24,11 @@ from nimloth.training.sft.stage3.checkpoint import (
     load_world_model_checkpoint,
     save_checkpoint,
 )
-from nimloth.training.sft.stage3.trainer import _build_optimizer
+from nimloth.training.sft.stage3.trainer import (
+    _build_optimizer,
+    _load_stage2_state_projector,
+    _validate_dino_grid_contract,
+)
 from nimloth.wm.grid import (
     GridPredictorConfig,
     GridWorldModel,
@@ -182,6 +188,163 @@ def test_split_projector_optimizer_groups_are_named_and_disjoint() -> None:
     spatial_ids = {id(p) for p in optimizer.param_groups[1]["params"]}
     global_ids = {id(p) for p in optimizer.param_groups[2]["params"]}
     assert spatial_ids and global_ids and spatial_ids.isdisjoint(global_ids)
+
+
+def test_stage3_accepts_evaluation_only_split_projector_stage2(
+    tmp_path,
+) -> None:
+    layout = _layout()
+    model = tmp_path / "stage2_epoch_025"
+    model.mkdir()
+    metadata = {
+        "training_stage": "query",
+        "objective": {"grid_size": 2},
+        "grid_tokens": layout.state_tokens,
+        "spatial_tokens": layout.spatial_tokens,
+        "global_tokens": layout.global_tokens,
+        "state_tokens": layout.state_tokens,
+        "state_dim": 1024,
+        "shared_slot_projector": False,
+        "projector_layout": SplitSpatialGlobalProjector.schema,
+        "ordering": "row_major_spatial_then_global",
+        "state_layout": layout.metadata(),
+        "evaluation_only": True,
+        "formal_stage2": False,
+        "migration": {
+            "schema": "stage2_k64_to_k65_split_projector_v1",
+            "source_checkpoint": "/source/epoch_016",
+        },
+        "dino_identity": asdict(DINOV2_LARGE_IDENTITY),
+    }
+    (model / "grid_state_config.json").write_text(json.dumps(metadata))
+
+    args = Namespace(
+        emb_dim=1024,
+        latent_query_mode="inject",
+        lambda_sigreg=0.0,
+        grid_size=2,
+        grid_global_tokens=1,
+        latent_token_count=5,
+        dino_grid_cache=tmp_path / "cache",
+        model=model,
+        rl_eval_checkpoint=None,
+        k64_stage3_migration_checkpoint=None,
+    )
+
+    assert _validate_dino_grid_contract(args) == metadata
+
+
+def test_stage3_rejects_split_projector_checkpoint_without_stage2_eval_marker(
+    tmp_path,
+) -> None:
+    layout = _layout()
+    model = tmp_path / "wrong_stage"
+    model.mkdir()
+    identity = asdict(DINOV2_LARGE_IDENTITY)
+    metadata = {
+        "objective": {"grid_size": 2},
+        "grid_tokens": layout.state_tokens,
+        "global_tokens": 1,
+        "state_dim": 1024,
+        "shared_slot_projector": False,
+        "projector_layout": SplitSpatialGlobalProjector.schema,
+        "ordering": "row_major_spatial_then_global",
+        "state_layout": layout.metadata(),
+        "evaluation_only": True,
+        "formal_stage3": False,
+        "dino_identity": identity,
+    }
+    (model / "grid_state_config.json").write_text(json.dumps(metadata))
+    args = Namespace(
+        emb_dim=1024,
+        latent_query_mode="inject",
+        lambda_sigreg=0.0,
+        grid_size=2,
+        grid_global_tokens=1,
+        latent_token_count=5,
+        dino_grid_cache=tmp_path / "cache",
+        model=model,
+        rl_eval_checkpoint=None,
+        k64_stage3_migration_checkpoint=None,
+    )
+
+    with pytest.raises(ValueError, match="formal_stage2"):
+        _validate_dino_grid_contract(args)
+
+
+def test_stage3_loads_exact_split_projector_from_stage2(tmp_path) -> None:
+    layout = _layout()
+    source = SplitSpatialGlobalProjector(6, 8, 12, state_layout=layout)
+    with torch.no_grad():
+        for index, parameter in enumerate(source.parameters(), start=1):
+            parameter.fill_(index / 10)
+    torch.save(source.state_dict(), tmp_path / "slot_projector.pt")
+    stage2_migration = {
+        "schema": "stage2_k64_to_k65_split_projector_v1",
+        "source_checkpoint": "/source/epoch_016",
+    }
+    config = {
+        "projector_layout": SplitSpatialGlobalProjector.schema,
+        "projector_hidden_dim": 12,
+        "migration": stage2_migration,
+    }
+
+    loaded = _load_stage2_state_projector(
+        tmp_path,
+        config,
+        qwen_hidden_dim=6,
+        state_dim=8,
+        grid_tokens=5,
+        state_layout=layout,
+        map_location=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+
+    assert isinstance(loaded, SplitSpatialGlobalProjector)
+    for key, value in source.state_dict().items():
+        torch.testing.assert_close(loaded.state_dict()[key], value, rtol=0, atol=0)
+    assert loaded.migration_provenance == {
+        "source": str(tmp_path.resolve()),
+        "projector": "stage2_split_spatial_global_v1",
+        "stage2_migration": stage2_migration,
+        "optimizer": "fresh_adamw_v1",
+    }
+
+
+def test_stage3_rejects_split_stage2_without_migration_lineage(tmp_path) -> None:
+    layout = _layout()
+    model = tmp_path / "stage2_without_lineage"
+    model.mkdir()
+    metadata = {
+        "training_stage": "query",
+        "objective": {"grid_size": 2},
+        "grid_tokens": layout.state_tokens,
+        "global_tokens": layout.global_tokens,
+        "state_dim": 1024,
+        "shared_slot_projector": False,
+        "projector_layout": SplitSpatialGlobalProjector.schema,
+        "ordering": "row_major_spatial_then_global",
+        "state_layout": layout.metadata(),
+        "evaluation_only": True,
+        "formal_stage2": False,
+        "dino_identity": asdict(DINOV2_LARGE_IDENTITY),
+    }
+    (model / "grid_state_config.json").write_text(json.dumps(metadata))
+    args = Namespace(
+        emb_dim=1024,
+        latent_query_mode="inject",
+        lambda_sigreg=0.0,
+        grid_size=2,
+        grid_global_tokens=1,
+        latent_token_count=5,
+        dino_grid_cache=tmp_path / "cache",
+        model=model,
+        rl_eval_checkpoint=None,
+        k64_stage3_migration_checkpoint=None,
+    )
+
+    with pytest.raises(ValueError, match="stage2_split_lineage"):
+        _validate_dino_grid_contract(args)
 
 
 def test_plain_resume_rejects_shared_checkpoint_for_split_projector(tmp_path) -> None:

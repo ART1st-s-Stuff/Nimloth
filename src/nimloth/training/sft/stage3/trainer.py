@@ -408,6 +408,22 @@ def _validate_dino_grid_contract(args: Any) -> dict[str, Any]:
                 config.get("state_layout"),
                 "configured Stage3 layout",
             )
+        migration = config.get("migration")
+        if (
+            config.get("training_stage") != "query"
+            or not isinstance(migration, dict)
+            or migration.get("schema")
+            != "stage2_k64_to_k65_split_projector_v1"
+            or not isinstance(migration.get("source_checkpoint"), str)
+            or not migration["source_checkpoint"]
+        ):
+            checkpoint_mismatches["stage2_split_lineage"] = (
+                {
+                    "training_stage": config.get("training_stage"),
+                    "migration": migration,
+                },
+                "query checkpoint with stage2_k64_to_k65_split_projector_v1 lineage",
+            )
     elif checkpoint_grid_size != int(args.grid_size):
         checkpoint_mismatches["objective.grid_size"] = (
             checkpoint_grid_size,
@@ -418,7 +434,10 @@ def _validate_dino_grid_contract(args: Any) -> dict[str, Any]:
             config.get("global_tokens"),
             int(args.grid_global_tokens),
         )
-    formal_marker = "formal_stage3" if split_projector else "formal_stage2"
+    # This metadata belongs to the Stage2 initialization checkpoint even when
+    # it uses the K64+CLS split projector.  Stage3 checkpoints have a separate
+    # resume path and must not be accepted here as fresh Stage3 initialization.
+    formal_marker = "formal_stage2"
     if args.grid_global_tokens and (
         not config.get("evaluation_only") or config.get(formal_marker) is not False
     ):
@@ -495,6 +514,61 @@ def _validate_stage2_stage3_dino_cache_contract(
         "feature_space_fingerprint": stage3.feature_space_fingerprint,
         "feature_space": stage3.feature_space,
     }
+
+
+def _load_stage2_state_projector(
+    checkpoint: Path,
+    config: dict[str, Any],
+    *,
+    qwen_hidden_dim: int,
+    state_dim: int,
+    grid_tokens: int,
+    state_layout: GridStateLayout | None,
+    map_location: torch.device,
+    dtype: torch.dtype,
+) -> SharedSlotProjector | SplitSpatialGlobalProjector:
+    """Load the exact Stage2 projector schema used to initialize Stage3."""
+
+    if config.get("projector_layout") != SplitSpatialGlobalProjector.schema:
+        return load_sft1_slot_projector(
+            checkpoint,
+            qwen_hidden_dim=qwen_hidden_dim,
+            state_dim=state_dim,
+            grid_tokens=grid_tokens,
+            map_location=map_location,
+            dtype=dtype,
+            state_layout=state_layout,
+        )
+    if state_layout is None:
+        raise ValueError("split Stage2 projector requires a global state layout")
+    hidden_dim = config.get("projector_hidden_dim")
+    if not isinstance(hidden_dim, int) or hidden_dim < 1:
+        raise ValueError("split Stage2 checkpoint is missing projector_hidden_dim")
+    projector = SplitSpatialGlobalProjector(
+        input_dim=qwen_hidden_dim,
+        output_dim=state_dim,
+        hidden_dim=hidden_dim,
+        state_layout=state_layout,
+    )
+    state_path = checkpoint / "slot_projector.pt"
+    if not state_path.is_file():
+        raise FileNotFoundError(f"Stage2 split projector is missing: {state_path}")
+    state = torch.load(state_path, map_location=map_location, weights_only=True)
+    if not isinstance(state, dict) or any(
+        not isinstance(value, torch.Tensor)
+        or value.dtype != torch.float32
+        or not torch.isfinite(value).all()
+        for value in state.values()
+    ):
+        raise ValueError("Stage2 split projector must contain finite FP32 tensors")
+    projector.load_state_dict(state, strict=True)
+    projector.migration_provenance = {
+        "source": str(checkpoint.resolve()),
+        "projector": "stage2_split_spatial_global_v1",
+        "stage2_migration": config.get("migration"),
+        "optimizer": "fresh_adamw_v1",
+    }
+    return projector.to(device=map_location, dtype=dtype)
 
 
 def _build_world_model(
@@ -578,8 +652,14 @@ def _build_world_model(
                 state_layout=layout,
             ).to(device=world_model_device, dtype=grid_dtype)
         else:
-            state_proj = load_sft1_slot_projector(
-                args.model,
+            stage2_config = json.loads(
+                (Path(args.model) / "grid_state_config.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            state_proj = _load_stage2_state_projector(
+                Path(args.model),
+                stage2_config,
                 qwen_hidden_dim=int(model.config.hidden_size),
                 state_dim=args.emb_dim,
                 grid_tokens=args.latent_token_count,
