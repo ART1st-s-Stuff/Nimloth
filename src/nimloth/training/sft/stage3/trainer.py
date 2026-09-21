@@ -350,7 +350,7 @@ def _load_rl_eval_grid_world_model(
         root / "outcome_head.pt", map_location="cpu", weights_only=True
     )
     if not isinstance(outcome_payload, dict):
-        raise TypeError("RL eval outcome_head.pt must contain a dictionary")
+        raise ValueError("RL eval outcome_head.pt must contain a dictionary")
     if outcome_payload.get("schema") != ActionOutcomeHead.schema:
         raise ValueError("unsupported RL eval OutcomeHead checkpoint schema")
     if int(outcome_payload.get("emb_dim", -1)) != predictor.config.emb_dim:
