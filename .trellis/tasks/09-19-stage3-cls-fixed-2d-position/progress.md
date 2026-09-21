@@ -1,5 +1,34 @@
 # Progress
 
+## 2026-09-21 Stage3 fresh start from K65 Stage2 epoch25
+
+- User approved continuing from the converged K65 Stage2 `epoch_025` into Stage3
+  and then a fresh spatial+CLS reconstruction pipeline. To make checkpoint writes
+  safe, the three specifically approved superseded output directories were removed;
+  `/mnt` available space rose from about 77 GiB to 119 GiB.
+- Commit `0f1f78419ac098a101b2897ee3285f462b60713a` fixes the Stage3 initialization
+  contract for a Stage2 split projector: it validates `formal_stage2=false` and the
+  K64-to-K65 migration lineage, then restores the exact spatial/global FP32 projector
+  branches. Remote focused regression: 84 passed, one Pillow deprecation warning.
+- Eight-GPU canary `20260921_stage3_k65_fixed2d_epoch25_canary1` completed one update
+  and wrote a valid `stop_step_000001`. Step-1 WM spatial/CLS MSE was
+  `0.2134465 / 0.3354442`; observed DINO spatial/CLS MSE was
+  `0.4625080 / 0.2958780`; predicted DINO spatial/CLS MSE was
+  `0.6867280 / 0.6791152`. There was no OOM, NaN, or traceback. After audit and
+  explicit user approval, its approximately 44 GiB checkpoint directory was deleted;
+  the external log and exit code were retained.
+- Formal fresh Stage3 run
+  `20260921_stage3_k65_fixed2d_eval_r5_from_stage2_epoch25` started on `a100-1`
+  with controller PID `1807381`, eight GPUs, five epochs, effective batch 64,
+  DINO coefficient 2, SIGReg 0, H1/T4, fixed 2D K64 plus one CLS slot, fresh WM and
+  optimizer, and latest-only checkpoint retention. It uses Stage2 epoch25/step675 as
+  its only initialization and preserves the reviewed r4 data/cache/config identities.
+  At the last check all eight ranks were training at 99--100% GPU utilization with no
+  terminal marker or error. After completion, the prepared reconstruction pipeline
+  will re-export frozen K65 train/eval caches, train state and DINO
+  `spatial_cls_grid_v1` CFM decoders from scratch for 4000 steps, and run matched
+  correct/zero/shuffled-CLS reconstruction evaluation.
+
 ## 2026-09-21 Stage2 K64 to K65 split-projector migration complete
 
 - Formal run `20260920_stage2_epoch16_k65_split_dino2_r1` completed on `a100-1`
