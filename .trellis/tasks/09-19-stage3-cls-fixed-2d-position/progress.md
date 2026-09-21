@@ -1,5 +1,26 @@
 # Progress
 
+## 2026-09-21 Stage2 K64 to K65 split-projector migration complete
+
+- Formal run `20260920_stage2_epoch16_k65_split_dino2_r1` completed on `a100-1`
+  at epoch 25 / global step 675 and stopped by the reviewed convergence rule: two
+  adjacent epochs with less than 1% relative improvement in validation spatial+CLS
+  DINO MSE. The remote training source was commit
+  `397202e1fab45fff6d17e800595cfe3c7c83754a`.
+- Validation epoch 1 to epoch 25: spatial DINO MSE `0.5841621161 -> 0.4602291286`,
+  CLS DINO MSE `0.9427748919 -> 0.3100138307`, and their convergence sum
+  `1.5269371271 -> 0.7702428699`. Validation LM loss remained nearly flat
+  (`0.4447632134 -> 0.4454948902`); final format pass rate was `1.0`.
+- Because the monitored validation metric decreased monotonically, epoch 25 is the
+  best epoch. Retained final artifacts are `best` and `epoch_025`, each about 7.8 GiB,
+  under `/mnt/nimloth/outputs/experiments/stage3-cls-fixed2d/20260920_stage2_epoch16_k65_split_dino2_r1/`.
+  `epoch_025/COMMITTED` records epoch 25 / step 675; `best` contains the complete
+  model, tokenizer, split projector, selected-row, grid-layout, and training-state
+  files but intentionally has no `COMMITTED` marker.
+- No matching training process remains; all eight `a100-1` GPUs were idle at the
+  2026-09-21 completion check. `/mnt` had about 77 GiB available. The five-minute
+  monitoring automation was deleted after completion.
+
 ## 2026-09-20 Stage2 epoch16 → K65 split-projector canary and formal run
 
 - 最终实现提交`397202e1fab45fff6d17e800595cfe3c7c83754a`已同步到a100-1；远端
