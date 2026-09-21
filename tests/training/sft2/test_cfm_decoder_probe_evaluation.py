@@ -220,6 +220,55 @@ class CFMProbeEvaluationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "fixed input batch mismatch"):
                 validate_manifests(paths)
 
+    def test_probe_manifests_accept_actual_contiguous_rank_count(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            for rank in range(2):
+                artifact = directory / f"rank_{rank:03d}_batch_000.pt"
+                artifact.write_bytes(str(rank).encode())
+                manifest = {
+                    "schema": "stage3_fixed_batch_probe_v1", "rank": rank, "step": 115,
+                    "batches": [{"keys": [[f"trajectory-{rank}", 0]]}], "identity": {"run": "one"},
+                    "files": [{"name": artifact.name, "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest()}],
+                }
+                (directory / f"rank_{rank:03d}_COMPLETE.json").write_text(json.dumps(manifest))
+            result = validate_manifests({"one": directory})
+            self.assertEqual(len(result["one"]["ranks"]), 2)
+
+    def test_probe_manifests_reject_incomplete_or_different_rank_sets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            paths = {label: root / label for label in ("complete", "incomplete")}
+            for label, ranks in (("complete", (0, 1, 2)), ("incomplete", (0, 2))):
+                directory = paths[label]
+                directory.mkdir()
+                for rank in ranks:
+                    artifact = directory / f"rank_{rank:03d}_batch_000.pt"
+                    artifact.write_bytes(f"{label}-{rank}".encode())
+                    manifest = {
+                        "schema": "stage3_fixed_batch_probe_v1", "rank": rank, "step": 115,
+                        "batches": [{"keys": [[f"trajectory-{rank}", 0]]}], "identity": {"run": label},
+                        "files": [{"name": artifact.name, "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest()}],
+                    }
+                    (directory / f"rank_{rank:03d}_COMPLETE.json").write_text(json.dumps(manifest))
+            with self.assertRaisesRegex(ValueError, "complete contiguous set from zero"):
+                validate_manifests(paths)
+
+            incomplete = paths["incomplete"]
+            missing_rank = 1
+            artifact = incomplete / f"rank_{missing_rank:03d}_batch_000.pt"
+            artifact.write_bytes(b"incomplete-1")
+            manifest = {
+                "schema": "stage3_fixed_batch_probe_v1", "rank": missing_rank, "step": 115,
+                "batches": [{"keys": [["trajectory-1", 0]]}], "identity": {"run": "incomplete"},
+                "files": [{"name": artifact.name, "sha256": hashlib.sha256(artifact.read_bytes()).hexdigest()}],
+            }
+            (incomplete / f"rank_{missing_rank:03d}_COMPLETE.json").write_text(json.dumps(manifest))
+            (incomplete / "rank_002_COMPLETE.json").unlink()
+            (incomplete / "rank_002_batch_000.pt").unlink()
+            with self.assertRaisesRegex(ValueError, "rank set differs"):
+                validate_manifests(paths)
+
     def test_probe_manifests_reject_mixed_run_identity(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

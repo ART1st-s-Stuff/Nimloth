@@ -21,6 +21,7 @@ from nimloth.wm.layout import GridStateLayout
 
 LEGACY_EPOCHS = (2, 4, 5)
 _LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_RANK_COMPLETE = re.compile(r"^rank_(\d{3})_COMPLETE\.json$")
 _STATE_LAYOUT = GridStateLayout(
     spatial_grid_size=8, global_tokens=1, global_role="dino_cls"
 )
@@ -250,13 +251,30 @@ def sha256(path):
 def validate_manifests(paths):
     reference = {}
     result = {}
+    expected_ranks = None
     for label, directory in paths.items():
         result[label] = []
         probe_step = None
         probe_identity = None
         declared_files = set()
-        for rank in range(8):
-            path = directory / f"rank_{rank:03d}_COMPLETE.json"
+        completion_paths = sorted(directory.glob("rank_*_COMPLETE.json"))
+        ranks = []
+        for path in completion_paths:
+            match = _RANK_COMPLETE.fullmatch(path.name)
+            if match is None:
+                raise ValueError(f"invalid diagnostic manifest filename: {path}")
+            ranks.append(int(match.group(1)))
+        if not ranks or ranks != list(range(len(ranks))):
+            raise ValueError(
+                f"probe {label} ranks must be a complete contiguous set from zero: {ranks}"
+            )
+        if expected_ranks is None:
+            expected_ranks = ranks
+        elif ranks != expected_ranks:
+            raise ValueError(
+                f"probe {label} rank set differs: {ranks} != {expected_ranks}"
+            )
+        for rank, path in zip(ranks, completion_paths, strict=True):
             data = json.loads(path.read_text())
             if data.get("schema") != "stage3_fixed_batch_probe_v1" or data.get("rank") != rank:
                 raise ValueError(f"invalid diagnostic manifest: {path}")
