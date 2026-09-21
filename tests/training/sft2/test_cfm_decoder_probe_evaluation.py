@@ -9,12 +9,14 @@ import torch
 
 from experiments.training.sft.stage3.cfm_decoder_probe import CLS_SCHEMA, SCHEMA
 from experiments.training.sft.stage3.evaluate_cfm_decoder_probe import (
+    LEGACY_POPULATION,
     aligned_rows,
     decoder_family_for_checkpoints,
     image_metrics,
     paired_noise,
     summarize_cls_ablations,
     validate_decoder_identity,
+    validate_population,
 )
 from experiments.training.sft.stage3.render_continuation_features import (
     column_layout,
@@ -26,6 +28,57 @@ from experiments.training.sft.stage3.render_continuation_features import (
 
 
 class CFMProbeEvaluationTests(unittest.TestCase):
+    @staticmethod
+    def _population_fixture(trajectory_count, window_count):
+        base, remainder = divmod(window_count, trajectory_count)
+        identities = []
+        rows = []
+        for trajectory_index in range(trajectory_count):
+            count = base + (trajectory_index < remainder)
+            trajectory = f"trajectory-{trajectory_index:03d}"
+            for start in range(count):
+                identities.append((trajectory, start))
+                for horizon in range(1, 5):
+                    rows.append(
+                        {
+                            "trajectory": trajectory,
+                            "window_start": start,
+                            "horizon_step": horizon,
+                            "observation": start + horizon,
+                        }
+                    )
+        return {"first": dict.fromkeys(identities), "second": dict.fromkeys(identities)}, rows
+
+    def test_population_preserves_historical_fixed_probe_contract(self):
+        probes, rows = self._population_fixture(8, 71)
+        self.assertEqual(
+            validate_population(probes, rows, expected=LEGACY_POPULATION),
+            LEGACY_POPULATION,
+        )
+
+    def test_named_probe_population_accepts_complete_larger_eval_export(self):
+        probes, rows = self._population_fixture(101, 1003)
+        self.assertEqual(
+            validate_population(probes, rows),
+            {
+                "trajectories": 101,
+                "windows": 1003,
+                "window_horizon_positions": 4012,
+                "unique_observations": 1306,
+            },
+        )
+
+    def test_population_rejects_missing_duplicate_or_misaligned_horizon_rows(self):
+        probes, rows = self._population_fixture(2, 3)
+        with self.assertRaisesRegex(ValueError, "complete aligned H4"):
+            validate_population(probes, rows[:-1])
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            validate_population(probes, [*rows, rows[0]])
+        changed = copy.deepcopy(rows)
+        changed[0]["observation"] += 1
+        with self.assertRaisesRegex(ValueError, "complete aligned H4"):
+            validate_population(probes, changed)
+
     def test_noise_is_identity_paired_not_order_or_column_dependent(self):
         keys = [("a", 3), ("b", 4), ("a", 3)]
         noise = paired_noise(keys, 20260931, size=12)

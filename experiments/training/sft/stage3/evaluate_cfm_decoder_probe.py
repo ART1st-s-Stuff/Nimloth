@@ -23,6 +23,12 @@ from nimloth.recon.cfm.flow import sample_euler, spatial_cls_condition_variants
 from nimloth.wm.layout import GridStateLayout
 
 SEEDS = (20260931, 20260932, 20260933)
+LEGACY_POPULATION = {
+    "trajectories": 8,
+    "windows": 71,
+    "window_horizon_positions": 284,
+    "unique_observations": 95,
+}
 _STATE_LAYOUT = GridStateLayout(
     spatial_grid_size=8, global_tokens=1, global_role="dino_cls"
 )
@@ -145,6 +151,54 @@ def aligned_rows(probes, cache_records):
                 row[f"{label}_copy"] = source["online_current"]
             rows.append(row)
     return rows
+
+
+def validate_population(probes, rows, *, expected=None):
+    """Bind reported population to the complete aligned H4 probe identities."""
+
+    if not probes:
+        raise ValueError("at least one diagnostic probe is required")
+    reference = next(iter(probes.values()))
+    identities = set(reference)
+    if not identities:
+        raise ValueError("diagnostic probe population is empty")
+    if any(set(probe) != identities for probe in probes.values()):
+        raise ValueError("named probe identities differ")
+
+    expected_rows = {
+        (str(trajectory), int(start), horizon, int(start) + horizon)
+        for trajectory, start in identities
+        for horizon in range(1, 5)
+    }
+    actual_rows = []
+    for row in rows:
+        identity = (
+            str(row["trajectory"]),
+            int(row["window_start"]),
+            int(row["horizon_step"]),
+            int(row["observation"]),
+        )
+        actual_rows.append(identity)
+    if len(set(actual_rows)) != len(actual_rows):
+        raise ValueError("diagnostic population contains duplicate window-horizon rows")
+    if set(actual_rows) != expected_rows:
+        raise ValueError(
+            "diagnostic population is not the complete aligned H4 expansion of probe windows"
+        )
+
+    population = {
+        "trajectories": len({str(trajectory) for trajectory, _ in identities}),
+        "windows": len(identities),
+        "window_horizon_positions": len(actual_rows),
+        "unique_observations": len(
+            {(trajectory, observation) for trajectory, _, _, observation in actual_rows}
+        ),
+    }
+    if expected is not None and population != expected:
+        raise ValueError(
+            f"unexpected legacy diagnostic population: expected {expected}, got {population}"
+        )
+    return population
 
 
 def summarize(values, rows):
@@ -417,7 +471,8 @@ def main(argv=None):
 
     torch.set_num_threads(4)
     paths = probe_paths(args, parser)
-    if not args.probe:
+    legacy_invocation = not args.probe
+    if legacy_invocation:
         # Preserve the historical reconstruction metric/column names for the
         # legacy --epoch2/--epoch4/--epoch5 invocation.
         paths = {f"e{epoch}": paths[f"epoch{epoch}"] for epoch in (2, 4, 5)}
@@ -465,9 +520,11 @@ def main(argv=None):
             "state_atol": 0.0,
             "state_rtol": 0.0,
         }
-    unique_observations = {(row["trajectory"], row["observation"]) for row in rows}
-    if (len(wanted), len(next(iter(probes.values()))), len(rows), len(unique_observations)) != (8, 71, 284, 95):
-        raise ValueError("unexpected diagnostic population; expected8trajectories/71windows/284positions/95observations")
+    population = validate_population(
+        probes,
+        rows,
+        expected=LEGACY_POPULATION if legacy_invocation else None,
+    )
     image_lookup = {tuple(key): index for index, key in enumerate(dataset.keys)}
     originals = torch.stack([dataset.images[image_lookup[(r["trajectory"], r["observation"])]] for r in rows]).float()/127.5-1
     for row in rows:
@@ -598,7 +655,7 @@ def main(argv=None):
         "noise_identity": "sha256(seed,trajectory,successor_observation); same pure noise across epochs/decoders/columns",
         "noise_repeats": "same successor observation reuses its noise across overlapping windows and horizons",
         "sampling": {"method": "ordinary midpoint-time Euler", "steps": 50, "cfg": False},
-        "population": {"trajectories": 8, "windows": 71, "window_horizon_positions": 284, "unique_observations": 95},
+        "population": population,
         "decoded_unique_per_column_seed": counts, "metric_weighting": "window-horizon weighted, then mean across3noise seeds; repeats not independent",
         "metrics": {"MSE": "RGB [0,1] mean squared error", "PSNR": "per image -10log10(max(MSE,1e-12)); 120dB cap", "SSIM": "11x11 Gaussian sigma1.5, valid convolution, K1.01 K2.03, channel mean"},
         "image_transform": "full RGB image bicubic128, no crop; identical to decoder training",
