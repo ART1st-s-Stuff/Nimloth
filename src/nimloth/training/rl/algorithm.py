@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import cast
 
 import torch
 import torch.nn.functional as F
@@ -49,7 +49,7 @@ class RLBatch:
 
     action/return 张量为 ``(B,H)``；``old_log_probs`` 按 window-major、time-minor
     展开后，再按每步 loss-mask token 展开。这个顺序必须与 policy replay 一致。
-    可选 DINO target 已在训练 loop 中与 ``(B,H)`` next observations 对齐；algorithm
+    可选 DINO target 已在训练 loop 中与 ``(B,H)`` current observations 对齐；algorithm
     不负责读取图像或调用 frozen teacher。
     """
 
@@ -58,6 +58,9 @@ class RLBatch:
     return_targets: torch.Tensor
     old_log_probs: torch.Tensor
     dino_grid_target: torch.Tensor | None = None
+    action_success_targets: torch.Tensor | None = None
+    action_success_mask: torch.Tensor | None = None
+    policy_step_advantages: torch.Tensor | None = None
 
     @property
     def state_prompts(self) -> tuple[AgentPrompt, ...]:
@@ -89,14 +92,14 @@ class RLBatch:
         )
 
     @property
-    def next_image_paths(self) -> tuple[str, ...]:
-        """按 batch/time 顺序展开 H 个 next observation 图像。"""
+    def current_image_paths(self) -> tuple[str, ...]:
+        """按 batch/time 顺序展开 H 个 current observation 图像。"""
 
         return tuple(
             path
             for window in self.windows
             for path in window.trajectory.image_paths[
-                window.start_step + 1 : window.start_step + 1 + window.history_size
+                window.start_step : window.start_step + window.history_size
             ]
         )
 
@@ -108,6 +111,61 @@ class RLStepOutput:
     loss: torch.Tensor
     losses: dict[str, torch.Tensor | None]
     metrics: dict[str, float]
+
+
+@dataclass(frozen=True)
+class SequenceLossNormalization:
+    """Full-update denominators used by one sequence micro-batch.
+
+    Every micro-batch returns its contribution to the same effective-batch mean.
+    This keeps gradient accumulation equivalent to one full-batch objective even
+    when policy token counts or available Outcome labels differ by window.
+    """
+
+    action_positions: int
+    outcome_labels: int
+    policy_tokens: int
+
+    def __post_init__(self) -> None:
+        if self.action_positions < 1:
+            raise ValueError("sequence normalization requires action positions")
+        if self.outcome_labels < 0 or self.policy_tokens < 0:
+            raise ValueError("sequence normalization counts must be non-negative")
+
+
+def slice_rl_batch(batch: RLBatch, start: int, stop: int) -> RLBatch:
+    """Slice complete windows and their variable-length policy-token stream."""
+
+    batch_size = len(batch.windows)
+    if not 0 <= start < stop <= batch_size:
+        raise ValueError(
+            f"invalid RLBatch slice [{start}:{stop}] for batch size {batch_size}"
+        )
+    token_offsets = [0]
+    for window in batch.windows:
+        token_offsets.append(
+            token_offsets[-1]
+            + sum(
+                len(sample.selected_old_log_probs)
+                for sample in window.policy_replay_inputs()
+            )
+        )
+    token_start = token_offsets[start]
+    token_stop = token_offsets[stop]
+
+    def _slice_optional(value: torch.Tensor | None) -> torch.Tensor | None:
+        return None if value is None else value[start:stop]
+
+    return RLBatch(
+        windows=batch.windows[start:stop],
+        action_indices=batch.action_indices[start:stop],
+        return_targets=batch.return_targets[start:stop],
+        old_log_probs=batch.old_log_probs[token_start:token_stop],
+        dino_grid_target=_slice_optional(batch.dino_grid_target),
+        action_success_targets=_slice_optional(batch.action_success_targets),
+        action_success_mask=_slice_optional(batch.action_success_mask),
+        policy_step_advantages=_slice_optional(batch.policy_step_advantages),
+    )
 
 
 def low_variance_kl(log_ratio: torch.Tensor) -> torch.Tensor:
@@ -149,6 +207,19 @@ def build_rl_batch(
         for window in windows
         for sample in window.policy_replay_inputs()
     )
+    action_success_rows: list[list[float]] = []
+    action_success_mask_rows: list[list[bool]] = []
+    for window in windows:
+        labels = window.trajectory.action_successes
+        selected = (
+            labels[window.start_step : window.start_step + history_size]
+            if labels is not None
+            else [None] * history_size
+        )
+        action_success_rows.append(
+            [float(value) if value is not None else 0.0 for value in selected]
+        )
+        action_success_mask_rows.append([value is not None for value in selected])
     return RLBatch(
         windows=windows,
         action_indices=torch.tensor(
@@ -180,6 +251,16 @@ def build_rl_batch(
                 for old_log_prob in sample.selected_old_log_probs
             ],
             dtype=torch.float32,
+            device=device,
+        ),
+        action_success_targets=torch.tensor(
+            action_success_rows,
+            dtype=torch.float32,
+            device=device,
+        ),
+        action_success_mask=torch.tensor(
+            action_success_mask_rows,
+            dtype=torch.bool,
             device=device,
         ),
     )
@@ -309,6 +390,7 @@ class RLAlgorithm:
         old_policy_log_prob: torch.Tensor | None = None,
         policy_advantage: torch.Tensor | None = None,
         total_transitions: int,
+        total_outcomes: int | None = None,
         dino_grid_target: torch.Tensor | None = None,
         include_world_model: bool = True,
         precomputed_hidden: torch.Tensor | None = None,
@@ -317,23 +399,51 @@ class RLAlgorithm:
 
         顺序固定为：完整 Qwen prefix 得到当前 state；WM/DINO 预测真实 successor；
         ValueHead 监督 executed action；可选 PlannerPolicyHead 对同一 action 做 PPO。
-        所有 objective 按完整 batch 的真实 transition 数归一化。
+        除masked Outcome BCE按有效标签数归一化外，其余objective按完整batch的
+        真实transition数归一化。
         """
 
-        if runtime.state_source != "recompute" or not runtime.representation_to_backbone:
-            raise RuntimeError(
-                "planner transition training requires differentiable full-prefix "
-                "Qwen recomputation"
-            )
+        if runtime.state_source != "recompute":
+            raise RuntimeError("planner transition training requires full-prefix Qwen recomputation")
 
-        # 1. 完整 Qwen prefix：历史 token 是固定输入，但本次 forward 仍可回传。
+        # 1. 完整 Qwen prefix只执行一次。DINO需要时保留Qwen图；WM/value/outcome
+        # 是否回传Qwen由representation_to_backbone显式控制。
         hidden = (
-            runtime.encode_state_prompts((transition.state_prompt,))
+            runtime.encode_state_prompts(
+                (transition.state_prompt,),
+                retain_backbone_graph=self.config.predictor.lambda_dino > 0.0,
+            )
             if precomputed_hidden is None
             else precomputed_hidden
         )
         hidden = move_to_device(hidden, runtime.agent.wm.state_proj)
-        current_state = runtime.agent.wm.project_state(hidden)
+        downstream_hidden = (
+            hidden if runtime.representation_to_backbone else hidden.detach()
+        )
+        current_state = runtime.agent.wm.project_state(downstream_hidden)
+
+        # Stage3的DINO锚定作用于真实current observation state，而不是WM预测。
+        dino_mse = None
+        if dino_grid_target is not None:
+            observed_state = (
+                current_state
+                if runtime.representation_to_backbone
+                else runtime.agent.wm.project_state(hidden)
+            )
+            current_dino_target = dino_grid_target.to(
+                device=observed_state.device,
+                dtype=torch.float32,
+                non_blocking=True,
+            ).detach()
+            if observed_state.shape != current_dino_target.shape:
+                raise ValueError(
+                    "current-state DINO target shape mismatch: "
+                    f"state={tuple(observed_state.shape)}, "
+                    f"target={tuple(current_dino_target.shape)}"
+                )
+            dino_mse = F.mse_loss(observed_state.float(), current_dino_target)
+        elif self.config.predictor.lambda_dino != 0.0:
+            raise ValueError("positive DINO-grid weight requires a current-state target")
 
         # 2. WM context：只有 current_state 可微，持久化历史和 successor target 都固定。
         stored_history = move_to_device(
@@ -370,21 +480,10 @@ class RLAlgorithm:
                 transition.actual_next_state(),
                 predicted_next_state,
             ).unsqueeze(0).detach()
-            current_dino_target = (
-                dino_grid_target.to(
-                    device=predicted_next_state.device,
-                    dtype=torch.float32,
-                    non_blocking=True,
-                )
-                if dino_grid_target is not None
-                else None
-            )
             wm_objective = world_model_loss(
                 predicted_next_state,
                 expected_next_state,
                 state_weight=self.config.predictor.lambda_wm,
-                dino_grid_target=current_dino_target,
-                dino_grid_weight=self.config.predictor.lambda_dino,
             )
             weighted_wm_loss = wm_objective.loss
             wm_mse = wm_objective.state_mse
@@ -392,7 +491,35 @@ class RLAlgorithm:
             weighted_wm_loss = current_state.new_zeros(())
             wm_mse = weighted_wm_loss
 
-        # 4. Value/Policy：两者均只读取 current_state 和实际执行 action。
+        # 4. Outcome读取同一个WM successor。标签缺失时保留同步forward但mask loss。
+        outcome_loss = current_state.new_zeros(())
+        outcome_count = 0
+        outcome_correct = 0
+        if self.config.outcome_head.enabled:
+            outcome_head = runtime.agent.wm.outcome_head
+            if outcome_head is None:
+                raise RuntimeError("OutcomeHead objective is enabled but the runtime has no head")
+            if wm_objective is None:
+                raise RuntimeError("OutcomeHead requires an enabled WM successor prediction")
+            outcome_logits = outcome_head(predicted_next_state)
+            if transition.action_success is not None:
+                outcome_target = torch.tensor(
+                    [float(transition.action_success)],
+                    device=outcome_logits.device,
+                    dtype=outcome_logits.dtype,
+                )
+                outcome_loss = F.binary_cross_entropy_with_logits(
+                    outcome_logits.reshape(1), outcome_target
+                )
+                outcome_count = 1
+                outcome_correct = int(
+                    (outcome_logits.detach().reshape(1) >= 0).item()
+                    == transition.action_success
+                )
+            else:
+                outcome_loss = outcome_logits.sum() * 0.0
+
+        # 5. Value/Policy：两者均只读取 current_state 和实际执行 action。
         action_values = runtime.agent.wm.predict_action_values(current_state)
         executed_action = torch.tensor(
             [transition.action_index],
@@ -439,14 +566,16 @@ class RLAlgorithm:
             )
             value_loss = value_objective.loss
 
-        # 5. 合并 objective
+        # 6. 合并 objective
         normalized_wm_loss = weighted_wm_loss / total_transitions
         normalized_wm_mse = wm_mse / total_transitions
         normalized_dino_mse = (
-            wm_objective.dino_grid_mse / total_transitions
-            if wm_objective is not None and wm_objective.dino_grid_mse is not None
-            else None
+            dino_mse / total_transitions if dino_mse is not None else None
         )
+        outcome_denominator = (
+            total_transitions if total_outcomes is None else max(total_outcomes, 1)
+        )
+        normalized_outcome_loss = outcome_loss / outcome_denominator
         normalized_value_loss = value_loss / total_transitions
         normalized_policy_loss = 0
         normalized_policy_entropy = 0
@@ -458,13 +587,19 @@ class RLAlgorithm:
         total = normalized_wm_loss + normalized_value_loss.to(
             device=normalized_wm_loss.device
         )
+        if normalized_dino_mse is not None:
+            total = total + self.config.predictor.lambda_dino * normalized_dino_mse
+        total = total + self.config.outcome_head.lambda_bce * normalized_outcome_loss
         total = total + normalized_policy_loss
         total = total - (
             self.config.planner_policy.entropy_coeff * normalized_policy_entropy
         )
+        if not torch.isfinite(total):
+            raise FloatingPointError("planner transition produced a non-finite total loss")
         losses = {
             "wm": normalized_wm_mse,
             "dino": normalized_dino_mse,
+            "outcome": normalized_outcome_loss,
             "sigreg": None,
             "value": normalized_value_loss,
             "policy": (
@@ -493,6 +628,9 @@ class RLAlgorithm:
                 total_transitions=total_transitions,
                 world_model_weight=self.config.predictor.lambda_wm,
                 dino_grid_weight=self.config.predictor.lambda_dino,
+                outcome_weight=self.config.outcome_head.lambda_bce,
+                outcome_count=outcome_count,
+                outcome_correct=outcome_correct,
             ),
         )
 
@@ -506,6 +644,7 @@ class RLAlgorithm:
         old_policy_log_probs: tuple[torch.Tensor | None, ...] | None = None,
         policy_advantages: tuple[torch.Tensor | None, ...] | None = None,
         total_transitions: int,
+        total_outcomes: int | None = None,
         dino_grid_targets: tuple[torch.Tensor | None, ...] | None = None,
         loss_weights: tuple[float, ...] | None = None,
         include_world_model: bool = True,
@@ -550,7 +689,8 @@ class RLAlgorithm:
                 )
 
         hidden_batch = runtime.encode_state_prompts(
-            tuple(transition.state_prompt for transition in transitions)
+            tuple(transition.state_prompt for transition in transitions),
+            retain_backbone_graph=self.config.predictor.lambda_dino > 0.0,
         )
         if hidden_batch.ndim not in (2, 3) or hidden_batch.shape[0] != batch_size:
             raise ValueError(
@@ -566,6 +706,7 @@ class RLAlgorithm:
                 old_policy_log_prob=old_policy_log_prob,
                 policy_advantage=policy_advantage,
                 total_transitions=total_transitions,
+                total_outcomes=total_outcomes,
                 dino_grid_target=dino_grid_target,
                 include_world_model=include_world_model,
                 precomputed_hidden=hidden_batch[index : index + 1],
@@ -623,12 +764,32 @@ class RLAlgorithm:
         self,
         runtime: RLModelRuntime,
         batch: RLBatch,
+        *,
+        normalization: SequenceLossNormalization | None = None,
+        include_policy: bool = True,
     ) -> RLStepOutput:
-        """构造 RL 计算图并计算 WM、value 与可选 PPO 目标。"""
+        """构造表示计算图，并可选地在同一图中计算 PPO 目标。
+
+        ``include_policy=False`` 供 sequence micro-batching 使用：调用者先对
+        表示目标反向并释放这张 Qwen 图，再调用 ``sequence_policy_step``。
+        这样仍然累积到同一次 optimizer update，但不会让两张 Qwen 计算图
+        同时驻留显存。
+        """
+
+        local_action_positions = batch.action_indices.numel()
+        action_scale = (
+            1.0
+            if normalization is None
+            else local_action_positions / normalization.action_positions
+        )
 
         hidden_states = self._state_hidden_sequence(runtime, batch)
-
-        state_sequence = runtime.agent.wm.project_state_sequence(hidden_states)
+        downstream_hidden = (
+            hidden_states
+            if runtime.representation_to_backbone
+            else hidden_states.detach()
+        )
+        state_sequence = runtime.agent.wm.project_state_sequence(downstream_hidden)
         state_context = state_sequence[:, :-1]
         action_values = runtime.agent.wm.predict_action_values(state_context)
 
@@ -642,22 +803,92 @@ class RLAlgorithm:
             # 下一状态只作为固定监督值；同一状态在它作为 current state 时训练
             # StateProjector，不能让监督值反向靠近当前预测。
             expected_next_states = state_sequence[:, 1:].detach()
-            dino_grid_target = (
-                batch.dino_grid_target.to(
-                    device=predicted_next_states.device,
-                    dtype=torch.float32,
-                    non_blocking=True,
-                )
-                if batch.dino_grid_target is not None
-                else None
-            )
             wm_objective = world_model_loss(
                 predicted_next_states,
                 expected_next_states,
                 state_weight=self.config.predictor.lambda_wm,
-                dino_grid_target=dino_grid_target,
-                dino_grid_weight=self.config.predictor.lambda_dino,
             )
+
+        # DINO anchors the real current observation state. Auxiliary objectives
+        # may stop at Qwen hidden while this path still trains Qwen and projector.
+        dino_mse = None
+        if batch.dino_grid_target is not None:
+            observed_state_sequence = (
+                state_sequence
+                if runtime.representation_to_backbone
+                else runtime.agent.wm.project_state_sequence(hidden_states)
+            )
+            observed_current_states = observed_state_sequence[:, :-1]
+            dino_grid_target = batch.dino_grid_target.to(
+                device=observed_current_states.device,
+                dtype=torch.float32,
+                non_blocking=True,
+            ).detach()
+            if observed_current_states.shape != dino_grid_target.shape:
+                raise ValueError(
+                    "current-state DINO target shape mismatch: "
+                    f"state={tuple(observed_current_states.shape)}, "
+                    f"target={tuple(dino_grid_target.shape)}"
+                )
+            dino_mse = F.mse_loss(observed_current_states.float(), dino_grid_target)
+        elif self.config.predictor.lambda_dino != 0.0:
+            raise ValueError("positive DINO-grid weight requires current-state targets")
+
+        outcome_loss = None
+        outcome_count = 0
+        outcome_correct = 0
+        if self.config.outcome_head.enabled:
+            outcome_head = runtime.agent.wm.outcome_head
+            if outcome_head is None:
+                raise RuntimeError(
+                    "OutcomeHead objective is enabled but the runtime has no head"
+                )
+            if wm_objective is None:
+                raise RuntimeError(
+                    "OutcomeHead requires an enabled WM successor prediction"
+                )
+            if (
+                batch.action_success_targets is None
+                or batch.action_success_mask is None
+            ):
+                raise ValueError(
+                    "OutcomeHead training requires action_success labels and mask"
+                )
+            outcome_logits = outcome_head(predicted_next_states)
+            outcome_targets = batch.action_success_targets.to(
+                device=outcome_logits.device,
+                dtype=outcome_logits.dtype,
+            )
+            outcome_mask = batch.action_success_mask.to(device=outcome_logits.device)
+            if (
+                outcome_logits.shape != outcome_targets.shape
+                or outcome_mask.shape != outcome_logits.shape
+            ):
+                raise ValueError(
+                    "OutcomeHead labels must align with sequence action positions"
+                )
+            outcome_count = int(outcome_mask.sum().item())
+            if outcome_count == 0 and normalization is None:
+                raise ValueError(
+                    "OutcomeHead training requires at least one fresh action_success label"
+                )
+            if outcome_count > 0:
+                outcome_loss = F.binary_cross_entropy_with_logits(
+                    outcome_logits[outcome_mask],
+                    outcome_targets[outcome_mask],
+                )
+                outcome_correct = int(
+                    (
+                        (outcome_logits.detach()[outcome_mask] >= 0)
+                        == (outcome_targets[outcome_mask] >= 0.5)
+                    ).sum().item()
+                )
+            elif normalization is not None:
+                # OutcomeHead is a separate DDP module with
+                # find_unused_parameters=False. Keep its graph in every micro
+                # backward even when this chunk has no valid labels; the full
+                # logical batch precheck guarantees a positive denominator.
+                outcome_loss = outcome_logits.sum() * 0.0
         value_objective = action_value_loss(
             action_values,
             batch.action_indices,
@@ -665,11 +896,22 @@ class RLAlgorithm:
             ranking_margin=self.config.value_head.rank_margin,
             ranking_weight=self.config.value_head.lambda_rank,
         )
-        total = (
-            value_objective.loss
-            if wm_objective is None
-            else wm_objective.loss + value_objective.loss
-        )
+        total = action_scale * value_objective.loss
+        if wm_objective is not None:
+            total = total + action_scale * wm_objective.loss
+        if dino_mse is not None:
+            total = total + (
+                action_scale * self.config.predictor.lambda_dino * dino_mse
+            )
+        if outcome_loss is not None:
+            outcome_scale = (
+                1.0
+                if normalization is None
+                else outcome_count / normalization.outcome_labels
+            )
+            total = total + (
+                outcome_scale * self.config.outcome_head.lambda_bce * outcome_loss
+            )
 
         # 各 WM variant 明确选择 SIGReg 的统计单位；grid 与 SFT2 一致，对 slot
         # mean pooling 后再把 (B,T,D) 交给 SequenceSIGReg。
@@ -682,10 +924,10 @@ class RLAlgorithm:
         if sigreg_loss is not None:
             total = total + self.config.predictor.lambda_sigreg * sigreg_loss
 
-        policy, token_value_loss, reference_kl_loss = self._policy_replay_losses(
-            runtime,
-            batch,
-            value_objective,
+        policy, token_value_loss, reference_kl_loss = (
+            self._policy_replay_losses(runtime, batch, value_objective)
+            if include_policy
+            else (None, None, None)
         )
         if policy is not None:
             # policy["loss"] 已取 clipped surrogate 的负号；entropy 作为奖励项减去。
@@ -694,48 +936,96 @@ class RLAlgorithm:
             # 保留PPO到Qwen logits的完整梯度，避免搬运selected vocabulary logits。
             policy_loss = policy["loss"].to(device=total.device)
             policy_entropy = policy["entropy"].to(device=total.device)
-            total = total + policy_loss - self.config.actor.entropy_coeff * policy_entropy
+            policy_tokens = int(policy["advantages"].numel())
+            policy_scale = (
+                1.0
+                if normalization is None
+                else policy_tokens / normalization.policy_tokens
+            )
+            total = total + policy_scale * policy_loss
+            if self.config.actor.entropy_coeff > 0.0:
+                total = total - (
+                    policy_scale
+                    * self.config.actor.entropy_coeff
+                    * policy_entropy
+                )
             if token_value_loss is not None:
-                token_value_weight = cast(float, self.config.token_credit.value_loss_weight)
+                token_value_weight = cast(
+                    float,
+                    self.config.token_credit.value_loss_weight,
+                )
                 total = total + token_value_weight * token_value_loss.to(
                     device=total.device
                 )
             if reference_kl_loss is not None:
-                total = total + self.config.actor.reference_kl_loss_weight * (
-                    reference_kl_loss.to(device=total.device)
+                total = total + policy_scale * (
+                    self.config.actor.reference_kl_loss_weight
+                    * reference_kl_loss.to(device=total.device)
                 )
+
+        outcome_scale = (
+            0.0
+            if outcome_loss is None
+            else (
+                1.0
+                if normalization is None
+                else outcome_count / normalization.outcome_labels
+            )
+        )
+        policy_scale = (
+            0.0
+            if policy is None
+            else (
+                1.0
+                if normalization is None
+                else int(policy["advantages"].numel())
+                / normalization.policy_tokens
+            )
+        )
 
         metrics = {
             "wm_mse": (
-                float(wm_objective.state_mse.detach().item())
+                action_scale * float(wm_objective.state_mse.detach().item())
                 if wm_objective is not None
                 else 0.0
             ),
             "dino_grid_mse": (
-                float(wm_objective.dino_grid_mse.detach().item())
-                if wm_objective is not None
-                and wm_objective.dino_grid_mse is not None
+                action_scale * float(dino_mse.detach().item())
+                if dino_mse is not None
                 else 0.0
             ),
             "lambda_wm": self.config.predictor.lambda_wm,
             "lambda_dino": self.config.predictor.lambda_dino,
+            "outcome_bce": (
+                outcome_scale * float(outcome_loss.detach().item())
+                if outcome_loss is not None
+                else 0.0
+            ),
+            "lambda_outcome": self.config.outcome_head.lambda_bce,
+            "outcome_count": float(outcome_count),
+            "outcome_correct": float(outcome_correct),
             "sigreg_loss": (
                 float(sigreg_loss.detach().item()) if sigreg_loss is not None else 0.0
             ),
-            "value_loss": float(value_objective.loss.detach().item()),
-            "value_mc_mse": float(
+            "value_loss": action_scale * float(value_objective.loss.detach().item()),
+            "value_mc_mse": action_scale * float(
                 value_objective.monte_carlo_mse.detach().item()
             ),
-            "value_rank": float(value_objective.ranking.detach().item()),
+            "value_rank": action_scale
+            * float(value_objective.ranking.detach().item()),
             "total_loss": float(total.detach().item()),
-            "actor_loss": float(policy["loss"].detach().item()) if policy else 0.0,
+            "actor_loss": (
+                policy_scale * float(policy["loss"].detach().item())
+                if policy
+                else 0.0
+            ),
             "token_value_loss": (
                 float(token_value_loss.detach().item())
                 if token_value_loss is not None
                 else 0.0
             ),
             "reference_kl_loss": (
-                float(reference_kl_loss.detach().item())
+                policy_scale * float(reference_kl_loss.detach().item())
                 if reference_kl_loss is not None
                 else 0.0
             ),
@@ -743,10 +1033,18 @@ class RLAlgorithm:
         if policy is not None:
             metrics.update(
                 {
-                    "entropy": float(policy["entropy"].detach().item()),
-                    "mean_advantage": float(policy["advantages"].mean().item()),
-                    "clip_fraction": float(policy["clip_fraction"].item()),
-                    "mean_ratio": float(policy["probability_ratio"].mean().item()),
+                    "entropy": policy_scale
+                    * float(policy["entropy"].detach().item()),
+                    "mean_advantage": policy_scale
+                    * float(policy["advantages"].mean().item()),
+                    "mean_abs_advantage": policy_scale
+                    * float(
+                        policy["advantages"].abs().mean().item()
+                    ),
+                    "clip_fraction": policy_scale
+                    * float(policy["clip_fraction"].item()),
+                    "mean_ratio": policy_scale
+                    * float(policy["probability_ratio"].mean().item()),
                     "policy_tokens": float(policy["advantages"].numel()),
                 }
             )
@@ -756,11 +1054,8 @@ class RLAlgorithm:
                 "wm": (
                     wm_objective.state_mse if wm_objective is not None else None
                 ),
-                "dino": (
-                    wm_objective.dino_grid_mse
-                    if wm_objective is not None
-                    else None
-                ),
+                "dino": dino_mse,
+                "outcome": outcome_loss,
                 "sigreg": sigreg_loss,
                 "value": value_objective.loss,
                 "policy": policy["loss"] if policy else None,
@@ -769,6 +1064,114 @@ class RLAlgorithm:
             },
             metrics=metrics,
         )
+
+    def sequence_policy_step(
+        self,
+        runtime: RLModelRuntime,
+        batch: RLBatch,
+        *,
+        normalization: SequenceLossNormalization,
+    ) -> RLStepOutput:
+        """单独构造 direct PPO policy replay 图。
+
+        只允许在 full-batch critic advantage 已预计算后调用，保证拆分前后
+        使用同一组全局归一化 advantage。该 loss 随表示 loss 一起累积梯度，
+        由训练 loop 统一执行一次 optimizer step。
+        """
+
+        if runtime.policy_replay is None:
+            raise RuntimeError("sequence policy step requires policy replay")
+        if batch.policy_step_advantages is None:
+            raise ValueError(
+                "split sequence policy step requires precomputed step advantages"
+            )
+        policy, token_value_loss, reference_kl_loss = self._policy_replay_losses(
+            runtime,
+            batch,
+            None,
+        )
+        if policy is None:
+            raise RuntimeError("sequence policy step produced no PPO objective")
+        policy_tokens = int(policy["advantages"].numel())
+        policy_scale = policy_tokens / normalization.policy_tokens
+        total = policy_scale * policy["loss"]
+        if self.config.actor.entropy_coeff > 0.0:
+            total = total - (
+                policy_scale
+                * self.config.actor.entropy_coeff
+                * policy["entropy"]
+            )
+        if token_value_loss is not None:
+            total = total + (
+                cast(float, self.config.token_credit.value_loss_weight)
+                * token_value_loss
+            )
+        if reference_kl_loss is not None:
+            total = total + policy_scale * (
+                self.config.actor.reference_kl_loss_weight * reference_kl_loss
+            )
+        return RLStepOutput(
+            loss=total,
+            losses={
+                "wm": None,
+                "dino": None,
+                "outcome": None,
+                "sigreg": None,
+                "value": None,
+                "policy": policy["loss"],
+                "token_value": token_value_loss,
+                "reference_kl": reference_kl_loss,
+            },
+            metrics={
+                "total_loss": float(total.detach().item()),
+                "actor_loss": policy_scale
+                * float(policy["loss"].detach().item()),
+                "token_value_loss": (
+                    float(token_value_loss.detach().item())
+                    if token_value_loss is not None
+                    else 0.0
+                ),
+                "reference_kl_loss": (
+                    policy_scale * float(reference_kl_loss.detach().item())
+                    if reference_kl_loss is not None
+                    else 0.0
+                ),
+                "entropy": policy_scale
+                * float(policy["entropy"].detach().item()),
+                "mean_advantage": policy_scale
+                * float(policy["advantages"].mean().item()),
+                "mean_abs_advantage": policy_scale
+                * float(policy["advantages"].abs().mean().item()),
+                "clip_fraction": policy_scale
+                * float(policy["clip_fraction"].item()),
+                "mean_ratio": policy_scale
+                * float(policy["probability_ratio"].mean().item()),
+                "policy_tokens": float(policy_tokens),
+            },
+        )
+
+    @torch.no_grad()
+    def sequence_old_action_values(
+        self,
+        runtime: RLModelRuntime,
+        batch: RLBatch,
+    ) -> torch.Tensor:
+        """Compute the frozen pre-update critic baseline for advantage whitening."""
+
+        hidden_states = self._state_hidden_sequence(runtime, batch)
+        downstream_hidden = (
+            hidden_states
+            if runtime.representation_to_backbone
+            else hidden_states.detach()
+        )
+        state_sequence = runtime.agent.wm.project_state_sequence(downstream_hidden)
+        action_values = runtime.agent.wm.predict_action_values(
+            state_sequence[:, :-1]
+        )
+        return action_values.gather(
+            -1,
+            batch.action_indices.to(device=action_values.device).unsqueeze(-1),
+        ).squeeze(-1).detach()
 
     def _state_hidden_sequence(
         self,
@@ -793,13 +1196,14 @@ class RLAlgorithm:
             batch.state_prompts,
             batch_size=len(batch.windows),
             state_steps=state_steps,
+            retain_backbone_graph=self.config.predictor.lambda_dino > 0.0,
         )
 
     def _policy_replay_losses(
         self,
         runtime: RLModelRuntime,
         batch: RLBatch,
-        value_objective: ActionValueLoss,
+        value_objective: ActionValueLoss | None,
     ) -> tuple[
         dict[str, torch.Tensor] | None,
         torch.Tensor | None,
@@ -837,16 +1241,28 @@ class RLAlgorithm:
                 ),
             )
         else:
-            step_advantages = normalized_monte_carlo_advantages(
-                return_targets=batch.return_targets.flatten().to(
-                    device=value_objective.selected_action_values.device,
-                    dtype=value_objective.selected_action_values.dtype,
-                ),
-                predicted_values=value_objective.selected_action_values.flatten(),
-            ).to(
+            if batch.policy_step_advantages is None:
+                if value_objective is None:
+                    raise ValueError(
+                        "policy replay requires critic values or precomputed advantages"
+                    )
+                step_advantages = normalized_monte_carlo_advantages(
+                    return_targets=batch.return_targets.flatten().to(
+                        device=value_objective.selected_action_values.device,
+                        dtype=value_objective.selected_action_values.dtype,
+                    ),
+                    predicted_values=value_objective.selected_action_values.flatten(),
+                )
+            else:
+                step_advantages = batch.policy_step_advantages.flatten()
+            step_advantages = step_advantages.to(
                 device=replay_output.selected_log_probs.device,
                 dtype=replay_output.selected_log_probs.dtype,
             )
+            if step_advantages.numel() != batch.return_targets.numel():
+                raise ValueError(
+                    "policy step advantages must align with sequence action positions"
+                )
             advantages = expand_step_advantages(
                 step_advantages,
                 replay_inputs,
@@ -927,13 +1343,15 @@ class RLAlgorithm:
 
 
 __all__ = [
-    "PLANNER_TRAINING_OBJECTIVE",
     "PLANNER_POLICY_TRAINING_OBJECTIVE",
+    "PLANNER_TRAINING_OBJECTIVE",
     "PlannerOldPolicyStatistics",
     "RLAlgorithm",
     "RLBatch",
     "RLStepOutput",
+    "SequenceLossNormalization",
     "build_rl_batch",
     "low_variance_kl",
     "normalized_monte_carlo_advantages",
+    "slice_rl_batch",
 ]

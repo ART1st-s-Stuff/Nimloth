@@ -29,7 +29,7 @@ class FakeTokenizer:
         for ch in text:
             offsets.append((pos, pos + 1))
             pos += 1
-        return {"offset_mapping": offsets}
+        return {"offset_mapping": offsets, "input_ids": [ord(ch) for ch in text]}
 
 
 class FakeProcessor:

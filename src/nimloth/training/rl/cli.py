@@ -13,9 +13,83 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any
 
-from nimloth.config.rl import load_rl_config, merge_rl_config_overrides
+from nimloth.config.rl import RLConfig, load_rl_config, merge_rl_config_overrides
+
+
+def _warm_start_components(
+    args: argparse.Namespace,
+    *,
+    include_outcome: bool,
+) -> list[tuple[str, Path | None]]:
+    components = [
+        ("--wm-checkpoint", args.wm_checkpoint),
+        ("--state-proj-checkpoint", args.state_proj_checkpoint),
+        ("--value-head-checkpoint", args.value_head_checkpoint),
+    ]
+    if include_outcome:
+        components.append(
+            ("--outcome-head-checkpoint", args.outcome_head_checkpoint)
+        )
+    return components
+
+
+def _validate_checkpoint_family(
+    args: argparse.Namespace,
+    *,
+    components: list[tuple[str, Path | None]],
+    context: str,
+) -> None:
+    """Require Qwen and Stage3 components from one immutable checkpoint root."""
+
+    missing = [name for name, value in components if value is None]
+    if missing:
+        raise ValueError(f"{context} requires " + ", ".join(missing))
+    roots = {
+        Path(path).resolve().parent
+        for _name, path in components
+        if path is not None
+    }
+    # Component paths are respectively <root>/wm_predictor,
+    # <root>/state_proj.pt, <root>/value_head and <root>/outcome_head.pt.
+    if len(roots) != 1:
+        raise ValueError(f"{context} components must share one checkpoint root")
+    component_root = next(iter(roots))
+    if Path(args.model).resolve() != component_root:
+        raise ValueError(
+            f"{context} Qwen and components must share one checkpoint root"
+        )
+
+
+def _validate_warm_start_checkpoints(
+    args: argparse.Namespace,
+    config: RLConfig,
+) -> None:
+    """Validate component provenance before constructing rollout or training state."""
+
+    outcome_enabled = config.outcome_head.enabled
+    planning_enabled = config.agent.planning.enabled
+
+    # A fresh OutcomeHead run must start from the complete selected Stage3
+    # checkpoint even when direct Qwen PPO disables the world-model planner.
+    # Resume reconstructs the complete family from its recovery checkpoint and
+    # intentionally retains the established resume validation path.
+    if outcome_enabled and not args.resume:
+        _validate_checkpoint_family(
+            args,
+            components=_warm_start_components(args, include_outcome=True),
+            context="fresh OutcomeHead RL",
+        )
+
+    if planning_enabled and args.fresh_rollout_manifest is not None:
+        _validate_checkpoint_family(
+            args,
+            components=_warm_start_components(
+                args,
+                include_outcome=outcome_enabled,
+            ),
+            context="planner fresh rollout",
+        )
 
 
 def build_rl_arg_parser() -> argparse.ArgumentParser:
@@ -57,6 +131,12 @@ def build_rl_arg_parser() -> argparse.ArgumentParser:
                     help="Warm-start StateProjector checkpoint (.pt file)")
     ap.add_argument("--value-head-checkpoint", type=Path, default=None,
                     help="Warm-start ValueHead checkpoint dir")
+    ap.add_argument(
+        "--outcome-head-checkpoint",
+        type=Path,
+        default=None,
+        help="Warm-start Stage3 ActionOutcomeHead checkpoint file",
+    )
     ap.add_argument(
         "--planner-policy-head-checkpoint",
         type=Path,
@@ -157,20 +237,8 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError(
             "--reference-model requires positive actor.reference_kl_loss_weight"
         )
+    _validate_warm_start_checkpoints(args, config)
     if config.agent.planning.enabled and args.fresh_rollout_manifest is not None:
-        missing = [
-            name
-            for name, value in (
-                ("--wm-checkpoint", args.wm_checkpoint),
-                ("--state-proj-checkpoint", args.state_proj_checkpoint),
-                ("--value-head-checkpoint", args.value_head_checkpoint),
-            )
-            if value is None
-        ]
-        if missing:
-            raise ValueError(
-                "planner fresh rollout requires " + ", ".join(missing)
-            )
         if (
             config.planner_policy.enabled
             and args.planner_policy_head_checkpoint is None
@@ -267,6 +335,11 @@ def main(argv: list[str] | None = None) -> int:
                             if args.planner_policy_head_checkpoint is not None
                             else {}
                         ),
+                        **(
+                            {"outcome_head": args.outcome_head_checkpoint}
+                            if args.outcome_head_checkpoint is not None
+                            else {}
+                        ),
                     }
                     if config.agent.planning.enabled
                     else None
@@ -312,5 +385,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    import sys
     raise SystemExit(main())

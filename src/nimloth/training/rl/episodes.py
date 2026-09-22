@@ -92,6 +92,19 @@ class ExecutedTransition:
     def next_image_path(self) -> str:
         return self.trajectory.image_paths[self.step_index + 1]
 
+    @property
+    def current_image_path(self) -> str:
+        """Return the real observation encoded by ``state_prompt``."""
+
+        return self.trajectory.image_paths[self.step_index]
+
+    @property
+    def action_success(self) -> bool | None:
+        """Return the executed-action outcome, preserving a missing label."""
+
+        outcomes = self.trajectory.action_successes
+        return None if outcomes is None else bool(outcomes[self.step_index])
+
 
 @dataclass(frozen=True)
 class EpisodeTrainingBatch:

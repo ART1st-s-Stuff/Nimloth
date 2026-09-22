@@ -16,8 +16,14 @@ set -euo pipefail
 
 REPO=${REPO:-/project/peilab/atst/nimloth}
 SCRIPTDIR=${REPO}/experiments/training/sft1
+# Stage 1 has no query settings; reject caller overrides before legacy shared defaults.
+if [[ -n ${LATENT_TOKEN_COUNT+x} || -n ${LATENT_QUERY_MODE+x} || -n ${NIMLOTH_LATENT_TOKEN_COUNT+x} ]]; then
+  echo "ERROR SFT1 format training does not accept latent/query settings" >&2
+  exit 2
+fi
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"
+unset LATENT_TOKEN_COUNT LATENT_QUERY_MODE NIMLOTH_LATENT_TOKEN_COUNT
 
 # SFT1_TUNE_MODE: lora | embedlr
 SFT1_TUNE_MODE=${SFT1_TUNE_MODE:-lora}
@@ -30,8 +36,6 @@ WANDB_RUN_NAME=${WANDB_RUN_NAME:-sft1-${SFT1_TUNE_MODE}-8gpu}
 EPOCHS=${EPOCHS:-20}
 GRAD_ACCUM=${GRAD_ACCUM:-8}
 MAX_LENGTH=${MAX_LENGTH:-20000}
-LATENT_TOKEN_COUNT=${LATENT_TOKEN_COUNT:-1}
-LATENT_QUERY_MODE=${LATENT_QUERY_MODE:-}
 TRAIN_JSONL=${TRAIN_JSONL:-${RECORDS_ROOT}/train_all.jsonl}
 VAL_JSONL=${VAL_JSONL:-${RECORDS_ROOT}/val_all.jsonl}
 
@@ -44,8 +48,6 @@ mkdir -p "${TRAIN_OUT}" "${REPO}/outputs/experiments/training/sft1/slurm"
   echo "Train: ${TRAIN_JSONL}"
   echo "Val: ${VAL_JSONL}"
   echo "Output: ${TRAIN_OUT}"
-  echo "Latent token count: ${LATENT_TOKEN_COUNT}"
-  echo "Latent query mode override: ${LATENT_QUERY_MODE:-<config/default>}"
   echo "W&B project: ${WANDB_PROJECT:-nimloth-sft1}"
   echo "W&B run name: ${WANDB_RUN_NAME}"
 } | tee -a "${LOG}"
@@ -68,7 +70,6 @@ TRAIN_ARGS+=(
   --batch-size 1
   --grad-accum "${GRAD_ACCUM}"
   --max-length "${MAX_LENGTH}"
-  --latent-token-count "${LATENT_TOKEN_COUNT}"
   --max-pixels 602112
   --format-eval-samples 32
   --cache-pixel-dtype "${CACHE_PIXEL_DTYPE:-bfloat16}"
@@ -79,9 +80,6 @@ TRAIN_ARGS+=(
   --wandb-run-name "${WANDB_RUN_NAME}"
   --seed 42
 )
-if [ -n "${LATENT_QUERY_MODE}" ]; then
-  TRAIN_ARGS+=(--latent-query-mode "${LATENT_QUERY_MODE}")
-fi
 if [ "${REQUIRE_PREBUILT_CACHE:-0}" = "1" ]; then
   TRAIN_ARGS+=(--require-prebuilt-cache)
 fi

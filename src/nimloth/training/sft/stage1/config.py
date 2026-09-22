@@ -12,27 +12,41 @@ _SFT1_YAML_TO_ARG: dict[tuple[str, str], str] = {
     ("query_alignment", "projector_hidden_dim"): "projector_hidden_dim",
     ("query_alignment", "weight_lm"): "weight_lm",
     ("query_alignment", "weight_dino"): "weight_dino",
+    ("query_alignment", "include_global_token"): "include_global_token",
+    ("query_alignment", "evaluation_only"): "evaluation_only",
     ("query_alignment", "dino_cache_root"): "dino_cache_root",
     ("data", "train_jsonl"): "train_jsonl",
     ("data", "val_jsonl"): "val_jsonl",
     ("latent", "token_count"): "latent_token_count",
     ("latent", "query_mode"): "latent_query_mode",
     ("latent", "mask_query_labels"): "mask_latent_query_labels",
+    ("tuning", "mode"): "tuning_mode",
     ("tuning", "lora"): "lora",
     ("tuning", "lora_r"): "lora_r",
     ("tuning", "lora_alpha"): "lora_alpha",
+    ("train", "distributed_strategy"): "distributed_strategy",
     ("train", "epochs"): "epochs",
     ("train", "batch_size"): "batch_size",
     ("train", "grad_accum"): "grad_accum",
+    ("train", "action_token_loss_weight"): "action_token_loss_weight",
     ("train", "lr"): "lr",
     ("train", "embedding_lr"): "embedding_lr",
+    ("train", "projector_lr"): "projector_lr",
+    ("train", "query_token_lr"): "query_token_lr",
+    ("train", "protocol_token_lr"): "protocol_token_lr",
+    ("train", "embedding_master_dtype"): "embedding_master_dtype",
     ("train", "max_length"): "max_length",
     ("train", "max_pixels"): "max_pixels",
+    ("train", "keep_epoch_checkpoints"): "keep_epoch_checkpoints",
 }
 
 
-def sft1_yaml_defaults(path: Path) -> dict[str, Any]:
+def sft1_yaml_defaults(path: Path, *, stage: str = "format") -> dict[str, Any]:
     cfg = load_yaml_config(path)
+    if stage == "format" and any(key in cfg for key in ("latent", "query_alignment")):
+        raise ValueError(
+            "stage1 format supervision does not accept latent/query configuration"
+        )
     defaults: dict[str, Any] = {}
     for section, values in cfg.items():
         if not isinstance(values, dict):

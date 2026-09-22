@@ -22,6 +22,7 @@ class EnvironmentStep:
     done: bool
     success: bool
     info: dict[str, Any] = field(default_factory=dict)
+    action_success: bool | None = None
 
 
 class EnvironmentSession(Protocol):

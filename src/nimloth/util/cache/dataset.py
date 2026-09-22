@@ -101,6 +101,10 @@ class CompactCachedTransitionCollator:
         out["pixel_values"] = torch.cat(pixel_rows, dim=0).contiguous()
         return out
 
+    def materialize_encoding(self, compact: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+        """Load one complete cached prefix, preserving its original image order."""
+        return self._materialize_encoding(compact)
+
     def __call__(self, batch: list[dict[str, Any]]) -> dict[str, Any]:
         materialized: dict[int, dict[str, torch.Tensor]] = {}
         current_rows: list[dict[str, torch.Tensor]] = []
@@ -118,6 +122,7 @@ class CompactCachedTransitionCollator:
                     "step_index": entry.get("step_index", 0),
                     "action_index": entry["action_index"],
                     "action_value_target": entry["action_value_target"],
+                    "action_success": entry.get("action_success"),
                     "success": entry["success"],
                     "messages": entry.get("messages"),
                     "next_messages": entry.get("next_messages"),
@@ -128,6 +133,7 @@ class CompactCachedTransitionCollator:
                     "needs_next_state": entry.get("needs_next_state"),
                     "loss_weight": entry.get("loss_weight", 1.0),
                     "next_image_path": entry.get("next_image_path"),
+                    "current_image_path": entry.get("current_image_path"),
                 }
             )
 
@@ -244,6 +250,10 @@ class CachedTransitionDataset(Dataset):
                 f"compact cache/sample mismatch at {index}: {entry.get('id')!r} != "
                 f"{transition_sample_id(sample)!r}"
             )
+        if entry.get("action_success") != sample.action_success:
+            raise ValueError("compact cache action outcome does not match source transition")
+        if float(entry["action_value_target"]) != sample.action_value_target:
+            raise ValueError("compact cache action value does not match source transition")
         entry["cache_index"] = index
         if (
             annotated_index is None
@@ -278,6 +288,7 @@ class CachedTransitionDataset(Dataset):
         # Image paths are transition metadata used by independent supervision
         # sidecars; preprocessed Qwen shards intentionally do not own them.
         entry["next_image_path"] = sample.next_image_path
+        entry["current_image_path"] = sample.current_image_path
         if (
             sample.next_prefix_messages is not None
             and sample.next_prefix_image_paths is not None

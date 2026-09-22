@@ -4,15 +4,88 @@
 
 ## 模块职责与数据流
 
-- `data.py`：读取记录中的对话和截图，构造仅监督回答的标签，屏蔽提示词、填充和注入的 query 位置；使用右侧填充保留文本区间的位置关系，并负责样本编码缓存。
+- `data.py`：读取记录中的对话和截图，构造仅监督回答的标签，屏蔽提示词和填充，stage1移除所有角色文本中的历史 latent 标记（原始 JSONL/截图不变），保留真实 CoT 和动作；使用右侧填充保留文本区间的位置关系，并负责样本编码缓存。
 - `config.py`：读取 YAML 默认配置。`cli.py`：定义命令行选项，在加载模型前校验训练阶段和参数。
 - `trainer.py`：加载 Qwen、设置可训练参数、构建优化器，驱动梯度累积、离线验证和 epoch checkpoint 保存。SFT1直接使用 teacher forcing 的回答 CE，不计算 DINO 或 WM 损失。SFT2显式选择 query 阶段后复用同一训练生命周期。
+- `loss.py`：`--action-token-loss-weight`（YAML `train.action_token_loss_weight`）为动作起止及八个动作 token 加权，其他有效回答 token（含 EOS）权重 1；按每微批次权重和归一化，保持梯度累积方式。默认 1 保留原 loss 路径；stage2 拒绝大于 1。验证与收敛仍使用未加权 LM loss，缓存不因权重改变而重建；checkpoint 身份包含权重，改变权重不可原样恢复。
+- `convergence.py`：验证 loss 收敛状态和可恢复的停止策略。
 - `distributed.py`：建立和清理分布式进程组，提供主进程判断与同步；checkpoint 模块不依赖训练循环。
 - `checkpoint.py`：保存训练状态、查找恢复位置和校验阶段身份，独立于训练循环。
 - `checkpoint_export.py`：负责 LoRA 合并与导出校验，包括单独训练的 embedding 和输出 head；历史合并脚本调用此实现。
 
 ## 保存与恢复
 
-Checkpoint 保存优化器、调度器、epoch/step 和 `training_stage=format`。明确识别出的旧格式训练 checkpoint 仍可恢复；Query/WM checkpoint 不能静默按格式阶段恢复。
+Stage1 不接受 K、query mode、query mask 的 CLI、环境变量或 YAML 配置。共享内部接口用 None 标记无 query 的阶段；stage2 仍要求正数 K。
 
-恢复从已保存的 epoch 边界继续，现有训练循环不保存随机数状态，因此不保证逐位重放。离线 loss/格式验证不等于环境 rollout；环境评估见 [`../evaluation/`](../evaluation/README.md)。
+Cache 使用 `nimloth_early_stage_cache_v7`，记录 `format_answer_ce_v2` 与 `remove_latent_markers_all_roles` 投影身份；旧缓存或无身份 tensor 不能静默复用。格式指标检查模型生成的 CoT 与动作块，不要求 latent 块。
+
+Checkpoint 保存 `training_stage=format`、`format_objective=format_answer_ce_v2`，query 参数为空。旧 query 训练 checkpoint 不可恢复为新格式阶段。完整优化步 checkpoint 以 COMMITTED 标记发布，保存优化器、调度器、各 rank RNG 和数据位置；恢复校验完整身份。离线 loss/格式验证不等于环境 rollout；当前共享 direct evaluator 仍要求 query 协议，尚不能用它验收此 format-only 产物。
+
+## 训练至收敛
+
+格式阶段可显式使用 `--until-converged --convergence-min-epochs N --convergence-patience-epochs P --convergence-min-relative-improvement R`，不能同时指定固定 `--epochs`。每轮完整验证后判断回答LM loss是否相对上一轮改善达到阈值；连续P轮未达到阈值且达到最少轮数后停止。绝对最低验证loss另外记录用于best checkpoint。
+
+此模式按首轮预计优化步数和warmup_ratio确定预热步数，之后保持设定学习率，不设置虚构的总epoch数供cosine调度。Checkpoint保存收敛计数和每rank随机状态，续训恢复原有判断历史。运行时限或外部暂停不代表收敛；只有实际满足条件且final保存后才产生CONVERGED.json。
+
+Stage1 and query stage2 optionally accept `--distributed-strategy fsdp` for multi-rank CUDA
+FULL_SHARD training; the default remains DDP. Query checkpoints split the gathered
+language-model state and projector state into the same portable artifacts as DDP,
+without reading live sharded parameters from rank zero.
+FSDP preserves original parameters and separates linear/embedding leaves to keep
+PEFT FP32 trainable tensors distinct from BF16 frozen weights. Each microbatch
+reduces sharded gradients; accumulation does not retain full replicated gradients.
+Global gradient clipping includes every rank and supports mixed gradient dtypes.
+
+Every rank participates in full CPU model/optimizer checkpoint collection, while
+rank zero publishes ordinary PEFT artifacts plus complete training state. Resume
+loads adapters before wrapping and converts the full named optimizer state into
+local shards after wrapping. FSDP is part of the resume identity. Epoch, best,
+final and optimizer-boundary saves use the same collective path. Format generation
+runs the same prompts on all ranks with synchronized stopping; validation LM loss
+and the convergence rule are unchanged.
+
+The explicit GPU integration probe is
+`torchrun --nproc_per_node=8 tests/integration/sft1_fsdp_roundtrip.py --output-dir UNIQUE_PATH`.
+It compares uninterrupted and restored next updates exactly, including optimizer
+state, and checks collective generation and epoch export. CPU tests alone do not
+establish FSDP runtime, memory capacity, or model quality.
+
+For bounded diagnostics, `--max-optimizer-steps N` pauses after absolute optimizer
+step N, using the existing complete resume checkpoint path and exit code 75.
+It does not complete an epoch or declare convergence, and does not change the
+learning-rate schedule or objective identity. Resuming at or above N rejects
+before restoring the optimizer; remove or raise the cap to continue training.
+
+Stage 1 LoRA+FSDP 支持 `--embedding-master-dtype float32`，保持完整输入
+embedding 和独立 lm_head 的 FP32 master。Stage 2 固定使用更窄的
+`selected_rows_v1` 范围：当前 K 个 query token 行以 `--query-token-lr`
+（默认 `5e-5`）训练，八个 action token、action start/end 和 EOS 行以
+`--protocol-token-lr`（默认 `1e-5`）训练，其余词表行不进入优化器。
+两张表的选中行是 FP32 master，前向为 BF16；LoRA 和 projector 默认均为
+`5e-5`。Checkpoint identity 保存 schema、精确 token IDs、两档学习率和
+冻结范围；普通 HF/PEFT 导出会把选中行写回标准 dense 权重，不包含私有行参数键。
+
+训练默认每 10 个 optimizer step 保存原子 `resume_step_*`。完整 epoch checkpoint
+提交并经所有 rank 同步后，删除已被该 epoch 覆盖的 step checkpoint；epoch checkpoint
+全部保留。诊断运行可显式传入 `--keep-step-checkpoints` 保留中间 step checkpoint。
+磁盘受限的收敛训练可显式传入 `--keep-epoch-checkpoints N`：新的 `epoch_*` 完成
+`COMMITTED` 校验且可能更新的 `best` 保存后，才保留同一训练身份中最新的 N 个完整
+epoch；独立 `best` 始终保留，且不再额外写一份重复的 `final` 权重。默认行为不变；
+不完整、损坏、软链接或不同训练身份的目录不会被该策略删除。
+
+Stage2 `--continue-from-epoch PATH` explicitly starts a new output directory from
+an exact COMMITTED epoch boundary. It is mutually exclusive with `--resume`.
+Model, optimizer, per-rank RNG, global step and next epoch are retained; only
+fixed epoch limit / convergence policy and warmup schedule may change. Learning
+rates are reset to the explicitly configured optimizer group rates before a new
+schedule is created. Fixed `--epochs` is the total epoch limit, so continuation
+from epoch 2 with `--epochs 4` schedules two additional epochs. Convergence mode
+replays the parent's complete validation history. `continuation.json` records
+parent training-state SHA256 and new schedule identity; ordinary resume remains
+strict and restores the existing scheduler.
+
+Stage2 may explicitly pass `--continue-with-projector-lr-change` together with
+`--continue-from-epoch` and `--until-converged`. This permits only
+`projector_lr` to differ from the committed identity. Optimizer moments, RNG,
+data position, objective, and validation convergence history remain intact;
+the continuation schedule resets every optimizer group to its configured LR.

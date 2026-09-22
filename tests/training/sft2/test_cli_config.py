@@ -4,10 +4,9 @@ from pathlib import Path
 
 import pytest
 
-from nimloth.training.sft.stage3.cli import parse_sft2_args
-from nimloth.config.sft2 import flatten_sft2_yaml_config
 from nimloth.config.io import load_yaml_config
-
+from nimloth.config.sft2 import flatten_sft2_yaml_config
+from nimloth.training.sft.stage3.cli import parse_sft2_args
 
 ROOT = Path(__file__).resolve().parents[3]
 K8_CONFIG = ROOT / "configs" / "training" / "sft2" / "latent_wm_value_k8.yaml"
@@ -17,6 +16,13 @@ DINO_GRID_CONFIG = (
 )
 DINO_GRID_H1_T4_CONFIG = (
     ROOT / "configs" / "training" / "sft2" / "dino_grid_k16_h1_t4.yaml"
+)
+CLS_FIXED2D_CONFIG = (
+    ROOT
+    / "configs"
+    / "training"
+    / "sft2"
+    / "action_outcome_k64_cls_fixed2d_h1_t4_eval.yaml"
 )
 REQUIRED = [
     "--model",
@@ -30,8 +36,81 @@ REQUIRED = [
 ]
 
 
+def test_backbone_gradient_boundary_is_explicit_opt_in():
+    args = parse_sft2_args([*REQUIRED, "--history-size", "1"])
+    assert args.wm_value_backbone_grad is True
+    args = parse_sft2_args([*REQUIRED, "--history-size", "1", "--no-wm-value-backbone-grad"])
+    assert args.wm_value_backbone_grad is False
+    assert args.preprocess_cache_reuse_image_root is None
+    assert args.require_prebuilt_cache is False
+
+
+def test_stage3_image_cache_reuse_cli_is_explicit_and_nonoverlapping(tmp_path) -> None:
+    source = tmp_path / "source"
+    destination = tmp_path / "destination"
+    processor_source = tmp_path / "epoch16"
+    processor_source.mkdir()
+    for split in ("train", "val"):
+        split_dir = source / split
+        split_dir.mkdir(parents=True)
+        (split_dir / "manifest.json").write_text("{}", encoding="utf-8")
+    common = [
+        *REQUIRED,
+        "--preprocess-cache-dir",
+        str(destination),
+        "--preprocess-cache-reuse-image-root",
+        str(source),
+        "--preprocess-cache-reuse-processor-source",
+        str(processor_source),
+        "--no-require-prebuilt-cache",
+    ]
+    args = parse_sft2_args(common)
+    assert args.preprocess_cache_reuse_image_root == source
+    assert args.preprocess_cache_reuse_processor_source == processor_source
+    assert args.preprocess_cache_processor_source is None
+
+    with pytest.raises(SystemExit):
+        parse_sft2_args([*common, "--require-prebuilt-cache"])
+    with pytest.raises(SystemExit):
+        parse_sft2_args(
+            [
+                *REQUIRED,
+                "--preprocess-cache-dir",
+                str(source / "nested"),
+                "--preprocess-cache-reuse-image-root",
+                str(source),
+                "--preprocess-cache-reuse-processor-source",
+                str(processor_source),
+                "--no-require-prebuilt-cache",
+            ]
+        )
+
+
+def test_legacy_stage3_image_cache_reuse_requires_original_processor(tmp_path) -> None:
+    source = tmp_path / "source"
+    for split in ("train", "val"):
+        split_dir = source / split
+        split_dir.mkdir(parents=True)
+        (split_dir / "manifest.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        parse_sft2_args(
+            [
+                *REQUIRED,
+                "--preprocess-cache-dir",
+                str(tmp_path / "destination"),
+                "--preprocess-cache-reuse-image-root",
+                str(source),
+                "--no-require-prebuilt-cache",
+            ]
+        )
+    assert flatten_sft2_yaml_config({"loss": {"wm_value_backbone_grad": False}}) == {
+        "wm_value_backbone_grad": False}
+    with pytest.raises(ValueError, match="must be a boolean"):
+        flatten_sft2_yaml_config({"loss": {"wm_value_backbone_grad": "false"}})
+
+
 def test_yaml_defaults_apply_after_argument_registration() -> None:
-    args = parse_sft2_args(["--config", str(K8_CONFIG), *REQUIRED])
+    args = parse_sft2_args(["--config", str(K8_CONFIG), *REQUIRED, "--history-size", "1"])
 
     assert args.config == K8_CONFIG
     assert args.latent_token_count == 8
@@ -46,7 +125,7 @@ def test_yaml_defaults_apply_after_argument_registration() -> None:
     assert args.grad_accum == 4
     assert args.max_length == 12000
     assert args.max_pixels == 100352
-    assert args.history_size == 4
+    assert args.history_size == 1
     assert not hasattr(args, "backbone_rows_per_forward")
     assert not hasattr(args, "offload_backbone_chunk_activations")
     assert not hasattr(args, "preprocess_cache_format")
@@ -56,7 +135,7 @@ def test_yaml_defaults_apply_after_argument_registration() -> None:
 
 
 def test_k1_control_uses_b1_ga8_for_global_sigreg_batch() -> None:
-    args = parse_sft2_args(["--config", str(K1_CONTROL_CONFIG), *REQUIRED])
+    args = parse_sft2_args(["--config", str(K1_CONTROL_CONFIG), *REQUIRED, "--history-size", "1"])
 
     assert args.latent_token_count == 1
     assert args.latent_query_mode == "inject"
@@ -65,7 +144,7 @@ def test_k1_control_uses_b1_ga8_for_global_sigreg_batch() -> None:
     assert args.batch_size == 1
     assert args.grad_accum == 8
     assert args.max_pixels == 100352
-    assert args.history_size == 4
+    assert args.history_size == 1
     assert args.batch_mode == "trajectory_online_cache"
     assert not hasattr(args, "backbone_rows_per_forward")
     assert not hasattr(args, "offload_backbone_chunk_activations")
@@ -78,6 +157,8 @@ def test_cli_values_override_yaml_defaults() -> None:
             "--config",
             str(K8_CONFIG),
             *REQUIRED,
+            "--history-size",
+            "1",
             "--latent-token-count",
             "3",
             "--latent-query-mode",
@@ -97,7 +178,7 @@ def test_cli_values_override_yaml_defaults() -> None:
 
 
 def test_dino_grid_config_has_no_retired_wm_ema_or_decoder_options() -> None:
-    args = parse_sft2_args(["--config", str(DINO_GRID_CONFIG), *REQUIRED])
+    args = parse_sft2_args(["--config", str(DINO_GRID_CONFIG), *REQUIRED, "--history-size", "1"])
 
     assert args.objective == "dino_grid"
     assert args.latent_token_count == 16
@@ -126,6 +207,31 @@ def test_dino_grid_h1_t4_config_uses_real_value_and_recorded_rollout_contract() 
         "val_terminal_cot_migrated.jsonl"
     )
     assert "/52_terminalcot_" in str(flattened["preprocess_cache_dir"])
+
+
+def test_cls_fixed2d_evaluation_config_resolves_explicit_k65_contract() -> None:
+    args = parse_sft2_args(["--config", str(CLS_FIXED2D_CONFIG), *REQUIRED])
+    assert args.objective == "dino_grid"
+    assert args.epochs == 5
+    assert args.schedule_total_steps == 46
+    assert args.lr_qwen_start == pytest.approx(2e-7)
+    assert args.lr_qwen_peak == pytest.approx(2e-7)
+    assert args.state_proj_lr == pytest.approx(8e-6)
+    assert args.wm_predictor_lr == pytest.approx(3e-4)
+    assert args.value_head_lr == pytest.approx(1e-4)
+    assert args.outcome_head_lr == pytest.approx(1e-4)
+    assert args.query_lr == pytest.approx(1e-5)
+    assert args.protocol_lr == pytest.approx(2e-6)
+    assert args.max_length == 16384
+    assert args.grid_size == 8
+    assert args.latent_token_count == 65
+    assert args.grid_global_tokens == 1
+    assert args.grid_position_encoding == "fixed_2d_sincos_v1"
+    assert args.grid_predictor_kind == "residual"
+    assert args.lambda_dino == pytest.approx(2.0)
+    assert args.lambda_outcome == pytest.approx(1.0)
+    assert args.lambda_sigreg == pytest.approx(0.0)
+    assert args.wm_value_backbone_grad is False
 
 
 def test_sft2_config_rejects_unknown_fields() -> None:
@@ -158,3 +264,10 @@ def test_sft2_config_rejects_retired_grid_ema_and_decoder_fields() -> None:
         match="unknown SFT2 config field: grid.ema_decay",
     ):
         flatten_sft2_yaml_config({"grid": {"ema_decay": 0.99}})
+
+
+@pytest.mark.parametrize("config", [K8_CONFIG, K1_CONTROL_CONFIG, DINO_GRID_CONFIG])
+def test_historical_h4_configs_require_explicit_native_override(config):
+    with pytest.raises(SystemExit) as error:
+        parse_sft2_args(["--config", str(config), *REQUIRED])
+    assert error.value.code == 2

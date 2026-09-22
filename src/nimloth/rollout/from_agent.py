@@ -29,11 +29,10 @@ def trajectory_from_agent_episode(
         episode.action_space_id,
         episode.action_space_version,
     )
-    template = create_prompt_template(
+    create_prompt_template(
         episode.prompt_template,
         action_count=len(action_space),
-    )
-    completed_prompt = template.build_supervised_prompt(episode.transcript)
+    ).build_supervised_prompt(episode.transcript)
     for action in episode.actions:
         if action.policy_prompt.template != episode.prompt_template:
             raise ValueError("Agent episode mixes prompt template specifications")
@@ -172,4 +171,9 @@ def trajectory_from_agent_episode(
         sampling_top_p=sampling_top_p,
         action_space_id=episode.action_space_id,
         action_space_version=episode.action_space_version,
+        action_successes=(
+            list(episode.action_successes)
+            if episode.action_successes is not None
+            else None
+        ),
     )

@@ -16,8 +16,14 @@ set -euo pipefail
 REPO=${REPO:-/project/peilab/atst/nimloth}
 PYTHON_ENV=${PYTHON_ENV:-/project/peilab/atst/nimloth/.venv-vagen-main}
 SCRIPTDIR=${REPO}/experiments/training/sft1
+# Stage 1 has no query settings; reject caller overrides before legacy shared defaults.
+if [[ -n ${LATENT_TOKEN_COUNT+x} || -n ${LATENT_QUERY_MODE+x} || -n ${NIMLOTH_LATENT_TOKEN_COUNT+x} ]]; then
+  echo "ERROR SFT1 format training does not accept latent/query settings" >&2
+  exit 2
+fi
 # shellcheck disable=SC1091
 source "${SCRIPTDIR}/common_env.sh"
+unset LATENT_TOKEN_COUNT LATENT_QUERY_MODE NIMLOTH_LATENT_TOKEN_COUNT
 
 RUN_DATE=${RUN_DATE:-$(date +%Y-%m-%d)}
 EXPERIMENT_NAME=${EXPERIMENT_NAME:-sft1_train_lora}
@@ -25,8 +31,6 @@ TRAIN_OUT=${TRAIN_OUT:-/project/peilab/atst/nimloth/outputs/experiments/training
 TRAIN_JSONL=${TRAIN_JSONL:-${RECORDS_ROOT}/train_success.jsonl}
 VAL_JSONL=${VAL_JSONL:-${RECORDS_ROOT}/val_all.jsonl}
 CACHE_LOG=${TRAIN_OUT}/sft1_cache_build.log
-LATENT_TOKEN_COUNT=${LATENT_TOKEN_COUNT:-8}
-LATENT_QUERY_MODE=${LATENT_QUERY_MODE:-}
 
 mkdir -p "${TRAIN_OUT}" "${REPO}/outputs/experiments/training/sft1/slurm"
 {
@@ -37,7 +41,6 @@ mkdir -p "${TRAIN_OUT}" "${REPO}/outputs/experiments/training/sft1/slurm"
   echo "Train: ${TRAIN_JSONL}"
   echo "Val: ${VAL_JSONL}"
   echo "Output/cache root: ${TRAIN_OUT}"
-  echo "Latent query mode override: ${LATENT_QUERY_MODE:-<config/default>}"
   echo "Pixel dtype: ${CACHE_PIXEL_DTYPE:-bfloat16}"
 } | tee -a "${CACHE_LOG}"
 
@@ -54,13 +57,9 @@ CACHE_ARGS+=(
   --no-wandb
   --max-length "${MAX_LENGTH:-20000}"
   --max-pixels 602112
-  --latent-token-count "${LATENT_TOKEN_COUNT}"
   --cache-pixel-dtype "${CACHE_PIXEL_DTYPE:-bfloat16}"
   --preprocess-workers "${PREPROCESS_WORKERS:-${SLURM_CPUS_PER_TASK:-8}}"
 )
-if [ -n "${LATENT_QUERY_MODE}" ]; then
-  CACHE_ARGS+=(--latent-query-mode "${LATENT_QUERY_MODE}")
-fi
 "${PYTHON_ENV}/bin/python3" "${SCRIPTDIR}/train.py" "${CACHE_ARGS[@]}" 2>&1 | tee -a "${CACHE_LOG}"
 touch "${TRAIN_OUT}/preprocess_cache_done.flag"
 echo "=== SFT1 preprocess cache build finished at $(date) ===" | tee -a "${CACHE_LOG}"

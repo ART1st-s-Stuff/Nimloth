@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import pickle
 import random
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -15,6 +17,7 @@ import torch
 import torch.distributed as dist
 
 from .distributed import is_main
+from .fsdp import checkpoint_state, save_full_pretrained
 
 if TYPE_CHECKING:
     from transformers import AutoProcessor
@@ -75,12 +78,25 @@ def restore_rng_state(state: dict[str, Any]) -> None:
         torch.cuda.set_rng_state(state["torch_cuda"])
 
 
+def objective_identities_match(saved, expected) -> bool:
+    if not isinstance(saved, dict) or not isinstance(expected, dict):
+        return False
+    def normalized(identity):
+        result = dict(identity)
+        result.setdefault("action_token_loss_weight", 1.0)
+        if result.get("stage") == "query":
+            result.setdefault("include_global_token", False)
+            result.setdefault("evaluation_only", False)
+        return result
+    return normalized(saved) == normalized(expected)
+
+
 def validate_resume_state(
     state: dict[str, Any], *, expected_identity: dict[str, Any], rank: int, world: int
 ) -> None:
     if state.get("resume_schema") != RESUME_SCHEMA:
         raise ValueError("checkpoint is not an optimizer-step resume checkpoint")
-    if state.get("identity") != expected_identity:
+    if not objective_identities_match(state.get("identity"), expected_identity):
         raise ValueError("resume checkpoint stage/dataset/objective identity mismatch")
     if int(state.get("world_size", -1)) != world:
         raise ValueError(
@@ -113,9 +129,10 @@ def save_resume_checkpoint(
     world: int,
     lora: bool,
     base_model_path: Path,
-    latent_token_count: int,
-    mask_latent_query_labels: bool,
-    latent_query_mode: str,
+    latent_token_count: int | None,
+    mask_latent_query_labels: bool | None,
+    latent_query_mode: str | None,
+    convergence_state: dict[str, Any] | None = None,
 ) -> Path:
     """Atomically publish a same-world checkpoint at an optimizer boundary."""
     local_rng = capture_rng_state()
@@ -124,6 +141,7 @@ def save_resume_checkpoint(
         dist.all_gather_object(rank_rng_states, local_rng)
     else:
         rank_rng_states = [local_rng]
+    full_weights, full_optimizer = checkpoint_state(model, optimizer)
     name = f"resume_step_{global_step:08d}"
     final = out_dir / name
     if is_main():
@@ -134,7 +152,7 @@ def save_resume_checkpoint(
                 final / "training_state.pt", map_location="cpu", weights_only=False
             )
             if (
-                existing.get("identity") != identity
+                not objective_identities_match(existing.get("identity"), identity)
                 or int(existing.get("step", -1)) != global_step
                 or int(existing.get("epoch", -1)) != epoch
                 or int(existing.get("next_micro_batch", -1)) != next_micro_batch
@@ -146,11 +164,19 @@ def save_resume_checkpoint(
             temporary = Path(tempfile.mkdtemp(prefix=f".{name}.tmp-", dir=out_dir))
             try:
                 module = model.module if hasattr(model, "module") else model
-                module.config.nimloth_latent_token_count = int(latent_token_count)
+                module.config.nimloth_format_objective = (
+                    "format_answer_ce_v2" if latent_token_count is None else None
+                )
+                module.config.nimloth_action_token_loss_weight = identity.get("action_token_loss_weight", 1.0)
+                module.config.nimloth_latent_token_count = latent_token_count
                 module.config.nimloth_latent_query_mode = latent_query_mode
-                module.save_pretrained(temporary, safe_serialization=True)
+                if full_weights is not None:
+                    save_full_pretrained(module, temporary, full_weights)
+                else:
+                    module.save_pretrained(temporary, safe_serialization=True)
                 processor.save_pretrained(temporary)
                 state = {
+                    "convergence_state": convergence_state,
                     "resume_schema": RESUME_SCHEMA,
                     "identity": identity,
                     "world_size": world,
@@ -162,13 +188,14 @@ def save_resume_checkpoint(
                     "best_val": best_val,
                     "lora": lora,
                     "base_model_path": str(base_model_path),
-                    "latent_token_count": int(latent_token_count),
+                    "format_objective": "format_answer_ce_v2" if latent_token_count is None else None,
+                    "latent_token_count": latent_token_count,
                     "latent_query_mode": latent_query_mode,
-                    "mask_latent_query_labels": bool(mask_latent_query_labels),
+                    "mask_latent_query_labels": mask_latent_query_labels,
                     "training_stage": getattr(
                         module.config, "nimloth_training_stage", "format"
                     ),
-                    "optimizer": optimizer.state_dict(),
+                    "optimizer": full_optimizer,
                     "scheduler": scheduler.state_dict(),
                 }
                 state_path = temporary / "training_state.pt"
@@ -203,27 +230,42 @@ def save_checkpoint(
     lora: bool = False,
     base_model_path: Path | None = None,
     merge_for_eval: bool = False,
-    latent_token_count: int = 1,
-    mask_latent_query_labels: bool = True,
-    latent_query_mode: str = "inject",
+    latent_token_count: int | None = None,
+    mask_latent_query_labels: bool | None = None,
+    latent_query_mode: str | None = None,
     world_size: int | None = None,
     identity: dict[str, Any] | None = None,
+    convergence_state: dict[str, Any] | None = None,
+    rank_rng_states: list[Any] | None = None,
 ) -> None:
+    full_weights, full_optimizer = checkpoint_state(model, optimizer)
+    if not is_main():
+        return
     ckpt = out_dir / name
     ckpt.mkdir(parents=True, exist_ok=True)
     module = model.module if hasattr(model, "module") else model
-    module.config.nimloth_latent_token_count = int(latent_token_count)
+    module.config.nimloth_format_objective = (
+        "format_answer_ce_v2" if latent_token_count is None else None
+    )
+    module.config.nimloth_action_token_loss_weight = (identity or {}).get("action_token_loss_weight", 1.0)
+    module.config.nimloth_latent_token_count = latent_token_count
     module.config.nimloth_latent_query_mode = latent_query_mode
-    module.save_pretrained(ckpt, safe_serialization=True)
+    if full_weights is not None:
+        save_full_pretrained(module, ckpt, full_weights)
+    else:
+        module.save_pretrained(ckpt, safe_serialization=True)
     processor.save_pretrained(ckpt)
     state = {
+        "convergence_state": convergence_state,
+        "rank_rng_states": rank_rng_states,
         "step": step,
         "epoch": epoch,
         "best_val": best_val,
         "lora": lora,
-        "latent_token_count": int(latent_token_count),
+        "format_objective": "format_answer_ce_v2" if latent_token_count is None else None,
+                    "latent_token_count": latent_token_count,
         "latent_query_mode": latent_query_mode,
-        "mask_latent_query_labels": bool(mask_latent_query_labels),
+        "mask_latent_query_labels": mask_latent_query_labels,
         "training_stage": getattr(module.config, "nimloth_training_stage", "format"),
     }
     if world_size is not None:
@@ -233,14 +275,17 @@ def save_checkpoint(
     if base_model_path is not None:
         state["base_model_path"] = str(base_model_path)
     if optimizer is not None:
-        state["optimizer"] = optimizer.state_dict()
+        state["optimizer"] = full_optimizer
     if scheduler is not None:
         state["scheduler"] = scheduler.state_dict()
     torch.save(state, ckpt / "training_state.pt")
     if name.startswith("epoch_"):
+        _fsync_tree(ckpt)
         (ckpt / COMMITTED_MARKER).write_text(
             json.dumps({"epoch": epoch, "step": step}) + "\n", encoding="utf-8"
         )
+        _fsync_file(ckpt / COMMITTED_MARKER)
+        _fsync_directory(ckpt)
     if lora and merge_for_eval and is_main() and base_model_path is not None:
         merge_peft_checkpoint(base_model_path, ckpt, ckpt / "hf_merged", processor)
 
@@ -257,6 +302,8 @@ def validate_resume_stage(
     }
     if wm_keys.intersection(state) or (checkpoint / "wm_predictor").exists():
         raise ValueError("WM/value checkpoint cannot resume an early training stage")
+    if expected == "format" and state.get("format_objective") != "format_answer_ce_v2":
+        raise ValueError("legacy query-bearing checkpoint cannot resume format-only supervision")
     saved_stage = state.get("training_stage")
     if saved_stage is None:
         legacy_keys = {"step", "epoch", "best_val", "lora"}
@@ -284,7 +331,7 @@ def find_latest_resume_dir(output_dir: Path) -> Path | None:
             continue
         try:
             step = int(p.name.rsplit("_", 1)[-1])
-        except ValueError:
+        except (TypeError, ValueError):
             continue
         if step > latest_step:
             latest_step = step
@@ -322,6 +369,125 @@ def find_latest_resume_dir(output_dir: Path) -> Path | None:
     return None
 
 
+def prune_resume_checkpoints_covered_by_epoch(
+    output_dir: Path, epoch_dir: Path, *, covered_step: int
+) -> list[Path]:
+    """Remove committed step checkpoints made redundant by a committed epoch."""
+    marker_path = epoch_dir / COMMITTED_MARKER
+    state_path = epoch_dir / "training_state.pt"
+    if not marker_path.is_file() or not state_path.is_file():
+        raise ValueError("cannot prune before a complete epoch checkpoint is committed")
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    if int(marker.get("step", -1)) != covered_step:
+        raise ValueError("epoch marker does not cover the requested optimizer step")
+    covered_epoch = int(marker.get("epoch", -1))
+    if covered_epoch < 0:
+        raise ValueError("epoch marker lacks a valid epoch")
+    candidates = []
+    for path in sorted(output_dir.glob("resume_step_*")):
+        committed = path / COMMITTED_MARKER
+        training_state = path / "training_state.pt"
+        if not committed.is_file() or not training_state.is_file():
+            continue
+        try:
+            step = int(path.name.rsplit("_", 1)[-1])
+        except ValueError:
+            continue
+        if step <= covered_step:
+            step_marker = json.loads(committed.read_text(encoding="utf-8"))
+            state = torch.load(training_state, map_location="cpu", weights_only=False)
+            if (int(step_marker.get("step", -1)) != step
+                    or int(state.get("step", -1)) != step
+                    or int(state.get("epoch", covered_epoch + 1)) > covered_epoch):
+                raise ValueError(f"resume checkpoint identity mismatch: {path}")
+            candidates.append(path)
+    for path in candidates:
+        shutil.rmtree(path)
+    _fsync_directory(output_dir)
+    return candidates
+
+
+def _committed_epoch_identity(path: Path) -> tuple[int, int, dict[str, Any]]:
+    """Validate an immutable epoch boundary before it participates in pruning."""
+    match = re.fullmatch(r"epoch_([0-9]+)", path.name)
+    if path.is_symlink() or not path.is_dir() or match is None:
+        raise ValueError(f"not an owned epoch checkpoint: {path}")
+    marker_path = path / COMMITTED_MARKER
+    state_path = path / "training_state.pt"
+    if not marker_path.is_file() or not state_path.is_file():
+        raise ValueError(f"epoch checkpoint is not committed: {path}")
+    try:
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        state = torch.load(state_path, map_location="cpu", weights_only=False)
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        AttributeError,
+        EOFError,
+        RuntimeError,
+        pickle.UnpicklingError,
+    ) as error:
+        raise ValueError(f"epoch checkpoint metadata is unreadable: {path}") from error
+    if not isinstance(marker, dict) or not isinstance(state, dict):
+        raise TypeError(f"epoch checkpoint identity is inconsistent: {path}")
+    try:
+        epoch = int(match.group(1))
+        marker_epoch = int(marker.get("epoch", -1))
+        step = int(marker.get("step", -1))
+        state_epoch = int(state.get("epoch", -1))
+        state_step = int(state.get("step", -1))
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"epoch checkpoint identity is inconsistent: {path}") from error
+    identity = state.get("identity")
+    if (
+        marker_epoch != epoch
+        or state_epoch != epoch
+        or state_step != step
+        or step < 0
+        or not isinstance(identity, dict)
+    ):
+        raise ValueError(f"epoch checkpoint identity is inconsistent: {path}")
+    return epoch, step, identity
+
+
+def prune_older_epoch_checkpoints(
+    output_dir: Path, latest_epoch_dir: Path, *, keep: int
+) -> list[Path]:
+    """Keep the newest verified epochs for one early-stage training identity.
+
+    ``best`` and non-epoch artifacts are outside this policy. An incomplete,
+    malformed, symlinked or foreign epoch is preserved rather than guessed to be
+    owned by this run.
+    """
+    if keep < 1:
+        raise ValueError("epoch checkpoint retention count must be positive")
+    if latest_epoch_dir.parent != output_dir:
+        raise ValueError("latest epoch checkpoint must be directly under output_dir")
+    latest_epoch, latest_step, latest_identity = _committed_epoch_identity(
+        latest_epoch_dir
+    )
+    owned: list[tuple[int, Path]] = [(latest_epoch, latest_epoch_dir)]
+    for path in sorted(output_dir.glob("epoch_*")):
+        if path == latest_epoch_dir or path.is_symlink():
+            continue
+        match = re.fullmatch(r"epoch_([0-9]+)", path.name)
+        if match is None or int(match.group(1)) >= latest_epoch:
+            continue
+        try:
+            epoch, step, identity = _committed_epoch_identity(path)
+        except (TypeError, ValueError):
+            continue
+        if step <= latest_step and objective_identities_match(identity, latest_identity):
+            owned.append((epoch, path))
+    owned.sort(reverse=True)
+    candidates = [path for _, path in sorted(owned[keep:])]
+    for path in candidates:
+        shutil.rmtree(path)
+    _fsync_directory(output_dir)
+    return candidates
+
+
 def merge_peft_checkpoint(
     base_model_path: Path,
     adapter_path: Path,
@@ -346,18 +512,8 @@ def load_lora_adapter_state(model: torch.nn.Module, adapter_dir: Path) -> None:
         if not bin_file.is_file():
             raise FileNotFoundError(f"missing adapter weights in {adapter_dir}")
         state = torch.load(bin_file, map_location="cpu", weights_only=True)
-    # The server's PEFT expects a newer Transformers TP symbol. This model has
-    # no tensor-parallel plan, so a sentinel only satisfies PEFT's lazy import;
-    # the TP sharding branch remains unreachable.
-    import transformers.integrations.tensor_parallel as transformers_tp
-
-    if not hasattr(transformers_tp, "EmbeddingParallel"):
-
-        class _EmbeddingParallelSentinel:
-            pass
-
-        transformers_tp.EmbeddingParallel = _EmbeddingParallelSentinel
-
+    # PEFT lazily imports tensor-parallel support only for actual TP layers.
+    # Ordinary full adapter loading needs no optional Transformers TP module.
     from peft import get_peft_model_state_dict, set_peft_model_state_dict
 
     incompatible = set_peft_model_state_dict(model, dict(state), adapter_name="default")

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -91,6 +91,7 @@ class GradientConfig:
 @dataclass(frozen=True)
 class PredictorConfig:
     lr: float = 1e-3
+    state_proj_lr: float | None = None
     emb_dim: int = 128
     history_size: int = 4
     lambda_wm: float = 1.0
@@ -108,6 +109,13 @@ class ValueHeadConfig:
     lambda_rank: float = 0.0
     ppo_clip_range: float | None = None
     ppo_epochs: int = 1
+
+
+@dataclass(frozen=True)
+class OutcomeHeadConfig:
+    enabled: bool = False
+    lr: float = 1e-4
+    lambda_bce: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -147,6 +155,8 @@ class TrainingConfig:
     log_interval: int = 1
     save_interval: int = 50
     planner_micro_batch_size: int = 1
+    sequence_micro_batch_size: int | None = None
+    activation_offload: bool = False
 
 
 @dataclass(frozen=True)
@@ -182,6 +192,7 @@ class RLConfig:
     validation: ValidationConfig
     training: TrainingConfig
     distributed: DistributedConfig
+    outcome_head: OutcomeHeadConfig = field(default_factory=OutcomeHeadConfig)
 
     def to_dict(self) -> dict[str, Any]:
         """生成适合日志与 W&B 序列化的普通字典。"""
@@ -200,6 +211,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         "gradient",
         "predictor",
         "value_head",
+        "outcome_head",
         "planner_policy",
         "rollout",
         "rl",
@@ -246,6 +258,7 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         "predictor",
         {
             "lr",
+            "state_proj_lr",
             "emb_dim",
             "history_size",
             "lambda_wm",
@@ -260,6 +273,11 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         raw,
         "value_head",
         {"lr", "rank_margin", "lambda_rank", "ppo_clip_range", "ppo_epochs"},
+    )
+    outcome_head = _section(
+        raw,
+        "outcome_head",
+        {"enabled", "lr", "lambda_bce"},
     )
     planner_policy = _section(
         raw,
@@ -293,7 +311,14 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
     training = _section(
         raw,
         "training",
-        {"seed", "log_interval", "save_interval", "planner_micro_batch_size"},
+        {
+            "seed",
+            "log_interval",
+            "save_interval",
+            "planner_micro_batch_size",
+            "sequence_micro_batch_size",
+            "activation_offload",
+        },
     )
     distributed = _section(
         raw,
@@ -450,6 +475,22 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         "predictor.lambda_wm",
         allow_zero=True,
     )
+    outcome_enabled = _boolean(
+        outcome_head.get("enabled", False), "outcome_head.enabled"
+    )
+    outcome_weight = _positive_float(
+        outcome_head.get("lambda_bce", 0.0),
+        "outcome_head.lambda_bce",
+        allow_zero=True,
+    )
+    if outcome_enabled != (outcome_weight > 0.0):
+        raise ValueError(
+            "outcome_head.enabled must match positive outcome_head.lambda_bce"
+        )
+    if outcome_enabled and not _boolean(
+        predictor.get("train_wm", True), "predictor.train_wm"
+    ):
+        raise ValueError("OutcomeHead training requires predictor.train_wm=true")
     dino_grid_weight = _positive_float(
         predictor.get("lambda_dino", 0.0),
         "predictor.lambda_dino",
@@ -677,6 +718,53 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             "rl.envs_per_iteration"
         )
 
+    sequence_micro_batch_size = (
+        _positive_int(
+            training["sequence_micro_batch_size"],
+            "training.sequence_micro_batch_size",
+        )
+        if "sequence_micro_batch_size" in training
+        else None
+    )
+    activation_offload = _boolean(
+        training.get("activation_offload", False),
+        "training.activation_offload",
+    )
+    if agent_config.planning.enabled and sequence_micro_batch_size is not None:
+        raise ValueError(
+            "training.sequence_micro_batch_size is only valid for non-planner "
+            "sequence training"
+        )
+    if agent_config.planning.enabled and activation_offload:
+        raise ValueError(
+            "training.activation_offload is only valid for non-planner "
+            "sequence training"
+        )
+    if (
+        sequence_micro_batch_size is not None
+        and sequence_micro_batch_size > batch_size
+    ):
+        raise ValueError(
+            "training.sequence_micro_batch_size must be <= rl.batch_size"
+        )
+    if (
+        sequence_micro_batch_size is not None
+        and sequence_micro_batch_size < batch_size
+    ):
+        if actor_config.credit_assignment == "token":
+            raise ValueError(
+                "sequence micro-batching does not support token credit; use "
+                "actor.credit_assignment=action or turn"
+            )
+        if sigreg_weight != 0.0:
+            raise ValueError(
+                "sequence micro-batching requires predictor.lambda_sigreg=0"
+            )
+        if value_rank_weight != 0.0:
+            raise ValueError(
+                "sequence micro-batching requires value_head.lambda_rank=0"
+            )
+
     if "state_source" not in gradient:
         raise ValueError("gradient.state_source must be explicit")
     state_source = str(gradient["state_source"])
@@ -691,12 +779,9 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
             "gradient.representation_to_backbone=true requires "
             "gradient.state_source=recompute"
         )
-    if agent_config.planning.enabled and (
-        state_source != "recompute" or not representation_to_backbone
-    ):
+    if agent_config.planning.enabled and state_source != "recompute":
         raise ValueError(
-            "planner training requires gradient.state_source=recompute and "
-            "gradient.representation_to_backbone=true"
+            "planner training requires gradient.state_source=recompute"
         )
 
     return RLConfig(
@@ -724,6 +809,13 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
         ),
         predictor=PredictorConfig(
             lr=_positive_float(predictor.get("lr", 1e-3), "predictor.lr"),
+            state_proj_lr=(
+                _positive_float(
+                    predictor["state_proj_lr"], "predictor.state_proj_lr"
+                )
+                if "state_proj_lr" in predictor
+                else None
+            ),
             emb_dim=_positive_int(predictor.get("emb_dim", 128), "predictor.emb_dim"),
             history_size=_positive_int(
                 predictor.get("history_size", 4),
@@ -793,8 +885,17 @@ def parse_rl_config(raw: Mapping[str, Any]) -> RLConfig:
                 training.get("planner_micro_batch_size", 1),
                 "training.planner_micro_batch_size",
             ),
+            sequence_micro_batch_size=sequence_micro_batch_size,
+            activation_offload=activation_offload,
         ),
         distributed=distributed_config,
+        outcome_head=OutcomeHeadConfig(
+            enabled=outcome_enabled,
+            lr=_positive_float(
+                outcome_head.get("lr", 1e-4), "outcome_head.lr"
+            ),
+            lambda_bce=outcome_weight,
+        ),
     )
 
 

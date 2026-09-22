@@ -73,10 +73,26 @@ def restore_saved_untied_embeddings(model, adapter_dir: Path) -> tuple[str, str]
         for name, endings in suffixes.items():
             matches = [key for key in keys if key.endswith(endings)]
             if len(matches) > 1:
-                raise RuntimeError(
-                    f"adapter contains ambiguous saved {name} weights: {matches}"
-                )
-            if matches:
+                # PEFT can save both the active modules_to_save tensor and its
+                # plain embedding alias. Only this exact, equal pair is safe.
+                active = [key for key in matches if key.endswith(endings[1])]
+                plain = active[0].replace(".modules_to_save.weight", ".weight") if len(active) == 1 else None
+                if len(matches) != 2 or plain not in matches:
+                    raise RuntimeError(
+                        f"adapter contains ambiguous saved {name} weights: {matches}"
+                    )
+                active_tensor = handle.get_tensor(active[0])
+                alias_tensor = handle.get_tensor(plain)
+                if (
+                    active_tensor.dtype != alias_tensor.dtype
+                    or active_tensor.shape != alias_tensor.shape
+                    or not torch.equal(active_tensor, alias_tensor)
+                ):
+                    raise RuntimeError(
+                        f"adapter contains conflicting saved {name} aliases: {matches}"
+                    )
+                selected[name] = active[0]
+            elif matches:
                 selected[name] = matches[0]
         if not selected:
             return None
@@ -124,17 +140,6 @@ def restore_saved_untied_embeddings(model, adapter_dir: Path) -> tuple[str, str]
     return selected["input"], selected["output"]
 
 
-def ensure_peft_transformers_compat() -> None:
-    import transformers.integrations.tensor_parallel as transformers_tp
-
-    if not hasattr(transformers_tp, "EmbeddingParallel"):
-
-        class _EmbeddingParallelSentinel:
-            pass
-
-        transformers_tp.EmbeddingParallel = _EmbeddingParallelSentinel
-
-
 def verify_adapter_loaded(model, adapter_dir: Path) -> int:
     from safetensors.torch import load_file
 
@@ -169,19 +174,38 @@ def copy_query_artifacts(source: Path, destination: Path, *, stage: str) -> None
         copy2(source / name, destination / name)
 
 
+def has_fp32_embedding_masters(adapter_dir: Path) -> bool:
+    """Inspect saved master precision without loading or rounding large tensors."""
+    from safetensors import safe_open
+
+    path = adapter_dir / "adapter_model.safetensors"
+    with safe_open(path, framework="pt", device="cpu") as handle:
+        keys = [key for key in list(handle.keys()) if key.endswith((
+            "embed_tokens.weight", "embed_tokens.modules_to_save.weight",
+            "lm_head.weight", "lm_head.modules_to_save.weight",
+        ))]
+        dtypes = {handle.get_slice(key).get_dtype() for key in keys}
+    if "F32" in dtypes and dtypes != {"F32"}:
+        raise ValueError("mixed saved embedding/head master precision")
+    return "F32" in dtypes
+
+
 def merge_checkpoint(
-    base_model: Path, adapter_dir: Path, out_dir: Path, processor=None
+    base_model: Path, adapter_dir: Path, out_dir: Path, processor=None,
+    *, dtype: torch.dtype | None = None,
 ) -> int:
     if processor is None:
         processor = AutoProcessor.from_pretrained(adapter_dir, trust_remote_code=True)
-    dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    if dtype is None:
+        dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+    fp32_masters = has_fp32_embedding_masters(adapter_dir)
     base = Qwen2_5_VLForConditionalGeneration.from_pretrained(
         base_model,
-        torch_dtype=dtype,
+        torch_dtype=torch.float32 if fp32_masters else dtype,
         trust_remote_code=True,
     )
     sync_vocab_metadata(base, len(processor.tokenizer))
-    ensure_peft_transformers_compat()
+    # Preserve saved LoRA precision during verification; the base stays in dtype.
     peft_model = PeftModel.from_pretrained(base, adapter_dir)
     verified_tensors = verify_adapter_loaded(peft_model, adapter_dir)
     merged = peft_model.merge_and_unload()
@@ -189,16 +213,28 @@ def merge_checkpoint(
     # Resizing here calls tie_weights() and can overwrite the independently
     # trained lm_head with the input embeddings. The base was already resized.
     finalize_merged_vocab(merged, len(processor.tokenizer))
+    if fp32_masters:
+        # Cast the backbone for training, preserving exact independent masters.
+        masters = [(module, module.weight.detach().clone()) for module in
+                   (merged.get_input_embeddings(), merged.get_output_embeddings())]
+        merged.to(dtype=dtype)
+        for module, weight in masters:
+            module.weight.data = weight
+        merged.config.nimloth_embedding_master_dtype = "float32"
     training_state_path = adapter_dir / "training_state.pt"
     if training_state_path.is_file():
         training_state = torch.load(
             training_state_path, map_location="cpu", weights_only=False
         )
-        merged.config.nimloth_latent_token_count = int(
-            training_state.get("latent_token_count", 1)
+        format_objective = training_state.get("format_objective")
+        merged.config.nimloth_format_objective = format_objective
+        merged.config.nimloth_latent_token_count = (
+            None
+            if format_objective == "format_answer_ce_v2"
+            else int(training_state.get("latent_token_count", 1))
         )
         saved_mode = training_state.get("latent_query_mode")
-        if saved_mode is None:
+        if saved_mode is None and format_objective != "format_answer_ce_v2":
             saved_mode = (
                 "inject"
                 if training_state.get("mask_latent_query_labels", True)
@@ -225,9 +261,11 @@ def main() -> int:
     ap.add_argument("--base-model", type=Path, required=True)
     ap.add_argument("--adapter-dir", type=Path, required=True)
     ap.add_argument("--out-dir", type=Path, required=True)
+    ap.add_argument("--dtype", choices=("bfloat16", "float32"), default=None)
     args = ap.parse_args()
 
-    return merge_checkpoint(args.base_model, args.adapter_dir, args.out_dir)
+    return merge_checkpoint(args.base_model, args.adapter_dir, args.out_dir,
+                            dtype=getattr(torch, args.dtype) if args.dtype else None)
 
 
 if __name__ == "__main__":

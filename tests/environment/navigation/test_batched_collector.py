@@ -140,6 +140,7 @@ def test_batched_collector_steps_only_active_envs_and_persists_prefix(
 
     assert [item.record_id for item in trajectories] == ["rl_000001", "rl_000002"]
     assert [item.num_steps for item in trajectories] == [1, 2]
+    assert [item.action_successes for item in trajectories] == [[True], [True, True]]
     assert [item.instruction for item in trajectories] == [
         "task rl_000001",
         "task rl_000002",

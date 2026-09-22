@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ from nimloth.training.rl.algorithm import RLBatch
 from nimloth.training.rl.loop import (
     RLLoopState,
     RLTrainingLoop,
+    _count_outcome_labels,
     _planner_transition_work,
 )
 
@@ -70,24 +72,33 @@ class _Optimization:
         self.fail_step = fail_step
         self.zero_grad_calls = 0
         self.step_calls = 0
+        self.backward_calls = 0
+        self.parameter = torch.nn.Parameter(torch.tensor(0.0))
+        self.optimizer = torch.optim.SGD(
+            [{"params": [self.parameter], "name": "test"}], lr=0.1
+        )
 
     def zero_grad(self) -> None:
         self.zero_grad_calls += 1
+        self.optimizer.zero_grad(set_to_none=True)
 
     def backward(self, _loss: torch.Tensor) -> None:
-        pass
+        self.backward_calls += 1
+        self.parameter.grad = torch.ones_like(self.parameter)
 
     def step(self) -> None:
         self.step_calls += 1
         if self.fail_step:
             raise RuntimeError("step failed")
+        self.optimizer.step()
 
 
 class _Algorithm:
     def __init__(self, *, fail_forward: bool = False) -> None:
         self.fail_forward = fail_forward
-        self.train_world_model = True
-        self.dino_grid_weight = 0.0
+        self.config = SimpleNamespace(
+            predictor=SimpleNamespace(train_wm=True, lambda_dino=0.0)
+        )
 
     def sequence_step(self, _runtime, _batch):  # type: ignore[no-untyped-def]
         if self.fail_forward:
@@ -112,10 +123,10 @@ class _DINOGridTargets:
 
 
 class _PlannerAlgorithm:
-    train_world_model = True
-    dino_grid_weight = 0.5
-
     def __init__(self) -> None:
+        self.config = SimpleNamespace(
+            predictor=SimpleNamespace(train_wm=True, lambda_dino=0.5)
+        )
         self.received_targets: list[torch.Tensor] = []
         self.old_value_calls = 0
         self.include_world_model: list[bool] = []
@@ -139,10 +150,12 @@ class _PlannerAlgorithm:
         old_policy_log_prob: torch.Tensor | None,
         policy_advantage: torch.Tensor | None,
         total_transitions: int,
+        total_outcomes: int | None,
         dino_grid_target: torch.Tensor,
         include_world_model: bool,
     ):  # type: ignore[no-untyped-def]
         assert total_transitions == 2
+        assert total_outcomes is None
         assert return_target.ndim == 0
         assert old_policy_log_prob is None
         assert policy_advantage is None
@@ -177,6 +190,7 @@ class _PlannerAlgorithm:
         old_policy_log_probs,
         policy_advantages,
         total_transitions,
+        total_outcomes,
         dino_grid_targets,
         loss_weights,
         include_world_model,
@@ -191,6 +205,7 @@ class _PlannerAlgorithm:
                 old_policy_log_prob=old_policy_log_prob,
                 policy_advantage=policy_advantage,
                 total_transitions=total_transitions,
+                total_outcomes=total_outcomes,
                 dino_grid_target=dino_grid_target,
                 include_world_model=include_world_model,
             )
@@ -274,7 +289,13 @@ def _training_loop(
         predictor=SimpleNamespace(history_size=1),
         value_head=SimpleNamespace(ppo_epochs=1),
         planner_policy=SimpleNamespace(enabled=False, entropy_coeff=0.0),
-        training=SimpleNamespace(seed=1, log_interval=1, save_interval=2),
+        training=SimpleNamespace(
+            seed=1,
+            log_interval=1,
+            save_interval=2,
+            sequence_micro_batch_size=None,
+            activation_offload=False,
+        ),
         validation=SimpleNamespace(enabled=False, interval=1),
     )
     return (
@@ -315,6 +336,134 @@ def test_fresh_consumption_aborts_when_failure_precedes_optimizer_step(
         loop._run_iteration(1)
 
     assert collector.events == ["collect", "begin", "abort"]
+
+
+def test_sequence_micro_batches_accumulate_before_exactly_one_optimizer_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop, collector = _training_loop(tmp_path, monkeypatch)
+    loop.config.training.sequence_micro_batch_size = 1
+    loop.config.training.activation_offload = True
+    loop.config.rl.batch_size = 2
+    loop.config.outcome_head = SimpleNamespace(enabled=False)
+    monkeypatch.setattr(loop_module, "count_trajectory_windows", lambda *_a, **_k: 2)
+    monkeypatch.setattr(
+        loop_module,
+        "sample_trajectory_windows",
+        lambda *_a, **_k: (object(), object()),
+    )
+    windows = tuple(
+        SimpleNamespace(
+            trajectory=SimpleNamespace(image_paths=(f"step_{index}.png",)),
+            start_step=0,
+            history_size=1,
+        )
+        for index in range(2)
+    )
+    batch = RLBatch(
+        windows=windows,  # type: ignore[arg-type]
+        action_indices=torch.zeros((2, 1), dtype=torch.long),
+        return_targets=torch.tensor([[1.0], [3.0]]),
+        old_log_probs=torch.zeros(2),
+    )
+    monkeypatch.setattr(loop_module, "build_rl_batch", lambda *_a, **_k: batch)
+
+    def slice_batch(source: RLBatch, start: int, stop: int) -> RLBatch:
+        return RLBatch(
+            windows=source.windows[start:stop],
+            action_indices=source.action_indices[start:stop],
+            return_targets=source.return_targets[start:stop],
+            old_log_probs=source.old_log_probs[start:stop],
+            policy_step_advantages=(
+                None
+                if source.policy_step_advantages is None
+                else source.policy_step_advantages[start:stop]
+            ),
+        )
+
+    monkeypatch.setattr(loop_module, "slice_rl_batch", slice_batch)
+
+    activation_events: list[str] = []
+    activation_depth = [0]
+
+    @contextmanager
+    def saved_context(enabled: bool):
+        assert enabled is True
+        activation_events.append("enter")
+        activation_depth[0] += 1
+        try:
+            yield
+        finally:
+            activation_depth[0] -= 1
+            activation_events.append("exit")
+
+    monkeypatch.setattr(loop_module, "saved_activation_context", saved_context)
+
+    class _MicroAlgorithm(_Algorithm):
+        def __init__(self) -> None:
+            super().__init__()
+            self.old_value_batch_sizes: list[int] = []
+            self.step_advantages: list[torch.Tensor] = []
+
+        def sequence_old_action_values(self, _runtime, prepared):  # type: ignore[no-untyped-def]
+            self.old_value_batch_sizes.append(len(prepared.windows))
+            return torch.zeros_like(prepared.return_targets)
+
+        def sequence_step(  # type: ignore[no-untyped-def]
+            self,
+            _runtime,
+            prepared,
+            *,
+            normalization,
+            include_policy,
+        ):
+            assert activation_depth[0] == 1
+            assert include_policy is False
+            assert normalization.action_positions == 2
+            assert normalization.policy_tokens == 2
+            assert prepared.policy_step_advantages is not None
+            self.step_advantages.append(prepared.policy_step_advantages.clone())
+            return SimpleNamespace(
+                loss=torch.tensor(0.5, requires_grad=True),
+                metrics={"total_loss": 0.5, "policy_tokens": 1.0},
+            )
+
+        def sequence_policy_step(  # type: ignore[no-untyped-def]
+            self,
+            _runtime,
+            prepared,
+            *,
+            normalization,
+        ):
+            assert activation_depth[0] == 1
+            assert normalization.policy_tokens == 2
+            assert prepared.policy_step_advantages is not None
+            return SimpleNamespace(
+                loss=torch.tensor(0.25, requires_grad=True),
+                metrics={"total_loss": 0.25, "actor_loss": 0.25},
+            )
+
+    algorithm = _MicroAlgorithm()
+    loop.algorithm = algorithm  # type: ignore[assignment]
+    loop.model_runtime = SimpleNamespace(policy_replay=object())  # type: ignore[assignment]
+
+    loop._run_iteration(1)
+
+    assert algorithm.old_value_batch_sizes == [1, 1]
+    assert len(algorithm.step_advantages) == 2
+    combined_advantages = torch.cat(algorithm.step_advantages)
+    torch.testing.assert_close(combined_advantages.mean(), torch.tensor(0.0))
+    torch.testing.assert_close(
+        combined_advantages.std(unbiased=False),
+        torch.tensor(1.0),
+    )
+    assert loop.optimization_runtime.zero_grad_calls == 1
+    assert loop.optimization_runtime.backward_calls == 4
+    assert loop.optimization_runtime.step_calls == 1
+    assert activation_events == ["enter", "exit"] * 4
+    assert loop.state.global_step == 1
+    assert collector.events == ["collect", "begin", "commit"]
 
 
 def test_distributed_failure_leaves_consumption_in_progress_and_reports_error(
@@ -368,6 +517,21 @@ def test_fresh_consumption_commits_after_post_update_checkpoint(
     assert loop.state.global_step == 1
 
 
+def test_optimizer_gradient_metrics_report_qwen_group_separately(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop, _collector = _training_loop(tmp_path, monkeypatch)
+    parameter = loop.optimization_runtime.parameter  # type: ignore[attr-defined]
+    loop.optimization_runtime.optimizer.param_groups[0]["name"] = "qwen"
+    parameter.grad = torch.full_like(parameter, 3.0)
+
+    metrics = loop._optimizer_gradient_metrics()
+
+    assert metrics["gradient_qwen_parameter_count"] == 1.0
+    assert metrics["gradient_qwen_l2"] == 3.0
+
+
 def test_planner_dino_targets_are_loaded_once_and_aligned_across_episodes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -377,10 +541,10 @@ def test_planner_dino_targets_are_loaded_once_and_aligned_across_episodes(
     loop.config.agent.planning.horizon = 2
     loop.config.training.planner_micro_batch_size = 2
     episode_a_transition = SimpleNamespace(
-        next_image_path="episode_a_step_1.png",
+        current_image_path="episode_a_step_0.png",
     )
     episode_b_transition = SimpleNamespace(
-        next_image_path="episode_b_step_1.png",
+        current_image_path="episode_b_step_0.png",
     )
     monkeypatch.setattr(
         loop_module,
@@ -412,7 +576,7 @@ def test_planner_dino_targets_are_loaded_once_and_aligned_across_episodes(
     loop._run_iteration(1)
 
     assert source.loaded_paths == [
-        ("episode_a_step_1.png", "episode_b_step_1.png")
+        ("episode_a_step_0.png", "episode_b_step_0.png")
     ]
     assert loop.optimization_runtime.zero_grad_calls == 1
     assert loop.optimization_runtime.step_calls == 1
@@ -459,8 +623,8 @@ def test_planner_dino_targets_load_only_the_rank_local_transition_shard(
 ) -> None:
     loop, _collector = _training_loop(tmp_path, monkeypatch)
     loop.config.agent.planning.enabled = True
-    episode_a_transition = SimpleNamespace(next_image_path="episode_a_step_1.png")
-    episode_b_transition = SimpleNamespace(next_image_path="episode_b_step_1.png")
+    episode_a_transition = SimpleNamespace(current_image_path="episode_a_step_0.png")
+    episode_b_transition = SimpleNamespace(current_image_path="episode_b_step_0.png")
     monkeypatch.setattr(
         loop_module,
         "build_episode_training_batches",
@@ -483,7 +647,7 @@ def test_planner_dino_targets_load_only_the_rank_local_transition_shard(
 
     loop._run_iteration(1)
 
-    assert source.loaded_paths == [("episode_b_step_1.png",)]
+    assert source.loaded_paths == [("episode_b_step_0.png",)]
     assert len(algorithm.received_targets) == 1
     assert algorithm.old_value_calls == 1
     assert algorithm.include_world_model == [True]
@@ -493,7 +657,7 @@ def test_planner_dino_targets_load_only_the_rank_local_transition_shard(
     )
 
 
-def test_sequence_dino_targets_are_loaded_and_reshaped_before_algorithm(
+def test_sequence_current_dino_targets_are_loaded_and_reshaped_before_algorithm(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -518,7 +682,7 @@ def test_sequence_dino_targets_are_loaded_and_reshaped_before_algorithm(
     )
     source = _DINOGridTargets()
     algorithm = _Algorithm()
-    algorithm.dino_grid_weight = 0.5
+    algorithm.config.predictor.lambda_dino = 0.5
     received: list[torch.Tensor] = []
 
     def sequence_step(_runtime, prepared):  # type: ignore[no-untyped-def]
@@ -537,7 +701,7 @@ def test_sequence_dino_targets_are_loaded_and_reshaped_before_algorithm(
 
     loop._run_iteration(1)
 
-    assert source.loaded_paths == [("step_1.png", "step_2.png")]
+    assert source.loaded_paths == [("step_0.png", "step_1.png")]
     assert len(received) == 1
     torch.testing.assert_close(
         received[0],
@@ -607,6 +771,24 @@ def test_planner_transition_work_shards_each_real_item_once_and_pads() -> None:
     )
     assert real_indices == list(range(10))
     assert sum(item.is_padding for shard in shards for item in shard) == 2
+
+
+def test_outcome_label_count_is_optional_for_legacy_runs_but_fail_closed_when_enabled() -> (
+    None
+):
+    transitions = (SimpleNamespace(), SimpleNamespace(action_success=None))
+
+    assert _count_outcome_labels(transitions, enabled=False) is None
+    with pytest.raises(ValueError, match="at least one fresh action_success label"):
+        _count_outcome_labels(transitions, enabled=True)
+
+    assert (
+        _count_outcome_labels(
+            transitions + (SimpleNamespace(action_success=False),),
+            enabled=True,
+        )
+        == 1
+    )
 
 
 def test_planner_transition_work_pads_ranks_when_batch_is_smaller_than_world() -> None:

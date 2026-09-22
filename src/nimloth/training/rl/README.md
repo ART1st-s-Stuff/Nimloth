@@ -172,13 +172,17 @@ Qwen action prior。这里的PPO只指ValueHead critic的frozen-old clipped regr
 states from the same raw trajectory; windows never cross episode boundaries.
 
 ```text
-hidden    = rollout_qwen_hidden[:, window_start:window_start+H+1]
-states    = state_proj(hidden)
-context   = states[:, :H]
-targets   = stop_gradient(states[:, 1:H+1])
-predicted = wm_predictor(context, actions[:, :H])
-L_wm      = mse(predicted, targets)
-L_sigreg  = SIGReg(states.transpose(0, 1))
+hidden       = recomputed_or_rollout_hidden(all H+1 real state prefixes)
+aux_hidden   = hidden if representation_to_backbone else stop_gradient(hidden)
+states       = state_proj(aux_hidden)
+context      = states[:, :H]
+targets      = stop_gradient(states[:, 1:H+1])
+predicted    = wm_predictor(context, actions[:, :H])
+observed     = state_proj(hidden)[:, :H]
+L_wm         = mse(predicted, targets)
+L_dino       = mse(observed, frozen_dino(current_images))
+L_outcome    = masked_bce(outcome_head(predicted), action_success)
+L_sigreg     = SIGReg(states.transpose(0, 1))
 
 Q         = value_head(context)
 L_value   = regression(Q[action], discounted_returns) + ranking_loss
@@ -204,6 +208,20 @@ When actor training is enabled, PPO recomputes `new_log_prob` from the exact
 same prompt and the same temperature/top-p transformation as the recorded
 behavior policy. The entropy term is calculated from that transformed
 distribution, including masked zero-probability actions.
+
+`actor.credit_assignment: turn`把每个environment step的Monte Carlo advantage
+分配给该turn中所有实际采样、且`loss_mask=true`的reasoning/action token。它直接
+训练Qwen policy，不构造PlannerPolicyHead，也不启用TokenValueHead；注入token不参与
+PPO loss。连续sequence路径上的WM、ValueHead和OutcomeHead可在Qwen hidden处截断，
+同时真实current observation的DINO锚定与actor PPO仍分别保留到Qwen的梯度。
+
+当`training.sequence_micro_batch_size`小于有效batch时，loop先在完整batch上冻结并
+归一化turn/action advantage，再逐微批累积梯度。每个微批先完成表示侧
+WM/DINO/Value/Outcome前向与反向并释放该Qwen图，然后单独执行policy replay前向与
+反向；所有微批结束后只调用一次`optimizer.step()`。两部分按完整batch的动作位置、
+Outcome标签和policy token总数归一化，因此拆分只改变计算图驻留时间，不改变目标或
+有效batch。该模式拒绝token credit、SIGReg和value ranking，直到这些跨样本统计具备
+等价聚合实现。
 
 `actor.credit_assignment: token`启用真正的turn内token GAE。Qwen同一次replay
 forward通过`logits_to_keep`只保留loss-mask位置；TokenValueHead读取这些位置进入
@@ -243,6 +261,7 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
 | `checkpoint_manager.py` | Runtime component state to checkpoint artifact mapping |
 | `trainer.py` | 按执行顺序加载 Agent、设置 FSDP/视觉 Backbone EMA/optimizer/resume 和 adapters |
 | `checkpoint.py` | 完整模型与 optimizer checkpoint helpers |
+| `fsdp.py` | direct-Qwen多卡训练的decoder/vision block级FULL_SHARD所有权 |
 | `cli.py` | CLI adapter and independent train/eval collector selection |
 
 ## Important restrictions
@@ -281,6 +300,13 @@ policy advantage会在所有loss-mask token上whiten；critic return不whiten。
   `zero`；未确认时配置解析直接失败，不猜测实验参数。
 - rollout behavior log-prob 与 replay 都使用同一 temperature/top-p 分布；注入的 latent
   query、action boundary 和补全 delimiter 不进入 PPO loss。
+- 非planner的sequence训练可设置`training.sequence_micro_batch_size`降低一次更新的
+  峰值显存；`rl.batch_size`仍是有效batch，一次有效batch只执行一次optimizer step。
+  action/turn advantage在完整有效batch上统一归一化，PPO按policy token、Outcome
+  按有效标签、WM/DINO/value按动作位置聚合。首版微批模式拒绝token credit、SIGReg、
+  Value ranking和reference KL；这些目标在实现完整batch等价统计前不能按局部均值近似。
+- 只要Qwen语言参数参与RL更新，训练器会显式切换Qwen到train mode并核验gradient
+  checkpointing实际激活；该要求同时适用于planner recompute和直接Qwen PPO/DINO。
 - `agent.planning.enabled: true`时，独立vLLM rollout在每个environment step让Qwen生成
   真实CoT；worker extension从同一次多模态forward截取latent hidden，不加载第二份
   HF Qwen。每次搜索只执行首动作，下一步用真实observation重新规划；terminal

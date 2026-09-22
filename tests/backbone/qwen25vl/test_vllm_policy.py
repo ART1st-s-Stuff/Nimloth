@@ -159,6 +159,99 @@ def test_from_model_forwards_ray_backend(monkeypatch) -> None:
     assert policy.latent_token_count == 16
 
 
+def test_from_model_maps_zero_mm_cache_for_vllm_085(monkeypatch) -> None:
+    captured = {}
+
+    def fake_llm(**kwargs):
+        captured.update(kwargs)
+        return _Engine(())
+
+    class LegacyEngineArgs:
+        def __init__(
+            self,
+            *,
+            disable_mm_preprocessor_cache: bool = False,
+        ) -> None:
+            del disable_mm_preprocessor_cache
+
+    monkeypatch.setitem(sys.modules, "vllm", SimpleNamespace(LLM=fake_llm))
+    monkeypatch.setitem(sys.modules, "vllm.engine", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm.engine.arg_utils",
+        SimpleNamespace(EngineArgs=LegacyEngineArgs),
+    )
+    QwenVLLMAgentPolicy.from_model(
+        "/model",
+        processor=SimpleNamespace(tokenizer=_Tokenizer()),
+        tensor_parallel_size=8,
+        temperature=0.0,
+        top_p=1.0,
+        max_model_len=32768,
+        max_images=6,
+        gpu_memory_utilization=0.85,
+        latent_token_count=16,
+        mm_processor_cache_gb=0,
+    )
+
+    assert captured["disable_mm_preprocessor_cache"] is True
+    assert "mm_processor_cache_gb" not in captured
+    assert "logprobs_mode" not in captured
+
+
+def test_from_model_uses_request_logits_processor_for_vllm_085(monkeypatch) -> None:
+    captured = {}
+
+    def fake_llm(**kwargs):
+        captured.update(kwargs)
+        return _Engine(())
+
+    class LegacyEngineArgs:
+        def __init__(
+            self,
+            *,
+            disable_mm_preprocessor_cache: bool = False,
+        ) -> None:
+            del disable_mm_preprocessor_cache
+
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm",
+        SimpleNamespace(
+            LLM=fake_llm,
+            SamplingParams=lambda **kwargs: SimpleNamespace(**kwargs),
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "vllm.engine", SimpleNamespace())
+    monkeypatch.setitem(
+        sys.modules,
+        "vllm.engine.arg_utils",
+        SimpleNamespace(EngineArgs=LegacyEngineArgs),
+    )
+    policy = QwenVLLMAgentPolicy.from_model(
+        "/model",
+        processor=SimpleNamespace(tokenizer=_Tokenizer()),
+        tensor_parallel_size=1,
+        temperature=0.0,
+        top_p=1.0,
+        max_model_len=32768,
+        max_images=6,
+        gpu_memory_utilization=0.85,
+        latent_token_count=16,
+        credit_assignment="turn",
+        mm_processor_cache_gb=0,
+    )
+
+    assert "logits_processors" not in captured
+    params = policy._response_sampling_params(policy._response_generation_spec())
+    assert len(params.logits_processors) == 1
+    scores = torch.zeros(1000)
+    masked = params.logits_processors[0]([501, 502, 503], scores)
+    first_latent_id = policy.token_id_map[LatentActionTokens().latent_state]
+    assert torch.isfinite(masked[first_latent_id])
+    assert int(torch.isfinite(masked).sum()) == 1
+
+
 def test_from_model_forwards_explicit_pixel_override_to_vllm(monkeypatch) -> None:
     captured = {}
 

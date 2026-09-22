@@ -14,7 +14,7 @@ from nimloth.agent import (
     PolicyReplayInput,
     PolicyReplayOutput,
     behavior_log_probs,
-    categorical_entropy_from_log_probs,
+    categorical_entropies_from_log_probs,
     sample_policy_decision,
 )
 from nimloth.latent import (
@@ -221,13 +221,7 @@ class QwenAgentPolicy:
 
 
 def _row_entropies(log_probs: torch.Tensor) -> torch.Tensor:
-    probabilities = log_probs.exp()
-    terms = torch.where(
-        probabilities > 0,
-        probabilities * log_probs,
-        torch.zeros_like(log_probs),
-    )
-    return -terms.sum(dim=-1)
+    return categorical_entropies_from_log_probs(log_probs)
 
 
 def _logits_to_keep_positions(positions: Sequence[int]) -> list[int]:
@@ -480,12 +474,16 @@ class QwenActionLogProbReplay:
                 "policy replay requires persisted token traces; historical "
                 "action-only records must not enter the current actor objective"
             )
-        with evaluating(self.model):
-            return replay_policy_token_log_probs(
-                samples=samples,
-                model=self.model,
-                processor=self.processor,
-                token_id_map=self.token_id_map,
-                device=self.device,
-                token_value_head=self.token_value_head,
+        if not self.model.training:
+            raise RuntimeError(
+                "current-policy replay requires the trainable Qwen model in "
+                "training mode; eval mode disables gradient checkpointing"
             )
+        return replay_policy_token_log_probs(
+            samples=samples,
+            model=self.model,
+            processor=self.processor,
+            token_id_map=self.token_id_map,
+            device=self.device,
+            token_value_head=self.token_value_head,
+        )

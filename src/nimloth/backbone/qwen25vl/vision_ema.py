@@ -65,21 +65,23 @@ class VisionEncoderEMA:
 
     @contextmanager
     def use_ema_weights(self, model: nn.Module):
-        """Temporarily swap trainable vision weights to EMA copies for forward."""
+        """Temporarily swap every saved vision weight, including frozen ones."""
 
         backups: dict[str, torch.Tensor] = {}
         module = _unwrap_module(model)
+        named_parameters = dict(module.named_parameters())
         try:
-            for name, param in iter_trainable_vision_params(module):
-                if name not in self.shadow:
-                    continue
+            missing = sorted(set(self.shadow) - set(named_parameters))
+            if missing:
+                raise ValueError(f"vision EMA parameters are absent from model: {missing}")
+            for name, shadow in self.shadow.items():
+                param = named_parameters[name]
                 backups[name] = param.data.detach().clone()
-                param.data.copy_(self.shadow[name])
+                param.data.copy_(shadow)
             yield
         finally:
-            for name, param in iter_trainable_vision_params(module):
-                if name in backups:
-                    param.data.copy_(backups[name])
+            for name, backup in backups.items():
+                named_parameters[name].data.copy_(backup)
 
     def save_checkpoint(self, path: Path) -> None:
         path = Path(path)

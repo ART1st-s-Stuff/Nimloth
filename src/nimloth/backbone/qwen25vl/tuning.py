@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 from typing import Literal
 
 from transformers import Qwen2_5_VLForConditionalGeneration
@@ -21,8 +23,29 @@ def is_vision_param(name: str) -> bool:
     return _is_vision_param(name)
 
 
-def _is_llm_param(name: str) -> bool:
-    return ".language_model." in name or name.startswith("language_model.")
+def _parameter_regions(model):
+    """Resolve ownership from actual modules before PEFT adds wrapper prefixes."""
+    decoder = model.get_decoder()
+    visual = getattr(model, "visual", None)
+    if visual is None:
+        visual = getattr(getattr(model, "model", None), "visual", None)
+    if visual is None:
+        raise ValueError("Qwen tuning requires an identifiable visual module")
+    vision_ids = {id(p) for p in visual.parameters()}
+    language_ids = {id(p) for p in decoder.parameters()} - vision_ids
+    for module in (model.get_input_embeddings(), model.get_output_embeddings()):
+        if module is not None:
+            language_ids.update(id(p) for p in module.parameters())
+    vocab_ids = {id(p) for module in
+                 (model.get_input_embeddings(), model.get_output_embeddings())
+                 if module is not None for p in module.parameters()}
+    dense_language_ids = language_ids - vocab_ids
+    if not dense_language_ids:
+        raise ValueError("Qwen tuning found no dense language parameters in get_decoder()")
+    unknown = {id(p) for p in model.parameters()} - language_ids - vision_ids
+    if unknown:
+        raise ValueError("Qwen tuning found parameters outside language and vision modules")
+    return language_ids, vision_ids, dense_language_ids
 
 
 def resolve_tune_modes(args: argparse.Namespace) -> tuple[TuneMode, TuneMode]:
@@ -36,21 +59,6 @@ def uses_lora(args: argparse.Namespace) -> bool:
     return llm_tune == "lora" or vision_tune == "lora"
 
 
-def _lora_target_modules(llm_tune: TuneMode, vision_tune: TuneMode) -> list[str]:
-    targets: list[str] = []
-    if llm_tune == "lora":
-        targets.extend(LLM_LORA_TARGETS)
-    if vision_tune == "lora":
-        targets.extend(VISION_LORA_TARGETS)
-    return targets
-
-
-def _set_requires_grad(module, predicate, enabled: bool) -> None:
-    for name, param in module.named_parameters():
-        if predicate(name):
-            param.requires_grad = enabled
-
-
 def configure_qwen_tuning(
     model: Qwen2_5_VLForConditionalGeneration,
     args: argparse.Namespace,
@@ -58,6 +66,7 @@ def configure_qwen_tuning(
     """Apply per-submodule freeze / LoRA / full fine-tune."""
 
     llm_tune, vision_tune = resolve_tune_modes(args)
+    language_ids, vision_ids, dense_language_ids = _parameter_regions(model)
     for param in model.parameters():
         param.requires_grad = False
 
@@ -83,7 +92,10 @@ def configure_qwen_tuning(
             lora_dropout=args.lora_dropout,
             bias="none",
             task_type="CAUSAL_LM",
-            target_modules=_lora_target_modules(llm_tune, vision_tune),
+            target_modules=(
+                (list(LLM_LORA_TARGETS) if llm_tune == "lora" else [])
+                + (list(VISION_LORA_TARGETS) if vision_tune == "lora" else [])
+            ),
             modules_to_save=modules_to_save or None,
         )
         model = get_peft_model(model, lora_config)
@@ -91,8 +103,27 @@ def configure_qwen_tuning(
             model.enable_input_require_grads()
 
     if llm_tune == "full":
-        _set_requires_grad(model, _is_llm_param, True)
+        for param in model.parameters():
+            if id(param) in language_ids:
+                param.requires_grad = True
     if vision_tune == "full":
-        _set_requires_grad(model, _is_vision_param, True)
+        for param in model.parameters():
+            if id(param) in vision_ids:
+                param.requires_grad = True
 
+    if llm_tune == "full" and not any(
+        p.requires_grad and id(p) in dense_language_ids for p in model.parameters()
+    ):
+        raise ValueError("Full language tuning has no trainable dense language parameters")
+    if int(os.environ.get("RANK", "0")) == 0:
+        counts = {
+            "language_dense": sum(p.numel() for p in model.parameters()
+                                  if id(p) in dense_language_ids and p.requires_grad),
+            "language_total": sum(p.numel() for p in model.parameters()
+                                  if id(p) in language_ids and p.requires_grad),
+            "vision": sum(p.numel() for p in model.parameters()
+                          if id(p) in vision_ids and p.requires_grad),
+        }
+        print(json.dumps({"qwen_tuning_trainable_parameters": counts,
+                          "llm_tune": llm_tune, "vision_tune": vision_tune}), flush=True)
     return model

@@ -25,12 +25,14 @@ class WorldModel(nn.Module):
         wm_predictor: nn.Module,
         value_head: nn.Module,
         planner_policy_head: nn.Module | None = None,
+        outcome_head: nn.Module | None = None,
     ) -> None:
         super().__init__()
         self.state_proj = state_proj
         self.wm_predictor = wm_predictor
         self.value_head = value_head
         self.planner_policy_head = planner_policy_head
+        self.outcome_head = outcome_head
 
     def forward(
         self,
@@ -174,7 +176,9 @@ class WorldModel(nn.Module):
 
         modules = (self.state_proj, self.wm_predictor, self.value_head)
         if self.planner_policy_head is not None:
-            return (*modules, self.planner_policy_head)
+            modules = (*modules, self.planner_policy_head)
+        if self.outcome_head is not None:
+            modules = (*modules, self.outcome_head)
         return modules
 
     @property
@@ -190,6 +194,7 @@ class WorldModel(nn.Module):
             state_proj=_unwrap(self.state_proj),
             wm_predictor=_unwrap(self.wm_predictor),
             value_head=_unwrap(self.value_head),
+            outcome_head=_unwrap(self.outcome_head) if self.outcome_head is not None else None,
             planner_policy_head=(
                 _unwrap(self.planner_policy_head)
                 if self.planner_policy_head is not None

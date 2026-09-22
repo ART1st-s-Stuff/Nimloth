@@ -81,7 +81,7 @@ def labels_for_trajectory_steps(
 
     labels = full_input_ids.clone()
     labels[:] = -100
-    offset_rows = _offset_cache(processor).offsets(full_text, max_length)
+    _, offset_rows = _offset_cache(processor).offsets(full_text, max_length)
     usable = min(labels.shape[0], len(offset_rows))
     for sample in steps:
         spans = assistant_char_spans(
@@ -203,7 +203,7 @@ def find_latent_block_in_last_assistant_span(
         raise ValueError("no assistant span for latent lookup")
     span_start, span_end = spans[-1]
     text = _render_messages(processor, prefix_messages, latent_token_count=latent_token_count)
-    offset_rows = _offset_cache(processor).offsets(text, max_length)
+    _, offset_rows = _offset_cache(processor).offsets(text, max_length)
     ids = _input_ids_list(input_ids)
     latent_ids = _latent_id_sequence(token_id_map, latent_token_count)
     matches: list[list[int]] = []
@@ -387,7 +387,7 @@ def find_step_latent_indices_in_full(
 
     tokens = LatentActionTokens()
     latent_id = token_id_map[tokens.latent_state]
-    offset_rows = _offset_cache(processor).offsets(full_text, max_length)
+    _, offset_rows = _offset_cache(processor).offsets(full_text, max_length)
     ids = full_input_ids.tolist()
     indices: list[int] = []
     for sample in steps:

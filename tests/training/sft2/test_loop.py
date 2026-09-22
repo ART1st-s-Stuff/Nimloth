@@ -28,7 +28,7 @@ def test_load_loop_state_restores_partial_epoch(tmp_path) -> None:
             "epoch_complete": False,
             "micro_step_in_epoch": 4,
             "best_val_wm_mse": 0.25,
-            "training_invariants": {"seed": 42},
+            "training_invariants": {"seed": 42, "training_unit": "complete_trajectory_v1"},
             "optimizer": optimizer.state_dict(),
         },
         state_path,
@@ -39,7 +39,7 @@ def test_load_loop_state_restores_partial_epoch(tmp_path) -> None:
         resume_state_path=state_path,
         resume_checkpoint_dir=tmp_path,
         optimizer=optimizer,
-        training_invariants={"seed": 42},
+        training_invariants={"seed": 42, "training_unit": "complete_trajectory_v1"},
     )
 
     assert state.global_step == 7
@@ -52,7 +52,7 @@ def test_load_loop_state_rejects_invariant_mismatch(tmp_path) -> None:
     state_path = tmp_path / "training_state.pt"
     torch.save(
         {
-            "training_invariants": {"world_size": 2},
+            "training_invariants": {"world_size": 2, "training_unit": "complete_trajectory_v1"},
         },
         state_path,
     )
@@ -63,11 +63,43 @@ def test_load_loop_state_rejects_invariant_mismatch(tmp_path) -> None:
             resume_state_path=state_path,
             resume_checkpoint_dir=tmp_path,
             optimizer=_optimizer(),
-            training_invariants={"world_size": 1},
+            training_invariants={"world_size": 1, "training_unit": "complete_trajectory_v1"},
         )
 
 
-def test_train_microbatch_backwards_primary_before_sigreg_forward() -> None:
+@pytest.mark.parametrize("previous", [None, 0.1])
+def test_resume_rejects_changed_or_unknown_sigreg_coefficient(tmp_path, previous):
+    path = tmp_path / "training_state.pt"
+    invariants = {"training_unit": "complete_trajectory_v1"}
+    if previous is not None:
+        invariants["lambda_sigreg"] = previous
+    torch.save({"training_invariants": invariants}, path)
+    with pytest.raises(ValueError, match="lambda_sigreg"):
+        load_sft2_loop_state(
+            resume=True, resume_state_path=path, resume_checkpoint_dir=tmp_path,
+            optimizer=_optimizer(), training_invariants={
+                "training_unit": "complete_trajectory_v1", "lambda_sigreg": 0.0,
+            },
+        )
+
+
+@pytest.mark.parametrize("offload", [False, True])
+def test_train_microbatch_combines_primary_and_sigreg_before_one_backward(monkeypatch, offload) -> None:
+    from contextlib import contextmanager
+    from nimloth.training.sft.stage3 import loop as loop_module
+    active = []
+    scopes = []
+    @contextmanager
+    def saved_context(enabled):
+        assert not active
+        assert enabled == offload
+        active.append(enabled)
+        scopes.append(enabled)
+        try:
+            yield
+        finally:
+            active.pop()
+    monkeypatch.setattr(loop_module, "saved_activation_context", saved_context)
     events: list[str] = []
     current_state = torch.randn(2, 4, requires_grad=True)
 
@@ -78,11 +110,13 @@ def test_train_microbatch_backwards_primary_before_sigreg_forward() -> None:
             return 0.5
 
         def training_primary_step(self, _runtime, batch, *, wm_weight: float):
+            assert active == [offload]
             events.append("primary_forward")
             assert batch == "prepared"
             assert wm_weight == 0.5
             return SimpleNamespace(
                 current_state=current_state,
+                online_states=current_state,
                 metrics={"total_loss": 2.0},
                 sample_count=2,
                 loss=torch.tensor(2.0, requires_grad=True),
@@ -93,12 +127,13 @@ def test_train_microbatch_backwards_primary_before_sigreg_forward() -> None:
             _runtime,
             batch,
             *,
-            detached_current_state: torch.Tensor,
+            online_states: torch.Tensor,
             sigreg_seed: int,
         ):
+            assert active == [offload]
             events.append("sigreg_forward")
             assert batch == "prepared"
-            assert detached_current_state.requires_grad is False
+            assert online_states is current_state
             assert sigreg_seed == 1_010_052
             return SimpleNamespace(
                 loss=torch.tensor(0.3, requires_grad=True),
@@ -115,6 +150,7 @@ def test_train_microbatch_backwards_primary_before_sigreg_forward() -> None:
 
     class FakeOptimizationRuntime:
         def backward(self, _loss: torch.Tensor, *, grad_accum: int) -> None:
+            assert not active
             events.append("backward")
             assert grad_accum == 4
 
@@ -126,6 +162,7 @@ def test_train_microbatch_backwards_primary_before_sigreg_forward() -> None:
 
     loop = SFT2TrainingLoop(
         config=SimpleNamespace(
+            activation_offload=offload,
             step_timing=False,
             step_timing_interval=1,
             grad_accum=4,
@@ -154,11 +191,165 @@ def test_train_microbatch_backwards_primary_before_sigreg_forward() -> None:
     assert events == [
         "prepare",
         "primary_forward",
-        "backward",
         "sigreg_forward",
         "backward",
         "merge_metrics",
     ]
     assert wm_weight == 0.5
+    assert scopes == [offload]
     assert metrics["total_loss"] == pytest.approx(2.3)
     assert sample_count == 2
+
+
+@pytest.mark.parametrize("scales", [(0.2, 0.5, 0.2, .125, .3), (0.2, 0.0, 0.2, .125, .7)])
+def test_primary_components_use_separate_global_window_denominators(scales):
+    wm = torch.tensor(2., requires_grad=True)
+    lm = torch.tensor(7., requires_grad=True)
+    dino = torch.tensor(11., requires_grad=True)
+    class Algorithm:
+        has_sigreg_stage = False
+        ce_weight = 3.
+        dino_grid_weight = .5
+        def wm_weight(self, *args):
+            return 1.
+        def training_primary_step(self, *args, **kwargs):
+            return SimpleNamespace(current_state=wm[None], metrics={}, sample_count=1,
+                                   loss=wm + 3 * lm + .5 * dino, losses={"lm": lm, "dino": dino})
+        def merge_training_metrics(self, metrics, sigreg):
+            return metrics
+    class Optimization:
+        def backward(self, loss, *, grad_accum):
+            assert grad_accum == 1
+            loss.backward()
+    loop = SFT2TrainingLoop(
+        config=SimpleNamespace(activation_offload=False, step_timing=False, step_timing_interval=1, grad_accum=8, seed=42),
+        rank=0, train_loader=[], val_loader=[], train_batch_sampler=None,
+        algorithm=Algorithm(), model_runtime=None, optimization_runtime=Optimization(),
+        batch_builder=SimpleNamespace(prepare=lambda value: value), checkpoint_runtime=None,
+        reporter=None, state=SFT2LoopState(), total_steps=1,
+    )
+    loop._train_microbatch(None, epoch=1, micro_step=1, loss_scales=scales)
+    assert wm.grad.item() == pytest.approx(scales[0])
+    assert lm.grad.item() == pytest.approx(3 * scales[1])
+    assert dino.grad.item() == pytest.approx(.5 * scales[4])
+
+
+def test_optional_export_routes_step_zero_and_each_epoch(tmp_path):
+    calls = []
+    loop = object.__new__(SFT2TrainingLoop)
+    loop.outcome_eval_dir = tmp_path
+    loop.state = SFT2LoopState()
+    loop.config = SimpleNamespace(epochs=1)
+    loop.val_loader = 'validation'
+    loop.model_runtime = object()
+    loop._evaluate_export = lambda loader, **kw: calls.append((loader, kw))
+    loop._run_epoch = lambda epoch: calls.append(('epoch', epoch))
+    loop.checkpoint_runtime = SimpleNamespace(save_final=lambda **kw: None)
+    loop._write_completion = lambda *args: None
+    loop.run()
+    assert calls == [('validation', {'epoch': 0, 'split': 'eval'}), ('epoch', 1)]
+
+
+def test_export_opens_rank_owned_file_and_passes_callback(tmp_path, monkeypatch):
+    import nimloth.training.sft.stage3.loop as module
+    loop = object.__new__(SFT2TrainingLoop)
+    loop.outcome_eval_dir = tmp_path
+    loop.rank = 3
+    loop.algorithm = SimpleNamespace(outcome_weight=1)
+    loop.model_runtime = object()
+    loop.batch_builder = object()
+    loop.config = SimpleNamespace(max_val_batches=-1)
+    loop._publish_export_manifest = lambda *args, **kwargs: None
+    def evaluate(*args, **kwargs):
+        assert kwargs['on_batch'].outcome_available
+        return {'wm_mse': .25}
+    monkeypatch.setattr(module, 'evaluate', evaluate)
+    assert loop._evaluate_export([], epoch=1, split='train') == {'wm_mse': .25}
+    assert (tmp_path/'epoch_001_train_rank_003.jsonl').is_file()
+
+
+@pytest.mark.parametrize("invariants", [None, {}, {"training_unit": "window_v1"}])
+def test_native_resume_rejects_missing_or_legacy_unit(tmp_path, invariants):
+    path = tmp_path / 'training_state.pt'
+    torch.save({'training_invariants': invariants}, path)
+    with pytest.raises(ValueError, match='complete_trajectory_v1'):
+        load_sft2_loop_state(resume=True, resume_state_path=path, resume_checkpoint_dir=tmp_path,
+                            optimizer=_optimizer(), training_invariants={'training_unit': 'complete_trajectory_v1'})
+
+
+@pytest.mark.parametrize('world_size', [1, 2])
+def test_batch_size_metrics_average_microbatches_including_padding(monkeypatch, world_size):
+    from contextlib import nullcontext
+    import nimloth.training.sft.stage3.loop as module
+
+    # Unequal windows and an all-padding microbatch must not weight batch-size
+    # statistics, while WM loss retains its valid-window denominator.
+    batches = [[SimpleNamespace(loss_weight=1., windows=2)],
+               [SimpleNamespace(loss_weight=1., windows=6)],
+               [SimpleNamespace(loss_weight=0., windows=2)]]
+    loop = object.__new__(SFT2TrainingLoop)
+    loop.config = SimpleNamespace(grad_accum=3, seed=42, stop_after_steps=0)
+    loop.rank = 0
+    loop.state = SFT2LoopState()
+    loop.model_runtime = SimpleNamespace(set_training_mode=lambda: None)
+    loop.optimization_runtime = SimpleNamespace(
+        zero_grad=lambda: None, accumulation_context=lambda **kw: nullcontext())
+    loop.train_loader = batches
+    loop.algorithm = SimpleNamespace(outcome_weight=0.)
+    loop.batch_builder = SimpleNamespace(device="cpu",
+        supervision_counts=lambda items: (sum(int(x.windows * x.loss_weight) for x in items), 0),
+        outcome_count=lambda items: 0,
+        observed_state_count=lambda items: sum(int((x.windows + 4) * x.loss_weight) for x in items))
+    loop.step_timer = SimpleNamespace(start=lambda *a: None, stop=lambda *a: None,
+                                      on_optimizer_step=lambda **kw: None)
+    loop.checkpoint_runtime = SimpleNamespace(save_periodic=lambda **kw: None)
+    loop._set_sampler_epoch = lambda epoch: None
+    loop._resume_train_iterator = lambda epoch: (iter(batches), 0)
+    loop._barrier = lambda: None
+    loop._validate_and_checkpoint = lambda epoch: None
+    monkeypatch.setattr(module, "seed_training_micro_step", lambda *a: None)
+    monkeypatch.setattr(module.dist, 'is_available', lambda: world_size > 1)
+    monkeypatch.setattr(module.dist, 'is_initialized', lambda: world_size > 1)
+    monkeypatch.setattr(module.dist, 'get_world_size', lambda: world_size)
+    # Other rank owns 4 windows and 8 observed states, a different population.
+    monkeypatch.setattr(module.dist, 'all_reduce',
+                        lambda totals: totals.add_(torch.tensor([4, 0, 0, 8])))
+    scales = []
+
+    def train_microbatch(items, **kwargs):
+        scales.append(kwargs['loss_scales'])
+        count = int(items[0].windows * items[0].loss_weight)
+        return 1., {"current_batch_size": float(count), "wm_mse": float(items[0].windows),
+                    "dino_grid_mse": float(items[0].windows),
+                    "dino_spatial_mse": float(items[0].windows) / 4,
+                    "dino_cls_mse": float(items[0].windows) * 3 / 4}, count
+
+    loop._train_microbatch = train_microbatch
+    captured = []
+    loop._optimizer_step = lambda epoch, accumulator, **kw: captured.append(accumulator.averages())
+    loop._run_epoch(1)
+    assert len(captured) == 1
+    assert captured[0]["current_batch_size"] == pytest.approx(8 / 3)
+    assert captured[0]["trajectory_batch_size"] == pytest.approx(2 / 3)
+    assert captured[0]["wm_mse"] == pytest.approx((2 * 2 + 6 * 6) / 8)
+    assert captured[0]['dino_grid_mse'] == pytest.approx((2 * 6 + 6 * 10) / 16)
+    assert captured[0]['dino_spatial_mse'] == pytest.approx((.5 * 6 + 1.5 * 10) / 16)
+    assert captured[0]['dino_cls_mse'] == pytest.approx((1.5 * 6 + 4.5 * 10) / 16)
+    global_states = 16 if world_size == 1 else 24
+    assert [value[4] for value in scales] == pytest.approx(
+        [world_size * 6 / global_states, world_size * 10 / global_states, 0])
+
+
+@pytest.mark.parametrize('old', [None, 'autoregressive_predicted_state_sequence_mse_v1',
+                               'direct_predicted_state_mse'])
+def test_resume_rejects_wrong_dino_objective(tmp_path, old):
+    path = tmp_path / 'training_state.pt'
+    invariants = {'training_unit': 'complete_trajectory_v1'}
+    if old is not None:
+        invariants['dino_supervision'] = old
+    torch.save({'training_invariants': invariants}, path)
+    with pytest.raises(ValueError, match='dino_supervision'):
+        load_sft2_loop_state(resume=True, resume_state_path=path, resume_checkpoint_dir=tmp_path,
+                            optimizer=_optimizer(), training_invariants={
+                                'training_unit': 'complete_trajectory_v1',
+                                'dino_supervision': 'unique_observed_online_state_mse_v1'})

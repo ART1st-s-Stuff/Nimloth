@@ -235,7 +235,7 @@ cat >"${RUN_ROOT}/README.md" <<EOF
 - 初始化：历史 VAGEN step79 HF checkpoint：${SOURCE_CHECKPOINT}。
 - 数据：train_success.jsonl（613 条轨迹、7309 个回答前缀）与 val_all.jsonl（355 条轨迹、6054 个回答前缀）。
 - 离线验证边界：val_all 与 train_success 有1个任务重叠，因此只用于训练过程诊断，不称为独立 held-out；正式 Base/Common Sense 120 与训练任务及场景均无重叠。
-- SFT1：format，K1 generate，LoRA r64/alpha128，world4，batch1，GA8，一轮。
+- SFT1：format（无query），LoRA r64/alpha128，world4，batch1，GA8，一轮。
 - SFT2：从 SFT1 epoch_001/hf_merged 初始化；query，K16 inject，CE+DINO，其他训练规模相同，一轮。
 - 计算单元：SFT1遍历613条完整轨迹（约20个optimizer step）；SFT2按回答前缀建立索引，完整遍历7309个回答（约229个optimizer step），每个样本保留该回答之前的全部真实历史，不截断或抽样回答。
 - 批量：每卡batch1、GA8保持不变；world4下有效batch为32，低于此前配置的64。
@@ -276,7 +276,6 @@ if ! "${PYTHON}" -m "${CONTRACT_MODULE}" validate-stage-checkpoint \
     --model "${SOURCE_CHECKPOINT}" --train-jsonl "${TRAIN_JSONL}" --val-jsonl "${VAL_JSONL}" \
     --output-dir "${STAGE1_OUT}" --epochs 1 --batch-size 1 --grad-accum 8 \
     --lr 1e-6 --embedding-lr 5e-6 --max-length 12000 --max-pixels 100352 \
-    --latent-token-count 1 --latent-query-mode generate \
     --lora --lora-r 64 --lora-alpha 128 --no-cache --no-wandb --resume --resume-save-steps 5 \
     2>&1 | tee -a "${RUN_ROOT}/stage1_train.log"; then
     handle_training_failure

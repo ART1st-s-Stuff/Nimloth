@@ -18,6 +18,7 @@ from nimloth.config.rl import (
     DistributedConfig,
     FreezeConfig,
     GradientConfig,
+    OutcomeHeadConfig,
     PlannerPolicyConfig,
     PredictorConfig,
     RLConfig,
@@ -35,6 +36,8 @@ from nimloth.training.rl.algorithm import RLAlgorithm
 from nimloth.training.rl.episodes import build_episode_training_batches
 from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.wm import WorldModel
+from nimloth.wm.grid import GridWorldModel
+from nimloth.wm.outcome import ActionOutcomeHead
 
 
 def _deterministic(action: int) -> tuple[float, ...]:
@@ -82,6 +85,7 @@ def _planner_trajectory() -> RolloutTrajectory:
         instruction="test",
         reward=1.0,
         rewards=[0.0, 0.0, 0.0, 1.0],
+        action_successes=[True, False, True, False],
         terminated=True,
         system_prompt="Navigate.",
         observation_texts=observations,
@@ -196,6 +200,18 @@ class _SequencePredictor(torch.nn.Module):
         return self.state(states) + self.action(actions)
 
 
+class _GridStateProjector(_StateProjector):
+    """Keep the latent-token axis used by the real Stage3 grid runtime."""
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        return torch.nn.functional.linear(hidden, self.weight)
+
+
+class _GridSequencePredictor(_SequencePredictor):
+    def forward(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        return self.state(states) + self.action(actions).unsqueeze(-2)
+
+
 class _RecordingValueHead(torch.nn.Linear):
     def __init__(self) -> None:
         super().__init__(2, 8, bias=False)
@@ -244,6 +260,7 @@ def _algorithm(
     dino_weight: float = 0.0,
     value_clip_range: float = 0.2,
     planner_policy_enabled: bool = False,
+    outcome_enabled: bool = False,
 ) -> RLAlgorithm:
     search_mode = "policy" if planner_policy_enabled else "greedy"
     return RLAlgorithm(
@@ -280,6 +297,11 @@ def _algorithm(
             validation=ValidationConfig(),
             training=TrainingConfig(),
             distributed=DistributedConfig(),
+            outcome_head=OutcomeHeadConfig(
+                enabled=outcome_enabled,
+                lr=1e-4,
+                lambda_bce=1.0 if outcome_enabled else 0.0,
+            ),
         ),
         sigreg=None,
     )
@@ -306,6 +328,18 @@ def test_episode_builds_one_training_transition_per_executed_action() -> None:
         "step_2.png",
         "step_3.png",
         "step_4.png",
+    ]
+    assert [transition.current_image_path for transition in episode.transitions] == [
+        "step_0.png",
+        "step_1.png",
+        "step_2.png",
+        "step_3.png",
+    ]
+    assert [transition.action_success for transition in episode.transitions] == [
+        True,
+        False,
+        True,
+        False,
     ]
 
 
@@ -556,7 +590,7 @@ def test_batched_planner_transition_matches_scalar_losses_and_gradients() -> Non
             )
 
 
-def test_transition_adds_dino_loss_for_each_real_next_observation() -> None:
+def test_transition_adds_dino_loss_for_each_real_current_observation() -> None:
     episode = build_episode_training_batches(
         [_planner_trajectory()],
         gamma=1.0,
@@ -579,6 +613,76 @@ def test_transition_adds_dino_loss_for_each_real_next_observation() -> None:
     assert all(output.losses["dino"] is not None for output in outputs)
     assert all(output.metrics["lambda_wm"] == 0.75 for output in outputs)
     assert all(output.metrics["lambda_dino"] == 0.25 for output in outputs)
+
+
+def test_outcome_wm_and_value_stop_at_qwen_hidden_but_update_projector() -> None:
+    trajectory = replace(
+        _planner_trajectory(),
+        world_model_states=[
+            [state] for state in _planner_trajectory().world_model_states
+        ],
+    )
+    episode = build_episode_training_batches(
+        [trajectory],
+        gamma=1.0,
+        truncated_bootstrap=0.0,
+    )[0]
+    runtime, backbone, _builder, _projector, _predictor, value_head = _runtime()
+    projector = _GridStateProjector()
+    predictor = _GridSequencePredictor()
+    runtime.agent.wm = GridWorldModel(
+        state_proj=projector,
+        wm_predictor=predictor,
+        value_head=value_head,
+        outcome_head=ActionOutcomeHead(2),
+    )
+    detached_runtime = replace(runtime, representation_to_backbone=False)
+
+    output = _algorithm(
+        train_world_model=True,
+        outcome_enabled=True,
+    ).planner_transition_step(
+        detached_runtime,
+        episode.transitions[1],
+        return_target=episode.return_targets[1],
+        old_action_value=torch.tensor(0.0),
+        total_transitions=1,
+    )
+    assert output.losses["outcome"] is not None
+    output.losses["outcome"].backward()
+
+    assert backbone.module.weight.grad is None
+    assert projector.weight.grad is not None
+    assert predictor.state.weight.grad is not None
+    assert runtime.agent.wm.outcome_head.linear.weight.grad is not None
+    assert output.metrics["outcome_count"] == 1.0
+
+
+def test_current_state_dino_retains_qwen_graph_when_downstream_is_detached() -> None:
+    episode = build_episode_training_batches(
+        [_planner_trajectory()],
+        gamma=1.0,
+        truncated_bootstrap=0.0,
+    )[0]
+    runtime, backbone, _builder, projector, _predictor, _value_head = _runtime()
+    detached_runtime = replace(runtime, representation_to_backbone=False)
+
+    output = _algorithm(
+        train_world_model=True,
+        dino_weight=2.0,
+    ).planner_transition_step(
+        detached_runtime,
+        episode.transitions[1],
+        return_target=episode.return_targets[1],
+        old_action_value=torch.tensor(0.0),
+        total_transitions=1,
+        dino_grid_target=torch.full((1, 2), 3.0),
+    )
+    assert output.losses["dino"] is not None
+    output.losses["dino"].backward()
+
+    assert backbone.module.weight.grad is not None
+    assert projector.weight.grad is not None
 
 
 def test_transition_rejects_detached_rollout_qwen_mode() -> None:

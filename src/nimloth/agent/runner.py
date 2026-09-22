@@ -27,6 +27,7 @@ class AgentEpisode:
     prompt_template: PromptTemplateSpec
     action_space_id: str
     action_space_version: int
+    action_successes: tuple[bool, ...] | None = None
 
     def __post_init__(self) -> None:
         if len(self.observations) != len(self.actions) + 1:
@@ -35,6 +36,10 @@ class AgentEpisode:
             )
         if len(self.rewards) != len(self.actions):
             raise ValueError("AgentEpisode reward/action count mismatch")
+        if self.action_successes is not None and len(self.action_successes) != len(
+            self.actions
+        ):
+            raise ValueError("AgentEpisode outcome/action count mismatch")
 
     @property
     def reward(self) -> float:
@@ -87,6 +92,7 @@ class EpisodeRunner:
         observations: list[EnvironmentObservation] = []
         actions: list[AgentAction] = []
         rewards: list[float] = []
+        action_successes: list[bool | None] = []
         success = False
         done = False
         stopped_at_token_budget = False
@@ -108,6 +114,7 @@ class EpisodeRunner:
                     response=action.response,
                 )
                 rewards.append(result.reward)
+                action_successes.append(result.action_success)
                 success = success or result.success
                 done = result.done
                 observation = result.observation
@@ -128,6 +135,11 @@ class EpisodeRunner:
                 prompt_template=self._agent.prompt_template_spec,
                 action_space_id=self._agent.action_space.identifier,
                 action_space_version=self._agent.action_space.version,
+                action_successes=(
+                    tuple(value for value in action_successes if value is not None)
+                    if all(value is not None for value in action_successes)
+                    else None
+                ),
             )
         finally:
             session.close()

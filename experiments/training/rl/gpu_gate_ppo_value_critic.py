@@ -44,7 +44,7 @@ from nimloth.training.rl.runtime import RLModelRuntime
 from nimloth.training.rl.trainer import (
     _build_optimizer,
     _build_world_model,
-    _prepare_planner_qwen_training,
+    _prepare_qwen_training,
     _wrap_distributed_modules,
 )
 from nimloth.util.distributed import (
@@ -377,7 +377,7 @@ def main() -> int:
         # This gate isolates the critic.  The production loop's first-epoch WM/DINO
         # branch already has CPU coverage and would obscure the requested gradient.
         world_model.wm_predictor.requires_grad_(False).eval()
-        checkpointed_modules = _prepare_planner_qwen_training(
+        checkpointed_modules = _prepare_qwen_training(
             model,
             gradient_checkpointing=bool(loading_args.gradient_checkpointing),
             eval_modules=(find_visual_module(model),),

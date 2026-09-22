@@ -1,5 +1,4 @@
-"""SFT3（旧 SFT2）的单步/多步目标与两阶段梯度计算。"""
-
+"""Trajectory-native Stage3: encode once, supervise every eligible WM window."""
 from __future__ import annotations
 
 import math
@@ -8,85 +7,72 @@ from pathlib import Path
 
 import torch
 
-from nimloth.training.common import action_value_loss, world_model_loss
+from nimloth.agent.model import AgentStateOutput
 from nimloth.training.common.value_semantics import SFT2_VALUE_OBJECTIVE
-from nimloth.training.sft.stage3.batch import SFT2Batch, SFT2RolloutBatch
+from nimloth.training.sft.stage3.batch import Stage3TrajectoryBatch
 from nimloth.training.sft.stage3.runtime import SFT2ModelRuntime
 from nimloth.training.sft.stage3.sigreg import (
     gather_global_sigreg_states,
     shared_sigreg_rng,
 )
-from nimloth.wm import (
-    LatentWMPredictor,
-    SequenceSIGReg,
-)
+from nimloth.wm import LatentWMPredictor, SequenceSIGReg
 
 
-def require_sft2_wm_history(
-    wm_predictor: LatentWMPredictor,
-    *,
-    history_size: int,
-    source: Path,
-) -> None:
-    """拒绝加载与当前 SFT2 LeWM 上下文长度不一致的 predictor。"""
-
+def require_sft2_wm_history(wm_predictor: LatentWMPredictor, *, history_size: int, source: Path) -> None:
     actual = int(wm_predictor.config.history_size)
-    expected = int(history_size)
-    if actual != expected:
-        raise ValueError(
-            "SFT2 WM checkpoint history_size does not match config: "
-            f"checkpoint={actual}, config={expected}, source={source}"
-        )
+    if actual != int(history_size):
+        raise ValueError(f"SFT2 WM checkpoint history_size does not match config: checkpoint={actual}, "
+                         f"config={history_size}, source={source}")
 
 
 @dataclass(frozen=True)
 class SFT2StepOutput:
-    """一次 SFT2 主前向产生的 loss、当前 state 和日志指标。"""
-
     loss: torch.Tensor
     losses: dict[str, torch.Tensor | None]
     metrics: dict[str, float]
     current_state: torch.Tensor
     sample_count: int
+    online_states: torch.Tensor
+    diagnostics: dict[str, torch.Tensor] | None = None
 
 
 @dataclass(frozen=True)
 class SFT2SIGRegStepOutput:
-    """主 loss 反传完成后，单独执行的 SIGReg 阶段结果。"""
-
     loss: torch.Tensor
     raw_loss: torch.Tensor | None
     metrics: dict[str, float]
 
 
-class SFT2Algorithm:
-    """定义 SFT3 一个 batch 的目标函数；类型名保留旧 SFT2 兼容性。
+def _window_mean(terms: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+    """Each eligible start owns one mean, independently of trajectory length."""
+    if terms.shape[0] != weights.numel():
+        raise ValueError("window loss and weight counts disagree")
+    per_window = terms.reshape(terms.shape[0], -1).mean(-1)
+    return (per_window * weights).sum() / weights.sum().clamp_min(1)
 
-    主阶段在起点计算 CE，并对单步或完整 T 步预测计算 WM/value。
-    主损失反传并释放 Qwen 图后，SIGReg 阶段才以 detached ``s_t`` 和在线
-    ``s_{t+1}`` 计算正则。这样 SIGReg 数值上仍看见
-    两个连续状态，但梯度只进入新状态侧，也不会同时保留两份 Qwen 激活。
+
+class SFT2Algorithm:
+    """One target encoder and one online encoder per complete-trajectory batch.
+
+    All WM windows reuse the same differentiable online states. Target states
+    retain their separate no-grad EMA/eval path. The caller combines primary
+    and SIGReg objectives before one ordinary backward through this graph.
     """
 
-    def __init__(
-        self,
-        *,
-        history_size: int,
-        sigreg: SequenceSIGReg | None,
-        sigreg_weight: float,
-        value_weight: float,
-        ce_weight: float,
-        wm_weight_start: float = 0.1,
-        wm_weight_end: float = 1.0,
-        wm_warmup_fraction: float = 0.3,
-        dino_grid_weight: float = 0.0,
-        prediction_horizon: int = 1,
-    ) -> None:
-        self.history_size = int(history_size)
-        if self.history_size < 1:
-            raise ValueError(
-                f"history_size must be positive, got {self.history_size}"
-            )
+    def __init__(self, *, history_size: int, sigreg: SequenceSIGReg | None,
+                 sigreg_weight: float, value_weight: float, ce_weight: float,
+                 wm_weight_start: float = .1, wm_weight_end: float = 1.,
+                 wm_warmup_fraction: float = .3, dino_grid_weight: float = 0.,
+                 prediction_horizon: int = 1, outcome_weight: float = 0.,
+                 wm_value_backbone_grad: bool = True) -> None:
+        if int(history_size) != 1:
+            raise ValueError("trajectory-native Stage3 requires history_size=1")
+        if int(prediction_horizon) < 1:
+            raise ValueError("prediction_horizon must be positive")
+        if not math.isfinite(outcome_weight) or outcome_weight < 0:
+            raise ValueError("outcome_weight must be finite and nonnegative")
+        self.history_size = 1
+        self.prediction_horizon = int(prediction_horizon)
         self.sigreg = sigreg
         self.sigreg_weight = float(sigreg_weight)
         self.value_weight = float(value_weight)
@@ -95,14 +81,8 @@ class SFT2Algorithm:
         self.wm_weight_end = float(wm_weight_end)
         self.wm_warmup_fraction = float(wm_warmup_fraction)
         self.dino_grid_weight = float(dino_grid_weight)
-        self.prediction_horizon = int(prediction_horizon)
-        if self.prediction_horizon < 1:
-            raise ValueError("prediction_horizon must be positive")
-        if self.prediction_horizon > 1 and self.history_size != 1:
-            raise ValueError(
-                "multi-step SFT2 rollout requires history_size=1, "
-                f"got H={self.history_size}, T={self.prediction_horizon}"
-            )
+        self.outcome_weight = float(outcome_weight)
+        self.wm_value_backbone_grad = bool(wm_value_backbone_grad)
 
     def wm_weight(self, global_step: int, total_steps: int) -> float:
         """在训练前段用 cosine ramp 增加 WM loss 权重。"""
@@ -120,312 +100,227 @@ class SFT2Algorithm:
 
     @property
     def has_sigreg_stage(self) -> bool:
-        """训练是否需要在主 loss 反传后执行独立 SIGReg 阶段。"""
+        return self.sigreg is not None and self.sigreg_weight > 0.
 
-        return self.sigreg is not None and self.sigreg_weight > 0.0
+    def training_primary_step(self, runtime: SFT2ModelRuntime, batch: Stage3TrajectoryBatch,
+                              *, wm_weight: float) -> SFT2StepOutput:
+        return self._step(runtime, batch, wm_weight=wm_weight)
 
-    def training_primary_step(
-        self,
-        runtime: SFT2ModelRuntime,
-        batch: SFT2Batch | SFT2RolloutBatch,
-        *,
-        wm_weight: float,
-    ) -> SFT2StepOutput:
-        return self._step(
-            runtime,
-            batch,
-            wm_weight=wm_weight,
-            include_lm_loss=True,
-        )
+    def training_sigreg_step(self, runtime: SFT2ModelRuntime,
+                             batch: Stage3TrajectoryBatch, *, online_states: torch.Tensor,
+                             sigreg_seed: int) -> SFT2SIGRegStepOutput:
+        """Regularize each real adjacent transition once using the existing graph.
 
-    def training_sigreg_step(
-        self,
-        runtime: SFT2ModelRuntime,
-        batch: SFT2Batch | SFT2RolloutBatch,
-        *,
-        detached_current_state: torch.Tensor,
-        sigreg_seed: int,
-    ) -> SFT2SIGRegStepOutput:
-        """只让在线 ``s_{t+1}`` 接收 SIGReg 梯度。
-
-        调用者必须先完成主 loss backward，再调用本方法。小于两个样本的 rank
-        无法估计 SIGReg 分布，但仍用依赖在线 state 的零 loss 参与 DDP backward。
+        Window overlap never defines this population: a trajectory with L actions
+        contributes L pairs, including its final transition. Padding contributes
+        none. Only successor occurrences receive SIGReg gradients.
         """
-
         if not self.has_sigreg_stage:
-            raise RuntimeError("SFT2 SIGReg stage is disabled")
-        next_state = runtime.agent.encode_state(
-            batch.online_tail,
-            include_lm_loss=False,
-        ).state
-        sigreg_current = runtime.agent.wm.sigreg_state(detached_current_state)
-        sigreg_next = runtime.agent.wm.sigreg_state(next_state)
-        global_current, global_next, global_batch_size = gather_global_sigreg_states(
-            sigreg_current,
-            sigreg_next,
-            batch.sample_weights > 0.0,
-        )
+            raise RuntimeError("Stage3 SIGReg is disabled")
+        if online_states.shape[0] != len(batch.state_keys):
+            raise ValueError("SIGReg online states must cover the complete trajectory batch")
+        current, valid = [], []
+        seen = set()
+        for record, left, right, start, end in zip(
+                batch.trajectory_ids, batch.state_offsets[:-1], batch.state_offsets[1:],
+                batch.window_offsets[:-1], batch.window_offsets[1:], strict=True):
+            weights = batch.sample_weights[start:end]
+            if not torch.all(weights == weights[0]):
+                raise ValueError("complete trajectory windows must share one padding weight")
+            active = bool(weights[0])
+            if active and record in seen:
+                raise ValueError("duplicate valid trajectory in SIGReg batch")
+            if active:
+                seen.add(record)
+            current.extend(range(left, right - 1))
+            valid.extend([active] * (right - left - 1))
+        indices = torch.tensor(current, dtype=torch.long, device=online_states.device)
+        mask = torch.tensor(valid, dtype=torch.bool, device=online_states.device)
+        current_state = runtime.agent.wm.sigreg_state(online_states[indices].detach())
+        next_state = runtime.agent.wm.sigreg_state(online_states[indices + 1])
+        global_current, global_next, count = gather_global_sigreg_states(
+            current_state, next_state, mask)
         with shared_sigreg_rng(sigreg_seed, global_next.device):
-            sigreg_loss = self._sigreg_loss(global_current, global_next)
-        if sigreg_loss is None:
-            # 保留全局 gather/在线编码图参与，但不伪造 global B<2 的统计量。
-            backward_loss = global_next.sum() * 0.0
+            raw_loss = self._sigreg_loss(global_current, global_next)
+        if raw_loss is None:
+            # Keep gather backward collectives identical even on all-padding ranks.
+            loss = global_next.sum() * 0.0
             metrics = {"sigreg_skipped_small_batch": 1.0}
         else:
-            backward_loss = self.sigreg_weight * sigreg_loss
-            metrics = {"sigreg_loss": float(sigreg_loss.detach().item())}
-        metrics["sigreg_global_batch_size"] = float(global_batch_size)
-        return SFT2SIGRegStepOutput(
-            loss=backward_loss,
-            raw_loss=sigreg_loss,
-            metrics=metrics,
+            loss = self.sigreg_weight * raw_loss
+            metrics = {"sigreg_loss": float(raw_loss.detach())}
+        metrics["sigreg_global_batch_size"] = float(count)
+        return SFT2SIGRegStepOutput(loss, raw_loss, metrics)
+
+    def evaluation_step(self, runtime: SFT2ModelRuntime,
+                        batch: Stage3TrajectoryBatch) -> SFT2StepOutput:
+        return self._step(runtime, batch, wm_weight=1.)
+
+    def _step(self, runtime: SFT2ModelRuntime, batch: Stage3TrajectoryBatch,
+              *, wm_weight: float) -> SFT2StepOutput:
+        if batch.prediction_horizon != self.prediction_horizon:
+            raise ValueError("trajectory prediction horizon does not match algorithm")
+        # EMA swaps must complete before creating any online autograd graph.
+        target_states = runtime.encode_next_state(batch.inputs)
+        encoded = runtime.agent.backbone(batch.inputs, include_lm_loss=True)
+        if self.wm_value_backbone_grad:
+            online_states = runtime.agent.wm.project_state(encoded.hidden)
+            current_hidden = encoded.hidden[batch.current_indices]
+            current_states = online_states[batch.current_indices]
+        else:
+            # One grad-enabled wrapped projector call: both branches update its
+            # weights, but only the observed/DINO branch reaches the backbone.
+            # Keep DDP reducer ownership; never call through projector.module.
+            current_hidden = encoded.hidden[batch.current_indices].detach()
+            combined = runtime.agent.wm.project_state(torch.cat(
+                (encoded.hidden, current_hidden), dim=0))
+            online_states, current_states = combined.split(
+                (encoded.hidden.shape[0], current_hidden.shape[0]), dim=0)
+        if online_states.shape != target_states.shape:
+            raise ValueError("online and EMA trajectory state shapes disagree")
+        if encoded.lm_losses is None or encoded.lm_losses.shape != batch.lm_weights.shape:
+            raise ValueError("trajectory forward requires one LM loss per eligible window")
+        lm_loss = (encoded.lm_losses * batch.lm_weights).sum() / batch.lm_weights.sum().clamp_min(1)
+        current = AgentStateOutput(hidden=current_hidden,
+                                   state=current_states, lm_loss=lm_loss)
+        rollout = runtime.agent.forward_action_rollout(batch.action_sequences, encoded_current=current)
+        expected = target_states[batch.next_indices].detach()
+        predicted = rollout.predicted_states
+        if predicted.shape != expected.shape:
+            raise ValueError("WM predictions must exactly match future target states")
+        weights = batch.sample_weights
+        layout = getattr(runtime.agent.wm, "state_layout", None)
+        if layout is not None:
+            wm_spatial = _window_mean(
+                (layout.spatial(predicted) - layout.spatial(expected)).square(), weights
+            )
+            wm_global = _window_mean(
+                (layout.global_state(predicted) - layout.global_state(expected)).square(),
+                weights,
+            )
+            wm = wm_spatial + wm_global
+        else:
+            wm_spatial = wm_global = None
+            wm = _window_mean((predicted - expected).square(), weights)
+        selected_values = rollout.action_values.gather(-1, batch.action_sequences.unsqueeze(-1)).squeeze(-1)
+        if selected_values.shape != batch.value_targets.shape:
+            raise ValueError("outgoing action values and MC targets must have identical shapes")
+        value = _window_mean((selected_values - batch.value_targets.to(selected_values)).square(), weights)
+        dino = None
+        if batch.observed_dino_target is not None:
+            if online_states.shape != batch.observed_dino_target.shape:
+                raise ValueError("DINO target shape must exactly match all observed online states")
+            observed_target = batch.observed_dino_target.detach().float()
+            if layout is not None:
+                dino_spatial = _window_mean(
+                    (layout.spatial(online_states.float()) - layout.spatial(observed_target)).square(),
+                    batch.observed_state_weights,
+                )
+                dino_global = _window_mean(
+                    (layout.global_state(online_states.float()) - layout.global_state(observed_target)).square(),
+                    batch.observed_state_weights,
+                )
+                dino = dino_spatial + dino_global
+            else:
+                dino_spatial = dino_global = None
+                dino = _window_mean(
+                    (online_states.float() - observed_target).square(),
+                    batch.observed_state_weights)
+        elif self.dino_grid_weight:
+            raise ValueError("positive DINO-grid weight requires a DINO-grid target")
+        head = getattr(runtime.agent.wm, "outcome_head", None)
+        logits = (
+            runtime.agent.wm.predict_outcome_logits(predicted)
+            if head is not None and hasattr(runtime.agent.wm, "predict_outcome_logits")
+            else (head(predicted) if head is not None else None)
         )
+        outcome = self._outcome_loss(batch, logits)
+        total = wm_weight * wm + self.value_weight * value + self.ce_weight * lm_loss
+        if dino is not None:
+            total = total + self.dino_grid_weight * dino
+        if outcome is not None:
+            total = total + self.outcome_weight * outcome
+        losses = {"lm": lm_loss, "wm": wm, "value": value, "dino": dino, "outcome": outcome}
+        count = int(weights.sum().item())
+        metrics = {"wm_mse": float(wm.detach()), "value_mc_mse": float(value.detach()),
+                   "value_total": float(value.detach()), "lm_ce": float(lm_loss.detach()),
+                   "lambda_wm": float(wm_weight), "lambda_sigreg": 0.,
+                   "lambda_value": self.value_weight, "lambda_ce": self.ce_weight,
+                   "lambda_dino": self.dino_grid_weight, "context_length": 1.,
+                   "prediction_horizon": float(self.prediction_horizon),
+                   "current_batch_size": float(count), "total_loss": float(total.detach())}
+        if dino is not None:
+            metrics["dino_grid_mse"] = float(dino.detach())
+            if dino_spatial is not None:
+                metrics["dino_spatial_mse"] = float(dino_spatial.detach())
+                metrics["dino_cls_mse"] = float(dino_global.detach())
+        if wm_spatial is not None:
+            metrics["wm_spatial_mse"] = float(wm_spatial.detach())
+            metrics["wm_cls_mse"] = float(wm_global.detach())
+        if batch.dino_grid_target is not None:
+            if predicted.shape != batch.dino_grid_target.shape:
+                raise ValueError("future DINO diagnostic target shape mismatch")
+            with torch.no_grad():
+                future_dino = batch.dino_grid_target.float()
+                if layout is None:
+                    predicted_dino = _window_mean(
+                        (predicted.float() - future_dino).square(), weights
+                    )
+                else:
+                    predicted_dino_spatial = _window_mean(
+                        (layout.spatial(predicted.float()) - layout.spatial(future_dino)).square(),
+                        weights,
+                    )
+                    predicted_dino_global = _window_mean(
+                        (layout.global_state(predicted.float()) - layout.global_state(future_dino)).square(),
+                        weights,
+                    )
+                    predicted_dino = predicted_dino_spatial + predicted_dino_global
+                    metrics["predicted_dino_spatial_mse"] = float(predicted_dino_spatial)
+                    metrics["predicted_dino_cls_mse"] = float(predicted_dino_global)
+                metrics["predicted_dino_grid_mse"] = float(predicted_dino)
+        if outcome is not None:
+            metrics["outcome_bce"] = float(outcome.detach())
+            metrics["outcome_count"] = float((batch.outcome_mask & (weights[:, None] > 0)).sum())
+        diagnostics = {"predicted_states": predicted.detach(), "target_states": expected.detach()}
+        if batch.dino_grid_target is not None:
+            diagnostics["dino_targets"] = batch.dino_grid_target.detach()
+        if batch.current_dino_target is not None:
+            diagnostics["current_dino_targets"] = batch.current_dino_target.detach()
+        if logits is not None:
+            diagnostics["outcome_logits"] = logits.detach()
+        return SFT2StepOutput(total, losses, metrics, current.state, count, online_states, diagnostics)
 
-    def merge_training_metrics(
-        self,
-        primary_metrics: dict[str, float],
-        sigreg: SFT2SIGRegStepOutput | None,
-    ) -> dict[str, float]:
-        """把两个显式反传阶段合并为一个 optimizer-step 日志视图。"""
+    def _outcome_loss(self, batch: Stage3TrajectoryBatch, logits: torch.Tensor | None):
+        if not self.outcome_weight:
+            return None
+        if logits is None:
+            raise ValueError("outcome supervision requires an outcome head")
+        targets = batch.outcome_targets
+        mask = batch.outcome_mask & (batch.sample_weights[:, None] > 0)
+        if logits.shape != targets.shape or mask.shape != targets.shape:
+            raise ValueError("outcome predictions and labels must have identical shape")
+        if not torch.isfinite(targets[mask]).all() or not ((targets[mask] == 0) | (targets[mask] == 1)).all():
+            raise ValueError("outcome targets must be finite binary labels")
+        safe = torch.where(mask, targets, torch.zeros_like(targets))
+        terms = torch.nn.functional.binary_cross_entropy_with_logits(logits, safe, reduction="none")
+        return (terms * mask).sum() / mask.sum().clamp_min(1)
 
+    def merge_training_metrics(self, primary_metrics, sigreg):
         metrics = dict(primary_metrics)
-        metrics["lambda_sigreg"] = self.sigreg_weight if sigreg is not None else 0.0
-        if sigreg is None:
-            return metrics
-        metrics.update(sigreg.metrics)
-        metrics["total_loss"] += float(sigreg.loss.detach().item())
+        metrics["lambda_sigreg"] = self.sigreg_weight if sigreg is not None else 0.
+        if sigreg is not None:
+            metrics.update(sigreg.metrics)
+            metrics["total_loss"] += float(sigreg.loss.detach())
         return metrics
 
-    def evaluation_step(
-        self,
-        runtime: SFT2ModelRuntime,
-        batch: SFT2Batch | SFT2RolloutBatch,
-    ) -> SFT2StepOutput:
-        return self._step(
-            runtime,
-            batch,
-            wm_weight=1.0,
-            include_lm_loss=False,
-        )
-
-    def _step(
-        self,
-        runtime: SFT2ModelRuntime,
-        batch: SFT2Batch | SFT2RolloutBatch,
-        *,
-        wm_weight: float,
-        include_lm_loss: bool,
-    ) -> SFT2StepOutput:
-        """按照 current forward → next target → CE/WM/value 完成主阶段。"""
-
-        if isinstance(batch, SFT2RolloutBatch):
-            return self._rollout_step(
-                runtime,
-                batch,
-                wm_weight=wm_weight,
-                include_lm_loss=include_lm_loss,
-            )
-
-        if not 1 <= batch.history_size <= self.history_size:
-            raise ValueError(
-                "SFT2 batch context length exceeds algorithm history_size: "
-                f"batch={batch.history_size}, algorithm={self.history_size}"
-            )
-        # 当前 Qwen 只执行一次；更老 state 来自它们先前 current forward 的 cache。
-        current_encoded = runtime.agent.encode_state(
-            batch.current,
-            include_lm_loss=include_lm_loss,
-        )
-        cached_history = runtime.history_cache.history(
-            batch.history_keys,
-            reference=current_encoded.state,
-        )
-        model_output = runtime.agent.forward_step_from_history(
-            batch.action_indices,
-            cached_history,
-            encoded_current=current_encoded,
-        )
-        runtime.history_cache.store(
-            batch.current_keys,
-            model_output.state[:, -1],
-            enabled=not batch.is_padding,
-        )
-        next_states = runtime.encode_next_state(batch.next)
-        expected_next_states = next_states[batch.current_next_indices]
-
-        wm_objective = world_model_loss(
-            model_output.predicted_next_state,
-            expected_next_states,
-            state_weight=wm_weight,
-            dino_grid_target=batch.dino_grid_target,
-            dino_grid_weight=self.dino_grid_weight,
-        )
-        value_objective = action_value_loss(
-            model_output.action_values,
-            batch.current_action_indices,
-            batch.current_value_targets,
-        )
-        total = wm_objective.loss + self.value_weight * value_objective.loss
-        if model_output.lm_loss is not None:
-            total = total + self.ce_weight * model_output.lm_loss
-        sample_count = 0 if batch.is_padding else batch.batch_size
-        if batch.is_padding:
-            total = total * 0.0
-
-        metrics = {
-            "value_mc_mse": float(
-                value_objective.monte_carlo_mse.detach().item()
-            ),
-            "value_total": float(value_objective.loss.detach().item()),
-            "lambda_wm": float(wm_weight),
-            "lambda_sigreg": 0.0,
-            "lambda_value": self.value_weight,
-            "lambda_ce": self.ce_weight,
-            "lambda_dino": self.dino_grid_weight,
-            "context_length": float(batch.history_size),
-            "prediction_horizon": 1.0,
-            "current_batch_size": float(sample_count),
-            "history_cache_entries": float(runtime.history_cache.count),
-            "total_loss": float(total.detach().item()),
-        }
-        metrics["wm_mse"] = float(wm_objective.state_mse.detach().item())
-        losses: dict[str, torch.Tensor | None] = {
-            "lm": model_output.lm_loss,
-            "wm": wm_objective.state_mse,
-            "value": value_objective.loss,
-        }
-        if wm_objective.dino_grid_mse is not None:
-            losses["dino"] = wm_objective.dino_grid_mse
-            metrics["dino_grid_mse"] = float(
-                wm_objective.dino_grid_mse.detach().item()
-            )
-        if model_output.lm_loss is not None:
-            metrics["lm_ce"] = float(model_output.lm_loss.detach().item())
-
-        return SFT2StepOutput(
-            loss=total,
-            losses=losses,
-            metrics=metrics,
-            current_state=model_output.state[:, -1],
-            sample_count=sample_count,
-        )
-
-    def _rollout_step(
-        self,
-        runtime: SFT2ModelRuntime,
-        batch: SFT2RolloutBatch,
-        *,
-        wm_weight: float,
-        include_lm_loss: bool,
-    ) -> SFT2StepOutput:
-        """从真实起点递推 T 步，分别监督后继状态和动作前的 outgoing Q。
-
-        Agent 统一执行 value-before-prediction；本阶段只装配对应的真实目标，
-        不复制 WM 递推。MC return 已在完整 episode 上计算，不在此窗口截断。
-        """
-
-        if self.history_size != 1 or batch.prediction_horizon != self.prediction_horizon:
-            raise ValueError(
-                "SFT2 rollout batch does not match algorithm H/T: "
-                f"algorithm=({self.history_size},{self.prediction_horizon}), "
-                f"batch=(1,{batch.prediction_horizon})"
-            )
-        current_encoded = runtime.agent.encode_state(
-            batch.current,
-            include_lm_loss=include_lm_loss,
-        )
-        model_output = runtime.agent.forward_action_rollout(
-            batch.action_sequences,
-            encoded_current=current_encoded,
-        )
-        runtime.history_cache.store(
-            batch.current_keys,
-            model_output.current_state,
-            enabled=not batch.is_padding,
-        )
-
-        next_states = runtime.encode_next_state(batch.next)
-        expected_next_states = next_states[batch.next_indices.flatten()].reshape(
-            batch.batch_size,
-            batch.prediction_horizon,
-            *next_states.shape[1:],
-        )
-        wm_objective = world_model_loss(
-            model_output.predicted_states,
-            expected_next_states,
-            state_weight=wm_weight,
-            dino_grid_target=batch.dino_grid_target,
-            dino_grid_weight=self.dino_grid_weight,
-        )
-        value_objective = action_value_loss(
-            model_output.action_values,
-            batch.action_sequences,
-            batch.value_target_sequences,
-        )
-        total = wm_objective.loss + self.value_weight * value_objective.loss
-        if model_output.lm_loss is not None:
-            total = total + self.ce_weight * model_output.lm_loss
-        sample_count = 0 if batch.is_padding else batch.batch_size
-        if batch.is_padding:
-            total = total * 0.0
-
-        metrics = {
-            "value_mc_mse": float(value_objective.monte_carlo_mse.detach().item()),
-            "value_total": float(value_objective.loss.detach().item()),
-            "lambda_wm": float(wm_weight),
-            "lambda_sigreg": 0.0,
-            "lambda_value": self.value_weight,
-            "lambda_ce": self.ce_weight,
-            "lambda_dino": self.dino_grid_weight,
-            "context_length": 1.0,
-            "prediction_horizon": float(batch.prediction_horizon),
-            "current_batch_size": float(sample_count),
-            "history_cache_entries": float(runtime.history_cache.count),
-            "total_loss": float(total.detach().item()),
-            "wm_mse": float(wm_objective.state_mse.detach().item()),
-        }
-        losses: dict[str, torch.Tensor | None] = {
-            "lm": model_output.lm_loss,
-            "wm": wm_objective.state_mse,
-            "value": value_objective.loss,
-        }
-        if wm_objective.dino_grid_mse is not None:
-            losses["dino"] = wm_objective.dino_grid_mse
-            metrics["dino_grid_mse"] = float(
-                wm_objective.dino_grid_mse.detach().item()
-            )
-        if model_output.lm_loss is not None:
-            metrics["lm_ce"] = float(model_output.lm_loss.detach().item())
-        return SFT2StepOutput(
-            loss=total,
-            losses=losses,
-            metrics=metrics,
-            current_state=model_output.current_state,
-            sample_count=sample_count,
-        )
-
-    def _sigreg_loss(
-        self,
-        current_state: torch.Tensor,
-        next_state: torch.Tensor,
-    ) -> torch.Tensor | None:
-        """为当前 transition 的在线 ``(s_t,s_{t+1})`` 计算一次 SIGReg。"""
-
-        if self.sigreg is None or self.sigreg_weight <= 0.0:
+    def _sigreg_loss(self, current_state, next_state):
+        if not self.has_sigreg_stage:
             return None
-        if current_state.ndim != 2 or next_state.ndim != 2:
-            raise ValueError(
-                "SFT2 SIGReg expects current_state/next_state=(B,D), "
-                f"got {tuple(current_state.shape)} and {tuple(next_state.shape)}"
-            )
-        if current_state.shape != next_state.shape:
-            raise ValueError("SFT2 SIGReg state batch sizes do not match")
+        if current_state.ndim != 2 or current_state.shape != next_state.shape:
+            raise ValueError("SIGReg requires matching [B,D] current and next states")
         return self.sigreg(torch.stack((current_state, next_state), dim=1))
 
-__all__ = [
-    "SFT2_VALUE_OBJECTIVE",
-    "SFT2Algorithm",
-    "SFT2SIGRegStepOutput",
-    "SFT2StepOutput",
-    "require_sft2_wm_history",
-]
+
+__all__ = ["SFT2_VALUE_OBJECTIVE", "SFT2Algorithm", "SFT2SIGRegStepOutput",
+           "SFT2StepOutput", "require_sft2_wm_history"]

@@ -26,7 +26,7 @@ from nimloth.training.rl.planner_verl_worker import (
 from nimloth.training.rl.trainer import (
     _build_optimizer,
     _build_world_model,
-    _prepare_planner_qwen_training,
+    _prepare_qwen_training,
 )
 
 
@@ -171,7 +171,7 @@ def build_planner_worker_components(
     if not rl_config.predictor.train_wm:
         world_model.wm_predictor.requires_grad_(False).eval()
 
-    checkpointed_modules = _prepare_planner_qwen_training(
+    checkpointed_modules = _prepare_qwen_training(
         model,
         gradient_checkpointing=bool(args.gradient_checkpointing),
         eval_modules=(find_visual_module(model),),

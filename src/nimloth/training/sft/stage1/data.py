@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,21 @@ from nimloth.latent import (
     normalize_latent_state_blocks,
 )
 from nimloth.util.distributed import is_main
+
+FORMAT_OBJECTIVE = "format_answer_ce_v2"
+CACHE_SCHEMA = "nimloth_early_stage_cache_v7"
+_LATENT_MARKER_RE = re.compile(r"<\|latent_state(?:_\d+)?\|>")
+
+
+def render_stage_text(text: str, latent_token_count: int | None) -> str:
+    """Project legacy prompt and answer query markers out without changing real text.
+
+    Applied to every full and prefix rendering, so assistant spans stay aligned.
+    Original JSONL/images remain untouched; cache identity records this projection.
+    """
+    if latent_token_count is None:
+        return _LATENT_MARKER_RE.sub("", text)
+    return normalize_latent_state_blocks(text, latent_token_count)
 
 
 def collect_images(messages: list[dict[str, Any]]) -> list[Image.Image]:
@@ -59,14 +75,14 @@ def _encode_input_ids(
     max_length: int,
     *,
     add_generation_prompt: bool,
-    latent_token_count: int = 1,
+    latent_token_count: int | None = None,
 ) -> list[int]:
     text = processor.apply_chat_template(
         messages,
         tokenize=False,
         add_generation_prompt=add_generation_prompt,
     )
-    text = normalize_latent_state_blocks(text, latent_token_count)
+    text = render_stage_text(text, latent_token_count)
     enc = processor(
         text=[text],
         images=images or None,
@@ -91,7 +107,7 @@ def assistant_token_spans(
     processor: AutoProcessor,
     max_length: int,
     *,
-    latent_token_count: int = 1,
+    latent_token_count: int | None = None,
 ) -> list[tuple[int, int]]:
     """Return assistant token spans aligned to a single full multimodal encoding."""
     images = collect_images(messages)
@@ -151,8 +167,8 @@ def collate_fn(
     processor: AutoProcessor,
     max_length: int,
     *,
-    latent_token_count: int = 1,
-    mask_latent_query_labels: bool = True,
+    latent_token_count: int | None = None,
+    mask_latent_query_labels: bool | None = True,
     require_complete: bool = False,
 ) -> dict[str, torch.Tensor]:
     texts: list[str] = []
@@ -163,7 +179,7 @@ def collate_fn(
         text = processor.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=False
         )
-        text = normalize_latent_state_blocks(text, latent_token_count)
+        text = render_stage_text(text, latent_token_count)
         texts.append(text)
         spans_per_item.append(
             assistant_token_spans(
@@ -196,7 +212,7 @@ def collate_fn(
             if start >= end:
                 continue
             labels[row, start:end] = enc["input_ids"][row, start:end]
-        if mask_latent_query_labels:
+        if latent_token_count is not None and mask_latent_query_labels:
             labels[row] = _mask_latent_query_labels(
                 labels[row],
                 enc["input_ids"][row],
@@ -227,11 +243,11 @@ def cache_fingerprint(
     min_pixels: int,
     vocab_size: int,
     max_images_per_record: int,
-    latent_token_count: int = 1,
-    mask_latent_query_labels: bool = True,
+    latent_token_count: int | None = None,
+    mask_latent_query_labels: bool | None = True,
     cache_pixel_dtype: str = "bfloat16",
     processor_source: str = "",
-    latent_query_mode: str = "inject",
+    latent_query_mode: str | None = None,
 ) -> str:
     stat = jsonl_path.stat()
     payload = "|".join(
@@ -246,10 +262,11 @@ def cache_fingerprint(
             str(max_images_per_record),
             str(latent_token_count),
             str(mask_latent_query_labels),
-            latent_query_mode,
+            str(latent_query_mode),
             cache_pixel_dtype,
             processor_source,
-            "v6-query-mode",
+            CACHE_SCHEMA,
+            FORMAT_OBJECTIVE if latent_token_count is None else "query",
         ]
     )
     return hashlib.sha256(payload.encode()).hexdigest()[:16]
@@ -260,14 +277,14 @@ def encode_sample_with_labels(
     processor: AutoProcessor,
     max_length: int,
     *,
-    latent_token_count: int = 1,
-    mask_latent_query_labels: bool = True,
+    latent_token_count: int | None = None,
+    mask_latent_query_labels: bool | None = True,
 ) -> dict[str, torch.Tensor]:
     images = collect_images(messages)
     text = processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=False
     )
-    text = normalize_latent_state_blocks(text, latent_token_count)
+    text = render_stage_text(text, latent_token_count)
     enc = processor(
         text=[text],
         images=images or None,
@@ -289,7 +306,7 @@ def encode_sample_with_labels(
         if start >= end:
             continue
         labels[0, start:end] = enc["input_ids"][0, start:end]
-    if mask_latent_query_labels:
+    if latent_token_count is not None and mask_latent_query_labels:
         labels[0] = _mask_latent_query_labels(
             labels[0],
             enc["input_ids"][0],
@@ -343,7 +360,7 @@ def collate_cached_fn(
 
 _CACHE_PROCESSOR: AutoProcessor | None = None
 _CACHE_MAX_LENGTH = 0
-_CACHE_LATENT_TOKEN_COUNT = 1
+_CACHE_LATENT_TOKEN_COUNT: int | None = None
 _CACHE_MASK_LATENT_QUERY_LABELS = True
 _CACHE_PIXEL_DTYPE = "bfloat16"
 
@@ -353,8 +370,8 @@ def _init_cache_worker(
     min_pixels: int,
     max_pixels: int,
     max_length: int,
-    latent_token_count: int = 1,
-    mask_latent_query_labels: bool = True,
+    latent_token_count: int | None = None,
+    mask_latent_query_labels: bool | None = True,
     cache_pixel_dtype: str = "bfloat16",
 ) -> None:
     global \
@@ -369,7 +386,7 @@ def _init_cache_worker(
     add_special_tokens(processor.tokenizer, latent_token_count=latent_token_count)
     _CACHE_PROCESSOR = processor
     _CACHE_MAX_LENGTH = max_length
-    _CACHE_LATENT_TOKEN_COUNT = int(latent_token_count)
+    _CACHE_LATENT_TOKEN_COUNT = latent_token_count
     _CACHE_MASK_LATENT_QUERY_LABELS = bool(mask_latent_query_labels)
     _CACHE_PIXEL_DTYPE = cache_pixel_dtype
 
@@ -481,7 +498,8 @@ class NimlothVLSFTDataset(Dataset):
         image_paths = list(rec.get("image_paths", []))
         if self.max_images_per_record > 0:
             image_paths = image_paths[: self.max_images_per_record]
-        return {"id": rec["id"], "messages": messages, "num_images": len(image_paths)}
+        return {"id": rec["id"], "messages": messages, "num_images": len(image_paths),
+                **({"success": rec["success"]} if "success" in rec else {})}
 
     def get_messages(self, idx: int) -> list[dict[str, Any]]:
         return self.build_messages(self.records[idx])
@@ -498,20 +516,24 @@ def build_preprocess_cache(
     preprocess_workers: int,
     force: bool = False,
     *,
-    latent_token_count: int = 1,
-    mask_latent_query_labels: bool = True,
+    latent_token_count: int | None = None,
+    mask_latent_query_labels: bool | None = True,
     cache_pixel_dtype: str = "bfloat16",
-    latent_query_mode: str = "inject",
+    latent_query_mode: str | None = None,
 ) -> None:
     del processor
     cache_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = cache_dir / "manifest.json"
-    if not force and manifest_path.is_file():
+    compatible = False
+    if manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text())
-        if (
+        compatible = (
             manifest.get("count") == len(dataset)
             and manifest.get("max_length") == max_length
-            and int(manifest.get("latent_token_count", 1)) == int(latent_token_count)
+            and manifest.get("cache_schema") == CACHE_SCHEMA
+            and manifest.get("format_objective")
+            == (FORMAT_OBJECTIVE if latent_token_count is None else None)
+            and manifest.get("latent_token_count") == latent_token_count
             and bool(manifest.get("mask_latent_query_labels", True))
             == bool(mask_latent_query_labels)
             and manifest.get(
@@ -522,7 +544,10 @@ def build_preprocess_cache(
             )
             == latent_query_mode
             and manifest.get("cache_pixel_dtype", "float32") == cache_pixel_dtype
-        ):
+        )
+        if not compatible:
+            raise ValueError("incompatible preprocess cache; use a new cache directory")
+        if not force:
             missing = 0
             for rec in dataset.records:
                 if not dataset.cache_path_for_id(rec["id"]).is_file():
@@ -543,7 +568,11 @@ def build_preprocess_cache(
     tasks: list[tuple[str, list[dict[str, Any]], str]] = []
     for rec in dataset.records:
         out_path = dataset.cache_path_for_id(rec["id"])
-        if not force and out_path.is_file():
+        if not compatible and out_path.is_file():
+            raise ValueError(
+                "unidentified cached tensors cannot be reused; use a new directory"
+            )
+        if compatible and not force and out_path.is_file():
             continue
         tasks.append((rec["id"], dataset.build_messages(rec), str(out_path)))
 
@@ -564,6 +593,11 @@ def build_preprocess_cache(
         )
 
     manifest = {
+        "cache_schema": CACHE_SCHEMA,
+        "format_objective": FORMAT_OBJECTIVE if latent_token_count is None else None,
+        "text_projection": "remove_latent_markers_all_roles"
+        if latent_token_count is None
+        else "normalize_query_blocks",
         "count": len(dataset),
         "max_length": max_length,
         "latent_token_count": latent_token_count,

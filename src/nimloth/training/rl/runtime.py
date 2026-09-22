@@ -31,6 +31,8 @@ class RLModelRuntime:
     def encode_state_prompts(
         self,
         prompts: tuple[AgentPrompt, ...],
+        *,
+        retain_backbone_graph: bool = False,
     ) -> torch.Tensor:
         """Recompute complete real prefixes while retaining the Qwen graph."""
 
@@ -53,7 +55,7 @@ class RLModelRuntime:
                     actual_tokens=actual_tokens,
                     max_tokens=self.max_state_tokens,
                 )
-        if self.representation_to_backbone:
+        if self.representation_to_backbone or retain_backbone_graph:
             hidden = self.agent.backbone(
                 backbone_batch,
                 include_lm_loss=False,
@@ -77,6 +79,7 @@ class RLModelRuntime:
         *,
         batch_size: int,
         state_steps: int,
+        retain_backbone_graph: bool = False,
     ) -> torch.Tensor:
         """按配置保留或截断表征目标到 Backbone 的计算图。"""
 
@@ -90,7 +93,10 @@ class RLModelRuntime:
         step_outputs: list[torch.Tensor] = []
         for step in range(state_steps):
             step_prompts = prompts[step::state_steps]
-            hidden = self.encode_state_prompts(step_prompts)
+            hidden = self.encode_state_prompts(
+                step_prompts,
+                retain_backbone_graph=retain_backbone_graph,
+            )
             step_outputs.append(hidden)
         return torch.stack(step_outputs, dim=1)
 

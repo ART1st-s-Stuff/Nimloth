@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import pytest
 import torch
 from PIL import Image
 
 from nimloth.agent import (
     behavior_log_probs,
+    categorical_entropies_from_log_probs,
     categorical_entropy_from_log_probs,
 )
 from nimloth.backbone.qwen25vl.policy import (
@@ -33,10 +35,25 @@ def test_greedy_distribution_records_the_actual_deterministic_behavior() -> None
 
 
 def test_entropy_handles_top_p_zero_probability_actions() -> None:
-    log_probs = torch.tensor([[0.0, float("-inf"), float("-inf")]])
+    logits = torch.tensor([[4.0, 3.0, 1.0, -2.0]], requires_grad=True)
+    log_probs = behavior_log_probs(logits[0], temperature=0.7, top_p=0.9).unsqueeze(0)
+    assert torch.isfinite(log_probs).sum() == 2
+    assert torch.isneginf(log_probs).sum() == 2
     entropy = categorical_entropy_from_log_probs(log_probs)
     assert torch.isfinite(entropy)
-    assert entropy.item() == 0.0
+    entropy.backward()
+    assert logits.grad is not None
+    assert torch.isfinite(logits.grad).all()
+    assert torch.count_nonzero(logits.grad) > 0
+
+
+@pytest.mark.parametrize("invalid", [float("nan"), float("inf")])
+def test_entropy_does_not_hide_invalid_log_probs(invalid: float) -> None:
+    log_probs = torch.tensor([[0.0, invalid]])
+
+    entropy = categorical_entropies_from_log_probs(log_probs)
+
+    assert not torch.isfinite(entropy).all()
 
 
 def test_runtime_pil_images_are_not_passed_to_chat_template() -> None:
@@ -63,5 +80,8 @@ def test_runtime_pil_images_are_not_passed_to_chat_template() -> None:
         },
     ]
 
-    assert render_policy_messages(messages, Processor(), latent_token_count=1) == "rendered"
+    assert (
+        render_policy_messages(messages, Processor(), latent_token_count=1)
+        == "rendered"
+    )
     assert collect_policy_images(messages)[0].getpixel((0, 0)) == (255, 255, 255)

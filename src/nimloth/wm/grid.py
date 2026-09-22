@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -12,6 +13,7 @@ from einops import rearrange
 from torch import nn
 
 from nimloth.wm._vendor_lewm import Embedder, modulate
+from nimloth.wm.layout import GridStateLayout
 from nimloth.wm.model import WorldModel
 
 
@@ -55,6 +57,232 @@ class SharedSlotProjector(nn.Module):
         return self.net(hidden.to(dtype=next(self.parameters()).dtype))
 
 
+class SplitSpatialGlobalProjector(nn.Module):
+    """K64 spatial 与 K1 global 使用独立、同构的 projector。"""
+
+    schema = "split_spatial_global_v1"
+
+    def __init__(
+        self,
+        input_dim: int,
+        output_dim: int,
+        hidden_dim: int = 2048,
+        *,
+        state_layout: GridStateLayout,
+    ) -> None:
+        super().__init__()
+        if state_layout.global_tokens != 1:
+            raise ValueError("split projector requires exactly one global slot")
+        self.input_dim = int(input_dim)
+        self.qwen_hidden_dim = self.input_dim
+        self.output_dim = int(output_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.state_layout = state_layout
+        self.grid_tokens = state_layout.state_tokens
+        self.latent_token_count = self.grid_tokens
+        self.migration_provenance: dict[str, object] | None = None
+        self.spatial = SharedSlotProjector(
+            input_dim,
+            output_dim,
+            hidden_dim,
+            grid_tokens=state_layout.spatial_tokens,
+        )
+        self.global_projector = SharedSlotProjector(
+            input_dim,
+            output_dim,
+            hidden_dim,
+            grid_tokens=1,
+        )
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        expected = (self.grid_tokens, self.input_dim)
+        if hidden.ndim != 3 or tuple(hidden.shape[1:]) != expected:
+            raise ValueError(
+                "SplitSpatialGlobalProjector expected hidden shape "
+                f"(B, {self.grid_tokens}, {self.input_dim}), got {tuple(hidden.shape)}"
+            )
+        return torch.cat(
+            (
+                self.spatial(self.state_layout.spatial(hidden)),
+                self.global_projector(
+                    self.state_layout.global_state(hidden).unsqueeze(-2)
+                ),
+            ),
+            dim=1,
+        )
+
+    def metadata(self, *, initialization_source: str | None = None) -> dict[str, object]:
+        source = (
+            str(initialization_source)
+            if initialization_source is not None
+            else None
+        )
+        return {
+            "projector_layout": self.schema,
+            "ordering": "row_major_spatial_then_global",
+            "state_layout": self.state_layout.metadata(),
+            "qwen_hidden_dim": self.input_dim,
+            "state_dim": self.output_dim,
+            "projector_hidden_dim": self.hidden_dim,
+            "initialization_source": source,
+            "spatial_initialization_source": source,
+            "global_initialization_source": source,
+            "global_initialization": "copy_of_spatial_v1",
+        }
+
+    @classmethod
+    def from_k64_shared(
+        cls,
+        shared: SharedSlotProjector,
+        *,
+        state_layout: GridStateLayout,
+    ) -> "SplitSpatialGlobalProjector":
+        if shared.grid_tokens != state_layout.spatial_tokens:
+            raise ValueError(
+                "K64 projector token count does not match migration layout: "
+                f"checkpoint={shared.grid_tokens}, spatial={state_layout.spatial_tokens}"
+            )
+        module = cls(
+            shared.input_dim,
+            shared.output_dim,
+            shared.hidden_dim,
+            state_layout=state_layout,
+        )
+        source = shared.state_dict()
+        module.spatial.load_state_dict(source, strict=True)
+        module.global_projector.load_state_dict(source, strict=True)
+        return module
+
+
+def load_k64_projector_for_k65_migration(
+    checkpoint: str | Path,
+    *,
+    qwen_hidden_dim: int,
+    state_dim: int,
+    state_layout: GridStateLayout,
+    map_location: str | torch.device = "cpu",
+    dtype: torch.dtype | None = None,
+) -> SplitSpatialGlobalProjector:
+    """显式读取 K64 Stage3 projector，并复制初始化两个 K65 分支。"""
+
+    checkpoint = Path(checkpoint)
+    state_path = checkpoint / "state_proj.pt"
+    training_path = checkpoint / "training_state.pt"
+    if not state_path.is_file() or not training_path.is_file():
+        raise FileNotFoundError(f"incomplete K64 Stage3 migration source: {checkpoint}")
+    training_state = torch.load(training_path, map_location="cpu", weights_only=False)
+    saved_tokens = int(training_state.get("latent_token_count", -1))
+    if saved_tokens != state_layout.spatial_tokens:
+        raise ValueError(
+            "K64 Stage3 migration source has incompatible token count: "
+            f"checkpoint={saved_tokens}, spatial={state_layout.spatial_tokens}"
+        )
+    state = torch.load(state_path, map_location=map_location, weights_only=True)
+    if not isinstance(state, dict) or set(state) != {
+        "net.0.weight", "net.0.bias", "net.1.weight", "net.1.bias",
+        "net.3.weight", "net.3.bias",
+    }:
+        raise ValueError("K64 migration source is not a strict SharedSlotProjector state")
+    first = state["net.0.weight"]
+    last = state["net.3.weight"]
+    if tuple(first.shape[1:]) != (qwen_hidden_dim,) or last.shape[0] != state_dim:
+        raise ValueError("K64 projector dimensions do not match the K65 target")
+    shared = SharedSlotProjector(
+        qwen_hidden_dim,
+        state_dim,
+        int(first.shape[0]),
+        grid_tokens=state_layout.spatial_tokens,
+    )
+    shared.load_state_dict(state, strict=True)
+    module = SplitSpatialGlobalProjector.from_k64_shared(
+        shared, state_layout=state_layout
+    )
+    if dtype is not None:
+        module.to(dtype=dtype)
+    return module
+
+
+def load_k64_stage2_projector_for_k65_migration(
+    checkpoint: str | Path,
+    *,
+    qwen_hidden_dim: int,
+    state_dim: int,
+    state_layout: GridStateLayout,
+    map_location: str | torch.device = "cpu",
+    dtype: torch.dtype | None = None,
+) -> SplitSpatialGlobalProjector:
+    """Strictly copy a K64 Stage2 shared projector into two K65 branches."""
+
+    checkpoint = Path(checkpoint)
+    config_path = checkpoint / "grid_state_config.json"
+    state_path = checkpoint / "slot_projector.pt"
+    if not config_path.is_file() or not state_path.is_file():
+        raise FileNotFoundError(
+            f"incomplete K64 Stage2 split-projector migration source: {checkpoint}"
+        )
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    expected = {
+        "training_stage": "query",
+        "grid_tokens": state_layout.spatial_tokens,
+        "qwen_hidden_dim": int(qwen_hidden_dim),
+        "state_dim": int(state_dim),
+        "shared_slot_projector": True,
+        "ordering": "row_major",
+    }
+    mismatches = {
+        key: (config.get(key), value)
+        for key, value in expected.items()
+        if config.get(key) != value
+    }
+    if mismatches or config.get("global_tokens", 0) not in (None, 0):
+        raise ValueError(f"K64 Stage2 projector migration source mismatch: {mismatches}")
+    state = torch.load(state_path, map_location=map_location, weights_only=True)
+    required = {
+        "net.0.weight", "net.0.bias", "net.1.weight", "net.1.bias",
+        "net.3.weight", "net.3.bias",
+    }
+    if not isinstance(state, dict) or set(state) != required:
+        raise ValueError("K64 Stage2 source is not a strict SharedSlotProjector state")
+    if any(
+        not isinstance(value, torch.Tensor)
+        or value.dtype != torch.float32
+        or not torch.isfinite(value).all()
+        for value in state.values()
+    ):
+        raise ValueError("K64 Stage2 projector source must contain finite FP32 tensors")
+    first, last = state["net.0.weight"], state["net.3.weight"]
+    if first.shape[1] != qwen_hidden_dim or last.shape[0] != state_dim:
+        raise ValueError("K64 Stage2 projector dimensions do not match K65 target")
+    shared = SharedSlotProjector(
+        qwen_hidden_dim,
+        state_dim,
+        int(first.shape[0]),
+        grid_tokens=state_layout.spatial_tokens,
+    )
+    shared.load_state_dict(state, strict=True)
+    module = SplitSpatialGlobalProjector.from_k64_shared(
+        shared, state_layout=state_layout
+    )
+    hashes = {}
+    for name, path in (
+        ("grid_state_config", config_path),
+        ("slot_projector", state_path),
+    ):
+        hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    module.migration_provenance = {
+        "schema": "stage2_k64_to_k65_split_projector_v1",
+        "source_checkpoint": str(checkpoint.resolve()),
+        "source_hashes": hashes,
+        "source_projector_layout": "shared_k64_v1",
+        "target_projector_layout": SplitSpatialGlobalProjector.schema,
+        "projector_initialization": "copy_shared_to_both_branches_v1",
+        "optimizer_initialization": "fresh_adamw_v1",
+    }
+    if dtype is not None:
+        module.to(dtype=dtype)
+    return module
+
+
 def load_sft1_slot_projector(
     checkpoint: str | Path,
     *,
@@ -63,6 +291,7 @@ def load_sft1_slot_projector(
     grid_tokens: int = 16,
     map_location: str | torch.device = "cpu",
     dtype: torch.dtype | None = None,
+    state_layout: GridStateLayout | None = None,
 ) -> SharedSlotProjector:
     """加载 SFT1 的 row-major 16-slot projector，供 SFT2 继续训练。"""
 
@@ -79,7 +308,9 @@ def load_sft1_slot_projector(
         "qwen_hidden_dim": int(qwen_hidden_dim),
         "state_dim": int(state_dim),
         "shared_slot_projector": True,
-        "ordering": "row_major",
+        "ordering": (
+            "row_major_spatial_then_global" if state_layout is not None else "row_major"
+        ),
     }
     mismatches = {
         key: (config.get(key), value)
@@ -88,6 +319,10 @@ def load_sft1_slot_projector(
     }
     if mismatches:
         raise ValueError(f"SFT1 grid-state interface mismatch: {mismatches}")
+    if state_layout is not None:
+        saved_layout = GridStateLayout.from_metadata(config.get("state_layout") or {})
+        if saved_layout != state_layout or state_layout.state_tokens != grid_tokens:
+            raise ValueError("SFT1 grid-state layout mismatch")
 
     projector = SharedSlotProjector(
         input_dim=int(config["qwen_hidden_dim"]),
@@ -218,6 +453,9 @@ class _TemporalSpatialConditionalBlock(nn.Module):
 @dataclass(frozen=True)
 class GridPredictorConfig:
     grid_tokens: int = 16
+    spatial_grid_size: int | None = None
+    global_tokens: int = 0
+    position_encoding: str = "learned_v1"
     emb_dim: int = 1024
     action_dim: int = 8
     history_size: int = 4
@@ -226,6 +464,59 @@ class GridPredictorConfig:
     dim_head: int = 64
     mlp_dim: int = 2048
     dropout: float = 0.1
+
+    def __post_init__(self) -> None:
+        if self.grid_tokens < 1 or self.history_size < 1:
+            raise ValueError("grid_tokens and history_size must be positive")
+        if self.position_encoding not in ("learned_v1", "fixed_2d_sincos_v1"):
+            raise ValueError(f"unsupported position encoding: {self.position_encoding}")
+        if self.position_encoding == "fixed_2d_sincos_v1":
+            if self.spatial_grid_size is None:
+                raise ValueError("fixed 2D position encoding requires spatial_grid_size")
+            layout = self.state_layout
+            if layout.state_tokens != self.grid_tokens:
+                raise ValueError(
+                    "grid_tokens must equal spatial_grid_size squared plus global_tokens"
+                )
+            if self.emb_dim % 4:
+                raise ValueError("fixed 2D sine-cosine encoding requires emb_dim divisible by 4")
+        elif self.spatial_grid_size is not None or self.global_tokens:
+            raise ValueError(
+                "explicit spatial/global layout requires fixed_2d_sincos_v1"
+            )
+
+    @property
+    def state_layout(self) -> GridStateLayout:
+        if self.position_encoding != "fixed_2d_sincos_v1":
+            raise ValueError("legacy learned-position predictor has no explicit state layout")
+        return GridStateLayout(
+            spatial_grid_size=int(self.spatial_grid_size),
+            global_tokens=int(self.global_tokens),
+            global_role="dino_cls" if self.global_tokens else "none",
+        )
+
+
+def fixed_2d_sincos_position(layout: GridStateLayout, emb_dim: int) -> torch.Tensor:
+    """Return deterministic row-major 2D sin/cos positions and a zero global row."""
+
+    if emb_dim % 4:
+        raise ValueError("2D sine-cosine position dimension must be divisible by 4")
+    axis_dim = emb_dim // 2
+    frequencies = torch.arange(axis_dim // 2, dtype=torch.float64)
+    frequencies = 1.0 / (10000 ** (frequencies / max(1, axis_dim // 2)))
+    coordinates = torch.arange(layout.spatial_grid_size, dtype=torch.float64)
+
+    def encode_axis(values: torch.Tensor) -> torch.Tensor:
+        phase = values[:, None] * frequencies[None, :]
+        return torch.cat((phase.sin(), phase.cos()), dim=-1)
+
+    y, x = torch.meshgrid(coordinates, coordinates, indexing="ij")
+    spatial = torch.cat(
+        (encode_axis(y.reshape(-1)), encode_axis(x.reshape(-1))), dim=-1
+    ).to(torch.float32)
+    if layout.has_global:
+        spatial = torch.cat((spatial, torch.zeros(1, emb_dim)), dim=0)
+    return spatial.unsqueeze(0)
 
 
 class TemporalSpatialGridPredictor(nn.Module):
@@ -238,15 +529,20 @@ class TemporalSpatialGridPredictor(nn.Module):
 
     def __init__(self, config: GridPredictorConfig) -> None:
         super().__init__()
-        if config.grid_tokens < 1 or config.history_size < 1:
-            raise ValueError("grid_tokens and history_size must be positive")
         self.config = config
         self.grid_tokens = config.grid_tokens
         self.emb_dim = config.emb_dim
         self.action_dim = config.action_dim
-        self.spatial_position = nn.Parameter(
-            torch.randn(1, config.grid_tokens, config.emb_dim)
-        )
+        if config.position_encoding == "fixed_2d_sincos_v1":
+            self.register_buffer(
+                "spatial_position",
+                fixed_2d_sincos_position(config.state_layout, config.emb_dim),
+                persistent=True,
+            )
+        else:
+            self.spatial_position = nn.Parameter(
+                torch.randn(1, config.grid_tokens, config.emb_dim)
+            )
         self.temporal_position = nn.Parameter(
             torch.zeros(1, config.history_size, 1, config.emb_dim)
         )
@@ -437,7 +733,7 @@ class TemporalSpatialGridPredictor(nn.Module):
         path: str | Path,
         *,
         map_location: str | torch.device = "cpu",
-    ) -> "TemporalSpatialGridPredictor":
+    ) -> TemporalSpatialGridPredictor:
         path = Path(path)
         config_path = path / "config.json"
         state_path = path / "predictor.pt"
@@ -554,8 +850,17 @@ class ResidualTemporalSpatialGridPredictor(nn.Module):
         (path / "config.json").write_text(
             json.dumps(
                 {
-                    "schema": "nimloth_residual_temporal_spatial_grid_v1",
+                    "schema": (
+                        "nimloth_residual_temporal_spatial_grid_v2"
+                        if self.config.position_encoding == "fixed_2d_sincos_v1"
+                        else "nimloth_residual_temporal_spatial_grid_v1"
+                    ),
                     "predictor": asdict(self.config),
+                    "state_layout": (
+                        self.config.state_layout.metadata()
+                        if self.config.position_encoding == "fixed_2d_sincos_v1"
+                        else None
+                    ),
                     "delta_head_initialization": "zeros",
                     "prediction_form": "input_state_plus_delta",
                 },
@@ -572,20 +877,119 @@ class ResidualTemporalSpatialGridPredictor(nn.Module):
         path: str | Path,
         *,
         map_location: str | torch.device = "cpu",
-    ) -> "ResidualTemporalSpatialGridPredictor":
+    ) -> ResidualTemporalSpatialGridPredictor:
         path = Path(path)
         payload = json.loads((path / "config.json").read_text(encoding="utf-8"))
-        if payload.get("schema") != "nimloth_residual_temporal_spatial_grid_v1":
+        if payload.get("schema") not in {
+            "nimloth_residual_temporal_spatial_grid_v1",
+            "nimloth_residual_temporal_spatial_grid_v2",
+        }:
             raise ValueError("unsupported residual grid predictor checkpoint schema")
-        module = cls(GridPredictorConfig(**payload["predictor"]))
+        config = GridPredictorConfig(**payload["predictor"])
+        if payload["schema"].endswith("_v2"):
+            layout = GridStateLayout.from_metadata(payload.get("state_layout") or {})
+            if layout != config.state_layout:
+                raise ValueError("residual predictor state layout mismatch")
+        elif config.position_encoding != "learned_v1":
+            raise ValueError("v1 residual checkpoint cannot contain fixed position state")
+        module = cls(config)
         module.load_state_dict(
             torch.load(path / "predictor.pt", map_location=map_location, weights_only=True)
         )
         return module
 
+    @classmethod
+    def migrate_k64_learned_to_k65_fixed(
+        cls,
+        path: str | Path,
+        *,
+        target_config: GridPredictorConfig,
+        map_location: str | torch.device = "cpu",
+    ) -> tuple["ResidualTemporalSpatialGridPredictor", dict[str, object]]:
+        """Migrate compatible residual-WM weights without reusing learned positions."""
+
+        path = Path(path)
+        payload = json.loads((path / "config.json").read_text(encoding="utf-8"))
+        if payload.get("schema") != "nimloth_residual_temporal_spatial_grid_v1":
+            raise ValueError("K64 migration requires a residual learned-position v1 checkpoint")
+        source_config = GridPredictorConfig(**payload["predictor"])
+        target_layout = target_config.state_layout
+        if source_config.position_encoding != "learned_v1":
+            raise ValueError("K64 migration source must use learned_v1 positions")
+        if source_config.grid_tokens != target_layout.spatial_tokens:
+            raise ValueError("K64 predictor token count does not match K65 spatial layout")
+        comparable = (
+            "emb_dim", "action_dim", "history_size", "depth", "heads",
+            "dim_head", "mlp_dim", "dropout",
+        )
+        mismatches = {
+            key: (getattr(source_config, key), getattr(target_config, key))
+            for key in comparable
+            if getattr(source_config, key) != getattr(target_config, key)
+        }
+        if (
+            target_config.position_encoding != "fixed_2d_sincos_v1"
+            or target_layout.global_tokens != 1
+        ):
+            mismatches["target_layout"] = (
+                target_config.position_encoding,
+                target_layout.metadata(),
+            )
+        if mismatches:
+            raise ValueError(f"K64/K65 residual predictor migration mismatch: {mismatches}")
+
+        source_state = torch.load(
+            path / "predictor.pt", map_location=map_location, weights_only=True
+        )
+        target = cls(target_config)
+        target_state = target.state_dict()
+        rebuilt = {"body.spatial_position"}
+        source_inherited_keys = set(source_state) - rebuilt
+        target_inherited_keys = set(target_state) - rebuilt
+        unknown = source_inherited_keys - target_inherited_keys
+        missing = target_inherited_keys - source_inherited_keys
+        if unknown or missing:
+            raise ValueError(
+                "K64/K65 predictor keys outside migration whitelist: "
+                f"missing={sorted(missing)}, unexpected={sorted(unknown)}"
+            )
+        inherited: list[str] = []
+        incompatible: dict[str, tuple[tuple[int, ...], tuple[int, ...]]] = {}
+        for key, value in source_state.items():
+            if key in rebuilt:
+                continue
+            if value.shape != target_state[key].shape:
+                incompatible[key] = (tuple(value.shape), tuple(target_state[key].shape))
+            else:
+                target_state[key] = value
+                inherited.append(key)
+        if incompatible:
+            raise ValueError(f"K64/K65 predictor tensor shape mismatch: {incompatible}")
+        target.load_state_dict(target_state, strict=True)
+        report: dict[str, object] = {
+            "schema": "k64_learned_to_k65_fixed2d_v1",
+            "source": str(path.resolve()),
+            "inherited_keys": sorted(inherited),
+            "rebuilt_keys": sorted(rebuilt),
+            "rejected_keys": [],
+        }
+        return target, report
+
 
 class GridWorldModel(WorldModel):
     """16-slot WM；state 就是可训练的 SFT1 projector 输出。"""
+
+    @property
+    def state_layout(self) -> GridStateLayout | None:
+        predictor = _unwrap(self.wm_predictor)
+        config = getattr(predictor, "config", None)
+        if config is None or config.position_encoding != "fixed_2d_sincos_v1":
+            return None
+        return config.state_layout
+
+    def spatial_state(self, state: torch.Tensor) -> torch.Tensor:
+        layout = self.state_layout
+        return state if layout is None else layout.spatial(state)
 
     def sigreg_state(self, state: torch.Tensor) -> torch.Tensor:
         """单个时刻先对 slots 做 mean pooling，交给公共 SFT2 SIGReg。"""
@@ -595,7 +999,7 @@ class GridWorldModel(WorldModel):
                 "grid SIGReg state must have shape (B,N,D), "
                 f"got {tuple(state.shape)}"
             )
-        return state.mean(dim=-2)
+        return self.spatial_state(state).mean(dim=-2)
 
     def sigreg_state_sequence(self, state_sequence: torch.Tensor) -> torch.Tensor:
         """RL sequence 每个时刻先对 slots 做 mean pooling。"""
@@ -605,7 +1009,7 @@ class GridWorldModel(WorldModel):
                 "grid SIGReg state must have shape (B,T,N,D), "
                 f"got {tuple(state_sequence.shape)}"
             )
-        return state_sequence.mean(dim=-2)
+        return self.spatial_state(state_sequence).mean(dim=-2)
 
     def predict_action_values(self, state: torch.Tensor) -> torch.Tensor:
         if state.ndim < 3:
@@ -613,7 +1017,12 @@ class GridWorldModel(WorldModel):
                 "grid value input must have shape (...,N,D), "
                 f"got {tuple(state.shape)}"
             )
-        return self.value_head(state.mean(dim=-2)).float()
+        return self.value_head(self.spatial_state(state).mean(dim=-2)).float()
+
+    def predict_outcome_logits(self, predicted_state: torch.Tensor) -> torch.Tensor:
+        if self.outcome_head is None:
+            raise RuntimeError("grid world model has no OutcomeHead")
+        return self.outcome_head(self.spatial_state(predicted_state)).float()
 
     def predict_action_logits(self, state: torch.Tensor) -> torch.Tensor:
         if state.ndim < 3:
@@ -623,13 +1032,14 @@ class GridWorldModel(WorldModel):
             )
         if self.planner_policy_head is None:
             raise RuntimeError("grid world model has no PlannerPolicyHead")
-        return self.planner_policy_head(state.mean(dim=-2)).float()
+        return self.planner_policy_head(self.spatial_state(state).mean(dim=-2)).float()
 
-    def unwrapped(self) -> "GridWorldModel":
+    def unwrapped(self) -> GridWorldModel:
         return GridWorldModel(
             state_proj=_unwrap(self.state_proj),
             wm_predictor=_unwrap(self.wm_predictor),
             value_head=_unwrap(self.value_head),
+            outcome_head=_unwrap(self.outcome_head) if self.outcome_head is not None else None,
             planner_policy_head=(
                 _unwrap(self.planner_policy_head)
                 if self.planner_policy_head is not None
@@ -641,8 +1051,11 @@ class GridWorldModel(WorldModel):
 __all__ = [
     "GridPredictorConfig",
     "GridWorldModel",
-    "SharedSlotProjector",
-    "TemporalSpatialGridPredictor",
     "ResidualTemporalSpatialGridPredictor",
+    "SharedSlotProjector",
+    "SplitSpatialGlobalProjector",
+    "TemporalSpatialGridPredictor",
+    "fixed_2d_sincos_position",
     "load_sft1_slot_projector",
+    "load_k64_projector_for_k65_migration",
 ]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from contextlib import nullcontext
 
 import torch
 
@@ -63,25 +64,67 @@ def _final_norm_module(model) -> torch.nn.Module:
     )
 
 
-def _capture_last_hidden(model, model_inputs: dict[str, torch.Tensor]):
+def _capture_last_hidden(
+    model, model_inputs: dict[str, torch.Tensor], *, full_logits: bool = False,
+    logit_mask: torch.Tensor | None = None,
+    supervised_labels: torch.Tensor | None = None,
+    lm_row_weights: torch.Tensor | None = None,
+    lm_source_rows: torch.Tensor | None = None,
+    return_lm_rows: bool = False,
+):
+    # These are complete-prefix feature/teacher-forcing forwards, never KV-cache
+    # decoding. Explicitly disable the model default even under no_grad (EMA
+    # targets), where gradient checkpointing does not disable it for us.
+    model_inputs = {**model_inputs, "use_cache": False}
     captured: dict[str, torch.Tensor] = {}
 
-    # State extraction reads the final decoder norm through the hook below; it
-    # does not consume vocabulary logits.  Restrict the causal-LM projection to
-    # one trailing position so long trajectory prefixes do not materialize a
-    # full ``[sequence, vocab]`` tensor.  Supervised forwards keep their labels
-    # and therefore retain the model's complete LM-loss semantics.
-    if "labels" not in model_inputs:
-        model_inputs = {**model_inputs, "logits_to_keep": 1}
+    # Capture complete decoder states, but project only positions needed by the
+    # caller. A packed supervised projection remains one head forward on every
+    # rank, including ranks with zero successful rows; FSDP ownership is intact.
+    if supervised_labels is not None and (full_logits or logit_mask is not None):
+        raise ValueError("weighted LM projection cannot also request vocabulary logits")
+    if (full_logits or logit_mask is not None or supervised_labels is not None) and "labels" in model_inputs:
+        raise ValueError("external logit capture computes its loss without labels")
+    if logit_mask is not None:
+        if logit_mask.dtype != torch.bool or logit_mask.shape != model_inputs["input_ids"].shape:
+            raise ValueError("logit mask must be boolean with the input sequence shape")
+        if not logit_mask.any():
+            raise ValueError("supervised projection requires at least one position")
+
+    projection_handle = None
+    if supervised_labels is None and (logit_mask is not None or (not full_logits and "labels" not in model_inputs)):
+        root = _unwrap_model(model)
+        head = root.get_output_embeddings()
+        if not isinstance(head, torch.nn.Module):
+            raise RuntimeError("Qwen output embedding module is required for bounded logits")
+
+        def select_projection(_module, args):
+            hidden = args[0]
+            selected = (hidden[logit_mask].unsqueeze(0) if logit_mask is not None
+                        else hidden[:, -1:, :])
+            return (selected, *args[1:])
+
+        projection_handle = head.register_forward_pre_hook(select_projection)
 
     def hook(_module, _inputs, output):
         captured["hidden"] = output[0] if isinstance(output, tuple) else output
 
-    handle = _final_norm_module(model).register_forward_hook(hook)
+    handle = None
     try:
-        output = model(**model_inputs, output_hidden_states=False, return_dict=True)
+        handle = _final_norm_module(model).register_forward_hook(hook)
+        projection_context = nullcontext()
+        if supervised_labels is not None:
+            from .supervised_lm import window_lm_projection
+            projection_context = window_lm_projection(
+                _unwrap_model(model).get_output_embeddings(), supervised_labels, lm_row_weights,
+                source_rows=lm_source_rows, return_rows=return_lm_rows)
+        with projection_context:
+            output = model(**model_inputs, output_hidden_states=False, return_dict=True)
     finally:
-        handle.remove()
+        if handle is not None:
+            handle.remove()
+        if projection_handle is not None:
+            projection_handle.remove()
     hidden = captured.get("hidden")
     if hidden is None:
         raise RuntimeError("Qwen final norm hook did not capture last hidden states.")
@@ -137,6 +180,7 @@ def extract_qwen_latents(
     device: torch.device,
     *,
     latent_token_count: int = 1,
+    lm_row_weights: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
     """Extract configured latent query hidden states from a Qwen batch.
 
@@ -145,7 +189,16 @@ def extract_qwen_latents(
     """
 
     model_inputs = {k: v.to(device, non_blocking=True) for k, v in enc.items()}
-    hidden, output = _capture_last_hidden(model, model_inputs)
+    labels = model_inputs.pop("labels") if lm_row_weights is not None else None
+    hidden, output = _capture_last_hidden(
+        model, model_inputs, supervised_labels=labels,
+        lm_row_weights=lm_row_weights.to(device) if labels is not None else None,
+    )
+    # The private weighted forward returns a scalar from inside the output-head
+    # boundary, retaining its FSDP backward hook without storing full logits.
+    lm_loss = output.logits if labels is not None else output.loss
+    if labels is not None and lm_loss.ndim != 0:
+        raise RuntimeError("weighted LM projection did not return a scalar loss")
     tokens = LatentActionTokens()
     rows: list[torch.Tensor] = []
     input_ids = enc["input_ids"].detach().cpu()
@@ -161,4 +214,73 @@ def extract_qwen_latents(
                 latent_token_count=latent_token_count,
             )
             rows.append(extract_latent_state_block(hidden[row : row + 1], latent_block))
-    return torch.stack(rows, dim=0), output.loss
+    state_hidden = torch.stack(rows, dim=0)
+    if lm_loss is None and torch.is_grad_enabled():
+        state_hidden = connect_unused_logits(state_hidden, output.logits)
+    return state_hidden, lm_loss
+
+
+def connect_unused_logits(hidden: torch.Tensor, logits: torch.Tensor) -> torch.Tensor:
+    """Keep an already-computed LM projection in hidden-only backward graphs.
+
+    Stage3 alternates LM and SIGReg forwards under static DDP. The bounded
+    hidden-only logits otherwise receive no backward hook, violating that
+    reducer contract for trainable vocabulary rows. This scalar zero adds no
+    LM objective, no projection forward, and no full-sequence vocabulary buffer.
+    """
+    if not logits.requires_grad:
+        return hidden
+    return hidden + (logits.float().sum() * 0.0).to(hidden.dtype)
+
+
+def extract_qwen_trajectory_latents(
+    model, enc: dict[str, torch.Tensor], token_id_map: dict[str, int],
+    device: torch.device, *, state_positions: torch.Tensor, latent_token_count: int,
+    lm_labels: torch.Tensor | None = None, lm_source_rows: torch.Tensor | None = None,
+    lm_row_weights: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Extract explicit ordered query blocks and virtual-window CE in one forward.
+
+    Positions are ``[states, slots, (batch_row, token_position)]``. Returned
+    losses are per virtual window (zero for masked windows), with no averaging
+    over windows; the caller retains ownership of the original loss groups.
+    """
+    from nimloth.latent.extraction import latent_state_tokens
+
+    if "labels" in enc:
+        raise ValueError("shared trajectory encoding requires explicit virtual LM labels")
+    ids = enc["input_ids"]
+    positions = state_positions.to(device=ids.device)
+    if (positions.dtype != torch.long or positions.ndim != 3
+            or positions.shape[1:] != (latent_token_count, 2) or positions.shape[0] == 0):
+        raise ValueError("state positions must have shape [N,K,2] and integer dtype")
+    rows, columns = positions.unbind(-1)
+    if (torch.any(rows < 0) or torch.any(rows >= ids.shape[0])
+            or torch.any(columns < 0) or torch.any(columns >= ids.shape[1])):
+        raise ValueError("state position is outside the encoded input")
+    if torch.any(rows != rows[:, :1]) or torch.any(columns[:, 1:] != columns[:, :-1] + 1):
+        raise ValueError("state positions must identify contiguous query blocks in one row")
+    expected = torch.tensor([token_id_map[token] for token in latent_state_tokens(latent_token_count)],
+                            device=ids.device)
+    if not torch.all(ids[rows, columns] == expected):
+        raise ValueError("state positions do not match ordered query token IDs")
+    attention = enc.get("attention_mask")
+    if attention is not None and not torch.all(attention[rows, columns] == 1):
+        raise ValueError("state positions cannot select padding")
+    if lm_labels is not None and (lm_source_rows is None or lm_row_weights is None):
+        raise ValueError("virtual LM labels require source rows and window weights")
+    model_inputs = {key: value.to(device, non_blocking=True) for key, value in enc.items()}
+    hidden, output = _capture_last_hidden(
+        model, model_inputs,
+        supervised_labels=lm_labels.to(device) if lm_labels is not None else None,
+        lm_row_weights=lm_row_weights.to(device) if lm_labels is not None else None,
+        lm_source_rows=lm_source_rows.to(device) if lm_labels is not None else None,
+        return_lm_rows=True,
+    )
+    states = hidden[rows.to(device), columns.to(device)]
+    losses = output.logits if lm_labels is not None else None
+    if losses is not None and losses.shape != (lm_labels.shape[0],):
+        raise RuntimeError("shared LM projection did not return per-window losses")
+    if losses is None and torch.is_grad_enabled():
+        states = connect_unused_logits(states, output.logits)
+    return states, losses

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import math
 from dataclasses import dataclass, replace
 from typing import Any, Callable, Literal, Protocol
@@ -21,6 +22,7 @@ from nimloth.backbone.qwen25vl.policy import (
 )
 from nimloth.backbone.qwen25vl.turn_generation import (
     TurnGenerationSpec,
+    build_turn_response_logits_processor,
     find_token_subsequence,
 )
 from nimloth.backbone.qwen25vl.vllm_hidden import (
@@ -66,6 +68,7 @@ class QwenVLLMAgentPolicy:
         max_response_tokens: int = 64,
         max_state_tokens: int | None = None,
         capture_policy_state: bool = False,
+        turn_logits_adapter_registered: bool = True,
         progress_callback: Callable[[str], None] | None = None,
     ) -> None:
         if credit_assignment not in {"action", "turn", "token"}:
@@ -87,6 +90,7 @@ class QwenVLLMAgentPolicy:
             int(max_state_tokens) if max_state_tokens is not None else None
         )
         self.capture_policy_state = bool(capture_policy_state)
+        self.turn_logits_adapter_registered = bool(turn_logits_adapter_registered)
         self._progress_callback = progress_callback
         if self.capture_policy_state and credit_assignment not in {"turn", "token"}:
             raise ValueError("policy-state capture requires turn or token credit")
@@ -128,6 +132,13 @@ class QwenVLLMAgentPolicy:
     ) -> "QwenVLLMAgentPolicy":
         from vllm import LLM
 
+        try:
+            from vllm.engine.arg_utils import EngineArgs
+
+            engine_parameters = set(inspect.signature(EngineArgs).parameters)
+        except (ImportError, TypeError, ValueError):
+            # Unit-test doubles and newer vLLM builds accept the current API.
+            engine_parameters = None
         engine_kwargs: dict[str, Any] = {}
         if max_pixels is not None:
             min_pixels, resolved_max_pixels = qwen_processor_pixel_bounds(processor)
@@ -142,7 +153,11 @@ class QwenVLLMAgentPolicy:
             }
         if distributed_executor_backend is not None:
             engine_kwargs["distributed_executor_backend"] = distributed_executor_backend
-        if credit_assignment in {"turn", "token"}:
+        turn_logits_adapter_registered = (
+            credit_assignment in {"turn", "token"}
+            and (engine_parameters is None or "logits_processors" in engine_parameters)
+        )
+        if turn_logits_adapter_registered:
             engine_kwargs["logits_processors"] = [
                 "nimloth.backbone.qwen25vl.vllm_logits:TurnResponseLogitsProcessor"
             ]
@@ -155,23 +170,35 @@ class QwenVLLMAgentPolicy:
                 "nimloth.backbone.qwen25vl.vllm_hidden."
                 "PolicyStateCaptureWorkerExtension"
             )
-        engine = LLM(
-            model=model_path,
-            trust_remote_code=True,
-            tensor_parallel_size=int(tensor_parallel_size),
-            dtype="bfloat16",
-            max_model_len=int(max_model_len),
-            gpu_memory_utilization=float(gpu_memory_utilization),
-            limit_mm_per_prompt={"image": int(max_images)},
+        llm_kwargs: dict[str, Any] = {
+            "model": model_path,
+            "trust_remote_code": True,
+            "tensor_parallel_size": int(tensor_parallel_size),
+            "dtype": "bfloat16",
+            "max_model_len": int(max_model_len),
+            "gpu_memory_utilization": float(gpu_memory_utilization),
+            "limit_mm_per_prompt": {"image": int(max_images)},
             # Cache behavior is an explicit rollout setting because vLLM
             # version/model combinations must be parity-tested before enabling it.
-            enable_prefix_caching=bool(enable_prefix_caching),
-            mm_processor_cache_gb=float(mm_processor_cache_gb),
-            # PPO 保存实际 temperature/top-p behavior 分布，不保存 raw logits 分布。
-            logprobs_mode="processed_logprobs",
-            enforce_eager=bool(enforce_eager),
+            "enable_prefix_caching": bool(enable_prefix_caching),
+            "enforce_eager": bool(enforce_eager),
             **engine_kwargs,
-        )
+        }
+        if engine_parameters is None or "mm_processor_cache_gb" in engine_parameters:
+            llm_kwargs["mm_processor_cache_gb"] = float(mm_processor_cache_gb)
+        elif float(mm_processor_cache_gb) == 0.0:
+            if "disable_mm_preprocessor_cache" not in engine_parameters:
+                raise RuntimeError("installed vLLM cannot disable its multimodal cache")
+            llm_kwargs["disable_mm_preprocessor_cache"] = True
+        else:
+            raise RuntimeError(
+                "installed vLLM does not support a sized multimodal processor cache"
+            )
+        # PPO stores the actual temperature/top-p behavior distribution.  Older
+        # vLLM releases expose processed log-probabilities as their only mode.
+        if engine_parameters is None or "logprobs_mode" in engine_parameters:
+            llm_kwargs["logprobs_mode"] = "processed_logprobs"
+        engine = LLM(**llm_kwargs)
         return cls(
             engine=engine,
             processor=processor,
@@ -182,6 +209,7 @@ class QwenVLLMAgentPolicy:
             max_response_tokens=max_response_tokens,
             max_state_tokens=max_state_tokens,
             capture_policy_state=capture_policy_state,
+            turn_logits_adapter_registered=turn_logits_adapter_registered,
             progress_callback=progress_callback,
         )
 
@@ -536,6 +564,11 @@ class QwenVLLMAgentPolicy:
     def _response_sampling_params(self, spec: TurnGenerationSpec) -> Any:
         from vllm import SamplingParams
 
+        kwargs: dict[str, Any] = {}
+        if not self.turn_logits_adapter_registered:
+            kwargs["logits_processors"] = [
+                build_turn_response_logits_processor(self.processor.tokenizer, spec)
+            ]
         return SamplingParams(
             temperature=self.temperature,
             top_p=self.top_p,
@@ -546,6 +579,7 @@ class QwenVLLMAgentPolicy:
             extra_args=spec.to_extra_args(),
             detokenize=False,
             skip_special_tokens=False,
+            **kwargs,
         )
 
     def _select_responses(

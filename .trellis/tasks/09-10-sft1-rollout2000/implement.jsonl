@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/experiments/task-contract.md", "reason": "实验授权与真实运行验收"}
+{"file": ".trellis/spec/experiments/outputs-checkpoints-and-evidence.md", "reason": "独立输出与恢复边界"}
+{"file": ".trellis/tasks/09-10-sft1-rollout2000/design.md", "reason": "本次数据参数预算与风险"}
+{"file": "src/nimloth/training/sft/spec.md", "reason": "人类SFT1纯回答LM监督与stage2 query边界"}

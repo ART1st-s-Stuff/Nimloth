@@ -18,13 +18,17 @@ import torch.distributed as dist
 
 from nimloth.agent import Agent
 from nimloth.backbone import BackboneEMA
+from nimloth.backbone.selected_token_rows import materialize_selected_state_dict
 from nimloth.util.distributed import is_main
 from nimloth.wm.predictor import LatentWMPredictor
-from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
 from nimloth.wm.planner_policy_head import PlannerPolicyHead
 from nimloth.wm.model import WorldModel
-from nimloth.wm.grid import TemporalSpatialGridPredictor
+from nimloth.wm.grid import (
+    ResidualTemporalSpatialGridPredictor,
+    TemporalSpatialGridPredictor,
+)
+from nimloth.wm.outcome import ActionOutcomeHead
 from nimloth.training.rl.token_value import TokenValueHead
 
 
@@ -46,6 +50,40 @@ def _rank_world() -> tuple[int, int]:
     if dist.is_available() and dist.is_initialized():
         return dist.get_rank(), dist.get_world_size()
     return 0, 1
+
+
+def _save_collected_fsdp_backbone(
+    agent: Agent,
+    out_dir: Path,
+    state: dict[str, torch.Tensor],
+) -> None:
+    """Export one already-collected CPU FSDP state without new collectives."""
+
+    if not state or any(value.device.type != "cpu" for value in state.values()):
+        raise ValueError("FSDP export requires nonempty CPU full backbone state")
+    wrapped = agent.backbone.model
+    model = getattr(wrapped, "module", None)
+    if model is None or not hasattr(model, "save_pretrained"):
+        raise TypeError("FSDP backbone must wrap a Hugging Face model")
+    row_state = {
+        key: value.detach().clone()
+        for key, value in state.items()
+        if key.rsplit(".", 1)[-1]
+        in {
+            "nimloth_query_rows",
+            "nimloth_protocol_rows",
+            "nimloth_query_ids",
+            "nimloth_protocol_ids",
+        }
+    }
+    dense_state = materialize_selected_state_dict(state) if row_state else state
+    model.save_pretrained(
+        out_dir,
+        state_dict=dense_state,
+        safe_serialization=True,
+    )
+    if row_state:
+        torch.save(row_state, out_dir / "selected_token_rows.pt")
 
 
 # ---------------------------------------------------------------------------
@@ -81,12 +119,14 @@ def save_rl_checkpoint(
     planner_policy_config: dict[str, Any] | None = None,
     reference_kl_config: dict[str, Any] | None = None,
     train_world_model: bool = True,
+    outcome_config: dict[str, Any] | None = None,
 ) -> None:
     model = agent.backbone.model
     state_proj = agent.wm.state_proj
     wm_predictor = agent.wm.wm_predictor
     value_head = agent.wm.value_head
     planner_policy_head = agent.wm.planner_policy_head
+    outcome_head = agent.wm.outcome_head
     rank, world = _rank_world()
     fsdp_model = _is_fsdp(model)
 
@@ -107,6 +147,12 @@ def save_rl_checkpoint(
         policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
         with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, policy):
             full_model_state = model.state_dict()
+        # Ignored or unsharded tensors are not guaranteed to follow the FSDP
+        # offload policy.  Normalize the sole export state here while every
+        # rank is still in the same completed collective.
+        for key, value in full_model_state.items():
+            if value.device.type != "cpu":
+                full_model_state[key] = value.detach().cpu()
 
     # 原始 optimizer state 是 rank-local FSDP shard。每个 rank 单独保存一份，
     # 既支持相同 world size 的精确恢复，也覆盖本 rank 的 WM heads。
@@ -125,6 +171,18 @@ def save_rl_checkpoint(
                     "planner_policy_head must unwrap to PlannerPolicyHead"
                 )
             policy_head.save_checkpoint(out_dir / "planner_policy_head")
+        if outcome_head is not None:
+            outcome = _unwrap(outcome_head)
+            if not isinstance(outcome, ActionOutcomeHead):
+                raise TypeError("outcome_head must unwrap to ActionOutcomeHead")
+            torch.save(
+                {
+                    "schema": outcome.schema,
+                    "emb_dim": outcome.emb_dim,
+                    "state_dict": outcome.state_dict(),
+                },
+                out_dir / "outcome_head.pt",
+            )
         if token_value_head is not None:
             token_head = _unwrap(token_value_head)
             if not isinstance(token_head, TokenValueHead):
@@ -133,10 +191,11 @@ def save_rl_checkpoint(
 
         # Qwen 模型
         if save_llm:
-            agent.backbone.save_pretrained(
-                out_dir,
-                state_dict=full_model_state if fsdp_model else None,
-            )
+            if fsdp_model:
+                assert full_model_state is not None
+                _save_collected_fsdp_backbone(agent, out_dir, full_model_state)
+            else:
+                agent.backbone.save_pretrained(out_dir)
             processor.save_pretrained(out_dir)
             if vision_ema is not None and vision_ema.shadow:
                 vision_ema.save_checkpoint(out_dir / "vision_ema.pt")
@@ -164,6 +223,7 @@ def save_rl_checkpoint(
             "planner_policy_config": planner_policy_config,
             "reference_kl_config": reference_kl_config,
             "train_world_model": bool(train_world_model),
+            "outcome_config": outcome_config,
         }
         if base_model_path:
             state["base_model_path"] = str(base_model_path)
@@ -229,6 +289,7 @@ def load_rl_wm_checkpoint(
     wm_predictor = wm.wm_predictor
     value_head = wm.value_head
     planner_policy_head = wm.planner_policy_head
+    outcome_head = wm.outcome_head
     sp_path = ckpt_dir / "state_proj.pt"
     if sp_path.is_file():
         _unwrap(state_proj).load_state_dict(
@@ -237,8 +298,11 @@ def load_rl_wm_checkpoint(
     pred_dir = ckpt_dir / "wm_predictor"
     if pred_dir.is_dir():
         predictor = _unwrap(wm_predictor)
-        if isinstance(predictor, TemporalSpatialGridPredictor):
-            loaded_pred = TemporalSpatialGridPredictor.load_checkpoint(
+        if isinstance(
+            predictor,
+            (TemporalSpatialGridPredictor, ResidualTemporalSpatialGridPredictor),
+        ):
+            loaded_pred = type(predictor).load_checkpoint(
                 pred_dir,
                 map_location=device,
             )
@@ -274,6 +338,23 @@ def load_rl_wm_checkpoint(
         raise ValueError(
             "resume checkpoint contains PlannerPolicyHead but runtime disabled it"
         )
+    outcome_path = ckpt_dir / "outcome_head.pt"
+    if outcome_head is not None:
+        if not outcome_path.is_file():
+            raise FileNotFoundError(
+                f"resume checkpoint is missing OutcomeHead: {outcome_path}"
+            )
+        outcome = _unwrap(outcome_head)
+        if not isinstance(outcome, ActionOutcomeHead):
+            raise TypeError("world model outcome head must unwrap to ActionOutcomeHead")
+        payload = torch.load(outcome_path, map_location=device, weights_only=True)
+        if payload.get("schema") != ActionOutcomeHead.schema:
+            raise ValueError("unsupported resume OutcomeHead checkpoint schema")
+        if int(payload.get("emb_dim", -1)) != outcome.emb_dim:
+            raise ValueError("resume OutcomeHead dimension mismatch")
+        outcome.load_state_dict(payload["state_dict"], strict=True)
+    elif outcome_path.is_file():
+        raise ValueError("resume checkpoint contains OutcomeHead but runtime disabled it")
 
     state_path = ckpt_dir / "rl_state.pt"
     if state_path.is_file():

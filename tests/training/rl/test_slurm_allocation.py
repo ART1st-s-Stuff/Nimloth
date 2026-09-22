@@ -11,6 +11,9 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 HELPER = REPO_ROOT / "experiments/training/rl/slurm_allocation.sh"
 CONTROLLER = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_slurm.sh"
 PIPELINE = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_smoke.sh"
+AI2THOR_SETUP = (
+    REPO_ROOT / "experiments/training/baseline/setup_ai2thor_env.sh"
+)
 FULL_RUNNER = REPO_ROOT / "experiments/training/rl/run_vllm_online_ppo_full.sh"
 WAIT_LAUNCHER = (
     REPO_ROOT / "experiments/training/rl/wait_for_1x8_hold_and_launch.sh"
@@ -126,6 +129,23 @@ done | sort
         text=True,
     )
     return result.stdout.splitlines()
+
+
+def test_online_pipeline_allows_explicit_cache_roots() -> None:
+    pipeline = PIPELINE.read_text(encoding="utf-8")
+
+    assert "HF_HOME=${HF_HOME:-/project/peilab/atst/.cache/huggingface}" in pipeline
+    assert "TRANSFORMERS_CACHE=${TRANSFORMERS_CACHE:-${HF_HOME}/hub}" in pipeline
+    assert "TORCH_HOME=${TORCH_HOME:-/project/peilab/atst/flower/.cache/torch}" in pipeline
+
+
+def test_ai2thor_setup_has_validated_system_vulkan_fallback() -> None:
+    setup = AI2THOR_SETUP.read_text(encoding="utf-8")
+
+    assert '[[ -f "${SYSTEM_VULKAN_LIB}" && -f "${SYSTEM_VULKAN_ICD}" ]]' in setup
+    assert 'export VK_ICD_FILENAMES="${SYSTEM_VULKAN_ICD}"' in setup
+    assert "VULKAN_SOURCE=system" in setup
+    assert '"${PYTHON:-python3}" -' in setup
 
 
 def test_planner_fsdp_ray_gate_is_batch_owned_one_node_eight_gpu() -> None:
@@ -252,12 +272,18 @@ def test_planner_policy_gpu_gate_uses_every_gpu_in_4plus4_hold() -> None:
     )
 
 
-def test_resumed_staged_pipeline_creates_a_new_first_iteration_output() -> None:
+def test_resumed_staged_pipeline_reuses_the_existing_run_output() -> None:
     pipeline = PIPELINE.read_text(encoding="utf-8")
 
-    assert "FIRST_ITERATION=$((RUN_INITIAL_GLOBAL_STEP + 1))" in pipeline
-    assert pipeline.count("ITERATION == FIRST_ITERATION") == 2
-    assert "ITERATION == 1" not in pipeline
+    assert "RUN_FIRST_ITERATION=$((RUN_INITIAL_GLOBAL_STEP + 1))" in pipeline
+    assert pipeline.count("ITERATION == RUN_FIRST_ITERATION") == 2
+    assert "missing formal-run README before iteration ${ITERATION}" in pipeline
+    assert "missing resumable checkpoint before iteration ${ITERATION}" in pipeline
+    assert (
+        "expected_steps = list(range(${RUN_INITIAL_GLOBAL_STEP} + 1, "
+        "${ITERATION} + 1))" in pipeline
+    )
+    assert 'actual_steps = [int(row["global_step"]) for row in rows]' in pipeline
 
 
 def test_parallel_controller_can_gate_between_rollout_and_training() -> None:

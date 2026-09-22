@@ -10,7 +10,7 @@ import torch
 
 from nimloth.agent import Agent
 from nimloth.backbone import BackboneBatch, BackboneEMA
-from nimloth.training.sft.stage3.history_cache import OnlineHistoryStateCache
+from nimloth.training.sft.stage3.utils import preserve_module_modes
 from nimloth.util.optim import (
     OptimizationRuntime,
     qwen_lr_schedule,
@@ -23,8 +23,12 @@ class SFT2ModelRuntime:
     """封装 SFT2 的在线 Agent、下一 observation 编码与 Backbone EMA。"""
 
     agent: Agent
-    history_cache: OnlineHistoryStateCache
     backbone_ema: BackboneEMA | None = None
+
+    def set_training_mode(self) -> None:
+        """Enable online training, including eval-loaded Qwen decoder/vision."""
+        for module in self.agent.trainable_modules:
+            module.train(any(parameter.requires_grad for parameter in module.parameters()))
 
     def encode_next_state(
         self,
@@ -32,17 +36,16 @@ class SFT2ModelRuntime:
     ) -> torch.Tensor:
         """以固定 Backbone 与 StateProjector 编码 WM 的下一状态监督值。"""
 
-        with torch.no_grad(), self._backbone_context():
+        with (
+            torch.no_grad(),
+            preserve_module_modes((self.agent.backbone, self.agent.wm.state_proj), training=False),
+            self._backbone_context(),
+        ):
             hidden = self.agent.backbone(
                 batch,
                 include_lm_loss=False,
             ).hidden.detach()
             return self.agent.wm.project_state(hidden)
-
-    def evaluation_context(self) -> AbstractContextManager[object]:
-        """让验证阶段的完整 Agent forward 使用 EMA Backbone 权重。"""
-
-        return self._backbone_context()
 
     def _backbone_context(self) -> AbstractContextManager[object]:
         """按当前 runtime 的 Agent 创建 Backbone EMA 权重上下文。"""
@@ -52,12 +55,17 @@ class SFT2ModelRuntime:
         return self.backbone_ema.use_ema_weights(self.agent.backbone.model)
 
     def unwrapped(self) -> "SFT2ModelRuntime":
-        """为不等长分布式验证创建不触发 wrapper collective 的模型视图。"""
+        """解除 replicated wrappers；FSDP 保留参数 all-gather 所需的根包装。"""
 
-        agent = self.agent.unwrapped()
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+
+        # FSDP owns parameter gathering even for no-grad validation. Only the
+        # replicated WM wrappers may be removed; validation must pad rank counts.
+        agent = (Agent(backbone=self.agent.backbone, wm=self.agent.wm.unwrapped())
+                 if isinstance(self.agent.backbone.model, FSDP)
+                 else self.agent.unwrapped())
         return SFT2ModelRuntime(
             agent=agent,
-            history_cache=self.history_cache,
             backbone_ema=self.backbone_ema,
         )
 
@@ -95,11 +103,8 @@ class SFT2OptimizationRuntime:
             start_lr=self.qwen_start_lr,
             peak_lr=self.qwen_peak_lr,
         )
-        set_optimizer_group_lr(
-            self.optimization.optimizer,
-            "qwen",
-            qwen_lr,
-        )
+        if any(group.get("name") == "qwen" for group in self.optimization.optimizer.param_groups):
+            set_optimizer_group_lr(self.optimization.optimizer, "qwen", qwen_lr)
         self.optimization.step()
         return qwen_lr
 

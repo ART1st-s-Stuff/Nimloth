@@ -5,59 +5,60 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
+import torch
+
 from nimloth.backbone.dino_grid import CachedDINOGridTargets
 from nimloth.training.sft.stage3.batch import (
-    SFT2Batch,
-    SFT2BatchAssembler,
-    SFT2RolloutBatch,
+    Stage3BatchAssembler,
+    Stage3TrajectoryBatch,
 )
 
 
 class DINOGridBatchAssembler:
-    """为当前 step 读取 next image 的 cached DINO grid。"""
+    """Load every observed state once; index future grids for diagnostics only."""
 
     def __init__(
         self,
-        base: SFT2BatchAssembler,
+        base: Stage3BatchAssembler,
         targets: CachedDINOGridTargets,
     ) -> None:
-        if targets.grid_size != 4 or targets.identity.hidden_size != 1024:
+        if targets.grid_size < 1 or targets.identity.hidden_size != 1024:
             raise ValueError(
-                "SFT2 DINO supervision requires a 4x4 grid with hidden size 1024"
+                "SFT2 DINO supervision requires a positive grid size with hidden size 1024"
             )
         self.base = base
         self.targets = targets
 
     @property
+    def input_builder(self):
+        return self.base.input_builder
+
+    @property
     def processor(self) -> Any:
         return self.base.processor
 
-    def collate_transition_samples(self, batch: list[Any]) -> Any:
-        return self.base.collate_transition_samples(batch)
+    @property
+    def device(self) -> torch.device:
+        return self.base.device
 
-    def prepare(self, raw_batch: Any) -> SFT2Batch | SFT2RolloutBatch:
+    def supervision_counts(self, raw_batch: Any) -> tuple[int, int]:
+        return self.base.supervision_counts(raw_batch)
+
+    def outcome_count(self, raw_batch: Any) -> int:
+        return self.base.outcome_count(raw_batch)
+
+    def observed_state_count(self, raw_batch: Any) -> int:
+        return self.base.observed_state_count(raw_batch)
+
+    def prepare(self, raw_batch: Any) -> Stage3TrajectoryBatch:
         base = self.base.prepare(raw_batch)
-        target_count = base.batch_size
-        if isinstance(base, SFT2RolloutBatch):
-            target_count *= base.prediction_horizon
-        if len(base.next_image_paths) != target_count or any(
-            not path for path in base.next_image_paths
-        ):
-            raise ValueError(
-                "DINO grid supervision requires one next_image_path per predicted state"
-            )
-        targets = self.targets.load(
-            base.next_image_paths,
-            device=base.sample_weights.device,
-        )
-        if isinstance(base, SFT2RolloutBatch):
-            targets = targets.reshape(
-                base.batch_size,
-                base.prediction_horizon,
-                *targets.shape[1:],
-            )
+        if len(base.observed_image_paths) != len(base.state_keys) or not all(base.observed_image_paths):
+            raise ValueError("DINO supervision requires every observed image including terminal")
+        observed = self.targets.load(base.observed_image_paths, device=base.sample_weights.device)
         return replace(
             base,
-            dino_grid_target=targets,
+            observed_dino_target=observed,
+            dino_grid_target=observed[base.next_indices],
+            current_dino_target=observed[base.current_indices],
         )
 __all__ = ["DINOGridBatchAssembler"]

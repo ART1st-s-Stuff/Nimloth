@@ -1,7 +1,8 @@
 """World-model 神经网络模块的公共导出。"""
 
-from nimloth.wm.lewm import LeWMConfig, action_one_hot, freeze_module
 from nimloth.wm._vendor_lewm import SIGReg
+from nimloth.wm.layout import GridStateLayout
+from nimloth.wm.lewm import LeWMConfig, action_one_hot, freeze_module
 from nimloth.wm.model import WorldModel
 from nimloth.wm.planner_policy_head import PlannerPolicyHead
 from nimloth.wm.predictor import LatentWMPredictor
@@ -11,11 +12,12 @@ from nimloth.wm.state_proj import StateProjector
 from nimloth.wm.value_head import ValueHead
 
 __all__ = [
+    "GridStateLayout",
     "LatentWMPredictor",
     "LeWMConfig",
     "PlannerPolicyHead",
-    "SequenceSIGReg",
     "SIGReg",
+    "SequenceSIGReg",
     "StateProjector",
     "ValueHead",
     "WMImageDecoder",

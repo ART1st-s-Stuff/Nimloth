@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/python/quality-and-testing.md", "reason": "Full affected-scope and ML-specific verification requirements"}
+{"file": ".trellis/spec/experiments/task-contract.md", "reason": "GPU canary, launch approval and experiment evidence gates"}
+{"file": ".trellis/spec/experiments/data-and-splits.md", "reason": "Cache/data provenance and split-overlap evidence"}
+{"file": ".trellis/spec/experiments/outputs-checkpoints-and-evidence.md", "reason": "Checkpoint compatibility, recovery and claim boundaries"}
+{"file": ".trellis/tasks/09-19-stage3-cls-fixed-2d-position/research/current-interface-audit-20260919.md", "reason": "Verify implementation against inspected production interfaces and scope decision"}

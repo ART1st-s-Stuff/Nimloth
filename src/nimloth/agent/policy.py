@@ -65,16 +65,27 @@ def behavior_log_probs(
     return torch.log_softmax(scaled_scores, dim=-1)
 
 
-def categorical_entropy_from_log_probs(log_probs: torch.Tensor) -> torch.Tensor:
-    """计算允许包含 top-p ``-inf`` mask 的离散分布 entropy。"""
+def categorical_entropies_from_log_probs(log_probs: torch.Tensor) -> torch.Tensor:
+    """Return row entropies while preserving finite top-p mask gradients."""
 
     probabilities = log_probs.exp()
-    terms = torch.where(
-        probabilities > 0,
-        probabilities * log_probs,
+    # ``where(probability > 0, probability * log_probability, 0)`` has a
+    # finite forward value but first evaluates ``0 * -inf``.  Its backward can
+    # therefore return NaN even when the entropy coefficient is zero.  Replace
+    # only the legitimate top-p/greedy ``-inf`` mask before multiplication;
+    # unexpected NaN or +inf inputs remain visible to the finite-loss gate.
+    safe_log_probs = torch.where(
+        torch.isneginf(log_probs),
         torch.zeros_like(log_probs),
+        log_probs,
     )
-    return -terms.sum(dim=-1).mean()
+    return -(probabilities * safe_log_probs).sum(dim=-1)
+
+
+def categorical_entropy_from_log_probs(log_probs: torch.Tensor) -> torch.Tensor:
+    """计算允许包含 top-p ``-inf`` mask 的平均离散分布 entropy。"""
+
+    return categorical_entropies_from_log_probs(log_probs).mean()
 
 
 def validate_action_log_probs(

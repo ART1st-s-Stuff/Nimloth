@@ -43,11 +43,14 @@ def preserve_module_modes(
     """Temporarily set module modes and restore every caller-owned state."""
 
     module_list = list(modules)
-    previous = [module.training for module in module_list]
+    # Wrappers can be in train mode while their pretrained child remains in
+    # eval mode. Snapshot every descendant; restoring only the root recursively
+    # would silently change the caller's mixed subtree modes.
+    previous = {child: child.training for module in module_list for child in module.modules()}
     try:
         for module in module_list:
             module.train(training)
         yield
     finally:
-        for module, was_training in zip(module_list, previous, strict=True):
-            module.train(was_training)
+        for module, was_training in previous.items():
+            module.training = was_training

@@ -4,10 +4,14 @@ from PIL import Image
 
 from nimloth.recon.cfm import (
     CFMConfig,
+    SpatialCLSCFMConfig,
+    SpatialCLSConditionedFlowUNet,
     TokenConditionedFlowUNet,
     conditional_flow_matching_loss,
     sample_euler,
     sample_euler_cfg,
+    spatial_cls_condition_sensitivity,
+    spatial_cls_condition_variants,
 )
 from nimloth.recon.rcdm.image_utils import image_to_diffusion_tensor
 from nimloth.training.reconstruction.cfm_sft2 import _load_image_uint8
@@ -124,3 +128,96 @@ def test_cfm_euler_sampling_is_deterministic() -> None:
     )
     assert first.shape == noise.shape
     torch.testing.assert_close(first, second, rtol=1e-4, atol=3e-6)
+
+
+def _tiny_spatial_cls_model() -> SpatialCLSConditionedFlowUNet:
+    return SpatialCLSConditionedFlowUNet(
+        SpatialCLSCFMConfig(
+            image_size=16,
+            spatial_grid_size=8,
+            spatial_token_count=64,
+            global_token_count=1,
+            token_dim=4,
+            base_channels=4,
+            condition_dim=8,
+            time_dim=16,
+        )
+    )
+
+
+def test_spatial_cls_cfm_keeps_cls_outside_the_spatial_grid() -> None:
+    model = _tiny_spatial_cls_model()
+    state = torch.arange(2 * 65 * 4, dtype=torch.float32).reshape(2, 65, 4)
+    spatial, cls = model.split_condition(state.flatten(1))
+    assert spatial.shape == (2, 64, 4)
+    assert cls.shape == (2, 4)
+    torch.testing.assert_close(spatial, state[:, :64])
+    torch.testing.assert_close(cls, state[:, 64])
+    grid = model.reshape_spatial_condition(spatial)
+    assert grid.shape == (2, 4, 8, 8)
+    assert grid[0, 3, 2, 5] == state[0, 2 * 8 + 5, 3]
+    with pytest.raises(ValueError, match=r"K64\+K1"):
+        model.split_condition(state[:, :64].flatten(1))
+
+
+def test_spatial_cls_cfm_routes_cls_gradient_without_changing_spatial_tokens() -> None:
+    torch.manual_seed(19)
+    model = _tiny_spatial_cls_model()
+    image = torch.randn(2, 3, 16, 16)
+    time = torch.rand(2)
+    state = torch.randn(2, 65, 4, requires_grad=True)
+    output = model(image, time, state.flatten(1))
+    assert output.shape == image.shape
+    output.square().mean().backward()
+    assert state.grad is not None
+    assert torch.isfinite(state.grad).all()
+    assert float(state.grad[:, 64].abs().sum()) > 0
+
+
+def test_spatial_cls_variants_only_change_the_final_slot() -> None:
+    state = torch.arange(3 * 65 * 4, dtype=torch.float32).reshape(3, 65, 4)
+    variants = spatial_cls_condition_variants(
+        state,
+        spatial_token_count=64,
+        global_token_count=1,
+        token_dim=4,
+        shuffle_indices=torch.tensor([1, 2, 0]),
+    )
+    for value in variants.values():
+        torch.testing.assert_close(value[:, :64], state[:, :64])
+    torch.testing.assert_close(variants["correct"][:, 64], state[:, 64])
+    torch.testing.assert_close(variants["zero_cls"][:, 64], torch.zeros_like(state[:, 64]))
+    torch.testing.assert_close(variants["shuffled_cls"][:, 64], state[[1, 2, 0], 64])
+    with pytest.raises(ValueError, match="must not keep"):
+        spatial_cls_condition_variants(
+            state,
+            spatial_token_count=64,
+            token_dim=4,
+            shuffle_indices=torch.arange(3),
+        )
+
+
+def test_spatial_cls_condition_sensitivity_uses_matched_noise_and_time() -> None:
+    torch.manual_seed(23)
+    model = _tiny_spatial_cls_model()
+    state = torch.randn(3, 65 * 4)
+    images = torch.randint(0, 256, (3, 3, 16, 16), dtype=torch.uint8)
+    first = spatial_cls_condition_sensitivity(
+        model,
+        state,
+        images,
+        torch.device("cpu"),
+        batch_size=2,
+        seed=29,
+    )
+    second = spatial_cls_condition_sensitivity(
+        model,
+        state,
+        images,
+        torch.device("cpu"),
+        batch_size=2,
+        seed=29,
+    )
+    assert first["num_items"] == 3
+    for key in first:
+        assert first[key] == pytest.approx(second[key], rel=1e-5, abs=1e-6)

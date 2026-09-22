@@ -1,11 +1,12 @@
-"""Pair each recorded answer with its own observation and row-major DINO grid."""
+"""Align every answer in a full trajectory with its observation and DINO grid."""
 
+import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import torch
-from torch.utils.data import Dataset
 
 from nimloth.latent import (
     latent_state_block,
@@ -19,46 +20,149 @@ from nimloth.training.sft.stage1.data import (
 )
 
 
-class AnswerPrefixDataset(Dataset):
-    """Index every recorded answer once, retaining its complete observed history."""
+def validate_query_alignment_jsonl(
+    path: Path,
+    *,
+    split: str,
+    query_count: int,
+    max_records: int = -1,
+    max_images_per_record: int = -1,
+) -> int:
+    """Validate the Stage2 answer-view contract without loading a model or CUDA."""
+    try:
+        dataset = NimlothVLSFTDataset(
+            path,
+            processor=None,
+            max_records=max_records,
+            max_images_per_record=max_images_per_record,
+        )
+    except json.JSONDecodeError as exc:
+        source_line = None
+        record_index = 0
+        with path.open("r", encoding="utf-8") as source:
+            for line_number, line in enumerate(source, start=1):
+                if not line.strip():
+                    continue
+                if line.strip() == exc.doc.strip():
+                    source_line = line_number
+                    break
+                record_index += 1
+        location = (
+            f"record {record_index}, source line {source_line}"
+            if source_line is not None
+            else "an unknown source line"
+        )
+        raise ValueError(
+            f"Stage2 query alignment {split} dataset contains invalid JSONL at "
+            f"{path} ({location}): {exc.msg} (column {exc.colno})"
+        ) from exc
+    if not dataset.records:
+        raise ValueError(f"Stage2 query alignment {split} dataset is empty: {path}")
 
-    def __init__(self, trajectories: NimlothVLSFTDataset):
-        if trajectories.use_cache:
-            raise ValueError(
-                "answer prefixes require original messages and image paths"
+    for index, record in enumerate(dataset.records):
+        location = f"{split} record {index} in {path}"
+        if not isinstance(record, dict):
+            raise TypeError(
+                f"Stage2 query alignment {location} must be a JSON object"
             )
-        self.trajectories = trajectories
-        self.index = []
-        for row, record in enumerate(trajectories.records):
-            answers = [
-                (row, index)
-                for index, message in enumerate(record["messages"])
-                if message["role"] == "assistant"
-            ]
-            if not answers:
-                raise ValueError("query-alignment trajectory has no recorded answers")
-            self.index.extend(answers)
-
-    def __len__(self):
-        return len(self.index)
-
-    def __getitem__(self, index):
-        row, answer = self.index[index]
-        messages = self.trajectories.get_messages(row)
-        return {"messages": messages[: answer + 1]}
-
-
-def answer_examples(
-    batch: list[dict[str, Any]], *, last_answer_only: bool = False
-) -> tuple[list[dict], list[str]]:
-    """Expand dialogues into prefixes; never borrow a later observation or thought."""
-    examples, paths = [], []
-    for record in batch:
+        if "messages" not in record:
+            record_format = record.get("record_format", "unknown")
+            raise ValueError(
+                f"Stage2 query alignment {location} must be answer-view JSONL with "
+                f"top-level 'messages'; received record_format={record_format!r}"
+            )
+        if not isinstance(record.get("id"), str) or not record["id"]:
+            raise ValueError(
+                f"Stage2 query alignment {location} requires a nonempty string 'id'"
+            )
+        if type(record.get("success")) is not bool:
+            raise ValueError(
+                f"Stage2 query alignment {location} requires boolean 'success'"
+            )
         messages = record["messages"]
-        if last_answer_only and (not messages or messages[-1]["role"] != "assistant"):
-            raise ValueError("answer prefix must end at its target assistant answer")
+        if not isinstance(messages, list) or not messages:
+            raise ValueError(
+                f"Stage2 query alignment {location} requires a nonempty 'messages' list"
+            )
+        for message_index, message in enumerate(messages):
+            if not isinstance(message, dict) or not isinstance(
+                message.get("role"), str
+            ):
+                raise TypeError(
+                    f"Stage2 query alignment {location} message {message_index} "
+                    "requires a string 'role'"
+                )
+            if not isinstance(message.get("content"), (str, list)):
+                raise TypeError(
+                    f"Stage2 query alignment {location} message {message_index} "
+                    "requires string or multimodal-list 'content'"
+                )
+            if isinstance(message["content"], list):
+                for part_index, part in enumerate(message["content"]):
+                    if not isinstance(part, dict):
+                        raise TypeError(
+                            f"Stage2 query alignment {location} message "
+                            f"{message_index} content part {part_index} must be an object"
+                        )
+                    if part.get("type") == "image" and (
+                        not isinstance(part.get("image"), str) or not part["image"]
+                    ):
+                        raise ValueError(
+                            f"Stage2 query alignment {location} message "
+                            f"{message_index} content part {part_index} requires a "
+                            "nonempty string image path"
+                        )
+        if "image_paths" in record:
+            image_paths = record["image_paths"]
+            if not isinstance(image_paths, list) or any(
+                not isinstance(image_path, str) or not image_path
+                for image_path in image_paths
+            ):
+                raise ValueError(
+                    f"Stage2 query alignment {location} requires 'image_paths' to be "
+                    "a list of nonempty strings"
+                )
+        try:
+            messages = dataset.get_messages(index)
+            answer_observation_paths([{"messages": messages}])
+            _answer_messages_with_query_boundary(messages, query_count)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Stage2 query alignment {location} violates the answer-view contract: "
+                f"{exc}"
+            ) from exc
+    return len(dataset.records)
+
+
+def _answer_messages_with_query_boundary(
+    messages: list[dict[str, Any]], query_count: int
+) -> list[dict[str, Any]]:
+    answer_messages = [message for message in messages if message["role"] == "assistant"]
+    boundary = (
+        r"</think>\s*"
+        + re.escape(latent_state_block(query_count))
+        + r"\s*<\|action_start\|>"
+    )
+    if any(
+        not isinstance(message["content"], str)
+        or re.search(
+            boundary,
+            normalize_latent_state_blocks(message["content"], query_count),
+        )
+        is None
+        for message in answer_messages
+    ):
+        raise ValueError("query state must follow the recorded CoT and precede the action")
+    return answer_messages
+
+
+def answer_observation_paths(batch: list[dict[str, Any]]) -> list[str]:
+    """Return one unambiguous current observation for every recorded answer."""
+    paths: list[str] = []
+    for record in batch:
         observation = None
-        for index, message in enumerate(messages):
+        answers = 0
+        for message in record["messages"]:
             if message["role"] == "user":
                 content = message["content"]
                 images = (
@@ -66,12 +170,8 @@ def answer_examples(
                     if isinstance(content, list)
                     else []
                 )
-                # Do not silently choose a view when the record is ambiguous.
                 observation = images[0] if len(images) == 1 else None
             if message["role"] != "assistant":
-                continue
-            if last_answer_only and index != len(messages) - 1:
-                observation = None
                 continue
             if observation is None:
                 raise ValueError(
@@ -85,12 +185,12 @@ def answer_examples(
                 raise ValueError(
                     "query alignment requires the recorded nonempty CoT for this observation"
                 )
-            examples.append({"messages": messages[: index + 1]})
             paths.append(str(observation))
             observation = None
-    if not examples:
-        raise ValueError("query alignment batch has no recorded answers")
-    return examples, paths
+            answers += 1
+        if answers == 0:
+            raise ValueError("query-alignment trajectory has no recorded answers")
+    return paths
 
 
 @dataclass
@@ -100,25 +200,13 @@ class QueryAlignmentCollator:
     query_count: int
     targets: Any
     mask_latent_query_labels: bool = True
-    last_answer_only: bool = False
 
     def __call__(self, batch):
-        examples, paths = answer_examples(batch, last_answer_only=self.last_answer_only)
-        for example in examples:
-            answer = normalize_latent_state_blocks(
-                example["messages"][-1]["content"], self.query_count
-            )
-            boundary = (
-                r"</think>\s*"
-                + re.escape(latent_state_block(self.query_count))
-                + r"\s*<\|action_start\|>"
-            )
-            if re.search(boundary, answer) is None:
-                raise ValueError(
-                    "query state must follow the recorded CoT and precede the action"
-                )
+        if any(type(record.get("success")) is not bool for record in batch):
+            raise ValueError("query alignment requires explicit trajectory success boolean")
+        paths = answer_observation_paths(batch)
         encoded = collate_fn(
-            examples,
+            batch,
             self.processor,
             self.max_length,
             latent_token_count=self.query_count,
@@ -126,43 +214,66 @@ class QueryAlignmentCollator:
             require_complete=True,
         )
         query_ids = [
-            self.processor.tokenizer.convert_tokens_to_ids(t)
-            for t in latent_state_tokens(self.query_count)
+            self.processor.tokenizer.convert_tokens_to_ids(token)
+            for token in latent_state_tokens(self.query_count)
         ]
         if len(set(query_ids)) != self.query_count or any(
-            t is None or t == self.processor.tokenizer.unk_token_id for t in query_ids
+            token_id is None
+            or token_id == self.processor.tokenizer.unk_token_id
+            for token_id in query_ids
         ):
             raise ValueError("query tokens must have distinct registered token IDs")
-        positions = []
-        for row, example in enumerate(examples):
+
+        answer_indices = torch.full_like(encoded["labels"], -1)
+        query_batch_indices: list[int] = []
+        query_positions: list[list[int]] = []
+        answer_index = 0
+        for row, record in enumerate(batch):
+            messages = record["messages"]
+            answer_messages = _answer_messages_with_query_boundary(
+                messages, self.query_count
+            )
             spans = assistant_token_spans(
-                example["messages"],
+                messages,
                 self.processor,
                 self.max_length,
                 latent_token_count=self.query_count,
             )
-            if len(spans) != sum(m["role"] == "assistant" for m in example["messages"]):
-                raise ValueError(
-                    "truncation removed a recorded answer from the query prefix"
-                )
-            start, end = spans[-1]
-            # History provides context but is not supervised again for every prefix.
-            encoded["labels"][row, :start] = -100
-            encoded["labels"][row, end:] = -100
+            if len(spans) != len(answer_messages):
+                raise ValueError("truncation removed a recorded answer from the trajectory")
             ids = encoded["input_ids"][row].tolist()
-            indices = [
-                i for i in range(start, min(end, len(ids))) if ids[i] in query_ids
-            ]
-            if [ids[i] for i in indices] != query_ids or indices != list(
-                range(indices[0], indices[0] + self.query_count)
-            ):
-                raise ValueError(
-                    "answer query slots must be complete, contiguous and in row-major order"
-                )
-            if not torch.any(encoded["labels"][row, 1:] != -100):
-                raise ValueError("truncation removed the target answer")
-            positions.append(indices)
-        encoded["query_positions"] = torch.tensor(positions, dtype=torch.long)
+            for start, end in spans:
+                indices = [
+                    position
+                    for position in range(start, min(end, len(ids)))
+                    if ids[position] in query_ids
+                ]
+                if (
+                    len(indices) != self.query_count
+                    or [ids[position] for position in indices] != query_ids
+                    or indices
+                    != list(range(indices[0], indices[0] + self.query_count))
+                ):
+                    raise ValueError(
+                        "answer query slots must be complete, contiguous and in row-major order"
+                    )
+                supervised = encoded["labels"][row, start:end] != -100
+                if not torch.any(supervised):
+                    raise ValueError("recorded answer has no supervised target tokens")
+                answer_indices[row, start:end][supervised] = answer_index
+                query_batch_indices.append(row)
+                query_positions.append(indices)
+                answer_index += 1
+        if answer_index != len(paths):
+            raise ValueError("answer/query/observation counts do not align")
+        encoded["lm_answer_mask"] = torch.tensor(
+            [batch[row]["success"] for row in query_batch_indices], dtype=torch.bool
+        )
+        encoded["answer_indices"] = answer_indices
+        encoded["query_batch_indices"] = torch.tensor(
+            query_batch_indices, dtype=torch.long
+        )
+        encoded["query_positions"] = torch.tensor(query_positions, dtype=torch.long)
         with torch.no_grad():
             encoded["dino_target"] = self.targets.load(
                 paths, device=torch.device("cpu")

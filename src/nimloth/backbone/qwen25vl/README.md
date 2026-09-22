@@ -6,12 +6,14 @@
 | `factory.py` | 阶段无关的模型加载、tuning 与独立能力构造 |
 | `input.py` | Agent 消息/图片到 `BackboneBatch` 的通用输入适配 |
 | `batch.py` | chat rendering、图片处理、CE label 与 tensor collate |
+| `image_text.py` | 图像占位符展开、assistant span 坐标映射与完整编码校验 |
 | `policy.py` | Qwen direct policy score 与 masked-token PPO replay 适配器 |
 | `vllm_policy.py` | 独立 vLLM 单请求 CoT/action behavior backend；不承担训练 |
 | `turn_generation.py` | turn continuation 的可测试 token 状态机与 logits mask |
 | `vllm_logits.py` | 把 turn 状态机接入 vLLM V1 per-request logits processor |
 | `checkpoint.py` | PEFT 与 full vision artifact |
 | `latent.py` | final hidden 捕获与 latent query 提取 |
+| `supervised_lm.py` | 在 FSDP head 边界内分块重算词表投影和窗口加权 CE |
 | `tuning.py` | LLM/vision `freeze | lora | full` 配置 |
 | `vision_ema.py` | 可训练视觉参数 EMA |
 | `monkey_patch.py` | 只供诊断脚本启用的局部实验 patch |
@@ -28,3 +30,18 @@ loss-mask 位置的 vocabulary logits，reasoning 使用屏蔽 Nimloth 注入 to
 action 使用八 token 词表；注入或强制补全的 token 不进入 PPO。
 latent query的注入边界按tokenizer解码后的字面`</think>`匹配，而不是假设该文本只有
 一种token ID切分；达到reasoning上限时才强制补入canonical close token序列。
+
+调用者可在 BackboneBatch 中携带 `lm_row_weights`（每行 0/1）。模型在同一次前向中独立计算各行回答 CE，按有效行计数；全零权重保留零梯度图。该字段由 backbone 消费，不传入 HF；是否为成功轨迹由训练调用者决定，backbone 不推断任务成功。
+
+隐藏状态提取不依赖 HF 的 `logits_to_keep` 参数：只需要 state 时，通过临时输出
+embedding pre-hook 将词表投影输入裁至最后一个位置，final norm 保留完整序列；
+原始 HF labels 路径保留完整 logits；带 `lm_row_weights` 的外部 LM loss 在一次
+FSDP head 调用内按每 128 个监督位置联合重算投影和 CE，保持完整词表、每行
+token 均值和完整 hidden。该私有模式用 head 的标量输出传递窗口 loss，使
+FSDP 反向解分片先于重算；不递归调用 head，不缓存旧参数视图。
+前向完成或异常后均移除 hook；目标和梯度须通过独立参考与分布式对比验证。
+
+图像展开后的文本和 assistant span 共同生成 CE 标签，并逐 token 核对真实输入；
+只监督最后 assistant，屏蔽 query tokens。编码不截断：完整 prefix 超出 max_length
+则明确报错。读取缓存时逐行验证图像 tokens、grid 与 pixels 数量，旧标签缓存须按
+新的 CE_MASK_VERSION 重建，不能仅改 manifest 继续使用。

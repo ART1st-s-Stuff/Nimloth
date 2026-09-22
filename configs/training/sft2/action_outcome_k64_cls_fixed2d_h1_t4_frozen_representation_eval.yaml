@@ -1,0 +1,93 @@
+# Evaluation-only Stage3 frozen-representation continuation.
+# Supply the complete epoch checkpoint through both --model and --stage3-init-checkpoint.
+# This restores all weights/EMA but intentionally starts a fresh optimizer.
+objective:
+  name: dino_grid
+
+# Supply dino_grid_cache and stage2_aligned_dino_cache at launch. They may
+# cover different corpora, but their validated feature-space contracts must match.
+
+data:
+  include_failed_rollouts: true
+
+tuning:
+  llm_tune: freeze
+  vision_tune: freeze
+  vision_ema: true
+  vision_ema_decay: 0.999
+
+train:
+  distributed_strategy: ddp
+  activation_offload: false
+  epochs: 15
+  schedule_total_steps: 46
+  batch_size: 1
+  grad_accum: 8
+  lr_qwen_start: 2.0e-7
+  lr_qwen_peak: 2.0e-7
+  qwen_lr_warmup_ratio: 0.15
+  state_proj_lr: 8.0e-6
+  freeze_state_projector: true
+  wm_predictor_lr: 3.0e-4
+  value_head_lr: 1.0e-4
+  outcome_head: true
+  outcome_head_lr: 1.0e-4
+  train_wm_predictor: true
+  weight_decay: 0.01
+  max_length: 16384
+  max_pixels: 100352
+  emb_dim: 1024
+  history_size: 1
+  prediction_horizon: 4
+  batch_mode: trajectory_online_cache
+  attn_implementation: flash_attention_2
+  gradient_checkpointing: true
+  checkpoint_interval_steps: 10
+  checkpoint_interval_minutes: 0.0
+  checkpoint_keep_last: 1
+  preprocess_cache_image_dtype: bfloat16
+  preprocess_cache_image_shard_size: 128
+  preprocess_cache_transition_shard_size: 256
+  preprocess_cache_shard_lru: 2
+  require_prebuilt_cache: true
+  preprocess_workers: 16
+  dataloader_workers: 4
+  dataloader_prefetch_factor: 2
+
+latent:
+  token_count: 65
+  query_mode: inject
+  query_tune: freeze
+  query_lr: 1.0e-5
+  protocol_lr: 2.0e-6
+
+grid:
+  size: 8
+  predictor_kind: residual
+  global_tokens: 1
+  position_encoding: fixed_2d_sincos_v1
+  wm_depth: 6
+  wm_heads: 16
+  wm_dim_head: 64
+  wm_mlp_dim: 2048
+  wm_dropout: 0.1
+
+loss:
+  # Epoch 5 had already completed the WM ramp. Keep its endpoint weight when
+  # starting the fresh heads-only optimizer so this is a continuation ablation,
+  # not a second warm-up experiment.
+  lambda_wm_start: 1.0
+  lambda_wm_end: 1.0
+  lambda_ce: 1.0
+  lambda_dino: 2.0
+  lambda_value: 1.0
+  lambda_outcome: 1.0
+  lambda_sigreg: 0.0
+  wm_value_backbone_grad: false
+  sigreg_num_proj: 1024
+  sigreg_knots: 17
+  value_gamma: 1.0
+
+monitor:
+  wandb: true
+  checkpoint_metric: val_wm_mse

@@ -184,6 +184,9 @@ class RolloutTrajectory:
     source_audit: dict[str, Any] = field(default_factory=dict)
     terminal_generation_audit: dict[str, Any] = field(default_factory=dict)
     conversion_provenance: dict[str, Any] = field(default_factory=dict)
+    action_successes: list[bool] | None = None
+    action_value_targets: list[float] | None = None
+    finite_horizon_provenance: dict[str, Any] = field(default_factory=dict)
     prompt_template_spec: PromptTemplateSpec | None = None
     sampling_temperature: float = 1.0
     sampling_top_p: float = 1.0
@@ -450,6 +453,10 @@ class RolloutTrajectory:
             "source_audit": self.source_audit,
             "terminal_generation_audit": self.terminal_generation_audit,
             "conversion_provenance": self.conversion_provenance,
+            **({"action_successes": self.action_successes} if self.action_successes is not None else {}),
+            **({"action_value_targets": self.action_value_targets,
+                "finite_horizon_provenance": self.finite_horizon_provenance}
+               if self.action_value_targets is not None or self.finite_horizon_provenance else {}),
             "planner_policy_traces": [
                 {
                     "candidate_sequences": [
@@ -611,6 +618,9 @@ class RolloutTrajectory:
                 record.get("terminal_generation_audit", {})
             ),
             conversion_provenance=dict(record.get("conversion_provenance", {})),
+            action_successes=record.get("action_successes"),
+            action_value_targets=record.get("action_value_targets"),
+            finite_horizon_provenance=dict(record.get("finite_horizon_provenance", {})),
             prompt_template_spec=prompt_template_spec,
             sampling_temperature=float(record["sampling_temperature"]),
             sampling_top_p=float(record["sampling_top_p"]),

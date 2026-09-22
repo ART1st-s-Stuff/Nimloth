@@ -7,6 +7,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class QueryAlignmentConfig:
     grid_size: int = 4
+    include_global_token: bool = False
     projector_hidden_dim: int = 2048
     weight_lm: float = 1.0
     weight_dino: float = 1.0
@@ -24,3 +25,7 @@ class QueryAlignmentConfig:
     @property
     def grid_tokens(self) -> int:
         return self.grid_size**2
+
+    @property
+    def state_tokens(self) -> int:
+        return self.grid_tokens + int(self.include_global_token)

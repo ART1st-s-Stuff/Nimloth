@@ -24,6 +24,7 @@ class BackboneOutput:
 
     hidden: torch.Tensor
     lm_loss: torch.Tensor | None = None
+    lm_losses: torch.Tensor | None = None
 
 
 class Backbone(nn.Module, ABC):

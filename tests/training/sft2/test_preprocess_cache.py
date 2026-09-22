@@ -38,7 +38,7 @@ class FakeTokenizer:
       for ch in text:
           offsets.append((pos, pos + 1))
           pos += 1
-      return {"offset_mapping": offsets}
+      return {"offset_mapping": offsets, "input_ids": [ord(ch) for ch in text]}
 
 
 class FakeProcessor:
@@ -255,6 +255,7 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
                     "step_index": 0,
                     "action_index": 0,
                     "action_value_target": 1.0,
+                    "action_success": True,
                     "success": True,
                     "current_enc": enc([1, 2], [0], [[1, 1, 2]]),
                 },
@@ -264,6 +265,7 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
                     "step_index": 1,
                     "action_index": 1,
                     "action_value_target": 1.0,
+                    "action_success": True,
                     "success": True,
                     "current_enc": enc([3, 4, 5], [0, 1], [[1, 1, 2], [1, 1, 3]]),
                     "next_enc": enc([6], [1], [[1, 1, 3]]),
@@ -275,6 +277,8 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
     samples = [
         TransitionSample(
             record_id="rec",
+            action_value_target=1.0,
+            action_success=True,
             step_index=0,
             prefix_messages=[{"role": "assistant", "content": "a <image>"}],
             prefix_image_paths=["im0"],
@@ -288,6 +292,8 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
         ),
         TransitionSample(
             record_id="rec",
+            action_value_target=1.0,
+            action_success=True,
             step_index=1,
             prefix_messages=[
                 {"role": "assistant", "content": "b <image> <image>"}
@@ -304,6 +310,7 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
     ]
     dataset = CachedTransitionDataset(cache_dir, samples, max_open_shards=1)
     collator = CompactCachedTransitionCollator(cache_dir, max_open_shards=1)
+    assert dataset[0]["action_success"] is True
     history_row = dataset[
         TransitionContextIndex(
             sample_index=0,
@@ -320,6 +327,7 @@ def test_compact_cache_mmap_collator_reuses_next_row(tmp_path) -> None:
     ]
     batch = collator([history_row, current_row])
 
+    assert [item["action_success"] for item in batch["items"]] == [True, True]
     assert [item["context_length"] for item in batch["items"]] == [2, 2]
     assert [item["is_current_step"] for item in batch["items"]] == [False, True]
 
@@ -368,3 +376,31 @@ def test_v1_cache_is_rejected_and_must_be_rebuilt(tmp_path) -> None:
     )
     with pytest.raises(ValueError, match="Rebuild the cache"):
         CachedTransitionDataset(cache_dir, [])
+
+
+def test_cached_input_rejects_per_row_image_mismatch_even_if_batch_totals_match():
+    from types import SimpleNamespace
+    from nimloth.backbone.qwen25vl.input import Qwen25VLInputBuilder
+    processor = SimpleNamespace(
+        image_token="<image_pad>", image_processor=SimpleNamespace(merge_size=2),
+        tokenizer=SimpleNamespace(pad_token_id=0, unk_token_id=-1, convert_tokens_to_ids=lambda _: 9))
+    builder = Qwen25VLInputBuilder(processor=processor, max_length=32)
+    rows = [
+        {"input_ids": torch.tensor([9]), "image_grid_thw": torch.tensor([[1, 2, 4]])},
+        {"input_ids": torch.tensor([9, 9]), "image_grid_thw": torch.tensor([[1, 2, 2]])},
+    ]
+    # Three total image tokens and three total features would pass a batch sum.
+    with pytest.raises(ValueError, match="tokens=1, features=2"):
+        builder.collate_encoded(rows, include_labels=False)
+
+
+def test_cached_input_rejects_pixel_grid_mismatch():
+    from types import SimpleNamespace
+    from nimloth.backbone.qwen25vl.input import Qwen25VLInputBuilder
+    processor = SimpleNamespace(
+        image_token="<image_pad>", image_processor=SimpleNamespace(merge_size=2),
+        tokenizer=SimpleNamespace(pad_token_id=0, unk_token_id=-1, convert_tokens_to_ids=lambda _: 9))
+    row = {"input_ids": torch.tensor([9]), "image_grid_thw": torch.tensor([[1, 2, 2]]),
+           "pixel_values": torch.zeros(3, 12)}
+    with pytest.raises(ValueError, match="pixel/grid mismatch"):
+        Qwen25VLInputBuilder(processor, 32).collate_encoded([row], include_labels=False)

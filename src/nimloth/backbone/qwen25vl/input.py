@@ -8,6 +8,7 @@ from typing import Any, Sequence
 import torch
 
 from nimloth.agent import bind_image_placeholders
+from .image_text import require_complete_length, validate_image_encoding
 from nimloth.backbone.base import BackboneBatch
 from nimloth.backbone.qwen25vl.batch import (
     build_qwen_batch,
@@ -61,6 +62,9 @@ class Qwen25VLInputBuilder:
         include_labels: bool,
     ) -> BackboneBatch:
         prepared_rows = list(rows)
+        for row in prepared_rows:
+            require_complete_length(row, int(self.max_length))
+            validate_image_encoding(row, self.processor)
         if include_labels:
             missing = [
                 index

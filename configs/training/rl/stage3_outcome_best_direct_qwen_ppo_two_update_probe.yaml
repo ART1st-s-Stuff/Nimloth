@@ -1,0 +1,81 @@
+# Two-update fresh direct-Qwen PPO probe from the selected Stage3 Outcome checkpoint.
+agent:
+  prompt_template: nimloth-latent-action
+  planning:
+    enabled: false
+
+freeze:
+  state_proj: false
+
+gradient:
+  state_source: recompute
+  representation_to_backbone: false
+  backbone_lr: 2.0e-7
+  backbone_weight_decay: 1.0e-4
+
+actor:
+  enabled: true
+  entropy_coeff: 0.0
+  clip_ratio: 0.2
+  credit_assignment: turn
+  max_response_tokens: 512
+  reference_kl_loss_weight: 0.0
+
+planner_policy:
+  enabled: false
+
+predictor:
+  lr: 3.0e-4
+  state_proj_lr: 8.0e-6
+  emb_dim: 1024
+  history_size: 1
+  lambda_wm: 1.0
+  lambda_dino: 2.0
+  lambda_sigreg: 0.0
+  sigreg_num_proj: 1024
+  sigreg_knots: 17
+  train_wm: true
+
+value_head:
+  lr: 1.0e-4
+  rank_margin: 0.1
+  lambda_rank: 0.0
+
+outcome_head:
+  enabled: true
+  lr: 1.0e-4
+  lambda_bce: 1.0
+
+rl:
+  iterations: 2
+  envs_per_iteration: 8
+  max_steps_per_episode: 20
+  gamma: 1.0
+  batch_size: 8
+  truncated_bootstrap: zero
+
+rollout:
+  train_datasets:
+    - base_train
+  temperature: 0.7
+  top_p: 0.95
+  max_episode_attempts: 1
+
+validation:
+  enabled: false
+  external: false
+  interval: 1
+  envs: 0
+  checkpoint_metric: success_rate
+
+training:
+  seed: 42
+  log_interval: 1
+  save_interval: 2
+  sequence_micro_batch_size: 1
+
+distributed:
+  nodes: 1
+  world_size: 8
+  gpus_per_rank: 1
+  rollout_tensor_parallel_size: 4

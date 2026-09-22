@@ -8,8 +8,17 @@ from pathlib import Path
 
 import pytest
 
-from nimloth.config.rl import load_rl_config, merge_rl_config_overrides, parse_rl_config
-from nimloth.training.rl.cli import main, parse_rl_args
+from nimloth.config.rl import (
+    RLConfig,
+    load_rl_config,
+    merge_rl_config_overrides,
+    parse_rl_config,
+)
+from nimloth.training.rl.cli import (
+    _validate_warm_start_checkpoints,
+    main,
+    parse_rl_args,
+)
 
 
 def _raw_config() -> dict:
@@ -78,6 +87,8 @@ def test_rl_config_builds_immutable_sections_and_cli_overrides() -> None:
     assert overridden.rl.envs_per_iteration == 3
     assert overridden.training.seed == 7
     assert config.training.planner_micro_batch_size == 1
+    assert config.training.sequence_micro_batch_size is None
+    assert config.training.activation_offload is False
     assert overridden.rollout.train_datasets == ("base_train",)
     assert config.rollout.max_episode_attempts == 1
     assert config.predictor.lambda_sigreg == 0.1
@@ -107,6 +118,153 @@ def test_planner_micro_batch_size_must_be_positive() -> None:
 
     raw["training"]["planner_micro_batch_size"] = 0
     with pytest.raises(ValueError, match="planner_micro_batch_size must be >= 1"):
+        parse_rl_config(raw)
+
+
+def test_sequence_micro_batch_size_is_typed_and_positive() -> None:
+    raw = _raw_config()
+    raw["rl"]["batch_size"] = 2
+    raw["training"] = {"sequence_micro_batch_size": 2}
+
+    assert parse_rl_config(raw).training.sequence_micro_batch_size == 2
+
+    raw["training"]["sequence_micro_batch_size"] = 0
+    with pytest.raises(ValueError, match="sequence_micro_batch_size must be >= 1"):
+        parse_rl_config(raw)
+
+    raw["training"]["sequence_micro_batch_size"] = 3
+    with pytest.raises(ValueError, match="must be <= rl.batch_size"):
+        parse_rl_config(raw)
+
+
+@pytest.mark.parametrize("invalid", ["false", 0, 1, None])
+def test_activation_offload_is_strictly_typed(invalid: object) -> None:
+    raw = _raw_config()
+    raw["training"] = {"activation_offload": invalid}
+
+    with pytest.raises(
+        ValueError,
+        match="training.activation_offload must be a boolean",
+    ):
+        parse_rl_config(raw)
+
+    raw["training"] = {"activation_offload": True}
+    assert parse_rl_config(raw).training.activation_offload is True
+
+
+def test_direct_ppo_retry_config_keeps_activation_offload_disabled() -> None:
+    config_path = (
+        Path(__file__).resolve().parents[3]
+        / "configs"
+        / "training"
+        / "rl"
+        / "stage3_outcome_best_direct_qwen_ppo_one_update_retry.yaml"
+    )
+
+    assert load_rl_config(config_path).training.activation_offload is False
+
+
+def test_direct_ppo_ten_more_iterations_only_change_training_horizon() -> None:
+    config_root = (
+        Path(__file__).resolve().parents[3] / "configs" / "training" / "rl"
+    )
+    retry = load_rl_config(
+        config_root / "stage3_outcome_best_direct_qwen_ppo_one_update_retry.yaml"
+    ).to_dict()
+    continuation = load_rl_config(
+        config_root / "stage3_outcome_best_direct_qwen_ppo_continue_to11.yaml"
+    ).to_dict()
+
+    retry["rl"]["iterations"] = 11
+    retry["training"]["save_interval"] = 11
+    assert continuation == retry
+    assert continuation["training"]["sequence_micro_batch_size"] == 1
+    assert continuation["training"]["activation_offload"] is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("credit_assignment", "token", "does not support token credit"),
+        ("lambda_sigreg", 0.1, "requires predictor.lambda_sigreg=0"),
+        ("lambda_rank", 0.1, "requires value_head.lambda_rank=0"),
+    ],
+)
+def test_sequence_micro_batch_rejects_non_equivalent_objectives(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    raw = _raw_config()
+    raw["rl"]["batch_size"] = 8
+    raw["training"] = {"sequence_micro_batch_size": 1}
+    raw["actor"] = {"credit_assignment": "turn"}
+    raw["predictor"]["lambda_sigreg"] = 0.0
+    raw["value_head"] = {"lambda_rank": 0.0}
+    if field == "credit_assignment":
+        raw["actor"][field] = value
+        raw["token_credit"] = {
+            "gamma": 0.99,
+            "gae_lambda": 0.95,
+            "value_lr": 1e-4,
+            "value_loss_weight": 1.0,
+            "hidden_dim": 8,
+        }
+        raw["rl"]["truncated_bootstrap"] = "zero"
+    elif field == "lambda_sigreg":
+        raw["predictor"][field] = value
+    else:
+        raw["value_head"][field] = value
+
+    with pytest.raises(ValueError, match=message):
+        parse_rl_config(raw)
+
+
+def test_sequence_micro_batch_field_is_rejected_for_planner_training() -> None:
+    raw = _raw_config()
+    raw["agent"] = {
+        "planning": {
+            "enabled": True,
+            "horizon": 1,
+            "search_mode": "greedy",
+            "device": "cuda",
+        }
+    }
+    raw["training"] = {"sequence_micro_batch_size": 1}
+    raw["predictor"].update({"train_wm": True, "lambda_sigreg": 0.0})
+    raw["value_head"] = {
+        "lambda_rank": 0.0,
+        "ppo_clip_range": 0.2,
+        "ppo_epochs": 1,
+    }
+    raw["rl"]["batch_size"] = 8
+    raw["rl"]["envs_per_iteration"] = 8
+
+    with pytest.raises(ValueError, match="only valid for non-planner"):
+        parse_rl_config(raw)
+
+
+def test_activation_offload_is_rejected_for_planner_training() -> None:
+    raw = _raw_config()
+    raw["agent"] = {
+        "planning": {
+            "enabled": True,
+            "horizon": 1,
+            "search_mode": "greedy",
+            "device": "cuda",
+        }
+    }
+    raw["training"] = {"activation_offload": True}
+    raw["predictor"].update({"train_wm": True, "lambda_sigreg": 0.0})
+    raw["value_head"] = {
+        "lambda_rank": 0.0,
+        "ppo_clip_range": 0.2,
+        "ppo_epochs": 1,
+    }
+    raw["rl"]["batch_size"] = 8
+    raw["rl"]["envs_per_iteration"] = 8
+
+    with pytest.raises(ValueError, match="only valid for non-planner"):
         parse_rl_config(raw)
 
 
@@ -697,6 +855,71 @@ def test_rl_cli_preserves_checkpoint_processor_by_default() -> None:
     )
 
     assert args.max_pixels is None
+
+
+def _outcome_warm_start_args(
+    root: Path,
+    *,
+    resume: bool = False,
+) -> Namespace:
+    return Namespace(
+        model=root,
+        wm_checkpoint=root / "wm_predictor",
+        state_proj_checkpoint=root / "state_proj.pt",
+        value_head_checkpoint=root / "value_head",
+        outcome_head_checkpoint=root / "outcome_head.pt",
+        fresh_rollout_manifest=root / "fresh_manifest.json",
+        resume=resume,
+    )
+
+
+def _direct_outcome_config() -> RLConfig:
+    raw = _raw_config()
+    raw["actor"] = {"enabled": True, "credit_assignment": "turn"}
+    raw["predictor"].update({"train_wm": True, "lambda_dino": 2.0})
+    raw["outcome_head"] = {"enabled": True, "lambda_bce": 1.0}
+    return parse_rl_config(raw)
+
+
+def test_fresh_direct_outcome_rl_requires_complete_same_root_checkpoint(
+    tmp_path: Path,
+) -> None:
+    config = _direct_outcome_config()
+    args = _outcome_warm_start_args(tmp_path / "stage3_epoch5")
+    args.outcome_head_checkpoint = None
+
+    with pytest.raises(
+        ValueError,
+        match=r"fresh OutcomeHead RL requires --outcome-head-checkpoint",
+    ):
+        _validate_warm_start_checkpoints(args, config)
+
+    args = _outcome_warm_start_args(tmp_path / "stage3_epoch5")
+    args.value_head_checkpoint = tmp_path / "other_epoch" / "value_head"
+    with pytest.raises(ValueError, match="components must share one checkpoint root"):
+        _validate_warm_start_checkpoints(args, config)
+
+
+def test_fresh_direct_outcome_rl_accepts_one_checkpoint_family(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "stage3_epoch5"
+    _validate_warm_start_checkpoints(
+        _outcome_warm_start_args(root),
+        _direct_outcome_config(),
+    )
+
+
+def test_direct_outcome_resume_keeps_existing_recovery_behavior(
+    tmp_path: Path,
+) -> None:
+    args = _outcome_warm_start_args(tmp_path / "stage3_epoch5", resume=True)
+    args.wm_checkpoint = None
+    args.state_proj_checkpoint = None
+    args.value_head_checkpoint = None
+    args.outcome_head_checkpoint = None
+
+    _validate_warm_start_checkpoints(args, _direct_outcome_config())
 
 
 def test_rl_config_rejects_impossible_distributed_topology() -> None:

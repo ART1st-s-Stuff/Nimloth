@@ -19,6 +19,7 @@ from nimloth.wm import (
 from nimloth.wm.grid import (
     SharedSlotProjector,
     TemporalSpatialGridPredictor,
+    ResidualTemporalSpatialGridPredictor,
 )
 
 
@@ -49,7 +50,7 @@ def _is_grid_predictor_checkpoint(path: Path) -> bool:
     if not config_path.is_file():
         raise FileNotFoundError(f"missing WM predictor config: {config_path}")
     raw = json.loads(config_path.read_text(encoding="utf-8"))
-    return "grid_tokens" in raw
+    return "grid_tokens" in raw or raw.get("schema") == "nimloth_residual_temporal_spatial_grid_v1"
 
 
 def load_planning_world_model(
@@ -71,7 +72,13 @@ def load_planning_world_model(
     qwen_hidden_dim = backbone_hidden_size(qwen_config)
     is_grid = _is_grid_predictor_checkpoint(wm_checkpoint)
     if is_grid:
-        predictor = TemporalSpatialGridPredictor.load_checkpoint(
+        predictor_metadata = json.loads((wm_checkpoint / "config.json").read_text(encoding="utf-8"))
+        predictor_type = (
+            ResidualTemporalSpatialGridPredictor
+            if predictor_metadata.get("schema") == "nimloth_residual_temporal_spatial_grid_v1"
+            else TemporalSpatialGridPredictor
+        )
+        predictor = predictor_type.load_checkpoint(
             wm_checkpoint,
             map_location="cpu",
         )

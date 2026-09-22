@@ -49,6 +49,13 @@ def discounted_action_value_targets(
     bootstrap值，避免把时间上限猜成terminal。
     """
 
+    from nimloth.rollout.finite_horizon import validated_action_value_targets
+
+    explicit = validated_action_value_targets(record, gamma=gamma)
+    if explicit is not None:
+        if truncated_bootstrap is not None:
+            raise ValueError("explicit finite-horizon targets cannot override bootstrap")
+        return explicit
     action_indices = list(record["action_indices"])
     n = len(action_indices)
     if n == 0:
@@ -100,6 +107,7 @@ class TransitionSample:
     action_value_target: float = 0.0
     success: bool = True
     split: str = "train"
+    action_success: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -171,6 +179,7 @@ def transition_training_item(sample: TransitionSample) -> dict[str, Any]:
         "action_index": sample.action_index,
         "action_value_target": sample.action_value_target,
         "success": sample.success,
+        "action_success": sample.action_success,
         "next_image_path": sample.next_image_path,
         "current_image_path": sample.current_image_path,
         "next_messages": None,
@@ -335,6 +344,10 @@ def _expand_structured_agent_transitions(
                 next_prefix_messages=next_messages,
                 next_prefix_image_paths=list(image_paths[: step_index + 2]),
                 action_value_target=float(value_targets[step_index]),
+                action_success=(
+                    record["action_successes"][step_index]
+                    if record.get("action_successes") is not None else None
+                ),
                 success=success,
                 split=split,
             )

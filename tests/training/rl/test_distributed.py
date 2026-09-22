@@ -10,8 +10,9 @@ from nimloth.backbone import (
     BackboneOutput,
     DistributedBackbone,
 )
+from nimloth.training.rl import fsdp as rl_fsdp
 from nimloth.training.rl.trainer import (
-    _prepare_planner_qwen_training,
+    _prepare_qwen_training,
     _wrap_distributed_modules,
     _wrap_world_model_ddp,
 )
@@ -47,7 +48,7 @@ class _Backbone(Backbone):
         del include_lm_loss
         return BackboneOutput(hidden=self.model(batch.tensors["hidden"]))
 
-    def with_model(self, model: nn.Module) -> "_Backbone":
+    def with_model(self, model: nn.Module) -> _Backbone:
         return _Backbone(model)
 
     def save_pretrained(self, *args, **kwargs) -> None:
@@ -61,12 +62,63 @@ class _CheckpointedBlock(nn.Module):
         self.gradient_checkpointing = enabled
 
 
-def test_planner_qwen_training_activates_requested_gradient_checkpointing() -> None:
+class Qwen2_5_VLDecoderLayer(nn.Sequential):
+    pass
+
+
+class Qwen2_5_VLVisionBlock(nn.Sequential):
+    pass
+
+
+class _TinyQwen(nn.Module):
+    _no_split_modules = ("Qwen2_5_VLDecoderLayer",)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.visual = nn.Sequential(
+            Qwen2_5_VLVisionBlock(nn.Linear(4, 4)),
+            nn.LayerNorm(4),
+        )
+        self.model = nn.Sequential(
+            Qwen2_5_VLDecoderLayer(nn.Linear(4, 4)),
+            Qwen2_5_VLDecoderLayer(nn.Linear(4, 4)),
+        )
+        self.embed_tokens = nn.Embedding(8, 4)
+
+
+def test_direct_qwen_fsdp_policy_uses_decoder_and_vision_boundaries() -> None:
+    model = _TinyQwen()
+
+    policy, counts = rl_fsdp.qwen_block_wrap_policy(model)
+    selected = policy._run_policy(model, ignored_modules=set(), root_kwargs={})
+
+    assert set(selected) == {
+        model.visual,
+        model.visual[0],
+        model.model[0],
+        model.model[1],
+    }
+    assert counts == {
+        "Qwen2_5_VLDecoderLayer": 2,
+        "Qwen2_5_VLVisionBlock": 1,
+        "Sequential": 1,
+    }
+
+
+def test_direct_qwen_fsdp_policy_rejects_incomplete_qwen_hierarchy() -> None:
+    model = _TinyQwen()
+    model.visual = nn.Sequential(nn.Linear(4, 4))
+
+    with pytest.raises(RuntimeError, match="decoder=2, vision=0"):
+        rl_fsdp.qwen_block_wrap_policy(model)
+
+
+def test_qwen_training_activates_requested_gradient_checkpointing() -> None:
     checkpointed = _CheckpointedBlock(enabled=True)
     frozen_checkpointed = _CheckpointedBlock(enabled=True).requires_grad_(False)
     model = nn.Sequential(checkpointed, frozen_checkpointed).eval()
 
-    active_modules = _prepare_planner_qwen_training(
+    active_modules = _prepare_qwen_training(
         model,
         gradient_checkpointing=True,
         eval_modules=(frozen_checkpointed,),
@@ -78,14 +130,14 @@ def test_planner_qwen_training_activates_requested_gradient_checkpointing() -> N
     assert active_modules == 1
 
 
-def test_planner_qwen_training_rejects_ineffective_checkpointing_flag() -> None:
+def test_qwen_training_rejects_ineffective_checkpointing_flag() -> None:
     model = nn.Sequential(_CheckpointedBlock(enabled=False)).eval()
 
     with pytest.raises(
         RuntimeError,
         match="no checkpoint-enabled module",
     ):
-        _prepare_planner_qwen_training(
+        _prepare_qwen_training(
             model,
             gradient_checkpointing=True,
         )

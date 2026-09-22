@@ -1,4 +1,4 @@
-# SFT2 — latent WM + Value head (defaults per sft2_exp.md)
+# Stage3 — complete-trajectory latent WM + Value head defaults
 
 init:
   sft1_checkpoint: null
@@ -19,7 +19,7 @@ tuning:
 
 train:
   epochs: 10
-  # P2: per-rank batch 2 x grad_accum 4 keeps effective batch 64 on 8 GPUs.
+  # Per-rank 2 complete trajectories x GA4 x 8 GPUs = 64 trajectories/update.
   batch_size: 2
   grad_accum: 4
   lr_qwen_start: 1.0e-8
@@ -31,9 +31,9 @@ train:
   max_length: 12000
   max_pixels: 602112
   emb_dim: 1024
-  # 与 RL 共用同一 LeWM 上下文语义：每个样本含 H 个动作和 H+1 个真实状态。
-  history_size: 4
-  # 每个 state 只在 current step 执行一次 Qwen；旧历史读取本 epoch 在线 detached cache。
+  # Encode all trajectory states together; each WM rollout starts from one state.
+  history_size: 1
+  # Legacy configuration field; native Stage3 always uses complete trajectories.
   batch_mode: trajectory_online_cache
   # Performance knobs: remote H800 environment has flash_attn installed; keep
   # gradient checkpointing enabled by default for memory safety, but CLI now

@@ -1,0 +1,28 @@
+{
+  "id": "sft2-dino-information-test",
+  "name": "sft2-dino-information-test",
+  "title": "Stage2 DINO信息恢复测试（a100-2）",
+  "description": "使用最新完整SFT1初始化，在a100-2进行有界Stage2测试训练，评估独立验证轨迹state对DINO特征的恢复能力。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "ARTI5T",
+  "assignee": "ARTI5T",
+  "createdAt": "2026-09-12",
+  "completedAt": null,
+  "branch": "codex/sft2-dino-information-test",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "kind": "experiment"
+  }
+}

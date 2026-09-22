@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import torch
 
@@ -180,10 +180,53 @@ def apply_turn_response_logits(
     return masked
 
 
+def build_turn_response_logits_processor(
+    tokenizer: Any,
+    spec: TurnGenerationSpec,
+) -> Callable[[list[int], torch.Tensor], torch.Tensor]:
+    """Build the request-level equivalent of the vLLM V1 adapter.
+
+    vLLM 0.8 accepts custom processors on ``SamplingParams`` rather than on
+    ``EngineArgs``.  Remember the decoded close boundary by generated prefix so
+    the callable also remains correct if one SamplingParams object is shared by
+    several requests.
+    """
+
+    close_boundaries: dict[tuple[int, ...], int] = {}
+
+    def processor(output_token_ids: list[int], logits: torch.Tensor) -> torch.Tensor:
+        output_ids = tuple(int(value) for value in output_token_ids)
+        decoded_close_end: int | None = None
+        for prefix, boundary in reversed(tuple(close_boundaries.items())):
+            if len(prefix) <= len(output_ids) and output_ids[: len(prefix)] == prefix:
+                decoded_close_end = boundary
+                break
+        if decoded_close_end is None:
+            decoded_output = tokenizer.decode(
+                list(output_ids),
+                skip_special_tokens=False,
+                clean_up_tokenization_spaces=False,
+                spaces_between_special_tokens=False,
+            )
+            if decoded_output.endswith(spec.close_text):
+                decoded_close_end = len(output_ids)
+        if decoded_close_end is not None:
+            close_boundaries[output_ids] = decoded_close_end
+        return apply_turn_response_logits(
+            output_ids,
+            logits,
+            spec=spec,
+            decoded_close_end=decoded_close_end,
+        )
+
+    return processor
+
+
 __all__ = [
     "TURN_RESPONSE_EXTRA_ARG",
     "TurnGenerationSpec",
     "allowed_turn_token_ids",
     "apply_turn_response_logits",
+    "build_turn_response_logits_processor",
     "find_token_subsequence",
 ]

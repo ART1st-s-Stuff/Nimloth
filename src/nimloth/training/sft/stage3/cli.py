@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
-from nimloth.latent import LATENT_QUERY_MODES, query_labels_are_masked, resolve_latent_query_mode
 from nimloth.config.sft2 import apply_sft2_yaml_defaults
+from nimloth.latent import (
+    LATENT_QUERY_MODES,
+    query_labels_are_masked,
+    resolve_latent_query_mode,
+)
 
 
 def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentParser:
@@ -22,21 +27,69 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--model", type=Path, required=True, help="Init HF dir (SFT1 hf_merged or resume best/)")
     ap.add_argument("--wm-predictor-checkpoint", type=Path, default=None)
     ap.add_argument(
+        "--stage3-init-checkpoint",
+        type=Path,
+        default=None,
+        help=(
+            "Complete Stage3 checkpoint used only to initialize model weights. "
+            "Unlike --resume, optimizer, schedule, RNG and loop state start fresh."
+        ),
+    )
+    ap.add_argument(
+        "--k64-stage3-migration-checkpoint",
+        type=Path,
+        default=None,
+        help=(
+            "Explicit one-time K64 Stage3 source for K65 split-projector/fixed-2D "
+            "migration. This is initialization, not optimizer resume."
+        ),
+    )
+    ap.add_argument(
         "--objective",
         choices=("latent", "dino_grid"),
         default="latent",
     )
     ap.add_argument("--dino-grid-cache", type=Path, default=None)
+    ap.add_argument(
+        "--stage2-aligned-dino-cache",
+        type=Path,
+        default=None,
+        help=(
+            "Standalone DINO cache used by the Stage2 alignment checkpoint. "
+            "Required when Stage3 uses a different-corpus spatial/CLS cache."
+        ),
+    )
     ap.add_argument("--train-jsonl", type=Path, required=True)
     ap.add_argument("--val-jsonl", type=Path, required=True)
     ap.add_argument("--output-dir", type=Path, required=True)
     ap.add_argument("--epochs", type=int, default=10)
-    ap.add_argument("--batch-size", type=int, default=2)
-    ap.add_argument("--grad-accum", type=int, default=4)
+    ap.add_argument("--schedule-total-steps", type=int, default=0,
+                    help="Fixed original LR/WM schedule length; zero derives it from epochs.")
+    ap.add_argument("--early-stop-metric", choices=("wm_mse", "predicted_dino_grid_mse"))
+    ap.add_argument("--early-stop-relative-improvement", type=float, default=.01)
+    ap.add_argument("--early-stop-patience", type=int, default=2)
+    ap.add_argument("--early-stop-baseline", type=float)
+    ap.add_argument("--distributed-strategy", choices=("ddp", "fsdp"), default="ddp")
+    ap.add_argument("--fsdp-wrap-granularity", choices=("linear", "block"), default="linear",
+                    help="FSDP handle grouping; block groups decoder/vision block internals.")
+    ap.add_argument("--activation-offload", action=argparse.BooleanOptionalAction, default=False,
+                    help="Store forward autograd saved tensors on CPU; computation and backward remain on GPU.")
+    ap.add_argument("--stop-after-steps", type=int, default=0,
+                    help="Stop at this absolute optimizer step with a partial resumable checkpoint; 0 disables.")
+    ap.add_argument("--diagnose-outcome-gradients", action="store_true",
+                    help="Measure first-batch outcome versus WM+DINO predictor gradients without an update.")
+    ap.add_argument("--batch-size", type=int, default=2, help="Complete trajectories per rank and microbatch.")
+    ap.add_argument("--grad-accum", type=int, default=4, help="Complete-trajectory microbatches per optimizer update.")
     ap.add_argument("--lr-qwen-start", type=float, default=1e-8)
     ap.add_argument("--lr-qwen-peak", type=float, default=5e-7)
     ap.add_argument("--qwen-lr-warmup-ratio", type=float, default=0.15)
     ap.add_argument("--state-proj-lr", type=float, default=1e-4)
+    ap.add_argument(
+        "--freeze-state-projector",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Freeze StateProjector parameters and exclude them from the optimizer.",
+    )
     ap.add_argument("--wm-predictor-lr", type=float, default=3e-4)
     ap.add_argument("--value-head-lr", type=float, default=3e-4)
     ap.add_argument("--weight-decay", type=float, default=0.01)
@@ -44,6 +97,13 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--max-pixels", type=int, default=602112)
     ap.add_argument("--emb-dim", type=int, default=1024)
     ap.add_argument("--grid-size", type=int, default=4)
+    ap.add_argument("--grid-predictor-kind", choices=("direct", "residual"), default="direct")
+    ap.add_argument("--grid-global-tokens", type=int, choices=(0, 1), default=0)
+    ap.add_argument(
+        "--grid-position-encoding",
+        choices=("learned_v1", "fixed_2d_sincos_v1"),
+        default="learned_v1",
+    )
     ap.add_argument("--grid-wm-depth", type=int, default=6)
     ap.add_argument("--grid-wm-heads", type=int, default=16)
     ap.add_argument("--grid-wm-dim-head", type=int, default=64)
@@ -52,10 +112,9 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument(
         "--history-size",
         type=int,
-        default=4,
+        default=1,
         help=(
-            "LeWM causal context length H. SFT2 consumes H consecutive actions "
-            "and H+1 real states; warm-started RL must use the same value."
+            "Stage3 predicts each window from one current state; H must be 1."
         ),
     )
     ap.add_argument(
@@ -81,20 +140,65 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     )
     ap.add_argument(
         "--query-tune",
-        choices=("freeze", "adapter"),
+        choices=("freeze", "adapter", "selected_rows"),
         default="freeze",
-        help="Optionally tune a small additive latent-query embedding adapter.",
+        help="Freeze Query, tune an additive adapter, or train selected input/head rows.",
     )
     ap.add_argument("--query-lr", type=float, default=5e-5)
+    ap.add_argument("--protocol-lr", type=float, default=2e-5)
     ap.add_argument("--max-train-records", type=int, default=-1)
     ap.add_argument("--max-val-records", type=int, default=-1)
     ap.add_argument("--max-val-batches", type=int, default=-1)
+    ap.add_argument("--diagnostic-steps", type=int, nargs="+", default=[])
+    ap.add_argument("--diagnostic-dir", type=Path, default=None)
+    ap.add_argument(
+        "--eval-only",
+        action="store_true",
+        help="Load the configured model/checkpoint and evaluate without updates or checkpoint writes.",
+    )
+    ap.add_argument(
+        "--rl-eval-checkpoint",
+        type=Path,
+        default=None,
+        help=(
+            "Complete RL checkpoint root used only with --eval-only. --model must "
+            "name this same directory; projector, WM, value and outcome weights are "
+            "then loaded from its fixed same-root artifact names."
+        ),
+    )
+    ap.add_argument(
+        "--feature-export-dir",
+        type=Path,
+        default=None,
+        help="With --eval-only, export full Stage3 DINO diagnostic grids for offline rendering.",
+    )
+    ap.add_argument(
+        "--frozen-wm-cache-dir",
+        type=Path,
+        default=None,
+        help=(
+            "With --eval-only, export each complete trajectory's fixed Stage2 and DINO grids "
+            "once for the standalone frozen-WM diagnostic."
+        ),
+    )
+    ap.add_argument(
+        "--frozen-wm-cache-split",
+        choices=("train", "eval"),
+        default=None,
+        help="Dataset loader exported by --frozen-wm-cache-dir; must be explicit.",
+    )
     ap.add_argument("--success-only", action="store_true", help="Train on successful rollouts only")
     ap.add_argument("--lambda-ce", type=float, default=1.0)
     ap.add_argument("--lambda-dino", type=float, default=0.5)
     ap.add_argument("--lambda-value", type=float, default=1.0)
+    ap.add_argument("--outcome-head", action="store_true")
+    ap.add_argument("--outcome-eval-dir", type=Path, default=None)
+    ap.add_argument("--lambda-outcome", type=float, default=0.0)
+    ap.add_argument("--outcome-head-lr", type=float, default=1e-4)
     ap.add_argument("--value-gamma", type=float, default=1.0)
     ap.add_argument("--lambda-sigreg", type=float, default=0.1)
+    ap.add_argument("--wm-value-backbone-grad", action=argparse.BooleanOptionalAction,
+                    default=True, help="Allow WM/value gradients through projector inputs into the backbone.")
     ap.add_argument("--sigreg-num-proj", type=int, default=1024)
     ap.add_argument("--sigreg-knots", type=int, default=17)
     ap.add_argument("--lambda-wm-start", type=float, default=0.1)
@@ -139,8 +243,25 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         type=Path,
         default=None,
         help=(
-            "Original model path recorded by a required prebuilt cache. Use only "
-            "when model weights were re-exported without changing processor files."
+            "Original model path recorded by a required prebuilt destination cache."
+        ),
+    )
+    ap.add_argument(
+        "--preprocess-cache-reuse-image-root",
+        type=Path,
+        default=None,
+        help=(
+            "Completed source preprocess-cache root with train/ and val/ children. "
+            "Only verified image shards are hardlinked; transition shards are rebuilt."
+        ),
+    )
+    ap.add_argument(
+        "--preprocess-cache-reuse-processor-source",
+        type=Path,
+        default=None,
+        help=(
+            "Exact original processor checkpoint for a legacy reuse source whose "
+            "manifest predates image_processor_identity. Never used to encode the destination."
         ),
     )
     ap.add_argument("--preprocess-workers", type=int, default=4, help="Workers for building preprocess cache.")
@@ -155,7 +276,8 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument("--preprocess-cache-shard-lru", type=int, default=2)
     ap.add_argument(
         "--require-prebuilt-cache",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=False,
         help="Refuse to build cache inside the GPU training job.",
     )
     ap.add_argument("--force-rebuild-cache", action="store_true")
@@ -174,13 +296,19 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
     ap.add_argument(
         "--step-timing",
         action="store_true",
-        help="Log rolling-average per-section step timings (profiling only).",
+        help="Log cumulative sampled per-section step timings (profiling only).",
     )
     ap.add_argument(
         "--step-timing-interval",
         type=int,
         default=50,
-        help="Log step timings every N optimizer steps when --step-timing is set.",
+        help="Log every N profiled optimizer updates when --step-timing is set.",
+    )
+    ap.add_argument(
+        "--step-timing-sample-interval",
+        type=int,
+        default=1,
+        help="Profile the first local update and every N updates thereafter; must be positive.",
     )
     ap.add_argument(
         "--checkpoint-interval-minutes",
@@ -194,6 +322,10 @@ def build_sft2_arg_parser(config_path: Path | None = None) -> argparse.ArgumentP
         default=0,
         help="Save resumable step_NNNNNN checkpoints every N optimizer steps (0 disables).",
     )
+    ap.add_argument("--checkpoint-latest-only", action="store_true", default=False,
+                    help="Keep only the newest complete resumable checkpoint across epochs and steps; record best metrics without separate best weights.")
+    ap.add_argument("--deduplicate-epoch-checkpoints", action="store_true", default=False,
+                    help="Hardlink immutable epoch/best/final artifacts in a fresh output directory.")
     ap.add_argument(
         "--checkpoint-keep-last",
         type=int,
@@ -222,9 +354,157 @@ def parse_sft2_args(argv: list[str] | None = None) -> argparse.Namespace:
     pre_args, remaining = pre.parse_known_args(argv)
     ap = build_sft2_arg_parser(pre_args.config)
     args = ap.parse_args(remaining)
+    if args.schedule_total_steps < 0 or args.early_stop_patience < 1:
+        ap.error("schedule_total_steps must be nonnegative and early_stop_patience positive")
+    if not 0 <= args.early_stop_relative_improvement < 1:
+        ap.error("early_stop_relative_improvement must be finite and in [0,1)")
+    if args.early_stop_baseline is not None and not 0 <= args.early_stop_baseline < float("inf"):
+        ap.error("early_stop_baseline must be finite and nonnegative")
     args.latent_query_mode = resolve_latent_query_mode(
         args.latent_query_mode,
         default="inject",
     )
+    if not 0 <= args.lambda_outcome < float("inf"):
+        ap.error("lambda_outcome must be finite and nonnegative")
+    if not 0 <= args.lambda_sigreg < float("inf"):
+        ap.error("lambda_sigreg must be finite and nonnegative")
+    if args.lambda_outcome > 0 and not args.outcome_head:
+        ap.error("lambda_outcome > 0 requires --outcome-head")
+    if args.stage3_init_checkpoint is not None and args.resume:
+        ap.error("stage3_init_checkpoint is fresh initialization and cannot be combined with --resume")
+    if args.stage3_init_checkpoint is not None and Path(args.model).resolve() != Path(args.stage3_init_checkpoint).resolve():
+        ap.error("--model and --stage3-init-checkpoint must name the same complete checkpoint root")
+    if args.outcome_head and args.objective != "dino_grid":
+        ap.error("outcome head requires dino_grid objective")
+    if args.grid_predictor_kind == "residual" and args.objective != "dino_grid":
+        ap.error("residual grid predictor requires dino_grid objective")
+    if args.grid_global_tokens:
+        if args.objective != "dino_grid" or args.grid_position_encoding != "fixed_2d_sincos_v1":
+            ap.error("global grid token requires dino_grid and fixed_2d_sincos_v1")
+        if args.grid_predictor_kind != "residual":
+            ap.error("global grid token evaluation requires the residual predictor")
+    if bool(args.diagnostic_steps) != (args.diagnostic_dir is not None):
+        ap.error("diagnostic-steps and diagnostic-dir must be supplied together")
+    if args.diagnostic_steps:
+        if args.objective != "dino_grid" or args.eval_only:
+            ap.error("fixed-step diagnostics require dino_grid training")
+        if min(args.diagnostic_steps) < 0 or len(set(args.diagnostic_steps)) != len(args.diagnostic_steps):
+            ap.error("diagnostic steps must be distinct nonnegative updates")
+        if args.diagnostic_dir.is_symlink():
+            ap.error("diagnostic-dir must not be a symlink")
+        if args.diagnostic_dir.exists() and not args.resume:
+            ap.error("fresh diagnostic-dir must not already exist")
+        if args.diagnostic_dir.resolve() == args.output_dir.resolve() or args.diagnostic_dir.resolve() in args.output_dir.resolve().parents:
+            ap.error("diagnostic-dir must not contain the training output")
+    if args.feature_export_dir is not None and not args.eval_only:
+        ap.error("feature_export_dir requires --eval-only")
+    if args.rl_eval_checkpoint is not None:
+        if not args.eval_only:
+            ap.error("rl_eval_checkpoint requires --eval-only")
+        if Path(args.model).resolve() != args.rl_eval_checkpoint.resolve():
+            ap.error("RL eval requires --model and --rl-eval-checkpoint to name the same root")
+        if args.resume or args.resume_from is not None:
+            ap.error("RL eval checkpoint cannot be combined with Stage3 resume")
+        if args.wm_predictor_checkpoint is not None:
+            ap.error("RL eval checkpoint owns the WM predictor; remove --wm-predictor-checkpoint")
+        if args.objective != "dino_grid":
+            ap.error("RL eval checkpoint currently requires the dino_grid objective")
+        if args.frozen_wm_cache_dir is not None:
+            ap.error("RL eval checkpoint does not support frozen_wm_cache export")
+        if args.outcome_eval_dir is not None:
+            ap.error("RL eval checkpoint does not support outcome_eval export")
+    if args.frozen_wm_cache_dir is not None and not args.eval_only:
+        ap.error("frozen_wm_cache_dir requires --eval-only")
+    if args.frozen_wm_cache_dir is not None and args.objective != "dino_grid":
+        ap.error("frozen_wm_cache_dir requires the dino_grid objective")
+    if args.frozen_wm_cache_dir is not None and args.frozen_wm_cache_split is None:
+        ap.error("frozen_wm_cache_dir requires --frozen-wm-cache-split")
+    if args.frozen_wm_cache_dir is None and args.frozen_wm_cache_split is not None:
+        ap.error("frozen_wm_cache_split requires --frozen-wm-cache-dir")
+    if args.frozen_wm_cache_dir is not None and args.max_val_batches > 0:
+        ap.error("frozen_wm_cache_dir requires complete evaluation with max_val_batches=-1")
+    if (
+        args.frozen_wm_cache_dir is not None
+        and args.frozen_wm_cache_split == "train"
+        and args.max_train_records != -1
+    ):
+        ap.error("train frozen-WM export requires max_train_records=-1")
+    if (
+        args.frozen_wm_cache_dir is not None
+        and args.frozen_wm_cache_split == "eval"
+        and args.max_val_records != -1
+    ):
+        ap.error("eval frozen-WM export requires max_val_records=-1")
+    if args.feature_export_dir is not None and args.frozen_wm_cache_dir is not None:
+        ap.error("feature_export_dir and frozen_wm_cache_dir are mutually exclusive")
+    if not 0 < args.outcome_head_lr < float("inf"):
+        ap.error("outcome_head_lr must be finite and positive")
+    if args.step_timing_sample_interval < 1:
+        ap.error("step_timing_sample_interval must be positive")
+    if args.history_size != 1:
+        ap.error("trajectory-native Stage3 requires history_size=1")
+    if args.stop_after_steps < 0:
+        ap.error("stop_after_steps must be nonnegative")
+    if args.preprocess_cache_reuse_image_root is not None:
+        if args.require_prebuilt_cache:
+            ap.error(
+                "preprocess_cache_reuse_image_root cannot be combined with "
+                "--require-prebuilt-cache"
+            )
+        if args.preprocess_cache_dir is None:
+            ap.error("preprocess_cache_reuse_image_root requires --preprocess-cache-dir")
+        source_root = args.preprocess_cache_reuse_image_root
+        if not source_root.is_dir():
+            ap.error(f"preprocess cache image reuse root is not a directory: {source_root}")
+        missing = [
+            str(source_root / split)
+            for split in ("train", "val")
+            if not (source_root / split).is_dir()
+        ]
+        if missing:
+            ap.error(
+                "preprocess cache image reuse root is missing split directories: "
+                + ", ".join(missing)
+            )
+        legacy_splits = []
+        for split in ("train", "val"):
+            manifest_path = source_root / split / "manifest.json"
+            if not manifest_path.is_file():
+                ap.error(f"preprocess cache image reuse manifest is missing: {manifest_path}")
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                ap.error(f"invalid preprocess cache image reuse manifest: {manifest_path}: {exc}")
+            if manifest.get("image_processor_identity") is None:
+                legacy_splits.append(split)
+        if legacy_splits and args.preprocess_cache_reuse_processor_source is None:
+            ap.error(
+                "legacy image reuse caches require --preprocess-cache-reuse-processor-source "
+                "to name their exact original processor; missing for "
+                + ", ".join(legacy_splits)
+            )
+        if (
+            args.preprocess_cache_reuse_processor_source is not None
+            and not args.preprocess_cache_reuse_processor_source.is_dir()
+        ):
+            ap.error(
+                "preprocess cache reuse processor source is not a directory: "
+                f"{args.preprocess_cache_reuse_processor_source}"
+            )
+        source = source_root.resolve()
+        destination = args.preprocess_cache_dir.resolve()
+        if (
+            source == destination
+            or source in destination.parents
+            or destination in source.parents
+        ):
+            ap.error("preprocess cache source and destination roots must not overlap")
+    elif args.preprocess_cache_reuse_processor_source is not None:
+        ap.error(
+            "preprocess_cache_reuse_processor_source requires "
+            "--preprocess-cache-reuse-image-root"
+        )
+    if args.diagnose_outcome_gradients and args.lambda_outcome <= 0:
+        ap.error("outcome gradient diagnostic requires positive lambda_outcome")
     args.mask_latent_query_labels = query_labels_are_masked(args.latent_query_mode)
     return args

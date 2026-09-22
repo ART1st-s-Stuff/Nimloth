@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import random
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from nimloth.training.sft.stage1.checkpoint import (
     find_latest_resume_dir,
     restore_rng_state,
     save_resume_checkpoint,
+    validate_resume_stage,
     validate_resume_state,
 )
 
@@ -93,9 +95,9 @@ def _run(tmp_path: Path, *, interrupt: bool):
                         world=1,
                         lora=False,
                         base_model_path=tmp_path / "base",
-                        latent_token_count=1,
-                        mask_latent_query_labels=False,
-                        latent_query_mode="generate",
+                        latent_token_count=None,
+                        mask_latent_query_labels=None,
+                        latent_query_mode=None,
                     )
                     return
 
@@ -106,6 +108,10 @@ def _run(tmp_path: Path, *, interrupt: bool):
         state = torch.load(
             checkpoint / "training_state.pt", map_location="cpu", weights_only=False
         )
+        validate_resume_stage(state, checkpoint, "format")
+        assert state["format_objective"] == "format_answer_ce_v2"
+        assert state["latent_token_count"] is None
+        assert state["latent_query_mode"] is None
         validate_resume_state(state, expected_identity=identity, rank=0, world=1)
         resumed = TinyModel()
         resumed.load_state_dict(torch.load(checkpoint / "model.pt", weights_only=True))
@@ -197,3 +203,69 @@ def test_latest_resume_keeps_legacy_epoch_compatibility(tmp_path):
         legacy / "training_state.pt",
     )
     assert find_latest_resume_dir(tmp_path) == legacy
+
+
+def test_epoch_pruning_removes_only_committed_covered_steps(tmp_path):
+    from nimloth.training.sft.stage1.checkpoint import (
+        prune_resume_checkpoints_covered_by_epoch,
+    )
+
+    epoch = tmp_path / "epoch_003"
+    epoch.mkdir()
+    torch.save({}, epoch / "training_state.pt")
+    (epoch / COMMITTED_MARKER).write_text('{"epoch": 3, "step": 30}\n')
+    for step in (10, 20, 40):
+        path = tmp_path / f"resume_step_{step:08d}"
+        path.mkdir()
+        torch.save({"step": step, "epoch": min(3, step // 10)},
+                   path / "training_state.pt")
+        (path / COMMITTED_MARKER).write_text(
+            json.dumps({"step": step}) + "\n"
+        )
+    incomplete = tmp_path / "resume_step_00000025"
+    incomplete.mkdir()
+    torch.save({}, incomplete / "training_state.pt")
+
+    removed = prune_resume_checkpoints_covered_by_epoch(
+        tmp_path, epoch, covered_step=30
+    )
+
+    assert [path.name for path in removed] == [
+        "resume_step_00000010", "resume_step_00000020"
+    ]
+    assert incomplete.exists()
+    assert (tmp_path / "resume_step_00000040").exists()
+
+
+def test_epoch_pruning_requires_matching_committed_epoch(tmp_path):
+    from nimloth.training.sft.stage1.checkpoint import (
+        prune_resume_checkpoints_covered_by_epoch,
+    )
+
+    epoch = tmp_path / "epoch_001"
+    epoch.mkdir()
+    torch.save({}, epoch / "training_state.pt")
+    with pytest.raises(ValueError, match="committed"):
+        prune_resume_checkpoints_covered_by_epoch(tmp_path, epoch, covered_step=10)
+
+
+def test_epoch_pruning_validates_every_candidate_before_deleting(tmp_path):
+    from nimloth.training.sft.stage1.checkpoint import (
+        prune_resume_checkpoints_covered_by_epoch,
+    )
+
+    epoch = tmp_path / "epoch_002"
+    epoch.mkdir()
+    torch.save({}, epoch / "training_state.pt")
+    (epoch / COMMITTED_MARKER).write_text('{"epoch": 2, "step": 20}\n')
+    for directory_step, state_step in ((10, 10), (20, 19)):
+        path = tmp_path / f"resume_step_{directory_step:08d}"
+        path.mkdir()
+        torch.save({"step": state_step, "epoch": 2}, path / "training_state.pt")
+        (path / COMMITTED_MARKER).write_text(
+            json.dumps({"step": directory_step}) + "\n"
+        )
+    with pytest.raises(ValueError, match="identity mismatch"):
+        prune_resume_checkpoints_covered_by_epoch(tmp_path, epoch, covered_step=20)
+    assert (tmp_path / "resume_step_00000010").exists()
+    assert (tmp_path / "resume_step_00000020").exists()

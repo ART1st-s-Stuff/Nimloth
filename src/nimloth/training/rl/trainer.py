@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from dataclasses import dataclass
 from dataclasses import asdict
 from pathlib import Path
@@ -37,6 +38,7 @@ from nimloth.training.rl.algorithm import (
 )
 from nimloth.training.rl.checkpoint import load_rl_wm_checkpoint
 from nimloth.training.rl.checkpoint_manager import RLCheckpointManager
+from nimloth.training.rl.fsdp import wrap_qwen_fsdp
 from nimloth.training.rl.loop import RLLoopState, RLTrainingLoop
 from nimloth.training.common.value_semantics import validate_planning_value_semantics
 from nimloth.training.rl.reporting import RLReporter
@@ -67,9 +69,11 @@ from nimloth.wm import (
 )
 from nimloth.wm.grid import (
     GridWorldModel,
+    ResidualTemporalSpatialGridPredictor,
     SharedSlotProjector,
     TemporalSpatialGridPredictor,
 )
+from nimloth.wm.outcome import ActionOutcomeHead
 
 
 @dataclass(frozen=True)
@@ -97,20 +101,21 @@ class RLDistributedModules:
         return self.backbone.model
 
 
-def _prepare_planner_qwen_training(
+def _prepare_qwen_training(
     model: torch.nn.Module,
     *,
     gradient_checkpointing: bool,
     eval_modules: tuple[torch.nn.Module, ...] = (),
 ) -> int:
-    """Put the planner's differentiable Qwen recompute in real train mode.
+    """Put every trainable RL Qwen path in real train mode.
 
     ``transformers.PreTrainedModel.from_pretrained`` returns an eval-mode model.
     Qwen only executes an enabled gradient-checkpointing function while the
-    corresponding module is also in train mode.  Planner rollout is handled by
-    an independent vLLM process, so this model exists solely for the
-    differentiable critic/WM update and must use training semantics before DDP
-    wrapping.
+    corresponding module is also in train mode.  Behavior rollout is handled by
+    an independent vLLM process.  Planner recompute and direct Qwen PPO/DINO
+    therefore both require training semantics before distributed wrapping.
+    Leaving the direct path in eval mode silently disables checkpointing and can
+    exhaust device memory even at sequence micro-batch size one.
 
     Return the number of modules on which checkpointing is effectively active
     so the launch log and tests can fail closed instead of trusting the CLI flag.
@@ -127,7 +132,7 @@ def _prepare_planner_qwen_training(
     )
     if gradient_checkpointing and not checkpointed_modules:
         raise RuntimeError(
-            "planner requested Qwen gradient checkpointing, but the loaded model "
+            "RL requested Qwen gradient checkpointing, but the loaded model "
             "has no checkpoint-enabled module"
         )
     inactive_modules = tuple(
@@ -135,7 +140,7 @@ def _prepare_planner_qwen_training(
     )
     if inactive_modules:
         raise RuntimeError(
-            "planner Qwen gradient checkpointing is disabled by eval-mode modules"
+            "RL Qwen gradient checkpointing is disabled by eval-mode modules"
         )
     return len(checkpointed_modules)
 
@@ -145,7 +150,10 @@ def _is_grid_predictor_checkpoint(path: Path) -> bool:
     if not config_path.is_file():
         return False
     raw = json.loads(config_path.read_text(encoding="utf-8"))
-    return "grid_tokens" in raw
+    return (
+        "grid_tokens" in raw
+        or raw.get("schema") == "nimloth_residual_temporal_spatial_grid_v1"
+    )
 
 
 def _build_grid_world_model(
@@ -162,7 +170,16 @@ def _build_grid_world_model(
             "grid RL requires --state-proj-checkpoint and --value-head-checkpoint"
         )
     wm_checkpoint = Path(args.wm_checkpoint)
-    predictor = TemporalSpatialGridPredictor.load_checkpoint(
+    predictor_metadata = json.loads(
+        (wm_checkpoint / "config.json").read_text(encoding="utf-8")
+    )
+    predictor_type = (
+        ResidualTemporalSpatialGridPredictor
+        if predictor_metadata.get("schema")
+        == "nimloth_residual_temporal_spatial_grid_v1"
+        else TemporalSpatialGridPredictor
+    )
+    predictor = predictor_type.load_checkpoint(
         wm_checkpoint,
         map_location="cpu",
     )
@@ -198,6 +215,21 @@ def _build_grid_world_model(
         emb_dim=predictor.config.emb_dim,
         map_location="cpu",
     )
+    outcome_head = None
+    if config.outcome_head.enabled:
+        if args.outcome_head_checkpoint is None:
+            raise ValueError("OutcomeHead RL requires --outcome-head-checkpoint")
+        payload = torch.load(
+            args.outcome_head_checkpoint,
+            map_location="cpu",
+            weights_only=True,
+        )
+        if payload.get("schema") != ActionOutcomeHead.schema:
+            raise ValueError("unsupported OutcomeHead checkpoint schema")
+        if int(payload.get("emb_dim", -1)) != predictor.config.emb_dim:
+            raise ValueError("OutcomeHead checkpoint dimension mismatch")
+        outcome_head = ActionOutcomeHead(predictor.config.emb_dim)
+        outcome_head.load_state_dict(payload["state_dict"])
     planner_policy_head = None
     if config.planner_policy.enabled:
         if args.planner_policy_head_checkpoint is None and not args.resume:
@@ -217,11 +249,27 @@ def _build_grid_world_model(
         state_proj=state_proj,
         wm_predictor=predictor,
         value_head=value_head,
+        outcome_head=outcome_head,
         planner_policy_head=planner_policy_head,
     )
     if config.freeze.state_proj:
         world_model.state_proj.requires_grad_(False).eval()
     return world_model.to(device)
+
+
+def _build_dino_grid_targets(
+    world_model: GridWorldModel, *, device: torch.device
+) -> FrozenDINOGridTargets:
+    grid_tokens = world_model.unwrapped().state_proj.grid_tokens
+    grid_size = math.isqrt(grid_tokens)
+    if grid_size < 1 or grid_size**2 != grid_tokens:
+        raise ValueError("RL DINO target requires a positive square state grid")
+    return FrozenDINOGridTargets.from_pretrained(
+        DINOV2_LARGE_IDENTITY,
+        device=device,
+        dtype=torch.bfloat16,
+        grid_size=grid_size,
+    )
 
 
 def _build_world_model(
@@ -255,6 +303,8 @@ def _build_world_model(
             llm=llm,
             device=device,
         )
+    if config.outcome_head.enabled:
+        raise ValueError("OutcomeHead RL currently requires a grid world-model checkpoint")
 
     if args.wm_checkpoint is not None:
         wm_predictor = LatentWMPredictor.load_checkpoint(args.wm_checkpoint)
@@ -334,24 +384,21 @@ def _wrap_llm_fsdp(
 ) -> torch.nn.Module:
     if world_size <= 1:
         return llm
-    from torch.distributed.fsdp import (
-        FullyShardedDataParallel as FSDP,
-        ShardingStrategy,
-    )
-
     # FULL_SHARD 的局部 embedding 不保证包含 padding row。
     embedding = llm.get_input_embeddings()
     if getattr(embedding, "padding_idx", None) is not None:
         embedding.padding_idx = None
-    wrapped = FSDP(
+    wrapped, metadata = wrap_qwen_fsdp(
         llm,
-        device_id=torch.cuda.current_device(),
-        sharding_strategy=ShardingStrategy.FULL_SHARD,
-        sync_module_states=True,
-        use_orig_params=True,
+        device=torch.device("cuda", torch.cuda.current_device()),
     )
     if is_main():
-        print(json.dumps({"fsdp": "wrapped", "world_size": world_size}))
+        print(
+            json.dumps(
+                {"fsdp": "wrapped", "world_size": world_size, **metadata},
+                sort_keys=True,
+            )
+        )
     return wrapped
 
 
@@ -445,18 +492,25 @@ def _wrap_world_model_ddp(
         if world_model.planner_policy_head is not None
         else None
     )
+    outcome_head = (
+        _wrap_trainable_ddp(world_model.outcome_head, device=device)
+        if world_model.outcome_head is not None
+        else None
+    )
     if isinstance(world_model, GridWorldModel):
         return GridWorldModel(
             state_proj=state_proj,  # type: ignore[arg-type]
             wm_predictor=wm_predictor,  # type: ignore[arg-type]
             value_head=value_head,  # type: ignore[arg-type]
             planner_policy_head=planner_policy_head,
+            outcome_head=outcome_head,
         )
     return WorldModel(
         state_proj=state_proj,
         wm_predictor=wm_predictor,
         value_head=value_head,
         planner_policy_head=planner_policy_head,
+        outcome_head=outcome_head,
     )
 
 
@@ -555,7 +609,11 @@ def _build_optimizer(
             }
         )
     for name, module, learning_rate in (
-        ("state_proj", world_model.state_proj, config.predictor.lr),
+        (
+            "state_proj",
+            world_model.state_proj,
+            config.predictor.state_proj_lr or config.predictor.lr,
+        ),
         ("value_head", world_model.value_head, config.value_head.lr),
         ("wm_predictor", world_model.wm_predictor, config.predictor.lr),
     ):
@@ -580,6 +638,20 @@ def _build_optimizer(
                     "params": policy_parameters,
                     "lr": config.planner_policy.lr,
                     "name": "planner_policy_head",
+                }
+            )
+    if world_model.outcome_head is not None:
+        outcome_parameters = [
+            parameter
+            for parameter in world_model.outcome_head.parameters()
+            if parameter.requires_grad
+        ]
+        if outcome_parameters:
+            parameter_groups.append(
+                {
+                    "params": outcome_parameters,
+                    "lr": config.outcome_head.lr,
+                    "name": "outcome_head",
                 }
             )
     if token_value_head is not None:
@@ -621,6 +693,7 @@ def _load_resume_state(
     expected_planner_policy_config: dict[str, Any] | None = None,
     expected_reference_kl_config: dict[str, Any],
     expected_train_world_model: bool,
+    expected_outcome_config: dict[str, Any] | None = None,
 ) -> RLResumeState:
     """恢复 WM、optimizer 和 iteration 位置。"""
 
@@ -696,6 +769,12 @@ def _load_resume_state(
         raise ValueError("resume reference KL config mismatch")
     if state.get("train_world_model", True) != expected_train_world_model:
         raise ValueError("resume train_world_model config mismatch")
+    saved_outcome_config = state.get("outcome_config")
+    if expected_outcome_config is not None and expected_outcome_config.get("enabled"):
+        if saved_outcome_config != expected_outcome_config:
+            raise ValueError("resume OutcomeHead config mismatch")
+    elif saved_outcome_config not in (None, expected_outcome_config):
+        raise ValueError("resume OutcomeHead config mismatch")
     return RLResumeState(
         start_iteration=int(state.get("iteration", 0)) + 1,
         global_step=int(state.get("global_step", 0)),
@@ -728,12 +807,9 @@ def train_rl(
             "planner value training requires trainable Qwen language parameters; "
             "--llm-tune cannot be freeze"
         )
-    if planning_enabled and (
-        config.gradient.state_source != "recompute"
-        or not config.gradient.representation_to_backbone
-    ):
+    if planning_enabled and config.gradient.state_source != "recompute":
         raise ValueError(
-            "planner RL requires differentiable full-prefix Qwen recomputation"
+            "planner RL requires full-prefix Qwen recomputation"
         )
     validate_collector_configuration(
         actor_enabled=actor_enabled,
@@ -851,6 +927,8 @@ def train_rl(
             broadcast_module_state(world_model.state_proj)
             broadcast_module_state(world_model.wm_predictor)
             broadcast_module_state(world_model.value_head)
+            if world_model.outcome_head is not None:
+                broadcast_module_state(world_model.outcome_head)
             if world_model.planner_policy_head is not None:
                 broadcast_module_state(world_model.planner_policy_head)
             if token_value_head is not None:
@@ -867,13 +945,13 @@ def train_rl(
             resume_path=(resume_dir / "vision_ema.pt") if args.resume else None,
             device=device,
         )
-        if planning_enabled:
+        if backbone_trainable:
             eval_modules = (
                 (find_visual_module(model),)
                 if vision_tune == "freeze"
                 else ()
             )
-            checkpointed_modules = _prepare_planner_qwen_training(
+            checkpointed_modules = _prepare_qwen_training(
                 model,
                 gradient_checkpointing=bool(args.gradient_checkpointing),
                 eval_modules=eval_modules,
@@ -882,7 +960,7 @@ def train_rl(
                 print(
                     json.dumps(
                         {
-                            "planner_qwen_training_mode": "train",
+                            "qwen_training_mode": "train",
                             "gradient_checkpointing_requested": bool(
                                 args.gradient_checkpointing
                             ),
@@ -950,6 +1028,7 @@ def train_rl(
                 "type": config.actor.reference_kl_loss_type,
             },
             expected_train_world_model=config.predictor.train_wm,
+            expected_outcome_config=asdict(config.outcome_head),
         )
         agent = Agent(
             backbone=distributed_modules.backbone,
@@ -1039,11 +1118,7 @@ def train_rl(
         if config.predictor.train_wm and config.predictor.lambda_dino > 0.0:
             if not isinstance(agent.wm, GridWorldModel):
                 raise ValueError("RL DINO-grid loss requires a grid world model")
-            dino_grid_targets = FrozenDINOGridTargets.from_pretrained(
-                DINOV2_LARGE_IDENTITY,
-                device=device,
-                dtype=torch.bfloat16,
-            )
+            dino_grid_targets = _build_dino_grid_targets(agent.wm, device=device)
         model_runtime = RLModelRuntime(
             agent=agent,
             input_builder=input_builder,

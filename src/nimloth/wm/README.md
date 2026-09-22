@@ -8,7 +8,8 @@
 | `model.py` | `WorldModel`：组合 StateProjector、WMPredictor、ValueHead |
 | `state_proj.py` | backbone hidden → WM state |
 | `predictor.py` | latent 下一状态预测与自回归 sequence 模拟 |
-| `grid.py` | 可在 SFT2 继续训练的 k16 SFT1 projector 与 H-context temporal-spatial predictor |
+| `grid.py` | shared slot projector、H-context temporal-spatial predictor 与 fixed-2D residual K64+CLS predictor |
+| `layout.py` | 显式 row-major spatial/global state 合同、切片与空间恒等门禁 |
 | `sigreg.py` | SFT2/RL 共用的 ``(B,T,D)`` sequence SIGReg |
 | `value_head.py` | 每个离散动作的 value |
 | `lewm.py`、`_vendor_lewm.py` | LeWM 配置和最小核心算子 |
@@ -25,3 +26,12 @@ successor `s_{t+1}`不能继续与`a_t`配对。
 `SharedSlotProjector` 的输出作为 grid state，并在 SFT2 继续训练该 projector；
 DINO teacher target 属于 backbone，SFT2/RL 共用的 predicted-state loss属于
 `training/common`；SFT2 可把它应用到完整`(B,T,...)`预测序列。WM 本身不维护 EMA 参数。
+
+新 K64+CLS 路径统一使用 `GridStateLayout`，禁止在调用点用隐式 `[:-1]`
+猜测全局槽位。固定二维编码是不可训练的 checkpoint buffer，全局槽位位置为零；
+同一时间步的 attention 仍允许 spatial 与 global 双向交互。旧 learned-position
+K64 checkpoint 保持 v1 schema，不会静默加载为 fixed-2D K65。
+
+`outcome.py` 的 `ActionOutcomeHead` 从既有动作条件预测 grid 读取单步执行
+成功 logit；它不额外调用 predictor。`WorldModel.outcome_head` 可选，随模块
+train/eval 与 DDP accumulation 管理；训练目标和 checkpoint 可用性由 Stage3 管理。

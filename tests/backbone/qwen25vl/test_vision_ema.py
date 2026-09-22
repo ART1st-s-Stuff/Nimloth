@@ -56,6 +56,20 @@ def test_vision_ema_use_weights_swaps_and_restores() -> None:
     assert torch.allclose(model.visual.weight, original)
 
 
+def test_loaded_vision_ema_swaps_frozen_visual_weights() -> None:
+    model = _FakeQwen()
+    ema = VisionEncoderEMA(decay=0.9)
+    ema.reset(model)
+    original = model.visual.weight.detach().clone()
+    with torch.no_grad():
+        ema.shadow["visual.weight"].fill_(7.0)
+    model.visual.requires_grad_(False)
+
+    with ema.use_ema_weights(model):
+        assert torch.allclose(model.visual.weight, torch.full_like(model.visual.weight, 7.0))
+    assert torch.allclose(model.visual.weight, original)
+
+
 def test_vision_ema_save_load_roundtrip(tmp_path) -> None:
     model = _FakeQwen()
     ema = VisionEncoderEMA(decay=0.95)
