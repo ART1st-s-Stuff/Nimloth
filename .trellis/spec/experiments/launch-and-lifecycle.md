@@ -17,6 +17,18 @@ A short experiment is a scoped remote reproduction or partial-parameter rerun ex
 
 At the deadline, cancel the job and verify its terminal scheduler/process state. Record partial outputs as partial evidence only, then either defer the experiment or mark the task blocked with the concrete resource/runtime blocker. Cancellation, a smoke substitute, or a later unrelated run must not be reported as successful validation of the expired experiment.
 
+An experiment failure or deadline is not a standing ban on resubmission. Within
+the already authorized objective and resource scope, a replacement run may be
+submitted without another human confirmation after all of the following are
+complete: the previous process is terminal, the failure has a concrete
+diagnosis, any required fix is committed and tested, resource/input/checkpoint/
+port/output checks are refreshed, the output identity is new, and failed fresh
+rollout consumption is not reused. Start a new 15-minute deadline for each short
+replacement run. Never repeat an unchanged command blindly or skip preflight;
+obtain new approval only when the objective, data semantics, resource scope,
+runtime budget, or another reviewed contract materially changes, or when the
+human explicitly requests a review point.
+
 ## W&B naming
 
 When W&B is used, record project, full run name, numeric ID, optional comment, and parameter-token meanings before launch.
